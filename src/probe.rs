@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow};
-use futures::{StreamExt, stream};
+use futures_util::{StreamExt, stream};
 use reqwest::Proxy;
 use serde_json::{Map, Value, json};
 use tokio::{

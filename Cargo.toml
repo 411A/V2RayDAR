@@ -5,20 +5,20 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1"
-axum = "0.8"
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
 base64 = "0.22"
-chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
-clap = { version = "4.5", features = ["derive"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+clap = { version = "4.6", features = ["derive"] }
 crossterm = "0.29.0"
-futures = "0.3"
-getrandom = "0.3"
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
+getrandom = "0.4"
 percent-encoding = "2"
-ratatui = { version = "0.30.1", default-features = false, features = ["crossterm", "layout-cache", "underline-color"] }
-reqwest = { version = "0.12", default-features = false, features = ["charset", "http2", "rustls-tls"] }
+ratatui = { version = "0.30.1", default-features = false, features = ["crossterm", "layout-cache"] }
+reqwest = "0.13"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
-tokio = { version = "1", features = ["fs", "macros", "net", "process", "rt-multi-thread", "signal", "time"] }
+tokio = { version = "1", features = ["fs", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2"

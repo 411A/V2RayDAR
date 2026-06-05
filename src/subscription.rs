@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, time::Duration};
 
 use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use futures::{StreamExt, stream};
+use futures_util::{StreamExt, stream};
 use percent_encoding::percent_decode_str;
 use reqwest::Client;
 use tokio::fs;

@@ -32,17 +32,48 @@ pub struct SubscriptionSource {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProbeConfig {
+    #[serde(default = "default_probe_mode")]
+    pub mode: ProbeMode,
+    #[serde(default = "default_sing_box_path")]
+    pub sing_box_path: String,
     #[serde(default = "default_connect_timeout_ms")]
     pub connect_timeout_ms: u64,
+    #[serde(default = "default_active_timeout_ms")]
+    pub active_timeout_ms: u64,
+    #[serde(default = "default_startup_timeout_ms")]
+    pub startup_timeout_ms: u64,
     #[serde(default = "default_probe_concurrency")]
     pub concurrency: usize,
+    #[serde(default = "default_test_url")]
+    pub test_url: String,
+    #[serde(default = "default_accepted_statuses")]
+    pub accepted_statuses: Vec<u16>,
+    #[serde(default)]
+    pub download_url: Option<String>,
+    #[serde(default = "default_download_bytes_limit")]
+    pub download_bytes_limit: usize,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProbeMode {
+    Active,
+    Tcp,
 }
 
 impl Default for ProbeConfig {
     fn default() -> Self {
         Self {
+            mode: default_probe_mode(),
+            sing_box_path: default_sing_box_path(),
             connect_timeout_ms: default_connect_timeout_ms(),
+            active_timeout_ms: default_active_timeout_ms(),
+            startup_timeout_ms: default_startup_timeout_ms(),
             concurrency: default_probe_concurrency(),
+            test_url: default_test_url(),
+            accepted_statuses: default_accepted_statuses(),
+            download_url: None,
+            download_bytes_limit: default_download_bytes_limit(),
         }
     }
 }
@@ -83,6 +114,51 @@ fn validate(config: AppConfig) -> Result<AppConfig> {
 
     if config.probe.concurrency == 0 {
         return Err(anyhow!("probe.concurrency must be greater than 0"));
+    }
+
+    if config.probe.connect_timeout_ms == 0 {
+        return Err(anyhow!("probe.connect_timeout_ms must be greater than 0"));
+    }
+
+    if config.probe.active_timeout_ms == 0 {
+        return Err(anyhow!("probe.active_timeout_ms must be greater than 0"));
+    }
+
+    if config.probe.startup_timeout_ms == 0 {
+        return Err(anyhow!("probe.startup_timeout_ms must be greater than 0"));
+    }
+
+    if config.probe.mode == ProbeMode::Active && config.probe.sing_box_path.trim().is_empty() {
+        return Err(anyhow!(
+            "probe.sing_box_path cannot be empty when probe.mode is active"
+        ));
+    }
+
+    if config.probe.mode == ProbeMode::Active && config.probe.test_url.trim().is_empty() {
+        return Err(anyhow!(
+            "probe.test_url cannot be empty when probe.mode is active"
+        ));
+    }
+
+    if config.probe.mode == ProbeMode::Active && config.probe.accepted_statuses.is_empty() {
+        return Err(anyhow!(
+            "probe.accepted_statuses cannot be empty when probe.mode is active"
+        ));
+    }
+
+    if config
+        .probe
+        .accepted_statuses
+        .iter()
+        .any(|status| !(100..=599).contains(status))
+    {
+        return Err(anyhow!(
+            "probe.accepted_statuses must contain valid HTTP status codes from 100 to 599"
+        ));
+    }
+
+    if config.probe.download_bytes_limit == 0 {
+        return Err(anyhow!("probe.download_bytes_limit must be greater than 0"));
     }
 
     if config.subscriptions.is_empty() {
@@ -135,12 +211,40 @@ fn default_priority() -> u32 {
     100
 }
 
+fn default_probe_mode() -> ProbeMode {
+    ProbeMode::Active
+}
+
+fn default_sing_box_path() -> String {
+    "sing-box".to_string()
+}
+
 fn default_connect_timeout_ms() -> u64 {
     1_500
 }
 
+fn default_active_timeout_ms() -> u64 {
+    10_000
+}
+
+fn default_startup_timeout_ms() -> u64 {
+    2_000
+}
+
 fn default_probe_concurrency() -> usize {
-    256
+    16
+}
+
+fn default_test_url() -> String {
+    "https://www.gstatic.com/generate_204".to_string()
+}
+
+fn default_accepted_statuses() -> Vec<u16> {
+    vec![204, 200]
+}
+
+fn default_download_bytes_limit() -> usize {
+    1_048_576
 }
 
 #[cfg(test)]
@@ -184,5 +288,51 @@ subscriptions:
         fs::remove_file(&path).ok();
 
         assert!(error.to_string().contains("unsupported config extension"));
+    }
+
+    #[test]
+    fn rejects_zero_probe_timeout() {
+        let path = std::env::temp_dir().join(format!(
+            "v2raydar-config-test-zero-timeout-{}.yaml",
+            std::process::id()
+        ));
+        fs::write(
+            &path,
+            r#"
+probe:
+  active_timeout_ms: 0
+subscriptions:
+  - name: local
+    url: data:,vless://uuid@example.com:443%23demo
+"#,
+        )
+        .expect("temp config can be written");
+        let error = AppConfig::load(&path).expect_err("zero timeout should fail");
+        fs::remove_file(&path).ok();
+
+        assert!(error.to_string().contains("active_timeout_ms"));
+    }
+
+    #[test]
+    fn rejects_invalid_http_status() {
+        let path = std::env::temp_dir().join(format!(
+            "v2raydar-config-test-status-{}.yaml",
+            std::process::id()
+        ));
+        fs::write(
+            &path,
+            r#"
+probe:
+  accepted_statuses: [99]
+subscriptions:
+  - name: local
+    url: data:,vless://uuid@example.com:443%23demo
+"#,
+        )
+        .expect("temp config can be written");
+        let error = AppConfig::load(&path).expect_err("invalid HTTP status should fail");
+        fs::remove_file(&path).ok();
+
+        assert!(error.to_string().contains("valid HTTP status codes"));
     }
 }

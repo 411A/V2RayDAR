@@ -15,8 +15,8 @@ pub fn print_summary(state: &RuntimeState, top_n: usize) {
     }
 
     println!(
-        "{:<5} {:<8} {:<10} {:<28} {:<22} {:>10}",
-        "rank", "prio", "proto", "name", "endpoint", "latency"
+        "{:<5} {:<8} {:<10} {:<28} {:<22} {:<12} {:>10}",
+        "rank", "prio", "proto", "name", "endpoint", "validation", "latency"
     );
 
     for item in state
@@ -31,12 +31,13 @@ pub fn print_summary(state: &RuntimeState, top_n: usize) {
             .map(|value| format!("{value} ms"))
             .unwrap_or_else(|| "-".to_string());
         println!(
-            "{:<5} {:<8} {:<10} {:<28} {:<22} {:>10}",
+            "{:<5} {:<8} {:<10} {:<28} {:<22} {:<12} {:>10}",
             item.rank,
             item.priority,
             truncate(&item.protocol, 10),
             truncate(&item.name, 28),
             truncate(&endpoint, 22),
+            truncate(&item.validation, 12),
             latency
         );
     }

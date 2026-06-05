@@ -1,0 +1,15 @@
+bind: 127.0.0.1:14127
+top_n: 10
+refresh_seconds: 300
+encoded_subscription: true
+fetch_timeout_ms: 15000
+fetch_concurrency: 4
+
+probe:
+  connect_timeout_ms: 1500
+  concurrency: 256
+
+subscriptions:
+  - name: primary
+    url: https://example.com/subscription
+    priority: 1

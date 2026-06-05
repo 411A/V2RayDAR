@@ -1,6 +1,6 @@
 # V2RayDAR
 
-V2RayDAR is a small Rust CLI that fetches V2Ray-style subscriptions, finds the configs whose server endpoints are reachable on the current network, ranks them, and exposes the best configs through a local subscription endpoint.
+V2RayDAR is a small Rust CLI that fetches V2Ray-style subscriptions, validates configs through the user's current network, ranks the configs that can load a real test URL, and exposes the best configs through a local subscription endpoint.
 
 Project name: V2Ray Detection And Reconnaissance, pronounced like `v2ray` + `radar`.
 
@@ -11,17 +11,42 @@ Phase 1 is a fast scanner and local subscription server:
 - Loads `configs.yaml`, `configs.yml`, or `configs.json`.
 - Fetches subscription sources by priority.
 - Parses common share links such as `vmess://`, `vless://`, `trojan://`, `ss://`, `ssr://`, `hysteria2://`, `hy2://`, and `tuic://`.
-- Runs concurrent TCP reachability and latency checks.
-- Ranks reachable configs.
+- Starts `sing-box` for active validation and sends an HTTP request through each candidate config.
+- Ranks configs that successfully load the configured test URL through the proxy.
 - Exposes the top N configs from a local HTTP endpoint.
 
-Important: Phase 1 checks TCP reachability and latency. It does not yet perform a full proxy handshake or real download-speed test through the config. That requires running a maintained core such as Xray, V2Ray, or sing-box, which is planned separately in `PLAN.md`.
+Important: the default probe mode is `active`, which requires `sing-box`. V2RayDAR does not publish a config unless `sing-box` can start that config and a real HTTP request succeeds through it. A TCP-only mode still exists for diagnostics, but it is not suitable when you need configs that are actually connectable in v2rayNG or v2rayN.
+
+Active validation currently converts VMess, VLESS, Trojan, Shadowsocks, Hysteria2, and TUIC share links into temporary sing-box configs. SSR links are parsed for diagnostics, but they are not published in active mode unless active conversion support is added later.
 
 ## Requirements
 
 - Rust toolchain with Cargo.
+- `sing-box` installed and available on `PATH`, or configured with `probe.sing_box_path`.
 - Internet access from the machine running V2RayDAR so it can fetch subscription URLs.
 - Android and the PC must be on the same network if Android v2rayNG will read the endpoint from the PC.
+
+Install or verify `sing-box` before using active mode:
+
+```bash
+sing-box version
+```
+
+If `sing-box` is not on `PATH`, set an absolute path:
+
+```yaml
+probe:
+  mode: active
+  sing_box_path: /usr/local/bin/sing-box
+```
+
+Windows example:
+
+```yaml
+probe:
+  mode: active
+  sing_box_path: C:\Tools\sing-box\sing-box.exe
+```
 
 ## Quick Start
 
@@ -50,8 +75,16 @@ fetch_timeout_ms: 15000
 fetch_concurrency: 4
 
 probe:
+  mode: active
+  sing_box_path: sing-box
   connect_timeout_ms: 1500
-  concurrency: 256
+  active_timeout_ms: 10000
+  startup_timeout_ms: 2000
+  concurrency: 16
+  test_url: https://www.gstatic.com/generate_204
+  accepted_statuses: [204, 200]
+  download_url:
+  download_bytes_limit: 1048576
 
 subscriptions:
   - name: primary
@@ -90,44 +123,66 @@ target\release\v2raydar.exe --config configs.yaml
 
 ## Config Fields
 
-`bind`: HTTP bind address for the local endpoint.
+Top-level keys:
 
-`top_n`: how many best reachable configs are exposed to clients.
+| Key | Type | Default | Possible values | Hot reload | Description |
+| --- | --- | --- | --- | --- | --- |
+| `bind` | Socket address | `127.0.0.1:14127` | `IP:PORT`, for example `127.0.0.1:14127`, `0.0.0.0:14127`, `192.168.1.23:14127` | Restart required | HTTP bind address for `/subscription`, `/subscription.txt`, `/results`, and `/health`. Use `127.0.0.1` for same-machine clients. Use `0.0.0.0` or a LAN IP for Android/LAN clients. |
+| `top_n` | Positive integer | `10` | `1` or higher | Yes | Maximum number of validated working configs exposed by subscription endpoints. |
+| `refresh_seconds` | Integer seconds | `300` | `0` or higher | Yes | Time between automatic subscription refreshes. `0` disables timer refresh, but saved config changes still trigger a reload. |
+| `encoded_subscription` | Boolean | `true` | `true`, `false` | Yes | When `true`, `/subscription` returns a base64-encoded newline list. Keep `true` for v2rayNG/v2rayN unless you know your client wants raw links. |
+| `fetch_timeout_ms` | Integer milliseconds | `15000` | `1` or higher | Yes | Timeout for fetching each subscription source. |
+| `fetch_concurrency` | Positive integer | `4` | `1` or higher | Yes | Number of same-priority subscription sources fetched concurrently. |
+| `probe` | Object | See probe table | Probe object | Yes | Controls validation strategy, sing-box path, timeouts, concurrency, and optional speed measurement. |
+| `subscriptions` | Array | Required | One or more subscription objects | Yes | Subscription sources to fetch and test. Lower `priority` values are processed first. |
 
-`refresh_seconds`: how often subscriptions are fetched and tested again. Use `0` to disable automatic refresh.
+Probe keys:
 
-`encoded_subscription`: when `true`, `/subscription` returns a base64-encoded newline list, which is the safest default for V2Ray clients.
+| Key | Type | Default | Possible values | Hot reload | Description |
+| --- | --- | --- | --- | --- | --- |
+| `probe.mode` | String enum | `active` | `active`, `tcp` | Yes | `active` starts `sing-box` and loads a real HTTP URL through the candidate config. `tcp` only checks TCP connect and can produce false positives. Use `active` for normal operation. |
+| `probe.sing_box_path` | String path | `sing-box` | Executable name on `PATH` or absolute path, for example `/usr/local/bin/sing-box`, `C:\Tools\sing-box\sing-box.exe` | Yes | sing-box executable used by active probes. Required when `probe.mode` is `active`. |
+| `probe.connect_timeout_ms` | Integer milliseconds | `1500` | `1` or higher | Yes | TCP connection timeout used only by `probe.mode: tcp`. |
+| `probe.active_timeout_ms` | Integer milliseconds | `10000` | `1` or higher | Yes | Timeout for the HTTP request sent through the candidate config in active mode. |
+| `probe.startup_timeout_ms` | Integer milliseconds | `2000` | `1` or higher | Yes | Timeout while waiting for the temporary local sing-box mixed proxy to become ready. |
+| `probe.concurrency` | Positive integer | `16` | `1` or higher | Yes | Number of configs tested at once. Higher values are faster but spawn more sing-box processes and use more CPU/RAM/network. |
+| `probe.test_url` | URL string | `https://www.gstatic.com/generate_204` | Any `http://` or `https://` URL reachable from a working proxy | Yes | Connectivity URL loaded through every candidate config. Choose a small, stable URL that works from your network. |
+| `probe.accepted_statuses` | Array of HTTP status codes | `[204, 200]` | HTTP status integers, for example `[204]`, `[200]`, `[200, 204, 301, 302]` | Yes | HTTP statuses treated as active-probe success for `probe.test_url`. |
+| `probe.download_url` | Optional URL string | Empty/null | Empty, `null`, or any `http://`/`https://` URL | Yes | Optional download URL used after the active connectivity probe succeeds. Leave empty to rank by active HTTP latency only. |
+| `probe.download_bytes_limit` | Positive integer bytes | `1048576` | `1` or higher | Yes | Maximum bytes counted for optional download Mbps measurement. The probe sends an HTTP `Range` request, but the server may ignore it. |
 
-`fetch_timeout_ms`: timeout for each subscription fetch.
+Subscription keys:
 
-`fetch_concurrency`: how many subscriptions in the same priority group can be fetched at once.
+| Key | Type | Default | Possible values | Hot reload | Description |
+| --- | --- | --- | --- | --- | --- |
+| `subscriptions[].name` | String | Required | Any non-empty label, for example `primary`, `backup`, `work-isp` | Yes | Local source name shown in `/results` and terminal output. |
+| `subscriptions[].url` | String | Required | `https://...`, `http://...`, `file://...`, local file path, or `data:` URL | Yes | Subscription source. Content may be base64 newline links, raw newline links, JSON/YAML containers, or supported DataURL content. |
+| `subscriptions[].priority` | Integer | `100` | `0` or higher | Yes | Lower number means higher priority. Priority `1` is ranked before priority `2` when validation quality is otherwise equal. |
 
-`probe.connect_timeout_ms`: TCP connection timeout per config.
+Supported config file extensions:
 
-`probe.concurrency`: how many configs can be tested at once.
+| Extension | Parser | Notes |
+| --- | --- | --- |
+| `.yaml` | YAML | Recommended in examples because it is explicit. |
+| `.yml` | YAML | Fully supported shorthand extension. |
+| `.json` | JSON | Supported for users who prefer JSON config files. |
 
-`subscriptions[].priority`: lower number means higher priority. Priority `1` is tested before priority `2`.
+Supported subscription source URL formats:
 
-Config file extensions:
-
-- `.yaml`
-- `.yml`
-- `.json`
-
-Supported subscription source URLs:
-
-- `https://...`
-- `http://...`
-- `file://...`
-- local file paths
-- `data:` URLs
+| Format | Example | Notes |
+| --- | --- | --- |
+| HTTPS URL | `https://example.com/subscription` | Recommended for remote subscriptions. |
+| HTTP URL | `http://example.com/subscription` | Supported, but HTTPS is safer when available. |
+| File URL | `file:///home/user/sub.txt` | Reads a local subscription file. |
+| Local path | `/home/user/sub.txt`, `C:\Users\me\sub.txt` | Reads a local subscription file directly. |
+| Data URL | `data:,vless://uuid@example.com:443%23demo` | Useful for tests or tiny inline subscriptions. |
 
 ## Local Endpoints
 
 When the app is running with the default config:
 
-- `http://127.0.0.1:14127/subscription` returns the top N reachable configs, base64 encoded by default.
-- `http://127.0.0.1:14127/subscription.txt` returns the same configs as raw newline-separated share links.
+- `http://127.0.0.1:14127/subscription` returns the top N actively validated configs, base64 encoded by default.
+- `http://127.0.0.1:14127/subscription.txt` returns the same validated configs as raw newline-separated share links.
 - `http://127.0.0.1:14127/results` returns JSON diagnostics with all ranked configs.
 - `http://127.0.0.1:14127/health` returns `ok`.
 
@@ -270,14 +325,16 @@ Android cannot reach V2RayDAR:
 
 All configs are unreachable:
 
-- Increase `probe.connect_timeout_ms`.
+- Confirm `sing-box version` works from the same terminal.
+- Increase `probe.active_timeout_ms`.
 - Confirm the original subscriptions still contain valid links.
 - Confirm the PC running V2RayDAR can reach the proxy server addresses.
-- Remember that Phase 1 checks server TCP reachability, not full proxy login/protocol validity.
+- Check `/results` for active probe errors, such as unsupported share-link fields or HTTP probe failures.
+- Try another `probe.test_url` if your network blocks the default connectivity endpoint.
 
 The endpoint is empty:
 
-- V2RayDAR only exposes reachable configs.
+- V2RayDAR only exposes configs that pass the active probe.
 - Check `/results` to see failed candidates and errors.
 - Check the terminal summary after each refresh.
 
@@ -286,4 +343,5 @@ The endpoint is empty:
 - v2rayNG official repository: https://github.com/2dust/v2rayNG
 - v2rayN official repository: https://github.com/2dust/v2rayN
 - V2Fly subscription service documentation: https://www.v2fly.org/en_US/v5/config/service/subscription.html
+- sing-box configuration documentation: https://sing-box.sagernet.org/configuration/
 - Xray outbound configuration documentation: https://xtls.github.io/en/config/outbounds/

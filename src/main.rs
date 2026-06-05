@@ -230,6 +230,7 @@ impl From<&AppConfig> for RuntimeConfig {
             top_n: config.top_n,
             refresh_seconds: config.refresh_seconds,
             encoded_subscription: config.encoded_subscription,
+            probe_mode: format!("{:?}", config.probe.mode).to_ascii_lowercase(),
         }
     }
 }

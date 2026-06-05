@@ -30,7 +30,9 @@ pub struct RankedConfig {
     pub endpoint: Endpoint,
     pub uri: String,
     pub reachable: bool,
+    pub validation: String,
     pub latency_ms: Option<u128>,
+    pub http_status: Option<u16>,
     pub download_mbps: Option<f64>,
     pub error: Option<String>,
 }
@@ -51,4 +53,5 @@ pub struct RuntimeConfig {
     pub top_n: usize,
     pub refresh_seconds: u64,
     pub encoded_subscription: bool,
+    pub probe_mode: String,
 }

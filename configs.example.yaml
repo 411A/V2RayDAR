@@ -6,8 +6,16 @@ fetch_timeout_ms: 15000
 fetch_concurrency: 4
 
 probe:
+  mode: active
+  sing_box_path: sing-box
   connect_timeout_ms: 1500
-  concurrency: 256
+  active_timeout_ms: 10000
+  startup_timeout_ms: 2000
+  concurrency: 16
+  test_url: https://www.gstatic.com/generate_204
+  accepted_statuses: [204, 200]
+  download_url:
+  download_bytes_limit: 1048576
 
 subscriptions:
   - name: primary

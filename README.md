@@ -8,7 +8,8 @@ Project name: V2Ray Detection And Reconnaissance, pronounced like `v2ray` + `rad
 
 Phase 1 is a fast scanner and local subscription server:
 
-- Loads `configs.yaml`, `configs.yml`, or `configs.json`.
+- Creates a per-user app folder and `config.yaml` on first run.
+- Supports `--portable` and `--config` for self-contained or development runs.
 - Fetches subscription sources by priority.
 - Parses common share links such as `vmess://`, `vless://`, `trojan://`, `ss://`, `ssr://`, `hysteria2://`, `hy2://`, and `tuic://`.
 - Starts `sing-box` for active validation and sends an HTTP request through each candidate config.
@@ -50,21 +51,21 @@ probe:
 
 ## Quick Start
 
-Create your runtime config from the example. Both `.yaml` and `.yml` are supported; this README uses `.yaml` because it is the less abbreviated YAML extension.
+Run V2RayDAR. On first run it creates the app folder, default config, and runtime subfolders automatically.
 
-Linux/macOS:
+Development:
 
 ```bash
-cp configs.example.yaml configs.yaml
+cargo run
 ```
 
-Windows PowerShell:
+Release binary:
 
 ```powershell
-Copy-Item configs.example.yaml configs.yaml
+target\release\v2raydar.exe
 ```
 
-Edit `configs.yaml` and replace the example subscription URL:
+The terminal output shows the app folder and config path. Edit that generated `config.yaml` and add your subscription sources:
 
 ```yaml
 bind: 127.0.0.1:14127
@@ -73,6 +74,11 @@ refresh_seconds: 300
 encoded_subscription: true
 fetch_timeout_ms: 15000
 fetch_concurrency: 4
+
+sharing:
+  enabled: false
+  require_token: false
+  token: AUTO_GENERATED_ON_FIRST_RUN
 
 probe:
   mode: active
@@ -88,37 +94,47 @@ probe:
 
 subscriptions:
   - name: primary
-    url: https://example.com/subscription
+    url: https://your-subscription-url
     priority: 1
 ```
 
 Run once without starting the HTTP server:
 
 ```bash
-cargo run -- --config configs.yaml --once
+cargo run -- --once
 ```
 
 Run continuously and serve the endpoint:
 
 ```bash
-cargo run -- --config configs.yaml
+cargo run
 ```
 
-V2RayDAR watches the config file while it runs. When you edit and save `configs.yaml`, it reloads the new settings and refreshes the ranked configs automatically.
+V2RayDAR watches the active config file while it runs. Most fields take effect live, including `top_n`, `refresh_seconds`, `encoded_subscription`, sharing settings, fetch settings, probe settings, and subscriptions. Changing `bind` requires restarting V2RayDAR because the HTTP listener is already open on the old address.
 
-Most fields take effect live, including `top_n`, `refresh_seconds`, `encoded_subscription`, fetch settings, probe settings, and subscriptions. Changing `bind` requires restarting V2RayDAR because the HTTP listener is already open on the old address.
+For portable mode, keep the app data beside the executable:
+
+```bash
+v2raydar --portable
+```
+
+For development or tests with an explicit config path:
+
+```bash
+v2raydar --config configs.example.yaml --once
+```
 
 For a release build:
 
 ```bash
 cargo build --release
-target/release/v2raydar --config configs.yaml
+target/release/v2raydar
 ```
 
 On Windows, the release binary is:
 
 ```powershell
-target\release\v2raydar.exe --config configs.yaml
+target\release\v2raydar.exe
 ```
 
 ## Config Fields
@@ -133,8 +149,17 @@ Top-level keys:
 | `encoded_subscription` | Boolean | `true` | `true`, `false` | Yes | When `true`, `/subscription` returns a base64-encoded newline list. Keep `true` for v2rayNG/v2rayN unless you know your client wants raw links. |
 | `fetch_timeout_ms` | Integer milliseconds | `15000` | `1` or higher | Yes | Timeout for fetching each subscription source. |
 | `fetch_concurrency` | Positive integer | `4` | `1` or higher | Yes | Number of same-priority subscription sources fetched concurrently. |
+| `sharing` | Object | See sharing table | Sharing object | Yes | Controls LAN exposure and optional URL token protection. |
 | `probe` | Object | See probe table | Probe object | Yes | Controls validation strategy, sing-box path, timeouts, concurrency, and optional speed measurement. |
-| `subscriptions` | Array | Required | One or more subscription objects | Yes | Subscription sources to fetch and test. Lower `priority` values are processed first. |
+| `subscriptions` | Array | `[]` | Zero or more subscription objects | Yes | Subscription sources to fetch and test. Lower `priority` values are processed first. A fresh install starts empty. |
+
+Sharing keys:
+
+| Key | Type | Default | Possible values | Hot reload | Description |
+| --- | --- | --- | --- | --- | --- |
+| `sharing.enabled` | Boolean | `false` | `true`, `false` | Yes | Enables LAN clients to read `/subscription`, `/subscription.txt`, and `/results`. Same-machine clients can still use `127.0.0.1`. |
+| `sharing.require_token` | Boolean | `false` | `true`, `false` | Yes | When enabled for LAN clients, subscription URLs must include `?token=...`. |
+| `sharing.token` | String | Generated on first run | URL-safe token string | Yes | Token used when `sharing.require_token` is true. Regenerate if the URL was shared too widely. |
 
 Probe keys:
 
@@ -186,6 +211,37 @@ When the app is running with the default config:
 - `http://127.0.0.1:14127/results` returns JSON diagnostics with all ranked configs.
 - `http://127.0.0.1:14127/health` returns `ok`.
 
+LAN clients are blocked by default. To allow LAN access, set:
+
+```yaml
+bind: 0.0.0.0:14127
+sharing:
+  enabled: true
+  require_token: false
+```
+
+Open LAN subscription URL:
+
+```text
+http://192.168.1.23:14127/subscription
+```
+
+For tokenized LAN access:
+
+```yaml
+bind: 0.0.0.0:14127
+sharing:
+  enabled: true
+  require_token: true
+  token: your-generated-token
+```
+
+Tokenized LAN subscription URL:
+
+```text
+http://192.168.1.23:14127/subscription?token=your-generated-token
+```
+
 ## Using With v2rayN on Windows
 
 If v2rayN runs on the same Windows machine as V2RayDAR, keep:
@@ -197,7 +253,7 @@ bind: 127.0.0.1:14127
 Start V2RayDAR:
 
 ```powershell
-target\release\v2raydar.exe --config configs.yaml
+target\release\v2raydar.exe
 ```
 
 In v2rayN:
@@ -215,10 +271,13 @@ http://127.0.0.1:14127/subscription
 6. Run the client action that updates subscriptions.
 7. Select one of the imported configs and connect.
 
-If v2rayN is on another Windows machine in the same LAN, bind V2RayDAR to a LAN-reachable address and use the server PC's LAN IP:
+If v2rayN is on another Windows machine in the same LAN, bind V2RayDAR to a LAN-reachable address, enable LAN sharing, and use the server PC's LAN IP:
 
 ```yaml
 bind: 0.0.0.0:14127
+sharing:
+  enabled: true
+  require_token: false
 ```
 
 Subscription URL from the other Windows machine:
@@ -240,16 +299,19 @@ Android cannot reach `127.0.0.1` on your PC. On Android, `127.0.0.1` means the A
 To use v2rayNG from Android:
 
 1. Make sure the Android device and the PC running V2RayDAR are on the same Wi-Fi or LAN.
-2. In `configs.yaml`, bind V2RayDAR to a LAN-reachable address:
+2. In `config.yaml`, bind V2RayDAR to a LAN-reachable address and enable LAN sharing:
 
 ```yaml
 bind: 0.0.0.0:14127
+sharing:
+  enabled: true
+  require_token: false
 ```
 
 3. Start V2RayDAR on the PC:
 
 ```bash
-cargo run -- --config configs.yaml
+cargo run
 ```
 
 4. Find the PC LAN IP.
@@ -302,9 +364,9 @@ If Android cannot open `/health`, check:
 
 ## Security Notes
 
-The default `bind` is `127.0.0.1:14127`, which is only reachable from the same machine.
+The default `bind` is `127.0.0.1:14127`, which is only reachable from the same machine. The default `sharing.enabled` is `false`, so LAN clients cannot read subscription data even if you later bind to a LAN address until sharing is enabled.
 
-If you use `0.0.0.0:14127`, anyone on the reachable network may be able to fetch your top configs. Use a trusted LAN, firewall rules, or a more specific bind address when possible.
+If you use `0.0.0.0:14127` and `sharing.enabled: true`, anyone on the reachable network may be able to fetch your top configs unless `sharing.require_token` is enabled. Use a trusted LAN, firewall rules, tokenized URLs, or a more specific bind address when possible.
 
 Do not expose the endpoint to the public internet.
 
@@ -320,7 +382,9 @@ Android cannot reach V2RayDAR:
 
 - Do not use `127.0.0.1` from Android.
 - Use `bind: 0.0.0.0:14127`.
+- Set `sharing.enabled: true`.
 - Use `http://PC_LAN_IP:14127/subscription`.
+- If `sharing.require_token: true`, include `?token=...` in the URL.
 - Check firewall rules.
 
 All configs are unreachable:

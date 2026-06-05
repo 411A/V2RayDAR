@@ -53,5 +53,8 @@ pub struct RuntimeConfig {
     pub top_n: usize,
     pub refresh_seconds: u64,
     pub encoded_subscription: bool,
+    pub sharing_enabled: bool,
+    pub require_token: bool,
+    pub token: String,
     pub probe_mode: String,
 }

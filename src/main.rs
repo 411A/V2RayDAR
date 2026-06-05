@@ -1,10 +1,12 @@
 mod config;
 mod model;
 mod parser;
+mod paths;
 mod probe;
 mod server;
 mod subscription;
 mod terminal;
+mod tui;
 
 use std::{
     path::{Path, PathBuf},
@@ -25,18 +27,35 @@ use tracing::{error, info, warn};
 use crate::{
     config::AppConfig,
     model::{RuntimeConfig, RuntimeState},
+    paths::AppPaths,
     probe::probe_candidates,
     server::serve,
     subscription::load_candidates,
-    terminal::print_summary,
+    terminal::{print_startup, print_summary},
 };
 
 #[derive(Debug, Parser)]
 #[command(name = "v2raydar")]
 #[command(about = "Fast V2Ray subscription reachability scanner and local top-N endpoint")]
 struct Cli {
-    #[arg(short, long, default_value = "configs.yaml")]
-    config: PathBuf,
+    #[arg(
+        short,
+        long,
+        help = "Use a specific config file instead of the app folder"
+    )]
+    config: Option<PathBuf>,
+
+    #[arg(
+        long,
+        help = "Keep config/data beside the executable in a V2RayDAR folder"
+    )]
+    portable: bool,
+
+    #[arg(
+        long,
+        help = "Use plain terminal output instead of the interactive TUI"
+    )]
+    no_tui: bool,
 
     #[arg(
         long,
@@ -55,26 +74,60 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let config = AppConfig::load(&cli.config)
-        .with_context(|| format!("failed to load config from {}", cli.config.display()))?;
+    let paths = resolve_paths(&cli)?;
+    paths.ensure().await?;
+
+    if !paths.config_path.exists() {
+        AppConfig::write_default(&paths.config_path)?;
+        println!("Created default config at {}", paths.config_path.display());
+    }
+
+    let config = AppConfig::load(&paths.config_path)
+        .with_context(|| format!("failed to load config from {}", paths.config_path.display()))?;
 
     let state = Arc::new(RwLock::new(RuntimeState::default()));
     let runtime_config = Arc::new(RwLock::new(RuntimeConfig::from(&config)));
+    print_startup(&config, &paths);
     refresh_once(&config, state.clone(), runtime_config.clone()).await?;
 
     if cli.once {
         return Ok(());
     }
 
-    let endpoint = format!("http://{}/subscription", config.bind);
-    println!("Serving top {} configs at {}", config.top_n, endpoint);
-    println!("Watching {} for live config changes.", cli.config.display());
+    println!(
+        "Serving top {} configs at {}",
+        config.top_n,
+        config.subscription_url("127.0.0.1", false)
+    );
+    println!(
+        "Watching {} for live config changes.",
+        paths.config_path.display()
+    );
 
     let (config_tx, config_rx) = watch::channel(config.clone());
     spawn_refresh_loop(config_rx, state.clone(), runtime_config.clone());
-    spawn_config_watcher(cli.config.clone(), config.bind, config_tx);
+    spawn_config_watcher(paths.config_path.clone(), config.bind, config_tx);
 
-    serve(config.bind, state, runtime_config).await
+    if cli.no_tui {
+        serve(config.bind, state, runtime_config).await
+    } else {
+        tokio::select! {
+            result = serve(config.bind, state.clone(), runtime_config.clone()) => result,
+            result = tui::run(config, paths, state, runtime_config) => result,
+        }
+    }
+}
+
+fn resolve_paths(cli: &Cli) -> Result<AppPaths> {
+    if let Some(config_path) = &cli.config {
+        return Ok(AppPaths::from_config_override(config_path.clone()));
+    }
+
+    if cli.portable {
+        return AppPaths::portable();
+    }
+
+    AppPaths::installed()
 }
 
 async fn refresh_once(
@@ -86,7 +139,11 @@ async fn refresh_once(
     let started_at = Utc::now();
     *runtime_config.write().await = RuntimeConfig::from(config);
     let fetched = load_candidates(config).await?;
-    let ranked = probe_candidates(fetched.candidates, &config.probe).await;
+    let ranked = if fetched.candidates.is_empty() {
+        Vec::new()
+    } else {
+        probe_candidates(fetched.candidates, &config.probe).await
+    };
     let reachable_count = ranked.iter().filter(|item| item.reachable).count();
 
     let runtime = RuntimeState {
@@ -230,6 +287,9 @@ impl From<&AppConfig> for RuntimeConfig {
             top_n: config.top_n,
             refresh_seconds: config.refresh_seconds,
             encoded_subscription: config.encoded_subscription,
+            sharing_enabled: config.sharing.enabled,
+            require_token: config.sharing.require_token,
+            token: config.sharing.token.clone(),
             probe_mode: format!("{:?}", config.probe.mode).to_ascii_lowercase(),
         }
     }

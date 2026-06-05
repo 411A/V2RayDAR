@@ -1,4 +1,10 @@
-use crate::model::RuntimeState;
+use std::path::Path;
+
+use crate::{
+    config::{AppConfig, SETTING_GUIDES},
+    model::RuntimeState,
+    paths::AppPaths,
+};
 
 pub fn print_summary(state: &RuntimeState, top_n: usize) {
     println!(
@@ -41,6 +47,51 @@ pub fn print_summary(state: &RuntimeState, top_n: usize) {
             latency
         );
     }
+}
+
+pub fn print_startup(config: &AppConfig, paths: &AppPaths) {
+    let local_url = config.subscription_url("127.0.0.1", false);
+
+    println!("V2RayDAR");
+    println!(
+        "Mode: {}",
+        if paths.portable {
+            "portable"
+        } else {
+            "installed"
+        }
+    );
+    println!("App folder: {}", display_path(&paths.root_dir));
+    println!("Config: {}", display_path(&paths.config_path));
+    println!("Local subscription: {local_url}");
+
+    if config.sharing.enabled {
+        println!(
+            "LAN sharing: enabled ({})",
+            if config.sharing.require_token {
+                "token required"
+            } else {
+                "open on LAN"
+            }
+        );
+        println!(
+            "LAN URL: use this machine's LAN IP with port {}",
+            config.bind.port()
+        );
+    } else {
+        println!("LAN sharing: disabled");
+    }
+
+    println!("Settings guide:");
+    for guide in SETTING_GUIDES {
+        println!("  {:<22} {}", guide.label, guide.help);
+    }
+
+    println!();
+}
+
+fn display_path(path: &Path) -> String {
+    path.display().to_string()
 }
 
 fn truncate(value: &str, width: usize) -> String {

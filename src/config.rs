@@ -1,9 +1,10 @@
 use std::{fs, net::SocketAddr, path::Path};
 
 use anyhow::{Context, Result, anyhow};
-use serde::Deserialize;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AppConfig {
     #[serde(default = "default_bind")]
     pub bind: SocketAddr,
@@ -19,10 +20,13 @@ pub struct AppConfig {
     pub fetch_concurrency: usize,
     #[serde(default)]
     pub probe: ProbeConfig,
+    #[serde(default)]
+    pub sharing: SharingConfig,
+    #[serde(default)]
     pub subscriptions: Vec<SubscriptionSource>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SubscriptionSource {
     pub name: String,
     pub url: String,
@@ -30,7 +34,7 @@ pub struct SubscriptionSource {
     pub priority: u32,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ProbeConfig {
     #[serde(default = "default_probe_mode")]
     pub mode: ProbeMode,
@@ -54,12 +58,67 @@ pub struct ProbeConfig {
     pub download_bytes_limit: usize,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ProbeMode {
     Active,
     Tcp,
 }
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SharingConfig {
+    #[serde(default = "default_sharing_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_require_token")]
+    pub require_token: bool,
+    #[serde(default = "default_sharing_token")]
+    pub token: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SettingGuide {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub help: &'static str,
+}
+
+pub const SETTING_GUIDES: &[SettingGuide] = &[
+    SettingGuide {
+        key: "bind",
+        label: "Listen address",
+        help: "127.0.0.1 stays private. 0.0.0.0 or a LAN IP allows nearby devices.",
+    },
+    SettingGuide {
+        key: "sharing.enabled",
+        label: "LAN sharing",
+        help: "Shows the subscription on your local network. Keep off on untrusted Wi-Fi.",
+    },
+    SettingGuide {
+        key: "sharing.require_token",
+        label: "URL token",
+        help: "Adds ?token=... so casual LAN visitors cannot read the subscription.",
+    },
+    SettingGuide {
+        key: "sharing.token",
+        label: "Token value",
+        help: "Auto-generated on first run. Regenerate if the URL was shared too widely.",
+    },
+    SettingGuide {
+        key: "encoded_subscription",
+        label: "Encoded feed",
+        help: "Use base64 for v2rayN/v2rayNG. Use .txt for a raw link list.",
+    },
+    SettingGuide {
+        key: "probe.mode",
+        label: "Validation mode",
+        help: "Active uses sing-box for real checks. TCP is diagnostic only.",
+    },
+    SettingGuide {
+        key: "probe.sing_box_path",
+        label: "sing-box path",
+        help: "Use a full path if sing-box is not available in your terminal PATH.",
+    },
+];
 
 impl Default for ProbeConfig {
     fn default() -> Self {
@@ -74,6 +133,16 @@ impl Default for ProbeConfig {
             accepted_statuses: default_accepted_statuses(),
             download_url: None,
             download_bytes_limit: default_download_bytes_limit(),
+        }
+    }
+}
+
+impl Default for SharingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_sharing_enabled(),
+            require_token: default_require_token(),
+            token: default_sharing_token(),
         }
     }
 }
@@ -100,6 +169,51 @@ impl AppConfig {
         };
 
         validate(config)
+    }
+
+    pub fn default_for_first_run() -> Self {
+        Self {
+            bind: default_bind(),
+            top_n: default_top_n(),
+            refresh_seconds: default_refresh_seconds(),
+            encoded_subscription: default_encoded_subscription(),
+            fetch_timeout_ms: default_fetch_timeout_ms(),
+            fetch_concurrency: default_fetch_concurrency(),
+            probe: ProbeConfig::default(),
+            sharing: SharingConfig {
+                token: generate_token(),
+                ..SharingConfig::default()
+            },
+            subscriptions: Vec::new(),
+        }
+    }
+
+    pub fn write_default(path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("unable to create {}", parent.display()))?;
+        }
+
+        let content = serde_yaml::to_string(&Self::default_for_first_run())
+            .context("unable to serialize default config")?;
+        fs::write(path, content)
+            .with_context(|| format!("unable to write default config to {}", path.display()))
+    }
+
+    pub fn subscription_url(&self, host: &str, raw: bool) -> String {
+        let endpoint = if raw {
+            "subscription.txt"
+        } else {
+            "subscription"
+        };
+        let mut url = format!("http://{}:{}/{}", host, self.bind.port(), endpoint);
+
+        if self.sharing.require_token {
+            url.push_str("?token=");
+            url.push_str(&self.sharing.token);
+        }
+
+        url
     }
 }
 
@@ -161,10 +275,6 @@ fn validate(config: AppConfig) -> Result<AppConfig> {
         return Err(anyhow!("probe.download_bytes_limit must be greater than 0"));
     }
 
-    if config.subscriptions.is_empty() {
-        return Err(anyhow!("at least one subscription source is required"));
-    }
-
     for subscription in &config.subscriptions {
         if subscription.name.trim().is_empty() {
             return Err(anyhow!("subscription name cannot be empty"));
@@ -179,6 +289,20 @@ fn validate(config: AppConfig) -> Result<AppConfig> {
     }
 
     Ok(config)
+}
+
+fn generate_token() -> String {
+    let mut bytes = [0_u8; 32];
+    if getrandom::fill(&mut bytes).is_ok() {
+        return URL_SAFE_NO_PAD.encode(bytes);
+    }
+
+    let fallback = format!(
+        "{}-{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    );
+    URL_SAFE_NO_PAD.encode(fallback)
 }
 
 fn default_bind() -> SocketAddr {
@@ -197,6 +321,18 @@ fn default_refresh_seconds() -> u64 {
 
 fn default_encoded_subscription() -> bool {
     true
+}
+
+fn default_sharing_enabled() -> bool {
+    false
+}
+
+fn default_require_token() -> bool {
+    false
+}
+
+fn default_sharing_token() -> String {
+    String::new()
 }
 
 fn default_fetch_timeout_ms() -> u64 {

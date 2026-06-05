@@ -21,6 +21,13 @@ pub struct FetchOutcome {
 }
 
 pub async fn load_candidates(config: &AppConfig) -> Result<FetchOutcome> {
+    if config.subscriptions.is_empty() {
+        return Ok(FetchOutcome {
+            candidates: Vec::new(),
+            errors: Vec::new(),
+        });
+    }
+
     let client = Client::builder()
         .timeout(Duration::from_millis(config.fetch_timeout_ms))
         .user_agent(concat!("v2raydar/", env!("CARGO_PKG_VERSION")))

@@ -23,18 +23,25 @@ Active validation currently converts VMess, VLESS, Trojan, Shadowsocks, Hysteria
 
 ## Requirements
 
-- Rust toolchain with Cargo.
-- `sing-box` installed and available on `PATH`, or configured with `probe.sing_box_path`.
+- Release users only need the V2RayDAR executable for their operating system.
+- Source builds require a Rust toolchain with Cargo.
+- Active probing requires a separate `sing-box` executable configured with `probe.sing_box_path`.
 - Internet access from the machine running V2RayDAR so it can fetch subscription URLs.
 - Android and the PC must be on the same network if Android v2rayNG will read the endpoint from the PC.
 
-Install or verify `sing-box` before using active mode:
+On first run, the TUI asks for the full `sing-box` executable path, verifies it with `sing-box version`, saves it in `config.yaml`, and then starts normal scanning. If you already use v2rayN on Windows, check the v2rayN installation folder for `sing-box.exe`. Otherwise, download sing-box from:
+
+```text
+https://github.com/SagerNet/sing-box/releases
+```
+
+You can verify `sing-box` manually:
 
 ```bash
 sing-box version
 ```
 
-If `sing-box` is not on `PATH`, set an absolute path:
+If you edit the config manually, set an absolute path:
 
 ```yaml
 probe:
@@ -52,7 +59,7 @@ probe:
 
 ## Quick Start
 
-Run V2RayDAR. On first run it creates the app folder, default config, and runtime subfolders automatically.
+Run V2RayDAR. On first run it creates the app folder and default config automatically. Subscription cache files are created only after HTTP subscriptions are fetched.
 
 Development:
 
@@ -84,7 +91,7 @@ sharing:
 
 probe:
   mode: active
-  sing_box_path: sing-box
+  sing_box_path:
   connect_timeout_ms: 1500
   active_timeout_ms: 10000
   startup_timeout_ms: 2000
@@ -141,6 +148,14 @@ For portable mode, keep the app data beside the executable:
 v2raydar --portable
 ```
 
+To remove generated app data:
+
+```bash
+v2raydar --uninstall
+```
+
+This asks for confirmation, then deletes V2RayDAR's generated app folder, including `config.yaml` and cache files. For scripts, use `v2raydar --uninstall --yes`. It does not delete the executable itself, the separate `sing-box` executable, or arbitrary folders used through `--config`.
+
 For development or tests with an explicit config path:
 
 ```bash
@@ -165,6 +180,8 @@ Run the Windows release binary with the project-root `configs.yaml`:
 ```powershell
 target\release\v2raydar.exe --config .\configs.yaml
 ```
+
+For download verification, first-run setup, trust warnings, and uninstall details, see [`RELEASE.md`](RELEASE.md).
 
 ## Config Fields
 
@@ -196,7 +213,7 @@ Probe keys:
 | Key | Type | Default | Possible values | Hot reload | Description |
 | --- | --- | --- | --- | --- | --- |
 | `probe.mode` | String enum | `active` | `active`, `tcp` | Yes | `active` starts `sing-box` and loads a real HTTP URL through the candidate config. `tcp` only checks TCP connect and can produce false positives. Use `active` for normal operation. |
-| `probe.sing_box_path` | String path | `sing-box` | Executable name on `PATH` or absolute path, for example `/usr/local/bin/sing-box`, `C:\Tools\sing-box\sing-box.exe` | Yes | sing-box executable used by active probes. Required when `probe.mode` is `active`. |
+| `probe.sing_box_path` | String path | Empty | Absolute executable path, for example `/usr/local/bin/sing-box`, `/Applications/sing-box/sing-box`, `C:\Tools\sing-box\sing-box.exe` | Yes | sing-box executable used by active probes. The first-run TUI verifies and saves this path when `probe.mode` is `active`. |
 | `probe.connect_timeout_ms` | Integer milliseconds | `1500` | `1` or higher | Yes | TCP connection timeout used only by `probe.mode: tcp`. |
 | `probe.active_timeout_ms` | Integer milliseconds | `10000` | `1` or higher | Yes | Timeout for the HTTP request sent through the candidate config in active mode. |
 | `probe.startup_timeout_ms` | Integer milliseconds | `2000` | `1` or higher | Yes | Timeout while waiting for the temporary local sing-box mixed proxy to become ready. |

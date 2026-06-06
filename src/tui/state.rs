@@ -51,6 +51,7 @@ pub enum ConfigKey {
     FetchConcurrency,
     MaxSubscriptionBytes,
     ProbeMode,
+    SingBoxPath,
     ConnectTimeout,
     ActiveTimeout,
     StartupTimeout,
@@ -65,7 +66,7 @@ pub enum ConfigKey {
 }
 
 impl ConfigKey {
-    pub const ALL: [Self; 19] = [
+    pub const ALL: [Self; 20] = [
         Self::Bind,
         Self::TopN,
         Self::RefreshSeconds,
@@ -74,6 +75,7 @@ impl ConfigKey {
         Self::FetchConcurrency,
         Self::MaxSubscriptionBytes,
         Self::ProbeMode,
+        Self::SingBoxPath,
         Self::ConnectTimeout,
         Self::ActiveTimeout,
         Self::StartupTimeout,

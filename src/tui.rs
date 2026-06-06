@@ -10,6 +10,7 @@ mod input_handlers;
 mod layout;
 mod logs_panel;
 mod main_menu_panel;
+mod setup;
 mod state;
 mod subscriptions_panel;
 mod top;
@@ -89,7 +90,11 @@ pub async fn run(
     result.and(restore_result)
 }
 
-fn restore_terminal() -> Result<()> {
+pub async fn run_sing_box_setup(config: &mut AppConfig, paths: &AppPaths) -> Result<()> {
+    setup::run(config, paths).await
+}
+
+pub fn restore_terminal() -> Result<()> {
     execute!(std::io::stdout(), DisableMouseCapture)?;
     disable_raw_mode()?;
     ratatui::restore();

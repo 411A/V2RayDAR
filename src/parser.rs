@@ -68,10 +68,9 @@ fn collect_entries_from_text(
             .iter()
             .any(|scheme| entry.to_ascii_lowercase().starts_with(scheme))
             && seen.insert(entry.to_string())
+            && let Ok(candidate) = parse_share_link(source, priority, entry)
         {
-            if let Ok(candidate) = parse_share_link(source, priority, entry) {
-                candidates.push(candidate);
-            }
+            candidates.push(candidate);
         }
     }
 }

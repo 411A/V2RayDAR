@@ -96,6 +96,7 @@ async fn probe_tcp(candidate: Candidate, timeout: Duration) -> RankedConfig {
         latency_ms,
         http_status: None,
         download_mbps: None,
+        download_bytes: None,
         error,
     }
 }
@@ -119,6 +120,7 @@ async fn probe_active(candidate: Candidate, config: &ProbeConfig) -> RankedConfi
             latency_ms: Some(started.elapsed().as_millis()),
             http_status: Some(active.http_status),
             download_mbps: active.download_mbps,
+            download_bytes: active.download_bytes,
             error: None,
         },
         Err(err) => failed_config(candidate, "active_http", err.to_string()),
@@ -128,6 +130,7 @@ async fn probe_active(candidate: Candidate, config: &ProbeConfig) -> RankedConfi
 struct ActiveProbeSuccess {
     http_status: u16,
     download_mbps: Option<f64>,
+    download_bytes: Option<usize>,
 }
 
 async fn probe_active_inner(
@@ -172,15 +175,18 @@ async fn probe_active_inner(
             ));
         }
 
-        let download_mbps = if let Some(download_url) = &config.download_url {
-            Some(measure_download_mbps(&client, download_url, config.download_bytes_limit).await?)
+        let (download_mbps, download_bytes) = if let Some(download_url) = &config.download_url {
+            let measurement =
+                measure_download(&client, download_url, config.download_bytes_limit).await?;
+            (Some(measurement.mbps), Some(measurement.bytes))
         } else {
-            None
+            (None, None)
         };
 
         Ok(ActiveProbeSuccess {
             http_status: status,
             download_mbps,
+            download_bytes,
         })
     }
     .await;
@@ -192,11 +198,16 @@ async fn probe_active_inner(
     result
 }
 
-async fn measure_download_mbps(
+struct DownloadMeasurement {
+    mbps: f64,
+    bytes: usize,
+}
+
+async fn measure_download(
     client: &reqwest::Client,
     download_url: &str,
     bytes_limit: usize,
-) -> Result<f64> {
+) -> Result<DownloadMeasurement> {
     let started = Instant::now();
     let response = client
         .get(download_url)
@@ -214,7 +225,10 @@ async fn measure_download_mbps(
     }
 
     let measured_bytes = body.len().min(bytes_limit);
-    Ok((measured_bytes as f64 * 8.0) / elapsed / 1_000_000.0)
+    Ok(DownloadMeasurement {
+        mbps: (measured_bytes as f64 * 8.0) / elapsed / 1_000_000.0,
+        bytes: measured_bytes,
+    })
 }
 
 async fn sing_box_available(path: &str) -> bool {
@@ -306,6 +320,7 @@ fn failed_config(candidate: Candidate, validation: &str, error: String) -> Ranke
         latency_ms: None,
         http_status: None,
         download_mbps: None,
+        download_bytes: None,
         error: Some(error),
     }
 }

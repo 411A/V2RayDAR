@@ -183,10 +183,22 @@ mod tests {
             top_n: 10,
             refresh_seconds: 300,
             encoded_subscription: true,
+            fetch_timeout_ms: 15_000,
+            fetch_concurrency: 4,
+            max_subscription_bytes: 16 * 1024 * 1024,
             sharing_enabled,
             require_token,
             token: "secret".to_string(),
             probe_mode: "active".to_string(),
+            speedtest_enabled: false,
+            probe_concurrency: 16,
+            active_timeout_ms: 10_000,
+            startup_timeout_ms: 2_000,
+            test_url: "https://www.gstatic.com/generate_204".to_string(),
+            accepted_statuses: vec![204, 200],
+            download_bytes_limit: 1_048_576,
+            subscription_count: 0,
+            enabled_subscription_count: 0,
         }
     }
 

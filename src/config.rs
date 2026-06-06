@@ -18,6 +18,8 @@ pub struct AppConfig {
     pub fetch_timeout_ms: u64,
     #[serde(default = "default_fetch_concurrency")]
     pub fetch_concurrency: usize,
+    #[serde(default = "default_max_subscription_bytes")]
+    pub max_subscription_bytes: usize,
     #[serde(default)]
     pub probe: ProbeConfig,
     #[serde(default)]
@@ -30,6 +32,8 @@ pub struct AppConfig {
 pub struct SubscriptionSource {
     pub name: String,
     pub url: String,
+    #[serde(default = "default_subscription_enabled")]
+    pub enabled: bool,
     #[serde(default = "default_priority")]
     pub priority: u32,
 }
@@ -179,6 +183,7 @@ impl AppConfig {
             encoded_subscription: default_encoded_subscription(),
             fetch_timeout_ms: default_fetch_timeout_ms(),
             fetch_concurrency: default_fetch_concurrency(),
+            max_subscription_bytes: default_max_subscription_bytes(),
             probe: ProbeConfig::default(),
             sharing: SharingConfig {
                 token: generate_token(),
@@ -224,6 +229,10 @@ fn validate(config: AppConfig) -> Result<AppConfig> {
 
     if config.fetch_concurrency == 0 {
         return Err(anyhow!("fetch_concurrency must be greater than 0"));
+    }
+
+    if config.max_subscription_bytes == 0 {
+        return Err(anyhow!("max_subscription_bytes must be greater than 0"));
     }
 
     if config.probe.concurrency == 0 {
@@ -340,11 +349,19 @@ fn default_fetch_timeout_ms() -> u64 {
 }
 
 fn default_fetch_concurrency() -> usize {
-    4
+    16
+}
+
+fn default_max_subscription_bytes() -> usize {
+    16 * 1024 * 1024
 }
 
 fn default_priority() -> u32 {
     100
+}
+
+fn default_subscription_enabled() -> bool {
+    true
 }
 
 fn default_probe_mode() -> ProbeMode {

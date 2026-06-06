@@ -1,0 +1,211 @@
+use crate::config::AppConfig;
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum MenuView {
+    Main,
+    Subscriptions,
+    NewSubscription,
+    SubscriptionActions,
+    Configurations,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum MainItem {
+    Sharing,
+    Subscriptions,
+    Configurations,
+}
+
+impl MainItem {
+    pub const ALL: [Self; 3] = [Self::Sharing, Self::Subscriptions, Self::Configurations];
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum SubscriptionAction {
+    EditName,
+    EditUrl,
+    EditPriority,
+    Toggle,
+    Delete,
+    Back,
+}
+
+impl SubscriptionAction {
+    pub const ALL: [Self; 6] = [
+        Self::EditName,
+        Self::EditUrl,
+        Self::EditPriority,
+        Self::Toggle,
+        Self::Delete,
+        Self::Back,
+    ];
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ConfigKey {
+    Bind,
+    TopN,
+    RefreshSeconds,
+    EncodedSubscription,
+    FetchTimeout,
+    FetchConcurrency,
+    MaxSubscriptionBytes,
+    ProbeMode,
+    ConnectTimeout,
+    ActiveTimeout,
+    StartupTimeout,
+    ProbeConcurrency,
+    TestUrl,
+    AcceptedStatuses,
+    DownloadUrl,
+    DownloadLimit,
+    TokenRequired,
+    Token,
+    ResetDefaults,
+}
+
+impl ConfigKey {
+    pub const ALL: [Self; 19] = [
+        Self::Bind,
+        Self::TopN,
+        Self::RefreshSeconds,
+        Self::EncodedSubscription,
+        Self::FetchTimeout,
+        Self::FetchConcurrency,
+        Self::MaxSubscriptionBytes,
+        Self::ProbeMode,
+        Self::ConnectTimeout,
+        Self::ActiveTimeout,
+        Self::StartupTimeout,
+        Self::ProbeConcurrency,
+        Self::TestUrl,
+        Self::AcceptedStatuses,
+        Self::DownloadUrl,
+        Self::DownloadLimit,
+        Self::TokenRequired,
+        Self::Token,
+        Self::ResetDefaults,
+    ];
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum Action {
+    Add,
+    Toggle,
+    Delete,
+    EditName,
+    EditUrl,
+    EditPriority,
+    Save,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InputMode {
+    None,
+    Command,
+    NewSubscription(NewSubscriptionStep),
+    Name,
+    Url,
+    Priority,
+    ConfigValue(ConfigKey),
+    ResetConfirm,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum NewSubscriptionStep {
+    Url,
+    Name,
+    Priority,
+    Enabled,
+}
+
+#[derive(Debug, Clone)]
+pub struct SubscriptionDraft {
+    pub name: String,
+    pub url: String,
+    pub priority: u32,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct HitMap {
+    pub main_rows: Vec<(usize, ratatui::layout::Rect)>,
+    pub subscription_rows: Vec<(usize, ratatui::layout::Rect)>,
+    pub config_rows: Vec<(usize, ratatui::layout::Rect)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TuiState {
+    pub editable: AppConfig,
+    pub view: MenuView,
+    pub selected_main: usize,
+    pub selected_subscription: usize,
+    pub selected_action: usize,
+    pub selected_config: usize,
+    pub input_mode: InputMode,
+    pub input: String,
+    pub new_subscription: Option<SubscriptionDraft>,
+    pub reset_code: Option<String>,
+    pub status: String,
+    pub dirty: bool,
+    pub hits: HitMap,
+}
+
+impl TuiState {
+    pub fn new(config: AppConfig) -> Self {
+        Self {
+            editable: config,
+            view: MenuView::Main,
+            selected_main: 0,
+            selected_subscription: 0,
+            selected_action: 0,
+            selected_config: 0,
+            input_mode: InputMode::None,
+            input: String::new(),
+            new_subscription: None,
+            reset_code: None,
+            status: "Ready".to_string(),
+            dirty: false,
+            hits: HitMap::default(),
+        }
+    }
+
+    pub fn selected_subscription_mut(&mut self) -> Option<&mut crate::config::SubscriptionSource> {
+        let index = self.selected_subscription_index()?;
+        self.editable.subscriptions.get_mut(index)
+    }
+
+    pub fn selected_subscription_ref(&self) -> Option<&crate::config::SubscriptionSource> {
+        self.editable
+            .subscriptions
+            .get(self.selected_subscription_index()?)
+    }
+
+    pub fn selected_subscription_index(&self) -> Option<usize> {
+        self.editable
+            .subscriptions
+            .get(self.selected_subscription.checked_sub(1)?)
+            .map(|_| self.selected_subscription - 1)
+    }
+
+    pub fn clamp_selection(&mut self) {
+        if self.editable.subscriptions.is_empty() {
+            self.selected_subscription = 0;
+            return;
+        }
+
+        self.selected_subscription = self
+            .selected_subscription
+            .min(self.editable.subscriptions.len());
+    }
+
+    pub fn next_subscription_priority(&self) -> u32 {
+        self.editable
+            .subscriptions
+            .iter()
+            .map(|source| source.priority)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1)
+    }
+}

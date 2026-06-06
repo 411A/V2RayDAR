@@ -28,31 +28,40 @@ const URI_SCHEMES: &[&str] = &[
 
 pub fn parse_subscription_document(source: &str, priority: u32, body: &[u8]) -> Vec<Candidate> {
     let text = String::from_utf8_lossy(body);
-    let mut raw_entries = Vec::new();
+    let mut candidates = Vec::new();
     let mut seen_entries = HashSet::new();
 
-    collect_entries_from_text(&text, &mut raw_entries, &mut seen_entries);
+    collect_entries_from_text(source, priority, &text, &mut candidates, &mut seen_entries);
 
     let compact = text.trim();
     if let Some(decoded) = decode_base64_to_string(compact) {
-        collect_entries_from_text(&decoded, &mut raw_entries, &mut seen_entries);
+        collect_entries_from_text(
+            source,
+            priority,
+            &decoded,
+            &mut candidates,
+            &mut seen_entries,
+        );
     }
 
     if let Ok(json) = serde_json::from_str::<JsonValue>(&text) {
-        collect_entries_from_json(&json, &mut raw_entries, &mut seen_entries);
+        collect_entries_from_json(source, priority, &json, &mut candidates, &mut seen_entries);
     }
 
     if let Ok(yaml) = serde_yaml::from_str::<YamlValue>(&text) {
-        collect_entries_from_yaml(&yaml, &mut raw_entries, &mut seen_entries);
+        collect_entries_from_yaml(source, priority, &yaml, &mut candidates, &mut seen_entries);
     }
 
-    raw_entries
-        .into_iter()
-        .filter_map(|uri| parse_share_link(source, priority, &uri).ok())
-        .collect()
+    candidates
 }
 
-fn collect_entries_from_text(text: &str, entries: &mut Vec<String>, seen: &mut HashSet<String>) {
+fn collect_entries_from_text(
+    source: &str,
+    priority: u32,
+    text: &str,
+    candidates: &mut Vec<Candidate>,
+    seen: &mut HashSet<String>,
+) {
     for token in text.split(is_token_boundary) {
         let entry = token.trim().trim_matches(['"', '\'', ',', ';']);
         if URI_SCHEMES
@@ -60,26 +69,32 @@ fn collect_entries_from_text(text: &str, entries: &mut Vec<String>, seen: &mut H
             .any(|scheme| entry.to_ascii_lowercase().starts_with(scheme))
             && seen.insert(entry.to_string())
         {
-            entries.push(entry.to_string());
+            if let Ok(candidate) = parse_share_link(source, priority, entry) {
+                candidates.push(candidate);
+            }
         }
     }
 }
 
 fn collect_entries_from_json(
+    source: &str,
+    priority: u32,
     value: &JsonValue,
-    entries: &mut Vec<String>,
+    candidates: &mut Vec<Candidate>,
     seen: &mut HashSet<String>,
 ) {
     match value {
-        JsonValue::String(text) => collect_entries_from_text(text, entries, seen),
+        JsonValue::String(text) => {
+            collect_entries_from_text(source, priority, text, candidates, seen)
+        }
         JsonValue::Array(values) => {
             for item in values {
-                collect_entries_from_json(item, entries, seen);
+                collect_entries_from_json(source, priority, item, candidates, seen);
             }
         }
         JsonValue::Object(map) => {
             for item in map.values() {
-                collect_entries_from_json(item, entries, seen);
+                collect_entries_from_json(source, priority, item, candidates, seen);
             }
         }
         _ => {}
@@ -87,20 +102,24 @@ fn collect_entries_from_json(
 }
 
 fn collect_entries_from_yaml(
+    source: &str,
+    priority: u32,
     value: &YamlValue,
-    entries: &mut Vec<String>,
+    candidates: &mut Vec<Candidate>,
     seen: &mut HashSet<String>,
 ) {
     match value {
-        YamlValue::String(text) => collect_entries_from_text(text, entries, seen),
+        YamlValue::String(text) => {
+            collect_entries_from_text(source, priority, text, candidates, seen)
+        }
         YamlValue::Sequence(values) => {
             for item in values {
-                collect_entries_from_yaml(item, entries, seen);
+                collect_entries_from_yaml(source, priority, item, candidates, seen);
             }
         }
         YamlValue::Mapping(map) => {
             for item in map.values() {
-                collect_entries_from_yaml(item, entries, seen);
+                collect_entries_from_yaml(source, priority, item, candidates, seen);
             }
         }
         _ => {}

@@ -15,7 +15,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use chrono::Utc;
+use chrono::{Local, Utc};
 use clap::Parser;
 use tokio::{
     fs,
@@ -30,9 +30,11 @@ use crate::{
     paths::AppPaths,
     probe::probe_candidates,
     server::serve,
-    subscription::load_candidates,
+    subscription::load_candidates_with_cache,
     terminal::{print_startup, print_summary},
 };
+
+const MAX_TUI_LOGS: usize = 8;
 
 #[derive(Debug, Parser)]
 #[command(name = "v2raydar")]
@@ -66,14 +68,18 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let cli = Cli::parse();
+    let default_log_filter = if cli.no_tui || cli.once {
+        "v2raydar=info,tower_http=warn"
+    } else {
+        "v2raydar=off,tower_http=warn"
+    };
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "v2raydar=info,tower_http=warn".into()),
+                .unwrap_or_else(|_| default_log_filter.into()),
         )
         .init();
-
-    let cli = Cli::parse();
     let paths = resolve_paths(&cli)?;
     paths.ensure().await?;
 
@@ -87,25 +93,41 @@ async fn main() -> Result<()> {
 
     let state = Arc::new(RwLock::new(RuntimeState::default()));
     let runtime_config = Arc::new(RwLock::new(RuntimeConfig::from(&config)));
-    print_startup(&config, &paths);
-    refresh_once(&config, state.clone(), runtime_config.clone()).await?;
 
     if cli.once {
+        print_startup(&config, &paths);
+        refresh_once(
+            &config,
+            &paths.cache_dir,
+            state.clone(),
+            runtime_config.clone(),
+            true,
+        )
+        .await?;
         return Ok(());
     }
 
-    println!(
-        "Serving top {} configs at {}",
-        config.top_n,
-        config.subscription_url("127.0.0.1", false)
-    );
-    println!(
-        "Watching {} for live config changes.",
-        paths.config_path.display()
-    );
+    if cli.no_tui {
+        print_startup(&config, &paths);
+        println!(
+            "Serving top {} configs at {}",
+            config.top_n,
+            config.subscription_url("127.0.0.1", false)
+        );
+        println!(
+            "Watching {} for live config changes.",
+            paths.config_path.display()
+        );
+    }
 
     let (config_tx, config_rx) = watch::channel(config.clone());
-    spawn_refresh_loop(config_rx, state.clone(), runtime_config.clone());
+    spawn_refresh_loop(
+        config_rx,
+        paths.cache_dir.clone(),
+        state.clone(),
+        runtime_config.clone(),
+        cli.no_tui,
+    );
     spawn_config_watcher(paths.config_path.clone(), config.bind, config_tx);
 
     if cli.no_tui {
@@ -132,30 +154,77 @@ fn resolve_paths(cli: &Cli) -> Result<AppPaths> {
 
 async fn refresh_once(
     config: &AppConfig,
+    cache_dir: &Path,
     state: Arc<RwLock<RuntimeState>>,
     runtime_config: Arc<RwLock<RuntimeConfig>>,
+    print_terminal_summary: bool,
 ) -> Result<()> {
     info!("refresh started");
     let started_at = Utc::now();
+    let started_instant = std::time::Instant::now();
     *runtime_config.write().await = RuntimeConfig::from(config);
-    let fetched = load_candidates(config).await?;
+    {
+        let mut runtime = state.write().await;
+        runtime.refreshing = true;
+        runtime.refresh_started_at = Some(started_at.to_rfc3339());
+        runtime.last_error = None;
+    }
+
+    let fetched = load_candidates_with_cache(config, Some(cache_dir), |bytes| {
+        let state = state.clone();
+        async move {
+            add_fetch_bytes(&state, bytes).await;
+        }
+    })
+    .await?;
     let ranked = if fetched.candidates.is_empty() {
         Vec::new()
     } else {
         probe_candidates(fetched.candidates, &config.probe).await
     };
     let reachable_count = ranked.iter().filter(|item| item.reachable).count();
+    let speedtest_bytes = ranked
+        .iter()
+        .filter_map(|item| item.download_bytes)
+        .map(|value| value as u64)
+        .sum::<u64>();
+    let finished_at = Utc::now();
 
-    let runtime = RuntimeState {
+    let previous = state.read().await.clone();
+    let fetch_bytes = previous.fetch_bytes;
+    let speedtest_bytes = previous.speedtest_bytes.saturating_add(speedtest_bytes);
+    let mut runtime = RuntimeState {
         last_refresh: Some(started_at.to_rfc3339()),
         last_error: None,
+        logs: previous.logs,
+        refresh_started_at: Some(started_at.to_rfc3339()),
+        refresh_finished_at: Some(finished_at.to_rfc3339()),
+        refresh_duration_ms: Some(started_instant.elapsed().as_millis()),
+        refreshing: false,
         total_candidates: ranked.len(),
         reachable_candidates: reachable_count,
+        fetch_bytes,
+        speedtest_bytes,
         fetch_errors: fetched.errors,
         ranked,
     };
 
-    print_summary(&runtime, config.top_n);
+    let summary = format!(
+        "{} Refresh Started; {} Refresh Ended ➔  Checked {} configs, {} reachable, {} fetch errors.",
+        started_at.with_timezone(&Local).format("%H:%M:%S"),
+        finished_at.with_timezone(&Local).format("%H:%M:%S"),
+        runtime.total_candidates,
+        runtime.reachable_candidates,
+        runtime.fetch_errors.len()
+    );
+    push_runtime_log(&mut runtime, summary);
+    for error in runtime.fetch_errors.clone() {
+        push_runtime_log(&mut runtime, format!("fetch error: {error}"));
+    }
+
+    if print_terminal_summary {
+        print_summary(&runtime, config.top_n);
+    }
     *state.write().await = runtime;
     info!("refresh finished");
     Ok(())
@@ -163,12 +232,34 @@ async fn refresh_once(
 
 fn spawn_refresh_loop(
     mut config_rx: watch::Receiver<AppConfig>,
+    cache_dir: PathBuf,
     state: Arc<RwLock<RuntimeState>>,
     runtime_config: Arc<RwLock<RuntimeConfig>>,
+    print_terminal_summary: bool,
 ) {
     tokio::spawn(async move {
+        let mut refresh_now = true;
+
         loop {
             let refresh_seconds = config_rx.borrow().refresh_seconds;
+
+            if refresh_now {
+                refresh_now = false;
+                let config = config_rx.borrow().clone();
+                if let Err(err) = refresh_once(
+                    &config,
+                    &cache_dir,
+                    state.clone(),
+                    runtime_config.clone(),
+                    print_terminal_summary,
+                )
+                .await
+                {
+                    error!(error = %err, "initial refresh failed");
+                    record_refresh_error(&state, err.to_string()).await;
+                }
+                continue;
+            }
 
             if refresh_seconds == 0 {
                 warn!("automatic refresh is disabled because refresh_seconds is 0");
@@ -176,7 +267,14 @@ fn spawn_refresh_loop(
                     return;
                 }
                 let config = config_rx.borrow().clone();
-                if let Err(err) = refresh_once(&config, state.clone(), runtime_config.clone()).await
+                if let Err(err) = refresh_once(
+                    &config,
+                    &cache_dir,
+                    state.clone(),
+                    runtime_config.clone(),
+                    print_terminal_summary,
+                )
+                .await
                 {
                     error!(error = %err, "refresh after config reload failed");
                     record_refresh_error(&state, err.to_string()).await;
@@ -190,7 +288,7 @@ fn spawn_refresh_loop(
             tokio::select! {
                 _ = &mut sleep => {
                     let config = config_rx.borrow().clone();
-                    if let Err(err) = refresh_once(&config, state.clone(), runtime_config.clone()).await {
+                    if let Err(err) = refresh_once(&config, &cache_dir, state.clone(), runtime_config.clone(), print_terminal_summary).await {
                         error!(error = %err, "refresh failed");
                         record_refresh_error(&state, err.to_string()).await;
                     }
@@ -201,7 +299,7 @@ fn spawn_refresh_loop(
                     }
 
                     let config = config_rx.borrow().clone();
-                    if let Err(err) = refresh_once(&config, state.clone(), runtime_config.clone()).await {
+                    if let Err(err) = refresh_once(&config, &cache_dir, state.clone(), runtime_config.clone(), print_terminal_summary).await {
                         error!(error = %err, "refresh after config reload failed");
                         record_refresh_error(&state, err.to_string()).await;
                     }
@@ -277,7 +375,30 @@ async fn modified_time(path: &Path) -> Result<SystemTime> {
 
 async fn record_refresh_error(state: &Arc<RwLock<RuntimeState>>, error: String) {
     let mut state = state.write().await;
-    state.last_error = Some(error);
+    state.last_error = Some(error.clone());
+    state.refreshing = false;
+    state.refresh_finished_at = Some(Utc::now().to_rfc3339());
+    state.total_candidates = 0;
+    state.reachable_candidates = 0;
+    state.fetch_errors = vec![error.clone()];
+    state.ranked.clear();
+    push_runtime_log(&mut state, format!("refresh error: {error}"));
+}
+
+async fn add_fetch_bytes(state: &Arc<RwLock<RuntimeState>>, bytes: u64) {
+    if bytes == 0 {
+        return;
+    }
+    let mut state = state.write().await;
+    state.fetch_bytes = state.fetch_bytes.saturating_add(bytes);
+}
+
+fn push_runtime_log(state: &mut RuntimeState, message: String) {
+    state.logs.push(message);
+    if state.logs.len() > MAX_TUI_LOGS {
+        let extra = state.logs.len() - MAX_TUI_LOGS;
+        state.logs.drain(0..extra);
+    }
 }
 
 impl From<&AppConfig> for RuntimeConfig {
@@ -287,10 +408,30 @@ impl From<&AppConfig> for RuntimeConfig {
             top_n: config.top_n,
             refresh_seconds: config.refresh_seconds,
             encoded_subscription: config.encoded_subscription,
+            fetch_timeout_ms: config.fetch_timeout_ms,
+            fetch_concurrency: config.fetch_concurrency,
+            max_subscription_bytes: config.max_subscription_bytes,
             sharing_enabled: config.sharing.enabled,
             require_token: config.sharing.require_token,
             token: config.sharing.token.clone(),
             probe_mode: format!("{:?}", config.probe.mode).to_ascii_lowercase(),
+            speedtest_enabled: config
+                .probe
+                .download_url
+                .as_deref()
+                .is_some_and(|url| !url.trim().is_empty()),
+            probe_concurrency: config.probe.concurrency,
+            active_timeout_ms: config.probe.active_timeout_ms,
+            startup_timeout_ms: config.probe.startup_timeout_ms,
+            test_url: config.probe.test_url.clone(),
+            accepted_statuses: config.probe.accepted_statuses.clone(),
+            download_bytes_limit: config.probe.download_bytes_limit,
+            subscription_count: config.subscriptions.len(),
+            enabled_subscription_count: config
+                .subscriptions
+                .iter()
+                .filter(|source| source.enabled)
+                .count(),
         }
     }
 }

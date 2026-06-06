@@ -10,7 +10,8 @@ Phase 1 is a fast scanner and local subscription server:
 
 - Creates a per-user app folder and `config.yaml` on first run.
 - Supports `--portable` and `--config` for self-contained or development runs.
-- Fetches subscription sources by priority.
+- Runs an interactive mouse-aware ratatui/crossterm TUI by default; use `--no-tui` for plain terminal output.
+- Fetches enabled subscription sources with bounded concurrency.
 - Parses common share links such as `vmess://`, `vless://`, `trojan://`, `ss://`, `ssr://`, `hysteria2://`, `hy2://`, and `tuic://`.
 - Starts `sing-box` for active validation and sends an HTTP request through each candidate config.
 - Ranks configs that successfully load the configured test URL through the proxy.
@@ -73,7 +74,8 @@ top_n: 10
 refresh_seconds: 300
 encoded_subscription: true
 fetch_timeout_ms: 15000
-fetch_concurrency: 4
+fetch_concurrency: 16
+max_subscription_bytes: 16777216
 
 sharing:
   enabled: false
@@ -95,6 +97,7 @@ probe:
 subscriptions:
   - name: primary
     url: https://your-subscription-url
+    enabled: true
     priority: 1
 ```
 
@@ -110,6 +113,26 @@ Run continuously and serve the endpoint:
 cargo run
 ```
 
+The interactive TUI is the default continuous mode. It shows a real-time top dashboard, current YAML-backed service settings, the LAN-visible subscription URL when available, recent logs, current found configs, and a subscription editor. Use Up/Down or `j`/`k` to select subscription rows, mouse clicks to select rows, Space to enable/disable the selected row, and `s` to save. Editing and destructive actions are command-mode only: type `:` and then commands such as `add`, `name`, `url`, `priority`, `delete`, `save`, or `q`.
+
+Windows PowerShell with the project-root `configs.yaml`:
+
+```powershell
+cargo run -- --config .\configs.yaml
+```
+
+Run the same config once without the TUI or HTTP server:
+
+```powershell
+cargo run -- --config .\configs.yaml --once
+```
+
+Use plain terminal output instead of the TUI:
+
+```powershell
+cargo run -- --config .\configs.yaml --no-tui
+```
+
 V2RayDAR watches the active config file while it runs. Most fields take effect live, including `top_n`, `refresh_seconds`, `encoded_subscription`, sharing settings, fetch settings, probe settings, and subscriptions. Changing `bind` requires restarting V2RayDAR because the HTTP listener is already open on the old address.
 
 For portable mode, keep the app data beside the executable:
@@ -121,7 +144,7 @@ v2raydar --portable
 For development or tests with an explicit config path:
 
 ```bash
-v2raydar --config configs.example.yaml --once
+v2raydar --config configs.example.yaml
 ```
 
 For a release build:
@@ -137,6 +160,12 @@ On Windows, the release binary is:
 target\release\v2raydar.exe
 ```
 
+Run the Windows release binary with the project-root `configs.yaml`:
+
+```powershell
+target\release\v2raydar.exe --config .\configs.yaml
+```
+
 ## Config Fields
 
 Top-level keys:
@@ -148,10 +177,11 @@ Top-level keys:
 | `refresh_seconds` | Integer seconds | `300` | `0` or higher | Yes | Time between automatic subscription refreshes. `0` disables timer refresh, but saved config changes still trigger a reload. |
 | `encoded_subscription` | Boolean | `true` | `true`, `false` | Yes | When `true`, `/subscription` returns a base64-encoded newline list. Keep `true` for v2rayNG/v2rayN unless you know your client wants raw links. |
 | `fetch_timeout_ms` | Integer milliseconds | `15000` | `1` or higher | Yes | Timeout for fetching each subscription source. |
-| `fetch_concurrency` | Positive integer | `4` | `1` or higher | Yes | Number of same-priority subscription sources fetched concurrently. |
+| `fetch_concurrency` | Positive integer | `16` | `1` or higher | Yes | Number of enabled subscription sources fetched concurrently. |
+| `max_subscription_bytes` | Positive integer bytes | `16777216` | `1` or higher | Yes | Maximum bytes accepted per subscription source to cap memory use. |
 | `sharing` | Object | See sharing table | Sharing object | Yes | Controls LAN exposure and optional URL token protection. |
 | `probe` | Object | See probe table | Probe object | Yes | Controls validation strategy, sing-box path, timeouts, concurrency, and optional speed measurement. |
-| `subscriptions` | Array | `[]` | Zero or more subscription objects | Yes | Subscription sources to fetch and test. Lower `priority` values are processed first. A fresh install starts empty. |
+| `subscriptions` | Array | `[]` | Zero or more subscription objects | Yes | Subscription sources to fetch and test. A fresh install starts empty. |
 
 Sharing keys:
 
@@ -182,6 +212,7 @@ Subscription keys:
 | --- | --- | --- | --- | --- | --- |
 | `subscriptions[].name` | String | Required | Any non-empty label, for example `primary`, `backup`, `work-isp` | Yes | Local source name shown in `/results` and terminal output. |
 | `subscriptions[].url` | String | Required | `https://...`, `http://...`, `file://...`, local file path, or `data:` URL | Yes | Subscription source. Content may be base64 newline links, raw newline links, JSON/YAML containers, or supported DataURL content. |
+| `subscriptions[].enabled` | Boolean | `true` | `true`, `false` | Yes | Disabled subscription rows stay in the config file but are skipped by fetches and probes. |
 | `subscriptions[].priority` | Integer | `100` | `0` or higher | Yes | Lower number means higher priority. Priority `1` is ranked before priority `2` when validation quality is otherwise equal. |
 
 Supported config file extensions:
@@ -253,8 +284,10 @@ bind: 127.0.0.1:14127
 Start V2RayDAR:
 
 ```powershell
-target\release\v2raydar.exe
+target\release\v2raydar.exe --config .\configs.yaml
 ```
+
+This opens the TUI and serves the subscription endpoint. If you want the generated per-user config instead, omit `--config .\configs.yaml`.
 
 In v2rayN:
 

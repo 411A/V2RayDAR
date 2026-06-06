@@ -3,7 +3,8 @@ top_n: 10
 refresh_seconds: 300
 encoded_subscription: true
 fetch_timeout_ms: 15000
-fetch_concurrency: 4
+fetch_concurrency: 16
+max_subscription_bytes: 16777216
 
 sharing:
   enabled: false

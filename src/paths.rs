@@ -10,11 +10,7 @@ const CONFIG_FILE_NAME: &str = "config.yaml";
 pub struct AppPaths {
     pub root_dir: PathBuf,
     pub config_path: PathBuf,
-    pub subscriptions_dir: PathBuf,
     pub cache_dir: PathBuf,
-    pub logs_dir: PathBuf,
-    pub backups_dir: PathBuf,
-    pub runtime_dir: PathBuf,
     pub portable: bool,
 }
 
@@ -42,19 +38,9 @@ impl AppPaths {
     }
 
     pub async fn ensure(&self) -> Result<()> {
-        for path in [
-            &self.root_dir,
-            &self.subscriptions_dir,
-            &self.cache_dir,
-            &self.logs_dir,
-            &self.backups_dir,
-            &self.runtime_dir,
-        ] {
-            fs::create_dir_all(path)
-                .await
-                .with_context(|| format!("unable to create {}", path.display()))?;
-        }
-
+        fs::create_dir_all(&self.root_dir)
+            .await
+            .with_context(|| format!("unable to create {}", self.root_dir.display()))?;
         Ok(())
     }
 
@@ -66,11 +52,7 @@ impl AppPaths {
     fn from_root_with_config(root_dir: PathBuf, config_path: PathBuf, portable: bool) -> Self {
         Self {
             config_path,
-            subscriptions_dir: root_dir.join("subscriptions"),
             cache_dir: root_dir.join("cache"),
-            logs_dir: root_dir.join("logs"),
-            backups_dir: root_dir.join("backups"),
-            runtime_dir: root_dir.join("runtime"),
             root_dir,
             portable,
         }

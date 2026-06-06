@@ -251,12 +251,6 @@ fn validate(config: AppConfig) -> Result<AppConfig> {
         return Err(anyhow!("probe.startup_timeout_ms must be greater than 0"));
     }
 
-    if config.probe.mode == ProbeMode::Active && config.probe.sing_box_path.trim().is_empty() {
-        return Err(anyhow!(
-            "probe.sing_box_path cannot be empty when probe.mode is active"
-        ));
-    }
-
     if config.probe.mode == ProbeMode::Active && config.probe.test_url.trim().is_empty() {
         return Err(anyhow!(
             "probe.test_url cannot be empty when probe.mode is active"
@@ -369,7 +363,7 @@ fn default_probe_mode() -> ProbeMode {
 }
 
 fn default_sing_box_path() -> String {
-    "sing-box".to_string()
+    String::new()
 }
 
 fn default_connect_timeout_ms() -> u64 {

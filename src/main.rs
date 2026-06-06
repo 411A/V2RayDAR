@@ -4,11 +4,13 @@ mod parser;
 mod paths;
 mod probe;
 mod server;
+mod sing_box;
 mod subscription;
 mod terminal;
 mod tui;
 
 use std::{
+    io::{self, Write},
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, SystemTime},
@@ -30,6 +32,7 @@ use crate::{
     paths::AppPaths,
     probe::probe_candidates,
     server::serve,
+    sing_box::{DOWNLOAD_URL, active_probe_needs_setup},
     subscription::load_candidates_with_cache,
     terminal::{print_startup, print_summary},
 };
@@ -64,6 +67,15 @@ struct Cli {
         help = "Run one refresh and print results without starting the endpoint"
     )]
     once: bool,
+
+    #[arg(
+        long,
+        help = "Remove this app's generated config and cache folder, then exit"
+    )]
+    uninstall: bool,
+
+    #[arg(long, help = "Skip confirmation for --uninstall")]
+    yes: bool,
 }
 
 #[tokio::main]
@@ -81,6 +93,12 @@ async fn main() -> Result<()> {
         )
         .init();
     let paths = resolve_paths(&cli)?;
+
+    if cli.uninstall {
+        uninstall(&paths, cli.config.is_some(), cli.yes).await?;
+        return Ok(());
+    }
+
     paths.ensure().await?;
 
     if !paths.config_path.exists() {
@@ -88,8 +106,17 @@ async fn main() -> Result<()> {
         println!("Created default config at {}", paths.config_path.display());
     }
 
-    let config = AppConfig::load(&paths.config_path)
+    let mut config = AppConfig::load(&paths.config_path)
         .with_context(|| format!("failed to load config from {}", paths.config_path.display()))?;
+
+    if active_probe_needs_setup(&config, &paths).await {
+        if cli.no_tui || cli.once {
+            print_sing_box_setup_required(&paths);
+            return Ok(());
+        }
+
+        tui::run_sing_box_setup(&mut config, &paths).await?;
+    }
 
     let state = Arc::new(RwLock::new(RuntimeState::default()));
     let runtime_config = Arc::new(RwLock::new(RuntimeConfig::from(&config)));
@@ -138,6 +165,55 @@ async fn main() -> Result<()> {
             result = tui::run(config, paths, state, runtime_config) => result,
         }
     }
+}
+
+async fn uninstall(paths: &AppPaths, config_override: bool, assume_yes: bool) -> Result<()> {
+    if config_override {
+        println!(
+            "--uninstall does not remove arbitrary --config directories. Remove {} manually if needed.",
+            paths.config_path.display()
+        );
+        return Ok(());
+    }
+
+    if !paths.root_dir.exists() {
+        println!(
+            "Nothing to remove; {} does not exist.",
+            paths.root_dir.display()
+        );
+        return Ok(());
+    }
+
+    if !assume_yes {
+        println!(
+            "This will permanently remove generated app data: {}",
+            paths.root_dir.display()
+        );
+        print!("Type DELETE to continue: ");
+        io::stdout().flush().ok();
+        let mut answer = String::new();
+        io::stdin().read_line(&mut answer)?;
+        if answer.trim() != "DELETE" {
+            println!("Uninstall cancelled.");
+            return Ok(());
+        }
+    }
+
+    println!("Removing generated app data: {}", paths.root_dir.display());
+    fs::remove_dir_all(&paths.root_dir)
+        .await
+        .with_context(|| format!("unable to remove {}", paths.root_dir.display()))?;
+    println!("Removed generated app data. Delete the V2RayDAR executable manually if desired.");
+    Ok(())
+}
+
+fn print_sing_box_setup_required(paths: &AppPaths) {
+    println!("V2RayDAR active probing requires sing-box before it can refresh.");
+    println!("Config: {}", paths.config_path.display());
+    println!("Set probe.sing_box_path to the full sing-box executable path.");
+    println!("If you use v2rayN, check its installation folder for sing-box.exe.");
+    println!("Download sing-box from: {DOWNLOAD_URL}");
+    println!("Then run V2RayDAR again.");
 }
 
 fn resolve_paths(cli: &Cli) -> Result<AppPaths> {

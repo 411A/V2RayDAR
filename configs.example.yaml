@@ -13,7 +13,7 @@ sharing:
 
 probe:
   mode: active
-  sing_box_path: sing-box
+  sing_box_path:
   connect_timeout_ms: 1500
   active_timeout_ms: 10000
   startup_timeout_ms: 2000

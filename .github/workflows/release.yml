@@ -94,6 +94,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       TAG_NAME: ${{ github.ref_name }}
+      REPOSITORY: ${{ github.repository }}
     steps:
       - name: Download executable artifacts
         uses: actions/download-artifact@v4
@@ -115,10 +116,11 @@ jobs:
       - name: Create or update release
         shell: bash
         run: |
-          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
-            gh release upload "$TAG_NAME" dist/* --clobber
+          if gh release view "$TAG_NAME" --repo "$REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" dist/* --clobber --repo "$REPOSITORY"
           else
             gh release create "$TAG_NAME" dist/* \
+              --repo "$REPOSITORY" \
               --title "V2RayDAR $TAG_NAME" \
               --notes "Single-file V2RayDAR executables for Windows, Linux, and macOS. Download sing-box separately for active probing."
           fi

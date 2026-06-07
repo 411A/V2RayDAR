@@ -38,10 +38,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Cache Cargo build state
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/${{ matrix.target }}
+          key: cargo-build-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-build-${{ runner.os }}-${{ matrix.target }}-
+
       - name: Install Rust target
         shell: bash
         run: |
-          rustup update stable
           rustup default stable
           rustup target add "${{ matrix.target }}"
 
@@ -70,10 +80,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Cache Cargo test state
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-test-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-test-${{ runner.os }}-
+
       - name: Install Rust
         shell: bash
         run: |
-          rustup update stable
           rustup default stable
           rustup component add rustfmt clippy
 

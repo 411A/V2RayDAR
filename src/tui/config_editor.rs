@@ -22,6 +22,7 @@ pub fn label(key: ConfigKey) -> &'static str {
         ConfigKey::ActiveTimeout => "probe.active_timeout_ms",
         ConfigKey::StartupTimeout => "probe.startup_timeout_ms",
         ConfigKey::ProbeConcurrency => "probe.concurrency",
+        ConfigKey::ProbeBatchSize => "probe.batch_size",
         ConfigKey::TestUrl => "probe.test_url",
         ConfigKey::AcceptedStatuses => "probe.accepted_statuses",
         ConfigKey::DownloadUrl => "probe.download_url",
@@ -50,6 +51,7 @@ pub fn guide(key: ConfigKey) -> &'static str {
         ConfigKey::ActiveTimeout => "active probe timeout in ms",
         ConfigKey::StartupTimeout => "sing-box startup timeout ms",
         ConfigKey::ProbeConcurrency => "parallel probe count",
+        ConfigKey::ProbeBatchSize => "configs per sing-box process; auto/null",
         ConfigKey::TestUrl => "URL used for active probe",
         ConfigKey::AcceptedStatuses => "HTTP codes, e.g. 204,200",
         ConfigKey::DownloadUrl => "speedtest URL or off/null",
@@ -76,6 +78,11 @@ pub fn value(config: &crate::config::AppConfig, key: ConfigKey) -> String {
         ConfigKey::ActiveTimeout => config.probe.active_timeout_ms.to_string(),
         ConfigKey::StartupTimeout => config.probe.startup_timeout_ms.to_string(),
         ConfigKey::ProbeConcurrency => config.probe.concurrency.to_string(),
+        ConfigKey::ProbeBatchSize => config
+            .probe
+            .batch_size
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "auto".to_string()),
         ConfigKey::TestUrl => config.probe.test_url.clone(),
         ConfigKey::AcceptedStatuses => config
             .probe
@@ -115,6 +122,9 @@ pub fn apply(config: &mut crate::config::AppConfig, key: ConfigKey, raw: &str) -
         ConfigKey::ActiveTimeout => config.probe.active_timeout_ms = nonzero(value, label(key))?,
         ConfigKey::StartupTimeout => config.probe.startup_timeout_ms = nonzero(value, label(key))?,
         ConfigKey::ProbeConcurrency => config.probe.concurrency = positive(value, label(key))?,
+        ConfigKey::ProbeBatchSize => {
+            config.probe.batch_size = optional_positive(value, label(key))?
+        }
         ConfigKey::TestUrl => config.probe.test_url = required(value, label(key))?,
         ConfigKey::AcceptedStatuses => config.probe.accepted_statuses = statuses(value)?,
         ConfigKey::DownloadUrl => config.probe.download_url = optional(value),
@@ -186,5 +196,12 @@ fn optional(value: &str) -> Option<String> {
     match value.to_ascii_lowercase().as_str() {
         "" | "off" | "none" | "null" => None,
         _ => Some(value.to_string()),
+    }
+}
+
+fn optional_positive(value: &str, label: &str) -> Result<Option<usize>> {
+    match value.to_ascii_lowercase().as_str() {
+        "" | "auto" | "off" | "none" | "null" => Ok(None),
+        _ => positive(value, label).map(Some),
     }
 }

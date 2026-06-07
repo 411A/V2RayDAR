@@ -5,6 +5,8 @@ use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 
+use crate::constants::{CONFIG_KEYS, MAIN_ITEMS, SUBSCRIPTION_ACTIONS};
+
 use super::{
     action_handlers::run_action,
     input_handlers::{handle_input_key, start_input},
@@ -173,7 +175,7 @@ fn move_up(state: &mut TuiState) {
 fn move_down(state: &mut TuiState) {
     match state.view {
         MenuView::Main => {
-            state.selected_main = (state.selected_main + 1).min(MainItem::ALL.len() - 1);
+            state.selected_main = (state.selected_main + 1).min(MAIN_ITEMS.len() - 1);
         }
         MenuView::Subscriptions => {
             state.selected_subscription =
@@ -181,11 +183,10 @@ fn move_down(state: &mut TuiState) {
         }
         MenuView::NewSubscription => {}
         MenuView::SubscriptionActions => {
-            state.selected_action =
-                (state.selected_action + 1).min(SubscriptionAction::ALL.len() - 1);
+            state.selected_action = (state.selected_action + 1).min(SUBSCRIPTION_ACTIONS.len() - 1);
         }
         MenuView::Configurations => {
-            state.selected_config = (state.selected_config + 1).min(ConfigKey::ALL.len() - 1);
+            state.selected_config = (state.selected_config + 1).min(CONFIG_KEYS.len() - 1);
         }
     }
 }
@@ -204,7 +205,7 @@ fn activate(state: &mut TuiState, config_path: &Path) -> Result<()> {
         MenuView::NewSubscription => Ok(()),
         MenuView::SubscriptionActions => activate_subscription_action(state, config_path),
         MenuView::Configurations => {
-            let key = ConfigKey::ALL[state.selected_config];
+            let key = CONFIG_KEYS[state.selected_config];
             if key == ConfigKey::ResetDefaults {
                 state.reset_code = Some(reset_code());
                 start_input(state, InputMode::ResetConfirm, "");
@@ -218,7 +219,7 @@ fn activate(state: &mut TuiState, config_path: &Path) -> Result<()> {
 }
 
 fn activate_main(state: &mut TuiState, config_path: &Path) -> Result<()> {
-    match MainItem::ALL[state.selected_main] {
+    match MAIN_ITEMS[state.selected_main] {
         MainItem::OpenConfig => {
             state.status = super::open_config::open(config_path);
         }
@@ -249,7 +250,7 @@ fn activate_main(state: &mut TuiState, config_path: &Path) -> Result<()> {
 }
 
 fn activate_subscription_action(state: &mut TuiState, config_path: &Path) -> Result<()> {
-    match SubscriptionAction::ALL[state.selected_action] {
+    match SUBSCRIPTION_ACTIONS[state.selected_action] {
         SubscriptionAction::EditName => run_action(state, Action::EditName, config_path)?,
         SubscriptionAction::EditUrl => run_action(state, Action::EditUrl, config_path)?,
         SubscriptionAction::EditPriority => run_action(state, Action::EditPriority, config_path)?,

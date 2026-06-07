@@ -1,4 +1,5 @@
 mod config;
+mod constants;
 mod model;
 mod parser;
 mod paths;
@@ -30,17 +31,18 @@ use tracing::{error, info, warn};
 
 use crate::{
     config::AppConfig,
+    constants::{
+        CONFIG_WATCH_INTERVAL, DEFAULT_LOG_FILTER_PLAIN, DEFAULT_LOG_FILTER_TUI, LOCALHOST_IP,
+        MAX_TUI_LOGS, SING_BOX_DOWNLOAD_URL, STABLE_WORKING_APPEARANCES,
+    },
     model::{RankedConfig, RuntimeConfig, RuntimeState},
     paths::AppPaths,
     probe::probe_candidates,
     server::serve,
-    sing_box::{DOWNLOAD_URL, active_probe_needs_setup},
+    sing_box::active_probe_needs_setup,
     subscription::load_candidates_with_cache,
     terminal::{print_startup, print_summary},
 };
-
-const MAX_TUI_LOGS: usize = 8;
-const STABLE_WORKING_APPEARANCES: u32 = 2;
 
 #[derive(Debug, Parser)]
 #[command(name = "v2raydar")]
@@ -85,9 +87,9 @@ struct Cli {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let default_log_filter = if cli.no_tui || cli.once {
-        "v2raydar=info,tower_http=warn"
+        DEFAULT_LOG_FILTER_PLAIN
     } else {
-        "v2raydar=off,tower_http=warn"
+        DEFAULT_LOG_FILTER_TUI
     };
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -142,7 +144,7 @@ async fn main() -> Result<()> {
         println!(
             "Serving top {} configs at {}",
             config.top_n,
-            config.subscription_url("127.0.0.1", false)
+            config.subscription_url(LOCALHOST_IP, false)
         );
         println!(
             "Watching {} for live config changes.",
@@ -215,7 +217,7 @@ fn print_sing_box_setup_required(paths: &AppPaths) {
     println!("Config: {}", paths.config_path.display());
     println!("Set probe.sing_box_path to the full sing-box executable path.");
     println!("If you use v2rayN, check its installation folder for sing-box.exe.");
-    println!("Download sing-box from: {DOWNLOAD_URL}");
+    println!("Download sing-box from: {}", SING_BOX_DOWNLOAD_URL);
     println!("Then run V2RayDAR again.");
 }
 
@@ -496,7 +498,7 @@ fn spawn_config_watcher(
         let mut last_modified = modified_time(&config_path).await.ok();
 
         loop {
-            time::sleep(Duration::from_secs(1)).await;
+            time::sleep(CONFIG_WATCH_INTERVAL).await;
             let modified = match modified_time(&config_path).await {
                 Ok(value) => value,
                 Err(err) => {
@@ -600,6 +602,7 @@ impl From<&AppConfig> for RuntimeConfig {
                 .as_deref()
                 .is_some_and(|url| !url.trim().is_empty()),
             probe_concurrency: config.probe.concurrency,
+            probe_batch_size: config.probe.batch_size,
             active_timeout_ms: config.probe.active_timeout_ms,
             startup_timeout_ms: config.probe.startup_timeout_ms,
             test_url: config.probe.test_url.clone(),

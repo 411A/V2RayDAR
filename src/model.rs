@@ -73,6 +73,7 @@ pub struct RuntimeConfig {
     pub probe_mode: String,
     pub speedtest_enabled: bool,
     pub probe_concurrency: usize,
+    pub probe_batch_size: Option<usize>,
     pub active_timeout_ms: u64,
     pub startup_timeout_ms: u64,
     pub test_url: String,

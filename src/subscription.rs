@@ -17,11 +17,10 @@ use tracing::warn;
 
 use crate::{
     config::{AppConfig, SubscriptionSource},
+    constants::{FNV_OFFSET_BASIS, FNV_PRIME, HTTP_EXCHANGE_OVERHEAD_BYTES},
     model::Candidate,
     parser::parse_subscription_document,
 };
-
-const HTTP_EXCHANGE_OVERHEAD_BYTES: u64 = 1024;
 
 #[derive(Debug)]
 pub struct FetchOutcome {
@@ -292,10 +291,10 @@ fn cache_paths(cache_dir: &Path, url: &str) -> CachePaths {
 }
 
 fn cache_key(value: &str) -> String {
-    let mut hash = 0xcbf29ce484222325_u64;
+    let mut hash = FNV_OFFSET_BASIS;
     for byte in value.as_bytes() {
         hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
+        hash = hash.wrapping_mul(FNV_PRIME);
     }
     format!("{hash:016x}")
 }

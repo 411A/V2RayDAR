@@ -17,15 +17,6 @@ pub enum MainItem {
     Configurations,
 }
 
-impl MainItem {
-    pub const ALL: [Self; 4] = [
-        Self::OpenConfig,
-        Self::Sharing,
-        Self::Subscriptions,
-        Self::Configurations,
-    ];
-}
-
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum SubscriptionAction {
     EditName,
@@ -34,17 +25,6 @@ pub enum SubscriptionAction {
     Toggle,
     Delete,
     Back,
-}
-
-impl SubscriptionAction {
-    pub const ALL: [Self; 6] = [
-        Self::EditName,
-        Self::EditUrl,
-        Self::EditPriority,
-        Self::Toggle,
-        Self::Delete,
-        Self::Back,
-    ];
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -63,6 +43,7 @@ pub enum ConfigKey {
     ActiveTimeout,
     StartupTimeout,
     ProbeConcurrency,
+    ProbeBatchSize,
     TestUrl,
     AcceptedStatuses,
     DownloadUrl,
@@ -70,32 +51,6 @@ pub enum ConfigKey {
     TokenRequired,
     Token,
     ResetDefaults,
-}
-
-impl ConfigKey {
-    pub const ALL: [Self; 21] = [
-        Self::Bind,
-        Self::TopN,
-        Self::RefreshSeconds,
-        Self::EncodedSubscription,
-        Self::PrioritizeStability,
-        Self::FetchTimeout,
-        Self::FetchConcurrency,
-        Self::MaxSubscriptionBytes,
-        Self::ProbeMode,
-        Self::SingBoxPath,
-        Self::ConnectTimeout,
-        Self::ActiveTimeout,
-        Self::StartupTimeout,
-        Self::ProbeConcurrency,
-        Self::TestUrl,
-        Self::AcceptedStatuses,
-        Self::DownloadUrl,
-        Self::DownloadLimit,
-        Self::TokenRequired,
-        Self::Token,
-        Self::ResetDefaults,
-    ];
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

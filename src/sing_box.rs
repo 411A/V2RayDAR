@@ -5,10 +5,9 @@ use tokio::process::Command;
 
 use crate::{
     config::{AppConfig, ProbeMode},
+    constants::SING_BOX_DOWNLOAD_URL,
     paths::AppPaths,
 };
-
-pub const DOWNLOAD_URL: &str = "https://github.com/SagerNet/sing-box/releases";
 
 pub async fn active_probe_needs_setup(config: &AppConfig, _paths: &AppPaths) -> bool {
     if config.probe.mode != ProbeMode::Active {
@@ -54,7 +53,7 @@ pub async fn verify_path(path: &str) -> Result<()> {
         .await
         .with_context(|| {
             format!(
-                "unable to run '{path}'. Enter the full sing-box executable path, or download it from {DOWNLOAD_URL}"
+                "unable to run '{path}'. Enter the full sing-box executable path, or download it from {SING_BOX_DOWNLOAD_URL}"
             )
         })?;
 

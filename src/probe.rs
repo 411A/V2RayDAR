@@ -1,5 +1,6 @@
 use std::{
     cmp::Ordering,
+    path::PathBuf,
     process::Stdio,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -18,6 +19,11 @@ use url::Url;
 
 use crate::{
     config::{ProbeConfig, ProbeMode},
+    constants::{
+        ACTIVE_PROBE_BATCH_CONCURRENCY_MULTIPLIER, ACTIVE_PROBE_BATCH_MAX_SIZE,
+        ACTIVE_PROBE_BATCH_MIN_SIZE, LOCAL_PROXY_WAIT_INTERVAL, LOCALHOST_IP,
+        SING_BOX_CONFIG_FILE_PREFIX, SING_BOX_INBOUND_TAG_PREFIX, SING_BOX_OUTBOUND_TAG_PREFIX,
+    },
     model::{Candidate, RankedConfig},
 };
 
@@ -43,17 +49,17 @@ pub async fn probe_candidates(
         );
     }
 
-    let ranked = stream::iter(candidates.into_iter().map(|candidate| async move {
-        match config.mode {
-            ProbeMode::Active => probe_active(candidate, config).await,
-            ProbeMode::Tcp => {
+    let ranked = match config.mode {
+        ProbeMode::Active => probe_active_batched(candidates, config).await,
+        ProbeMode::Tcp => {
+            stream::iter(candidates.into_iter().map(|candidate| async move {
                 probe_tcp(candidate, Duration::from_millis(config.connect_timeout_ms)).await
-            }
+            }))
+            .buffer_unordered(config.concurrency)
+            .collect::<Vec<_>>()
+            .await
         }
-    }))
-    .buffer_unordered(config.concurrency)
-    .collect::<Vec<_>>()
-    .await;
+    };
 
     rank_configs(ranked)
 }
@@ -102,11 +108,197 @@ async fn probe_tcp(candidate: Candidate, timeout: Duration) -> RankedConfig {
     }
 }
 
-async fn probe_active(candidate: Candidate, config: &ProbeConfig) -> RankedConfig {
-    let started = Instant::now();
-    let result = probe_active_inner(&candidate, config).await;
+struct PreparedActiveCandidate {
+    candidate: Candidate,
+    outbound: Value,
+}
 
-    match result {
+struct BatchProbeFailure {
+    entries: Vec<PreparedActiveCandidate>,
+    error: anyhow::Error,
+    retry_split: bool,
+}
+
+impl BatchProbeFailure {
+    fn retryable(entries: Vec<PreparedActiveCandidate>, error: anyhow::Error) -> Self {
+        Self {
+            entries,
+            error,
+            retry_split: true,
+        }
+    }
+
+    fn unrecoverable(entries: Vec<PreparedActiveCandidate>, error: anyhow::Error) -> Self {
+        Self {
+            entries,
+            error,
+            retry_split: false,
+        }
+    }
+}
+
+struct ReservedLocalPort {
+    port: u16,
+    _listener: TcpListener,
+}
+
+struct ActiveProbeSuccess {
+    latency_ms: u128,
+    http_status: u16,
+    download_mbps: Option<f64>,
+    download_bytes: Option<usize>,
+}
+
+async fn probe_active_batched(
+    candidates: Vec<Candidate>,
+    config: &ProbeConfig,
+) -> Vec<RankedConfig> {
+    let mut prepared = Vec::new();
+    let mut ranked = Vec::new();
+
+    for candidate in candidates {
+        match sing_box_outbound_from_share_link(&candidate.uri) {
+            Ok(outbound) => prepared.push(PreparedActiveCandidate {
+                candidate,
+                outbound,
+            }),
+            Err(err) => ranked.push(failed_config(candidate, "active_http", err.to_string())),
+        }
+    }
+
+    let batch_size = active_probe_batch_size(config.concurrency, config.batch_size);
+    while !prepared.is_empty() {
+        let batch_len = prepared.len().min(batch_size);
+        let batch = prepared.drain(..batch_len).collect::<Vec<_>>();
+        ranked.extend(probe_active_batch_with_fallback(batch, config).await);
+    }
+
+    ranked
+}
+
+fn active_probe_batch_size(concurrency: usize, configured: Option<usize>) -> usize {
+    configured.unwrap_or_else(|| {
+        concurrency
+            .saturating_mul(ACTIVE_PROBE_BATCH_CONCURRENCY_MULTIPLIER)
+            .clamp(ACTIVE_PROBE_BATCH_MIN_SIZE, ACTIVE_PROBE_BATCH_MAX_SIZE)
+    })
+}
+
+async fn probe_active_batch_with_fallback(
+    batch: Vec<PreparedActiveCandidate>,
+    config: &ProbeConfig,
+) -> Vec<RankedConfig> {
+    let mut pending = vec![batch];
+    let mut ranked = Vec::new();
+
+    while let Some(batch) = pending.pop() {
+        match probe_active_batch(batch, config).await {
+            Ok(mut batch_ranked) => ranked.append(&mut batch_ranked),
+            Err(failure) if failure.retry_split && failure.entries.len() > 1 => {
+                let mut left = failure.entries;
+                let right = left.split_off(left.len() / 2);
+                pending.push(right);
+                pending.push(left);
+            }
+            Err(failure) => {
+                let error = failure.error.to_string();
+                ranked.extend(
+                    failure
+                        .entries
+                        .into_iter()
+                        .map(|entry| failed_config(entry.candidate, "active_http", error.clone())),
+                );
+            }
+        }
+    }
+
+    ranked
+}
+
+async fn probe_active_batch(
+    entries: Vec<PreparedActiveCandidate>,
+    config: &ProbeConfig,
+) -> std::result::Result<Vec<RankedConfig>, BatchProbeFailure> {
+    if entries.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let reservations = match reserve_local_ports(entries.len()).await {
+        Ok(reservations) => reservations,
+        Err(err) => {
+            return Err(BatchProbeFailure::unrecoverable(
+                entries,
+                err.context("unable to reserve local proxy ports"),
+            ));
+        }
+    };
+    let ports = reservations
+        .iter()
+        .map(|reservation| reservation.port)
+        .collect::<Vec<_>>();
+    let config_path = match write_sing_box_batch_config(&entries, &ports).await {
+        Ok(path) => path,
+        Err(err) => {
+            return Err(BatchProbeFailure::unrecoverable(
+                entries,
+                err.context("unable to write sing-box config"),
+            ));
+        }
+    };
+
+    drop(reservations);
+
+    let child = Command::new(&config.sing_box_path)
+        .arg("run")
+        .arg("-c")
+        .arg(&config_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+
+    let mut child = match child {
+        Ok(child) => child,
+        Err(err) => {
+            let _ = fs::remove_file(config_path).await;
+            return Err(BatchProbeFailure::unrecoverable(
+                entries,
+                anyhow!(err).context(format!(
+                    "failed to start sing-box using '{}'",
+                    config.sing_box_path
+                )),
+            ));
+        }
+    };
+
+    if let Err(err) = wait_for_local_proxies(
+        &mut child,
+        &ports,
+        Duration::from_millis(config.startup_timeout_ms),
+    )
+    .await
+    {
+        cleanup_sing_box_child(child, config_path).await;
+        return Err(BatchProbeFailure::retryable(entries, err));
+    }
+
+    let ranked = stream::iter(entries.into_iter().zip(ports.into_iter()).map(
+        |(entry, port)| async move { probe_active_target(entry.candidate, port, config).await },
+    ))
+    .buffer_unordered(config.concurrency)
+    .collect::<Vec<_>>()
+    .await;
+
+    cleanup_sing_box_child(child, config_path).await;
+    Ok(ranked)
+}
+
+async fn probe_active_target(
+    candidate: Candidate,
+    port: u16,
+    config: &ProbeConfig,
+) -> RankedConfig {
+    match probe_active_target_inner(port, config).await {
         Ok(active) => RankedConfig {
             rank: 0,
             stability_count: 0,
@@ -119,7 +311,7 @@ async fn probe_active(candidate: Candidate, config: &ProbeConfig) -> RankedConfi
             uri: candidate.uri,
             reachable: true,
             validation: "active_http".to_string(),
-            latency_ms: Some(started.elapsed().as_millis()),
+            latency_ms: Some(active.latency_ms),
             http_status: Some(active.http_status),
             download_mbps: active.download_mbps,
             download_bytes: active.download_bytes,
@@ -129,75 +321,46 @@ async fn probe_active(candidate: Candidate, config: &ProbeConfig) -> RankedConfi
     }
 }
 
-struct ActiveProbeSuccess {
-    http_status: u16,
-    download_mbps: Option<f64>,
-    download_bytes: Option<usize>,
-}
+async fn probe_active_target_inner(port: u16, config: &ProbeConfig) -> Result<ActiveProbeSuccess> {
+    let proxy_url = format!("http://{LOCALHOST_IP}:{port}");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(config.active_timeout_ms))
+        .proxy(Proxy::all(&proxy_url)?)
+        .build()?;
 
-async fn probe_active_inner(
-    candidate: &Candidate,
-    config: &ProbeConfig,
-) -> Result<ActiveProbeSuccess> {
-    let outbound = sing_box_outbound_from_share_link(&candidate.uri)?;
-    let port = reserve_local_port().await?;
-    let config_path = write_sing_box_config(&candidate.id, port, outbound).await?;
-    let cleanup_path = config_path.clone();
-
-    let mut child = Command::new(&config.sing_box_path)
-        .arg("run")
-        .arg("-c")
-        .arg(&config_path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .with_context(|| format!("failed to start sing-box using '{}'", config.sing_box_path))?;
-
-    let result = async {
-        wait_for_local_proxy(
-            &mut child,
-            port,
-            Duration::from_millis(config.startup_timeout_ms),
-        )
-        .await?;
-        let proxy_url = format!("http://127.0.0.1:{port}");
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_millis(config.active_timeout_ms))
-            .proxy(Proxy::all(&proxy_url)?)
-            .build()?;
-
-        let response = client.get(&config.test_url).send().await?;
-        let status = response.status().as_u16();
-        if !config.accepted_statuses.contains(&status) {
-            return Err(anyhow!(
-                "active HTTP probe returned status {}; accepted statuses are {:?}",
-                status,
-                config.accepted_statuses
-            ));
-        }
-
-        let (download_mbps, download_bytes) = if let Some(download_url) = &config.download_url {
-            let measurement =
-                measure_download(&client, download_url, config.download_bytes_limit).await?;
-            (Some(measurement.mbps), Some(measurement.bytes))
-        } else {
-            (None, None)
-        };
-
-        Ok(ActiveProbeSuccess {
-            http_status: status,
-            download_mbps,
-            download_bytes,
-        })
+    let started = Instant::now();
+    let response = client.get(&config.test_url).send().await?;
+    let latency_ms = started.elapsed().as_millis();
+    let status = response.status().as_u16();
+    if !config.accepted_statuses.contains(&status) {
+        return Err(anyhow!(
+            "active HTTP probe returned status {}; accepted statuses are {:?}",
+            status,
+            config.accepted_statuses
+        ));
     }
-    .await;
 
-    let _ = child.kill().await;
-    let _ = child.wait().await;
-    let _ = fs::remove_file(cleanup_path).await;
+    let (download_mbps, download_bytes) = match config
+        .download_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+    {
+        Some(download_url) => {
+            match measure_download(&client, download_url, config.download_bytes_limit).await {
+                Ok(measurement) => (Some(measurement.mbps), Some(measurement.bytes)),
+                Err(_) => (None, None),
+            }
+        }
+        None => (None, None),
+    };
 
-    result
+    Ok(ActiveProbeSuccess {
+        latency_ms,
+        http_status: status,
+        download_mbps,
+        download_bytes,
+    })
 }
 
 struct DownloadMeasurement {
@@ -211,22 +374,32 @@ async fn measure_download(
     bytes_limit: usize,
 ) -> Result<DownloadMeasurement> {
     let started = Instant::now();
-    let response = client
+    let mut stream = client
         .get(download_url)
+        .header(reqwest::header::ACCEPT_ENCODING, "identity")
         .header(
             reqwest::header::RANGE,
             format!("bytes=0-{}", bytes_limit.saturating_sub(1)),
         )
         .send()
         .await?
-        .error_for_status()?;
-    let body = response.bytes().await?;
+        .error_for_status()?
+        .bytes_stream();
+    let mut measured_bytes = 0_usize;
+    while measured_bytes < bytes_limit {
+        let Some(chunk) = stream.next().await else {
+            break;
+        };
+        let chunk = chunk?;
+        let remaining = bytes_limit - measured_bytes;
+        measured_bytes = measured_bytes.saturating_add(chunk.len().min(remaining));
+    }
+
     let elapsed = started.elapsed().as_secs_f64();
-    if elapsed == 0.0 || body.is_empty() {
+    if elapsed == 0.0 || measured_bytes == 0 {
         return Err(anyhow!("download probe returned no measurable data"));
     }
 
-    let measured_bytes = body.len().min(bytes_limit);
     Ok(DownloadMeasurement {
         mbps: (measured_bytes as f64 * 8.0) / elapsed / 1_000_000.0,
         bytes: measured_bytes,
@@ -245,23 +418,39 @@ async fn sing_box_available(path: &str) -> bool {
         .unwrap_or(false)
 }
 
-async fn reserve_local_port() -> Result<u16> {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
-    Ok(listener.local_addr()?.port())
+async fn reserve_local_ports(count: usize) -> Result<Vec<ReservedLocalPort>> {
+    let mut reservations = Vec::with_capacity(count);
+    for _ in 0..count {
+        let listener = TcpListener::bind((LOCALHOST_IP, 0)).await?;
+        let port = listener.local_addr()?.port();
+        reservations.push(ReservedLocalPort {
+            port,
+            _listener: listener,
+        });
+    }
+
+    Ok(reservations)
 }
 
-async fn wait_for_local_proxy(
+async fn wait_for_local_proxies(
     child: &mut tokio::process::Child,
-    port: u16,
+    ports: &[u16],
     timeout: Duration,
 ) -> Result<()> {
     let started = Instant::now();
+    let mut ready = vec![false; ports.len()];
     loop {
         if let Some(status) = child.try_wait()? {
             return Err(anyhow!("sing-box exited before proxy was ready: {status}"));
         }
 
-        if TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+        for (index, port) in ports.iter().enumerate() {
+            if !ready[index] && TcpStream::connect((LOCALHOST_IP, *port)).await.is_ok() {
+                ready[index] = true;
+            }
+        }
+
+        if ready.iter().all(|is_ready| *is_ready) {
             return Ok(());
         }
 
@@ -272,39 +461,69 @@ async fn wait_for_local_proxy(
             ));
         }
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(LOCAL_PROXY_WAIT_INTERVAL).await;
     }
 }
 
-async fn write_sing_box_config(id: &str, port: u16, outbound: Value) -> Result<std::path::PathBuf> {
+async fn write_sing_box_batch_config(
+    entries: &[PreparedActiveCandidate],
+    ports: &[u16],
+) -> Result<PathBuf> {
     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     let path = std::env::temp_dir().join(format!(
-        "v2raydar-sing-box-{}-{id}-{timestamp}.json",
+        "{SING_BOX_CONFIG_FILE_PREFIX}-{}-{timestamp}.json",
         std::process::id()
     ));
+    let mut inbounds = Vec::with_capacity(entries.len());
+    let mut outbounds = Vec::with_capacity(entries.len());
+    let mut rules = Vec::with_capacity(entries.len());
+
+    for (index, (entry, port)) in entries.iter().zip(ports.iter()).enumerate() {
+        let inbound_tag = format!("{SING_BOX_INBOUND_TAG_PREFIX}-{index}");
+        let outbound_tag = format!("{SING_BOX_OUTBOUND_TAG_PREFIX}-{index}");
+        let mut outbound = entry.outbound.clone();
+        outbound
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("sing-box outbound is not a JSON object"))?
+            .insert("tag".to_string(), json!(outbound_tag));
+
+        inbounds.push(json!({
+            "type": "mixed",
+            "tag": inbound_tag,
+            "listen": LOCALHOST_IP,
+            "listen_port": port
+        }));
+        outbounds.push(outbound);
+        rules.push(json!({
+            "inbound": [
+                inbound_tag
+            ],
+            "action": "route",
+            "outbound": outbound_tag
+        }));
+    }
+
     let config = json!({
         "log": {
             "disabled": true
         },
-        "inbounds": [
-            {
-                "type": "mixed",
-                "tag": "mixed-in",
-                "listen": "127.0.0.1",
-                "listen_port": port
-            }
-        ],
-        "outbounds": [
-            outbound
-        ],
+        "inbounds": inbounds,
+        "outbounds": outbounds,
         "route": {
-            "final": "proxy",
+            "rules": rules,
+            "final": format!("{SING_BOX_OUTBOUND_TAG_PREFIX}-0"),
             "auto_detect_interface": true
         }
     });
 
     fs::write(&path, serde_json::to_vec_pretty(&config)?).await?;
     Ok(path)
+}
+
+async fn cleanup_sing_box_child(mut child: tokio::process::Child, config_path: PathBuf) {
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+    let _ = fs::remove_file(config_path).await;
 }
 
 fn failed_config(candidate: Candidate, validation: &str, error: String) -> RankedConfig {
@@ -874,5 +1093,79 @@ mod tests {
         assert_eq!(outbound["type"], "shadowsocks");
         assert_eq!(outbound["method"], "aes-256-gcm");
         assert_eq!(outbound["password"], "pass");
+    }
+
+    #[test]
+    fn active_probe_batch_size_is_bounded() {
+        assert_eq!(
+            active_probe_batch_size(1, None),
+            ACTIVE_PROBE_BATCH_MIN_SIZE
+        );
+        assert_eq!(active_probe_batch_size(4, None), 64);
+        assert_eq!(
+            active_probe_batch_size(usize::MAX, None),
+            ACTIVE_PROBE_BATCH_MAX_SIZE
+        );
+        assert_eq!(active_probe_batch_size(4, Some(10)), 10);
+    }
+
+    #[tokio::test]
+    async fn writes_batched_sing_box_config_with_one_route_per_entry() {
+        let entries = vec![
+            PreparedActiveCandidate {
+                candidate: Candidate {
+                    id: "one".to_string(),
+                    source: "test".to_string(),
+                    priority: 1,
+                    protocol: "ss".to_string(),
+                    name: "one".to_string(),
+                    endpoint: crate::model::Endpoint {
+                        host: "one.example".to_string(),
+                        port: 8388,
+                    },
+                    uri: "ss://one".to_string(),
+                },
+                outbound: json!({
+                    "type": "direct",
+                    "tag": "will-be-replaced"
+                }),
+            },
+            PreparedActiveCandidate {
+                candidate: Candidate {
+                    id: "two".to_string(),
+                    source: "test".to_string(),
+                    priority: 1,
+                    protocol: "ss".to_string(),
+                    name: "two".to_string(),
+                    endpoint: crate::model::Endpoint {
+                        host: "two.example".to_string(),
+                        port: 8388,
+                    },
+                    uri: "ss://two".to_string(),
+                },
+                outbound: json!({
+                    "type": "direct"
+                }),
+            },
+        ];
+
+        let path = write_sing_box_batch_config(&entries, &[12_001, 12_002])
+            .await
+            .expect("batch config writes");
+        let bytes = fs::read(&path).await.expect("batch config can be read");
+        fs::remove_file(&path)
+            .await
+            .expect("batch config can be removed");
+        let config: Value = serde_json::from_slice(&bytes).expect("batch config is JSON");
+
+        assert_eq!(config["inbounds"].as_array().expect("inbounds").len(), 2);
+        assert_eq!(config["outbounds"][0]["tag"], "proxy-0");
+        assert_eq!(config["outbounds"][1]["tag"], "proxy-1");
+        assert_eq!(config["route"]["rules"].as_array().expect("rules").len(), 2);
+        assert_eq!(config["route"]["rules"][0]["outbound"], "proxy-0");
+        assert_eq!(
+            config["route"]["rules"][1]["inbound"][0],
+            format!("{SING_BOX_INBOUND_TAG_PREFIX}-1")
+        );
     }
 }

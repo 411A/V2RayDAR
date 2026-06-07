@@ -12,7 +12,7 @@ mod logs_panel;
 mod main_menu_panel;
 mod open_config;
 mod setup;
-mod state;
+pub(crate) mod state;
 mod subscriptions_panel;
 mod top;
 mod util;
@@ -33,6 +33,7 @@ use tokio::sync::RwLock;
 
 use crate::{
     config::AppConfig,
+    constants::{TUI_FRAME_INTERVAL, TUI_INPUT_POLL_INTERVAL, TUI_MAX_EVENTS_PER_FRAME},
     model::{RuntimeConfig, RuntimeState},
     paths::AppPaths,
 };
@@ -42,10 +43,6 @@ use self::{
     state::TuiState,
     view::RuntimeView,
 };
-
-const FRAME_INTERVAL: Duration = Duration::from_millis(100);
-const INPUT_POLL_INTERVAL: Duration = Duration::from_millis(16);
-const MAX_EVENTS_PER_FRAME: usize = 64;
 
 pub async fn run(
     initial_config: AppConfig,
@@ -73,12 +70,12 @@ pub async fn run(
                 break Err(err.into());
             }
 
-            next_frame = now + FRAME_INTERVAL;
+            next_frame = now + TUI_FRAME_INTERVAL;
         }
 
         let poll_timeout = next_frame
             .saturating_duration_since(Instant::now())
-            .min(INPUT_POLL_INTERVAL);
+            .min(TUI_INPUT_POLL_INTERVAL);
         if event::poll(poll_timeout).unwrap_or(false)
             && matches!(drain_events(&mut tui, &paths)?, EventResult::Quit)
         {
@@ -91,7 +88,7 @@ pub async fn run(
 }
 
 fn drain_events(tui: &mut TuiState, paths: &AppPaths) -> Result<EventResult> {
-    for _ in 0..MAX_EVENTS_PER_FRAME {
+    for _ in 0..TUI_MAX_EVENTS_PER_FRAME {
         match event::read() {
             Ok(Event::Key(key)) => {
                 if matches!(handle_key(tui, key, &paths.config_path)?, EventResult::Quit) {

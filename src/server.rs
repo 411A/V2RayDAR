@@ -1,6 +1,6 @@
 use std::{net::SocketAddr, sync::Arc};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use axum::{
     Json, Router,
     extract::{ConnectInfo, Query, State},
@@ -34,7 +34,9 @@ pub async fn serve(bind: SocketAddr, runtime: SharedState, config: SharedConfig)
         .route("/subscription.txt", get(subscription_txt))
         .with_state(state);
 
-    let listener = TcpListener::bind(bind).await?;
+    let listener = TcpListener::bind(bind)
+        .await
+        .with_context(|| bind_error_context(bind))?;
     info!(bind = %bind, "HTTP endpoint listening");
     axum::serve(
         listener,
@@ -42,6 +44,16 @@ pub async fn serve(bind: SocketAddr, runtime: SharedState, config: SharedConfig)
     )
     .await?;
     Ok(())
+}
+
+fn bind_error_context(bind: SocketAddr) -> String {
+    if cfg!(target_os = "windows") {
+        return format!(
+            "unable to bind configured address {bind}; Windows may forbid this port even when no app is using it. Check reserved ranges with: netsh interface ipv4 show excludedportrange protocol=tcp"
+        );
+    }
+
+    format!("unable to bind configured address {bind}")
 }
 
 async fn health() -> &'static str {
@@ -174,30 +186,40 @@ fn authorize_request(
 mod tests {
     use std::net::SocketAddr;
 
-    use super::authorize_request;
-    use crate::model::RuntimeConfig;
+    use super::{authorize_request, bind_error_context};
+    use crate::{
+        constants::{
+            DEFAULT_ACCEPTED_STATUSES, DEFAULT_ACTIVE_TIMEOUT_MS, DEFAULT_BIND,
+            DEFAULT_DOWNLOAD_BYTES_LIMIT, DEFAULT_ENCODED_SUBSCRIPTION, DEFAULT_FETCH_CONCURRENCY,
+            DEFAULT_FETCH_TIMEOUT_MS, DEFAULT_MAX_SUBSCRIPTION_BYTES, DEFAULT_PRIORITIZE_STABILITY,
+            DEFAULT_PROBE_CONCURRENCY, DEFAULT_REFRESH_SECONDS, DEFAULT_STARTUP_TIMEOUT_MS,
+            DEFAULT_TEST_URL, DEFAULT_TOP_N, LOCALHOST_IP,
+        },
+        model::RuntimeConfig,
+    };
 
     fn runtime_config(sharing_enabled: bool, require_token: bool) -> RuntimeConfig {
         RuntimeConfig {
-            bind: "127.0.0.1:14127".parse().expect("valid bind"),
-            top_n: 10,
-            refresh_seconds: 300,
-            encoded_subscription: true,
-            prioritize_stability: false,
-            fetch_timeout_ms: 15_000,
-            fetch_concurrency: 4,
-            max_subscription_bytes: 16 * 1024 * 1024,
+            bind: DEFAULT_BIND.parse().expect("valid bind"),
+            top_n: DEFAULT_TOP_N,
+            refresh_seconds: DEFAULT_REFRESH_SECONDS,
+            encoded_subscription: DEFAULT_ENCODED_SUBSCRIPTION,
+            prioritize_stability: DEFAULT_PRIORITIZE_STABILITY,
+            fetch_timeout_ms: DEFAULT_FETCH_TIMEOUT_MS,
+            fetch_concurrency: DEFAULT_FETCH_CONCURRENCY,
+            max_subscription_bytes: DEFAULT_MAX_SUBSCRIPTION_BYTES,
             sharing_enabled,
             require_token,
             token: "secret".to_string(),
             probe_mode: "active".to_string(),
             speedtest_enabled: false,
-            probe_concurrency: 16,
-            active_timeout_ms: 10_000,
-            startup_timeout_ms: 2_000,
-            test_url: "https://www.gstatic.com/generate_204".to_string(),
-            accepted_statuses: vec![204, 200],
-            download_bytes_limit: 1_048_576,
+            probe_concurrency: DEFAULT_PROBE_CONCURRENCY,
+            probe_batch_size: None,
+            active_timeout_ms: DEFAULT_ACTIVE_TIMEOUT_MS,
+            startup_timeout_ms: DEFAULT_STARTUP_TIMEOUT_MS,
+            test_url: DEFAULT_TEST_URL.to_string(),
+            accepted_statuses: DEFAULT_ACCEPTED_STATUSES.to_vec(),
+            download_bytes_limit: DEFAULT_DOWNLOAD_BYTES_LIMIT,
             subscription_count: 0,
             enabled_subscription_count: 0,
         }
@@ -211,7 +233,7 @@ mod tests {
     fn allows_local_request_when_lan_sharing_is_disabled() {
         let config = runtime_config(false, false);
 
-        assert!(authorize_request(&config, addr("127.0.0.1:50000"), None).is_ok());
+        assert!(authorize_request(&config, addr(&format!("{LOCALHOST_IP}:50000")), None).is_ok());
     }
 
     #[test]
@@ -236,5 +258,12 @@ mod tests {
 
         assert!(authorize_request(&config, addr("192.168.1.50:50000"), Some("wrong")).is_err());
         assert!(authorize_request(&config, addr("192.168.1.50:50000"), Some("secret")).is_ok());
+    }
+
+    #[test]
+    fn bind_error_context_includes_configured_address() {
+        let message = bind_error_context(addr(&format!("{LOCALHOST_IP}:14127")));
+
+        assert!(message.contains("127.0.0.1:14127"));
     }
 }

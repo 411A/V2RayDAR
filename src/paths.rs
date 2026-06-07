@@ -3,8 +3,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, anyhow};
 use tokio::fs;
 
-const APP_DIR_NAME: &str = "V2RayDAR";
-const CONFIG_FILE_NAME: &str = "config.yaml";
+use crate::constants::{APP_DIR_NAME, APP_DIR_NAME_LOWER, CACHE_DIR_NAME, CONFIG_FILE_NAME};
 
 #[derive(Debug, Clone)]
 pub struct AppPaths {
@@ -52,7 +51,7 @@ impl AppPaths {
     fn from_root_with_config(root_dir: PathBuf, config_path: PathBuf, portable: bool) -> Self {
         Self {
             config_path,
-            cache_dir: root_dir.join("cache"),
+            cache_dir: root_dir.join(CACHE_DIR_NAME),
             root_dir,
             portable,
         }
@@ -76,10 +75,13 @@ fn installed_root_dir() -> Result<PathBuf> {
     }
 
     if let Some(data_home) = std::env::var_os("XDG_DATA_HOME") {
-        return Ok(PathBuf::from(data_home).join("v2raydar"));
+        return Ok(PathBuf::from(data_home).join(APP_DIR_NAME_LOWER));
     }
 
-    Ok(home_dir()?.join(".local").join("share").join("v2raydar"))
+    Ok(home_dir()?
+        .join(".local")
+        .join("share")
+        .join(APP_DIR_NAME_LOWER))
 }
 
 fn home_dir() -> Result<PathBuf> {

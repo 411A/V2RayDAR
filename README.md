@@ -97,6 +97,7 @@ probe:
   active_timeout_ms: 30000
   startup_timeout_ms: 5000
   concurrency: 4
+  batch_size:
   test_url: https://www.gstatic.com/generate_204
   accepted_statuses: [204, 200]
   download_url:
@@ -223,7 +224,8 @@ Probe keys:
 | `probe.connect_timeout_ms` | Integer milliseconds | `5000` | `1` or higher | Yes | TCP connection timeout used only by `probe.mode: tcp`. |
 | `probe.active_timeout_ms` | Integer milliseconds | `30000` | `1` or higher | Yes | Timeout for the HTTP request sent through the candidate config in active mode. |
 | `probe.startup_timeout_ms` | Integer milliseconds | `5000` | `1` or higher | Yes | Timeout while waiting for the temporary local sing-box mixed proxy to become ready. |
-| `probe.concurrency` | Positive integer | `4` | `1` or higher | Yes | Number of configs tested at once. Higher values are faster but spawn more sing-box processes and use more CPU/RAM/network. |
+| `probe.concurrency` | Positive integer | `4` | `1` or higher | Yes | Number of configs actively tested at once. Higher values can be faster but use more CPU/RAM/network. |
+| `probe.batch_size` | Optional positive integer | Empty/null | Empty, `null`, or `1` or higher | Yes | Number of configs loaded into one sing-box process in active mode. Leave empty for adaptive batching. Larger batches reduce process startup overhead; `probe.concurrency` still controls simultaneous network checks. |
 | `probe.test_url` | URL string | `https://www.gstatic.com/generate_204` | Any `http://` or `https://` URL reachable from a working proxy | Yes | Connectivity URL loaded through every candidate config. Choose a small, stable URL that works from your network. |
 | `probe.accepted_statuses` | Array of HTTP status codes | `[204, 200]` | HTTP status integers, for example `[204]`, `[200]`, `[200, 204, 301, 302]` | Yes | HTTP statuses treated as active-probe success for `probe.test_url`. |
 | `probe.download_url` | Optional URL string | Empty/null | Empty, `null`, or any `http://`/`https://` URL | Yes | Optional download URL used after the active connectivity probe succeeds. Leave empty to rank by active HTTP latency only. |

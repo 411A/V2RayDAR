@@ -2,7 +2,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::config::AppConfig;
+use crate::{config::AppConfig, constants::BYTE_UNITS};
 
 pub fn save_config(path: &Path, config: &AppConfig) -> Result<()> {
     let content = serde_yaml::to_string(config).context("unable to serialize config")?;
@@ -11,18 +11,17 @@ pub fn save_config(path: &Path, config: &AppConfig) -> Result<()> {
 }
 
 pub fn human_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut value = bytes as f64;
     let mut unit = 0_usize;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
+    while value >= 1024.0 && unit < BYTE_UNITS.len() - 1 {
         value /= 1024.0;
         unit += 1;
     }
 
     if unit == 0 {
-        format!("{bytes} {}", UNITS[unit])
+        format!("{bytes} {}", BYTE_UNITS[unit])
     } else {
-        format!("{value:.2} {}", UNITS[unit])
+        format!("{value:.2} {}", BYTE_UNITS[unit])
     }
 }
 

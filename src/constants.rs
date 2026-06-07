@@ -1,0 +1,163 @@
+use std::time::Duration;
+
+use serde::Serialize;
+
+use crate::tui::state::{ConfigKey, MainItem, SubscriptionAction};
+
+pub const APP_DIR_NAME: &str = "V2RayDAR";
+pub const APP_DIR_NAME_LOWER: &str = "v2raydar";
+pub const CACHE_DIR_NAME: &str = "cache";
+pub const CONFIG_FILE_NAME: &str = "config.yaml";
+pub const DEFAULT_CONFIG_TEMPLATE: &str = include_str!("../configs.example.yaml");
+
+pub const DEFAULT_BIND: &str = "127.0.0.1:14127";
+pub const DEFAULT_TOP_N: usize = 10;
+pub const DEFAULT_REFRESH_SECONDS: u64 = 300;
+pub const DEFAULT_ENCODED_SUBSCRIPTION: bool = true;
+pub const DEFAULT_PRIORITIZE_STABILITY: bool = false;
+pub const DEFAULT_SHARING_ENABLED: bool = false;
+pub const DEFAULT_REQUIRE_TOKEN: bool = false;
+pub const DEFAULT_SHARING_TOKEN: &str = "";
+pub const DEFAULT_FETCH_TIMEOUT_MS: u64 = 30_000;
+pub const DEFAULT_FETCH_CONCURRENCY: usize = 4;
+pub const DEFAULT_MAX_SUBSCRIPTION_BYTES: usize = 32 * 1024 * 1024;
+pub const DEFAULT_SUBSCRIPTION_PRIORITY: u32 = 100;
+pub const DEFAULT_SUBSCRIPTION_ENABLED: bool = true;
+pub const DEFAULT_SING_BOX_PATH: &str = "";
+pub const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 5_000;
+pub const DEFAULT_ACTIVE_TIMEOUT_MS: u64 = 30_000;
+pub const DEFAULT_STARTUP_TIMEOUT_MS: u64 = 5_000;
+pub const DEFAULT_PROBE_CONCURRENCY: usize = 4;
+pub const DEFAULT_PROBE_BATCH_SIZE: Option<usize> = None;
+pub const DEFAULT_TEST_URL: &str = "https://www.gstatic.com/generate_204";
+pub const DEFAULT_ACCEPTED_STATUSES: &[u16] = &[204, 200];
+pub const DEFAULT_DOWNLOAD_BYTES_LIMIT: usize = 1_048_576;
+
+pub const MAX_TUI_LOGS: usize = 8;
+pub const STABLE_WORKING_APPEARANCES: u32 = 2;
+
+pub const DEFAULT_LOG_FILTER_PLAIN: &str = "v2raydar=info,tower_http=warn";
+pub const DEFAULT_LOG_FILTER_TUI: &str = "v2raydar=off,tower_http=warn";
+pub const CONFIG_WATCH_INTERVAL: Duration = Duration::from_secs(1);
+pub const LOCALHOST_IP: &str = "127.0.0.1";
+
+pub const ACTIVE_PROBE_BATCH_MIN_SIZE: usize = 32;
+pub const ACTIVE_PROBE_BATCH_MAX_SIZE: usize = 128;
+pub const ACTIVE_PROBE_BATCH_CONCURRENCY_MULTIPLIER: usize = 16;
+pub const LOCAL_PROXY_WAIT_INTERVAL: Duration = Duration::from_millis(25);
+pub const SING_BOX_CONFIG_FILE_PREFIX: &str = "v2raydar-sing-box";
+pub const SING_BOX_INBOUND_TAG_PREFIX: &str = "mixed-in";
+pub const SING_BOX_OUTBOUND_TAG_PREFIX: &str = "proxy";
+pub const SING_BOX_DOWNLOAD_URL: &str = "https://github.com/SagerNet/sing-box/releases";
+
+pub const HTTP_EXCHANGE_OVERHEAD_BYTES: u64 = 1024;
+pub const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+pub const FNV_PRIME: u64 = 0x100000001b3;
+
+pub const SUPPORTED_URI_SCHEMES: &[&str] = &[
+    "vmess://",
+    "vless://",
+    "trojan://",
+    "ss://",
+    "ssr://",
+    "hysteria2://",
+    "hy2://",
+    "tuic://",
+];
+
+pub const TUI_FRAME_INTERVAL: Duration = Duration::from_millis(100);
+pub const TUI_INPUT_POLL_INTERVAL: Duration = Duration::from_millis(16);
+pub const TUI_MAX_EVENTS_PER_FRAME: usize = 64;
+pub const TUI_MAX_VISIBLE_RANKED: usize = 64;
+pub const TUI_SETUP_POLL_INTERVAL: Duration = Duration::from_millis(150);
+pub const BYTE_UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+pub const FIREWALL_RULE_NAME: &str = "V2RayDAR Subscription Sharing";
+
+pub const MAIN_ITEMS: [MainItem; 4] = [
+    MainItem::OpenConfig,
+    MainItem::Sharing,
+    MainItem::Subscriptions,
+    MainItem::Configurations,
+];
+pub const SUBSCRIPTION_ACTIONS: [SubscriptionAction; 6] = [
+    SubscriptionAction::EditName,
+    SubscriptionAction::EditUrl,
+    SubscriptionAction::EditPriority,
+    SubscriptionAction::Toggle,
+    SubscriptionAction::Delete,
+    SubscriptionAction::Back,
+];
+pub const CONFIG_KEYS: [ConfigKey; 22] = [
+    ConfigKey::Bind,
+    ConfigKey::TopN,
+    ConfigKey::RefreshSeconds,
+    ConfigKey::EncodedSubscription,
+    ConfigKey::PrioritizeStability,
+    ConfigKey::FetchTimeout,
+    ConfigKey::FetchConcurrency,
+    ConfigKey::MaxSubscriptionBytes,
+    ConfigKey::ProbeMode,
+    ConfigKey::SingBoxPath,
+    ConfigKey::ConnectTimeout,
+    ConfigKey::ActiveTimeout,
+    ConfigKey::StartupTimeout,
+    ConfigKey::ProbeConcurrency,
+    ConfigKey::ProbeBatchSize,
+    ConfigKey::TestUrl,
+    ConfigKey::AcceptedStatuses,
+    ConfigKey::DownloadUrl,
+    ConfigKey::DownloadLimit,
+    ConfigKey::TokenRequired,
+    ConfigKey::Token,
+    ConfigKey::ResetDefaults,
+];
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SettingGuide {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub help: &'static str,
+}
+
+pub const SETTING_GUIDES: &[SettingGuide] = &[
+    SettingGuide {
+        key: "bind",
+        label: "Listen address",
+        help: "127.0.0.1 stays private. 0.0.0.0 or a LAN IP allows nearby devices.",
+    },
+    SettingGuide {
+        key: "sharing.enabled",
+        label: "LAN sharing",
+        help: "Shows the subscription on your local network. Keep off on untrusted Wi-Fi.",
+    },
+    SettingGuide {
+        key: "sharing.require_token",
+        label: "URL token",
+        help: "Adds ?token=... so casual LAN visitors cannot read the subscription.",
+    },
+    SettingGuide {
+        key: "sharing.token",
+        label: "Token value",
+        help: "Auto-generated on first run. Regenerate if the URL was shared too widely.",
+    },
+    SettingGuide {
+        key: "encoded_subscription",
+        label: "Encoded feed",
+        help: "Use base64 for v2rayN/v2rayNG. Use .txt for a raw link list.",
+    },
+    SettingGuide {
+        key: "prioritize_stability",
+        label: "Stable ranking",
+        help: "false favors any quick working config. true promotes configs seen working in 3+ refreshes.",
+    },
+    SettingGuide {
+        key: "probe.mode",
+        label: "Validation mode",
+        help: "Active uses sing-box for real checks. TCP is diagnostic only.",
+    },
+    SettingGuide {
+        key: "probe.sing_box_path",
+        label: "sing-box path",
+        help: "Use a full path if sing-box is not available in your terminal PATH.",
+    },
+];

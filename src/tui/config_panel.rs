@@ -42,6 +42,7 @@ pub fn draw(
                 format_mb(runtime_config.max_subscription_bytes),
             ),
             ("probe", runtime_config.probe_mode.clone()),
+            ("batch", format_batch_size(runtime_config.probe_batch_size)),
         ],
     );
     draw_group(
@@ -69,6 +70,12 @@ pub fn draw(
 
 fn format_mb(bytes: usize) -> String {
     format!("{}MB", bytes / 1_048_576)
+}
+
+fn format_batch_size(value: Option<usize>) -> String {
+    value
+        .map(|size| size.to_string())
+        .unwrap_or_else(|| "auto".to_string())
 }
 
 fn draw_group(

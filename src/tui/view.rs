@@ -1,8 +1,9 @@
 use chrono::{DateTime, Utc};
 
-use crate::model::{RuntimeConfig, RuntimeState};
-
-pub const MAX_VISIBLE_RANKED: usize = 64;
+use crate::{
+    constants::TUI_MAX_VISIBLE_RANKED,
+    model::{RuntimeConfig, RuntimeState},
+};
 
 #[derive(Debug, Clone, Default)]
 pub struct RuntimeView {
@@ -43,7 +44,7 @@ impl RuntimeView {
                 .ranked
                 .iter()
                 .filter(|item| item.reachable)
-                .take(config.top_n.min(MAX_VISIBLE_RANKED))
+                .take(config.top_n.min(TUI_MAX_VISIBLE_RANKED))
                 .map(|item| RankedView {
                     rank: item.rank,
                     stability_count: item.stability_count,

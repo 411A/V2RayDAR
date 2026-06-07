@@ -13,18 +13,10 @@ use serde_json::Value as JsonValue;
 use serde_yaml::Value as YamlValue;
 use url::Url;
 
-use crate::model::{Candidate, Endpoint};
-
-const URI_SCHEMES: &[&str] = &[
-    "vmess://",
-    "vless://",
-    "trojan://",
-    "ss://",
-    "ssr://",
-    "hysteria2://",
-    "hy2://",
-    "tuic://",
-];
+use crate::{
+    constants::SUPPORTED_URI_SCHEMES,
+    model::{Candidate, Endpoint},
+};
 
 pub fn parse_subscription_document(source: &str, priority: u32, body: &[u8]) -> Vec<Candidate> {
     let text = String::from_utf8_lossy(body);
@@ -64,7 +56,7 @@ fn collect_entries_from_text(
 ) {
     for token in text.split(is_token_boundary) {
         let entry = token.trim().trim_matches(['"', '\'', ',', ';']);
-        if URI_SCHEMES
+        if SUPPORTED_URI_SCHEMES
             .iter()
             .any(|scheme| entry.to_ascii_lowercase().starts_with(scheme))
             && seen.insert(entry.to_string())

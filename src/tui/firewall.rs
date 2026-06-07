@@ -2,7 +2,7 @@ use std::process::Command;
 
 use anyhow::{Result, anyhow};
 
-const RULE_NAME: &str = "V2RayDAR Subscription Sharing";
+use crate::constants::FIREWALL_RULE_NAME;
 
 pub fn apply(enabled: bool, port: u16) -> Result<String> {
     if cfg!(target_os = "windows") {
@@ -23,7 +23,7 @@ fn windows(enabled: bool, port: u16) -> Result<String> {
                 "firewall",
                 "add",
                 "rule",
-                &format!("name={RULE_NAME}"),
+                &format!("name={FIREWALL_RULE_NAME}"),
                 "dir=in",
                 "action=allow",
                 "protocol=TCP",
@@ -41,7 +41,7 @@ fn windows(enabled: bool, port: u16) -> Result<String> {
                 "firewall",
                 "delete",
                 "rule",
-                &format!("name={RULE_NAME}"),
+                &format!("name={FIREWALL_RULE_NAME}"),
             ],
         )?;
         Ok("Sharing disabled; Windows firewall rule removed".to_string())

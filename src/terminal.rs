@@ -1,7 +1,8 @@
 use std::path::Path;
 
 use crate::{
-    config::{AppConfig, SETTING_GUIDES},
+    config::AppConfig,
+    constants::{LOCALHOST_IP, SETTING_GUIDES},
     model::RuntimeState,
     paths::AppPaths,
 };
@@ -50,7 +51,7 @@ pub fn print_summary(state: &RuntimeState, top_n: usize) {
 }
 
 pub fn print_startup(config: &AppConfig, paths: &AppPaths) {
-    let local_url = config.subscription_url("127.0.0.1", false);
+    let local_url = config.subscription_url(LOCALHOST_IP, false);
 
     println!("V2RayDAR");
     println!(

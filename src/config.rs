@@ -4,7 +4,15 @@ use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 
-const DEFAULT_CONFIG_TEMPLATE: &str = include_str!("../configs.example.yaml");
+use crate::constants::{
+    DEFAULT_ACCEPTED_STATUSES, DEFAULT_ACTIVE_TIMEOUT_MS, DEFAULT_BIND, DEFAULT_CONFIG_TEMPLATE,
+    DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_DOWNLOAD_BYTES_LIMIT, DEFAULT_ENCODED_SUBSCRIPTION,
+    DEFAULT_FETCH_CONCURRENCY, DEFAULT_FETCH_TIMEOUT_MS, DEFAULT_MAX_SUBSCRIPTION_BYTES,
+    DEFAULT_PRIORITIZE_STABILITY, DEFAULT_PROBE_BATCH_SIZE, DEFAULT_PROBE_CONCURRENCY,
+    DEFAULT_REFRESH_SECONDS, DEFAULT_REQUIRE_TOKEN, DEFAULT_SHARING_ENABLED, DEFAULT_SHARING_TOKEN,
+    DEFAULT_SING_BOX_PATH, DEFAULT_STARTUP_TIMEOUT_MS, DEFAULT_SUBSCRIPTION_ENABLED,
+    DEFAULT_SUBSCRIPTION_PRIORITY, DEFAULT_TEST_URL, DEFAULT_TOP_N,
+};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AppConfig {
@@ -56,6 +64,8 @@ pub struct ProbeConfig {
     pub startup_timeout_ms: u64,
     #[serde(default = "default_probe_concurrency")]
     pub concurrency: usize,
+    #[serde(default = "default_probe_batch_size")]
+    pub batch_size: Option<usize>,
     #[serde(default = "default_test_url")]
     pub test_url: String,
     #[serde(default = "default_accepted_statuses")]
@@ -83,56 +93,6 @@ pub struct SharingConfig {
     pub token: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct SettingGuide {
-    pub key: &'static str,
-    pub label: &'static str,
-    pub help: &'static str,
-}
-
-pub const SETTING_GUIDES: &[SettingGuide] = &[
-    SettingGuide {
-        key: "bind",
-        label: "Listen address",
-        help: "127.0.0.1 stays private. 0.0.0.0 or a LAN IP allows nearby devices.",
-    },
-    SettingGuide {
-        key: "sharing.enabled",
-        label: "LAN sharing",
-        help: "Shows the subscription on your local network. Keep off on untrusted Wi-Fi.",
-    },
-    SettingGuide {
-        key: "sharing.require_token",
-        label: "URL token",
-        help: "Adds ?token=... so casual LAN visitors cannot read the subscription.",
-    },
-    SettingGuide {
-        key: "sharing.token",
-        label: "Token value",
-        help: "Auto-generated on first run. Regenerate if the URL was shared too widely.",
-    },
-    SettingGuide {
-        key: "encoded_subscription",
-        label: "Encoded feed",
-        help: "Use base64 for v2rayN/v2rayNG. Use .txt for a raw link list.",
-    },
-    SettingGuide {
-        key: "prioritize_stability",
-        label: "Stable ranking",
-        help: "false favors any quick working config. true promotes configs seen working in 3+ refreshes.",
-    },
-    SettingGuide {
-        key: "probe.mode",
-        label: "Validation mode",
-        help: "Active uses sing-box for real checks. TCP is diagnostic only.",
-    },
-    SettingGuide {
-        key: "probe.sing_box_path",
-        label: "sing-box path",
-        help: "Use a full path if sing-box is not available in your terminal PATH.",
-    },
-];
-
 impl Default for ProbeConfig {
     fn default() -> Self {
         Self {
@@ -142,6 +102,7 @@ impl Default for ProbeConfig {
             active_timeout_ms: default_active_timeout_ms(),
             startup_timeout_ms: default_startup_timeout_ms(),
             concurrency: default_probe_concurrency(),
+            batch_size: default_probe_batch_size(),
             test_url: default_test_url(),
             accepted_statuses: default_accepted_statuses(),
             download_url: None,
@@ -239,6 +200,10 @@ fn validate(config: AppConfig) -> Result<AppConfig> {
         return Err(anyhow!("probe.concurrency must be greater than 0"));
     }
 
+    if config.probe.batch_size == Some(0) {
+        return Err(anyhow!("probe.batch_size must be null or greater than 0"));
+    }
+
     if config.probe.connect_timeout_ms == 0 {
         return Err(anyhow!("probe.connect_timeout_ms must be greater than 0"));
     }
@@ -309,57 +274,55 @@ fn generate_token() -> String {
 }
 
 fn default_bind() -> SocketAddr {
-    "127.0.0.1:14127"
-        .parse()
-        .expect("default bind address is valid")
+    DEFAULT_BIND.parse().expect("default bind address is valid")
 }
 
 fn default_top_n() -> usize {
-    10
+    DEFAULT_TOP_N
 }
 
 fn default_refresh_seconds() -> u64 {
-    300
+    DEFAULT_REFRESH_SECONDS
 }
 
 fn default_encoded_subscription() -> bool {
-    true
+    DEFAULT_ENCODED_SUBSCRIPTION
 }
 
 fn default_prioritize_stability() -> bool {
-    false
+    DEFAULT_PRIORITIZE_STABILITY
 }
 
 fn default_sharing_enabled() -> bool {
-    false
+    DEFAULT_SHARING_ENABLED
 }
 
 fn default_require_token() -> bool {
-    false
+    DEFAULT_REQUIRE_TOKEN
 }
 
 fn default_sharing_token() -> String {
-    String::new()
+    DEFAULT_SHARING_TOKEN.to_string()
 }
 
 fn default_fetch_timeout_ms() -> u64 {
-    30_000
+    DEFAULT_FETCH_TIMEOUT_MS
 }
 
 fn default_fetch_concurrency() -> usize {
-    4
+    DEFAULT_FETCH_CONCURRENCY
 }
 
 fn default_max_subscription_bytes() -> usize {
-    32 * 1024 * 1024
+    DEFAULT_MAX_SUBSCRIPTION_BYTES
 }
 
 fn default_priority() -> u32 {
-    100
+    DEFAULT_SUBSCRIPTION_PRIORITY
 }
 
 fn default_subscription_enabled() -> bool {
-    true
+    DEFAULT_SUBSCRIPTION_ENABLED
 }
 
 fn default_probe_mode() -> ProbeMode {
@@ -367,35 +330,39 @@ fn default_probe_mode() -> ProbeMode {
 }
 
 fn default_sing_box_path() -> String {
-    String::new()
+    DEFAULT_SING_BOX_PATH.to_string()
 }
 
 fn default_connect_timeout_ms() -> u64 {
-    5_000
+    DEFAULT_CONNECT_TIMEOUT_MS
 }
 
 fn default_active_timeout_ms() -> u64 {
-    30_000
+    DEFAULT_ACTIVE_TIMEOUT_MS
 }
 
 fn default_startup_timeout_ms() -> u64 {
-    5_000
+    DEFAULT_STARTUP_TIMEOUT_MS
 }
 
 fn default_probe_concurrency() -> usize {
-    4
+    DEFAULT_PROBE_CONCURRENCY
+}
+
+fn default_probe_batch_size() -> Option<usize> {
+    DEFAULT_PROBE_BATCH_SIZE
 }
 
 fn default_test_url() -> String {
-    "https://www.gstatic.com/generate_204".to_string()
+    DEFAULT_TEST_URL.to_string()
 }
 
 fn default_accepted_statuses() -> Vec<u16> {
-    vec![204, 200]
+    DEFAULT_ACCEPTED_STATUSES.to_vec()
 }
 
 fn default_download_bytes_limit() -> usize {
-    1_048_576
+    DEFAULT_DOWNLOAD_BYTES_LIMIT
 }
 
 #[cfg(test)]
@@ -462,6 +429,29 @@ subscriptions:
         fs::remove_file(&path).ok();
 
         assert!(error.to_string().contains("active_timeout_ms"));
+    }
+
+    #[test]
+    fn rejects_zero_probe_batch_size() {
+        let path = std::env::temp_dir().join(format!(
+            "v2raydar-config-test-zero-batch-{}.yaml",
+            std::process::id()
+        ));
+        fs::write(
+            &path,
+            r#"
+probe:
+  batch_size: 0
+subscriptions:
+  - name: local
+    url: data:,vless://uuid@example.com:443%23demo
+"#,
+        )
+        .expect("temp config can be written");
+        let error = AppConfig::load(&path).expect_err("zero batch size should fail");
+        fs::remove_file(&path).ok();
+
+        assert!(error.to_string().contains("batch_size"));
     }
 
     #[test]

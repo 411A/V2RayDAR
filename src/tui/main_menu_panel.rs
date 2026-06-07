@@ -5,6 +5,8 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Row, Table},
 };
 
+use crate::constants::{CONFIG_KEYS, MAIN_ITEMS, SUBSCRIPTION_ACTIONS};
+
 use super::{
     config_editor,
     state::{
@@ -23,7 +25,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) {
 }
 
 fn draw_main(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) {
-    let rows = MainItem::ALL.iter().enumerate().map(|(index, item)| {
+    let rows = MAIN_ITEMS.iter().enumerate().map(|(index, item)| {
         let (name, value) = match item {
             MainItem::OpenConfig => ("Open Configs File", "open or reveal config.yaml"),
             MainItem::Sharing => (
@@ -40,7 +42,7 @@ fn draw_main(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) {
         Row::new([Cell::from(name), Cell::from(value)])
             .style(row_style(index == state.selected_main, value))
     });
-    state.hits.main_rows = row_hits(area, MainItem::ALL.len());
+    state.hits.main_rows = row_hits(area, MAIN_ITEMS.len());
     render_table(
         frame,
         area,
@@ -53,7 +55,7 @@ fn draw_main(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) {
 
 fn draw_subscription_actions(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) {
     let selected = state.selected_subscription_ref();
-    let rows = SubscriptionAction::ALL
+    let rows = SUBSCRIPTION_ACTIONS
         .iter()
         .enumerate()
         .map(|(index, action)| {
@@ -142,9 +144,9 @@ fn draw_new_subscription(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
 
 fn draw_configurations(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) {
     let visible_rows = visible_row_count(area);
-    let offset = scroll_offset(state.selected_config, ConfigKey::ALL.len(), visible_rows);
-    state.hits.config_rows = row_hits_with_offset(area, ConfigKey::ALL.len(), offset);
-    let rows = ConfigKey::ALL
+    let offset = scroll_offset(state.selected_config, CONFIG_KEYS.len(), visible_rows);
+    state.hits.config_rows = row_hits_with_offset(area, CONFIG_KEYS.len(), offset);
+    let rows = CONFIG_KEYS
         .iter()
         .enumerate()
         .skip(offset)

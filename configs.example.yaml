@@ -19,6 +19,7 @@ probe:
   active_timeout_ms: 30000
   startup_timeout_ms: 5000
   concurrency: 4
+  batch_size:
   test_url: https://www.gstatic.com/generate_204
   accepted_statuses: [204, 200]
   download_url:

@@ -7,12 +7,13 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
-use std::{path::Path, time::Duration};
+use std::path::Path;
 
 use crate::{
     config::AppConfig,
+    constants::{SING_BOX_DOWNLOAD_URL, TUI_SETUP_POLL_INTERVAL},
     paths::AppPaths,
-    sing_box::{self, DOWNLOAD_URL},
+    sing_box,
 };
 
 use super::util::save_config;
@@ -31,7 +32,7 @@ pub async fn run(config: &mut AppConfig, paths: &AppPaths) -> Result<()> {
     let result = loop {
         terminal.draw(|frame| draw(frame, &state, paths))?;
 
-        if !event::poll(Duration::from_millis(150)).unwrap_or(false) {
+        if !event::poll(TUI_SETUP_POLL_INTERVAL).unwrap_or(false) {
             continue;
         }
 
@@ -114,7 +115,7 @@ fn draw(frame: &mut Frame<'_>, state: &SetupState, paths: &AppPaths) {
         Line::from("If you already use v2rayN, check its installation folder for sing-box.exe."),
         Line::from("If it is not installed, download sing-box for your operating system:"),
         Line::from(Span::styled(
-            DOWNLOAD_URL,
+            SING_BOX_DOWNLOAD_URL,
             Style::default().fg(Color::Yellow),
         )),
         Line::from(""),

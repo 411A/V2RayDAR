@@ -1,4 +1,4 @@
-bind: 127.0.0.1:14127
+bind: 127.0.0.1:27141
 top_n: 10
 refresh_seconds: 300
 encoded_subscription: true

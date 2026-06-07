@@ -262,8 +262,8 @@ mod tests {
 
     #[test]
     fn bind_error_context_includes_configured_address() {
-        let message = bind_error_context(addr(&format!("{LOCALHOST_IP}:14127")));
+        let message = bind_error_context(addr(&format!("{LOCALHOST_IP}:27141")));
 
-        assert!(message.contains("127.0.0.1:14127"));
+        assert!(message.contains("127.0.0.1:27141"));
     }
 }

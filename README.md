@@ -76,7 +76,7 @@ target\release\v2raydar.exe
 The terminal output shows the app folder and config path. First-run config starts with slow-network defaults and two public subscription sources:
 
 ```yaml
-bind: 127.0.0.1:14127
+bind: 127.0.0.1:27141
 top_n: 10
 refresh_seconds: 300
 encoded_subscription: true
@@ -195,7 +195,7 @@ Top-level keys:
 
 | Key | Type | Default | Possible values | Hot reload | Description |
 | --- | --- | --- | --- | --- | --- |
-| `bind` | Socket address | `127.0.0.1:14127` | `IP:PORT`, for example `127.0.0.1:14127`, `0.0.0.0:14127`, `192.168.1.23:14127` | Restart required | HTTP bind address for `/subscription`, `/subscription.txt`, `/results`, and `/health`. Use `127.0.0.1` for same-machine clients. Use `0.0.0.0` or a LAN IP for Android/LAN clients. |
+| `bind` | Socket address | `127.0.0.1:27141` | `IP:PORT`, for example `127.0.0.1:27141`, `0.0.0.0:27141`, `192.168.1.23:27141` | Restart required | HTTP bind address for `/subscription`, `/subscription.txt`, `/results`, and `/health`. Use `127.0.0.1` for same-machine clients. Use `0.0.0.0` or a LAN IP for Android/LAN clients. |
 | `top_n` | Positive integer | `10` | `1` or higher | Yes | Maximum number of validated working configs exposed by subscription endpoints. |
 | `refresh_seconds` | Integer seconds | `300` | `0` or higher | Yes | Time between automatic subscription refreshes. `0` disables timer refresh, but saved config changes still trigger a reload. |
 | `encoded_subscription` | Boolean | `true` | `true`, `false` | Yes | When `true`, `/subscription` returns a base64-encoded newline list. Keep `true` for v2rayNG/v2rayN unless you know your client wants raw links. |
@@ -262,15 +262,15 @@ Supported subscription source URL formats:
 
 When the app is running with the default config:
 
-- `http://127.0.0.1:14127/subscription` returns the top N actively validated configs, base64 encoded by default.
-- `http://127.0.0.1:14127/subscription.txt` returns the same validated configs as raw newline-separated share links.
-- `http://127.0.0.1:14127/results` returns JSON diagnostics with all ranked configs.
-- `http://127.0.0.1:14127/health` returns `ok`.
+- `http://127.0.0.1:27141/subscription` returns the top N actively validated configs, base64 encoded by default.
+- `http://127.0.0.1:27141/subscription.txt` returns the same validated configs as raw newline-separated share links.
+- `http://127.0.0.1:27141/results` returns JSON diagnostics with all ranked configs.
+- `http://127.0.0.1:27141/health` returns `ok`.
 
 LAN clients are blocked by default. To allow LAN access, set:
 
 ```yaml
-bind: 0.0.0.0:14127
+bind: 0.0.0.0:27141
 sharing:
   enabled: true
   require_token: false
@@ -279,13 +279,13 @@ sharing:
 Open LAN subscription URL:
 
 ```text
-http://192.168.1.23:14127/subscription
+http://192.168.1.23:27141/subscription
 ```
 
 For tokenized LAN access:
 
 ```yaml
-bind: 0.0.0.0:14127
+bind: 0.0.0.0:27141
 sharing:
   enabled: true
   require_token: true
@@ -295,7 +295,7 @@ sharing:
 Tokenized LAN subscription URL:
 
 ```text
-http://192.168.1.23:14127/subscription?token=your-generated-token
+http://192.168.1.23:27141/subscription?token=your-generated-token
 ```
 
 ## Using With v2rayN on Windows
@@ -303,7 +303,7 @@ http://192.168.1.23:14127/subscription?token=your-generated-token
 If v2rayN runs on the same Windows machine as V2RayDAR, keep:
 
 ```yaml
-bind: 127.0.0.1:14127
+bind: 127.0.0.1:27141
 ```
 
 Start V2RayDAR:
@@ -322,7 +322,7 @@ In v2rayN:
 4. Set the URL to:
 
 ```text
-http://127.0.0.1:14127/subscription
+http://127.0.0.1:27141/subscription
 ```
 
 5. Save it.
@@ -332,7 +332,7 @@ http://127.0.0.1:14127/subscription
 If v2rayN is on another Windows machine in the same LAN, bind V2RayDAR to a LAN-reachable address, enable LAN sharing, and use the server PC's LAN IP:
 
 ```yaml
-bind: 0.0.0.0:14127
+bind: 0.0.0.0:27141
 sharing:
   enabled: true
   require_token: false
@@ -341,13 +341,13 @@ sharing:
 Subscription URL from the other Windows machine:
 
 ```text
-http://PC_LAN_IP:14127/subscription
+http://PC_LAN_IP:27141/subscription
 ```
 
 Example:
 
 ```text
-http://192.168.1.23:14127/subscription
+http://192.168.1.23:27141/subscription
 ```
 
 ## Using With v2rayNG on Android
@@ -360,7 +360,7 @@ To use v2rayNG from Android:
 2. In `config.yaml`, bind V2RayDAR to a LAN-reachable address and enable LAN sharing:
 
 ```yaml
-bind: 0.0.0.0:14127
+bind: 0.0.0.0:27141
 sharing:
   enabled: true
   require_token: false
@@ -389,7 +389,7 @@ ipconfig
 5. On the Android device, test the endpoint in a browser:
 
 ```text
-http://PC_LAN_IP:14127/health
+http://PC_LAN_IP:27141/health
 ```
 
 If it shows `ok`, the phone can reach V2RayDAR.
@@ -400,13 +400,13 @@ If it shows `ok`, the phone can reach V2RayDAR.
 9. Set the URL to:
 
 ```text
-http://PC_LAN_IP:14127/subscription
+http://PC_LAN_IP:27141/subscription
 ```
 
 Example:
 
 ```text
-http://192.168.1.23:14127/subscription
+http://192.168.1.23:27141/subscription
 ```
 
 10. Save it.
@@ -422,9 +422,9 @@ If Android cannot open `/health`, check:
 
 ## Security Notes
 
-The default `bind` is `127.0.0.1:14127`, which is only reachable from the same machine. The default `sharing.enabled` is `false`, so LAN clients cannot read subscription data even if you later bind to a LAN address until sharing is enabled.
+The default `bind` is `127.0.0.1:27141`, which is only reachable from the same machine. The default `sharing.enabled` is `false`, so LAN clients cannot read subscription data even if you later bind to a LAN address until sharing is enabled.
 
-If you use `0.0.0.0:14127` and `sharing.enabled: true`, anyone on the reachable network may be able to fetch your top configs unless `sharing.require_token` is enabled. Use a trusted LAN, firewall rules, tokenized URLs, or a more specific bind address when possible.
+If you use `0.0.0.0:27141` and `sharing.enabled: true`, anyone on the reachable network may be able to fetch your top configs unless `sharing.require_token` is enabled. Use a trusted LAN, firewall rules, tokenized URLs, or a more specific bind address when possible.
 
 Do not expose the endpoint to the public internet.
 
@@ -439,9 +439,9 @@ No configs are imported by the client:
 Android cannot reach V2RayDAR:
 
 - Do not use `127.0.0.1` from Android.
-- Use `bind: 0.0.0.0:14127`.
+- Use `bind: 0.0.0.0:27141`.
 - Set `sharing.enabled: true`.
-- Use `http://PC_LAN_IP:14127/subscription`.
+- Use `http://PC_LAN_IP:27141/subscription`.
 - If `sharing.require_token: true`, include `?token=...` in the URL.
 - Check firewall rules.
 

@@ -35,7 +35,7 @@ pub fn label(key: ConfigKey) -> &'static str {
 
 pub fn guide(key: ConfigKey) -> &'static str {
     match key {
-        ConfigKey::Bind => "host:port, e.g. 0.0.0.0:14127",
+        ConfigKey::Bind => "host:port, e.g. 0.0.0.0:27141",
         ConfigKey::TopN => "positive number, e.g. 10",
         ConfigKey::RefreshSeconds => "seconds between refreshes",
         ConfigKey::EncodedSubscription => "true/false for base64 feed",

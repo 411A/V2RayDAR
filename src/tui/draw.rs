@@ -1,18 +1,16 @@
 use ratatui::Frame;
 
-use crate::{
-    model::{RuntimeConfig, RuntimeState},
-    paths::AppPaths,
-};
+use crate::{model::RuntimeConfig, paths::AppPaths};
 
 use super::{
     config_panel, footer, found_panel, layout, logs_panel, main_menu_panel, state::TuiState, top,
+    view::RuntimeView,
 };
 
 pub fn draw(
     frame: &mut Frame<'_>,
     state: &mut TuiState,
-    runtime: &RuntimeState,
+    runtime: &RuntimeView,
     runtime_config: &RuntimeConfig,
     paths: &AppPaths,
 ) {

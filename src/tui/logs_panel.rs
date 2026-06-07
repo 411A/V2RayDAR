@@ -6,9 +6,9 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 
-use crate::model::RuntimeState;
+use super::view::RuntimeView;
 
-pub fn draw(frame: &mut Frame<'_>, area: Rect, runtime: &RuntimeState) {
+pub fn draw(frame: &mut Frame<'_>, area: Rect, runtime: &RuntimeView) {
     let lines = if runtime.logs.is_empty() {
         vec![Line::from("Waiting for refresh logs...")]
     } else {

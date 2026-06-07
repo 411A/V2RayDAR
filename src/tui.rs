@@ -15,6 +15,7 @@ mod state;
 mod subscriptions_panel;
 mod top;
 mod util;
+mod view;
 
 use std::{
     sync::Arc,
@@ -38,7 +39,12 @@ use crate::{
 use self::{
     events::{EventResult, handle_key, handle_mouse},
     state::TuiState,
+    view::RuntimeView,
 };
+
+const FRAME_INTERVAL: Duration = Duration::from_millis(100);
+const INPUT_POLL_INTERVAL: Duration = Duration::from_millis(16);
+const MAX_EVENTS_PER_FRAME: usize = 64;
 
 pub async fn run(
     initial_config: AppConfig,
@@ -50,44 +56,65 @@ pub async fn run(
     let mut terminal = ratatui::try_init()?;
     execute!(std::io::stdout(), EnableMouseCapture)?;
     let mut tui = TuiState::new(initial_config);
-    let mut last_tick = Instant::now();
+    let mut next_frame = Instant::now();
 
     let result: Result<()> = loop {
-        let runtime = state.read().await.clone();
-        let config = runtime_config.read().await.clone();
-        if let Err(err) =
-            terminal.draw(|frame| draw::draw(frame, &mut tui, &runtime, &config, &paths))
-        {
-            break Err(err.into());
-        }
-
-        let timeout = Duration::from_millis(150).saturating_sub(last_tick.elapsed());
-        if event::poll(timeout).unwrap_or(false) {
-            match event::read() {
-                Ok(Event::Key(key)) => {
-                    let handled = handle_key(&mut tui, key, &paths.config_path);
-                    if matches!(handled?, EventResult::Quit) {
-                        break Ok(());
-                    }
-                }
-                Ok(Event::Mouse(mouse)) => {
-                    let handled = handle_mouse(&mut tui, mouse, &paths.config_path);
-                    if matches!(handled?, EventResult::Quit) {
-                        break Ok(());
-                    }
-                }
-                Ok(_) => {}
-                Err(err) => break Err(err.into()),
+        let now = Instant::now();
+        if now >= next_frame {
+            let config = runtime_config.read().await.clone();
+            let runtime = {
+                let runtime = state.read().await;
+                RuntimeView::from_state(&runtime, &config)
+            };
+            if let Err(err) =
+                terminal.draw(|frame| draw::draw(frame, &mut tui, &runtime, &config, &paths))
+            {
+                break Err(err.into());
             }
+
+            next_frame = now + FRAME_INTERVAL;
         }
 
-        if last_tick.elapsed() >= Duration::from_secs(1) {
-            last_tick = Instant::now();
+        let poll_timeout = next_frame
+            .saturating_duration_since(Instant::now())
+            .min(INPUT_POLL_INTERVAL);
+        if event::poll(poll_timeout).unwrap_or(false)
+            && matches!(drain_events(&mut tui, &paths)?, EventResult::Quit)
+        {
+            break Ok(());
         }
     };
 
     let restore_result = restore_terminal();
     result.and(restore_result)
+}
+
+fn drain_events(tui: &mut TuiState, paths: &AppPaths) -> Result<EventResult> {
+    for _ in 0..MAX_EVENTS_PER_FRAME {
+        match event::read() {
+            Ok(Event::Key(key)) => {
+                if matches!(handle_key(tui, key, &paths.config_path)?, EventResult::Quit) {
+                    return Ok(EventResult::Quit);
+                }
+            }
+            Ok(Event::Mouse(mouse)) => {
+                if matches!(
+                    handle_mouse(tui, mouse, &paths.config_path)?,
+                    EventResult::Quit
+                ) {
+                    return Ok(EventResult::Quit);
+                }
+            }
+            Ok(_) => {}
+            Err(err) => return Err(err.into()),
+        }
+
+        if !event::poll(Duration::ZERO).unwrap_or(false) {
+            break;
+        }
+    }
+
+    Ok(EventResult::Continue)
 }
 
 pub async fn run_sing_box_setup(config: &mut AppConfig, paths: &AppPaths) -> Result<()> {

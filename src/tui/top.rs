@@ -7,11 +7,11 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
-use crate::model::{RuntimeConfig, RuntimeState};
+use crate::model::RuntimeConfig;
 
-use super::util::human_bytes;
+use super::{util::human_bytes, view::RuntimeView};
 
-pub fn draw(frame: &mut Frame<'_>, area: Rect, runtime: &RuntimeState, config: &RuntimeConfig) {
+pub fn draw(frame: &mut Frame<'_>, area: Rect, runtime: &RuntimeView, config: &RuntimeConfig) {
     let now = Utc::now();
     let failed = runtime
         .total_candidates
@@ -63,7 +63,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, runtime: &RuntimeState, config: &
     }
 }
 
-fn refresh_status(runtime: &RuntimeState, refresh_seconds: u64, now: DateTime<Utc>) -> String {
+fn refresh_status(runtime: &RuntimeView, refresh_seconds: u64, now: DateTime<Utc>) -> String {
     if runtime.refreshing {
         return "running".to_string();
     }
@@ -72,17 +72,10 @@ fn refresh_status(runtime: &RuntimeState, refresh_seconds: u64, now: DateTime<Ut
         return "manual".to_string();
     }
 
-    let Some(finished_at) = runtime.refresh_finished_at.as_deref() else {
+    let Some(finished_at) = runtime.refresh_finished_at else {
         return "pending".to_string();
     };
-    let Ok(finished_at) = DateTime::parse_from_rfc3339(finished_at) else {
-        return format!("next {}", format_duration(refresh_seconds as u128 * 1000));
-    };
-
-    let elapsed = now
-        .signed_duration_since(finished_at.with_timezone(&Utc))
-        .num_seconds()
-        .max(0) as u64;
+    let elapsed = now.signed_duration_since(finished_at).num_seconds().max(0) as u64;
     let remaining = refresh_seconds.saturating_sub(elapsed);
     format!("next {}", format_duration(remaining as u128 * 1000))
 }

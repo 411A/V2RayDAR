@@ -315,13 +315,16 @@ fn spawn_refresh_loop(
 ) {
     tokio::spawn(async move {
         let mut refresh_now = true;
+        let mut last_refresh_fingerprint: Option<RefreshFingerprint> = None;
 
         loop {
             let refresh_seconds = config_rx.borrow().refresh_seconds;
+            let current_config = config_rx.borrow().clone();
 
             if refresh_now {
                 refresh_now = false;
-                let config = config_rx.borrow().clone();
+                let config = current_config;
+                last_refresh_fingerprint = Some(RefreshFingerprint::from(&config));
                 if let Err(err) = refresh_once(
                     &config,
                     &cache_dir,
@@ -343,6 +346,12 @@ fn spawn_refresh_loop(
                     return;
                 }
                 let config = config_rx.borrow().clone();
+                *runtime_config.write().await = RuntimeConfig::from(&config);
+                let fingerprint = RefreshFingerprint::from(&config);
+                if last_refresh_fingerprint.as_ref() == Some(&fingerprint) {
+                    continue;
+                }
+                last_refresh_fingerprint = Some(fingerprint);
                 if let Err(err) = refresh_once(
                     &config,
                     &cache_dir,
@@ -364,6 +373,7 @@ fn spawn_refresh_loop(
             tokio::select! {
                 _ = &mut sleep => {
                     let config = config_rx.borrow().clone();
+                    last_refresh_fingerprint = Some(RefreshFingerprint::from(&config));
                     if let Err(err) = refresh_once(&config, &cache_dir, state.clone(), runtime_config.clone(), print_terminal_summary).await {
                         error!(error = %err, "refresh failed");
                         record_refresh_error(&state, err.to_string()).await;
@@ -375,6 +385,12 @@ fn spawn_refresh_loop(
                     }
 
                     let config = config_rx.borrow().clone();
+                    *runtime_config.write().await = RuntimeConfig::from(&config);
+                    let fingerprint = RefreshFingerprint::from(&config);
+                    if last_refresh_fingerprint.as_ref() == Some(&fingerprint) {
+                        continue;
+                    }
+                    last_refresh_fingerprint = Some(fingerprint);
                     if let Err(err) = refresh_once(&config, &cache_dir, state.clone(), runtime_config.clone(), print_terminal_summary).await {
                         error!(error = %err, "refresh after config reload failed");
                         record_refresh_error(&state, err.to_string()).await;
@@ -383,6 +399,31 @@ fn spawn_refresh_loop(
             }
         }
     });
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct RefreshFingerprint {
+    top_n: usize,
+    encoded_subscription: bool,
+    fetch_timeout_ms: u64,
+    fetch_concurrency: usize,
+    max_subscription_bytes: usize,
+    probe: crate::config::ProbeConfig,
+    subscriptions: Vec<crate::config::SubscriptionSource>,
+}
+
+impl From<&AppConfig> for RefreshFingerprint {
+    fn from(config: &AppConfig) -> Self {
+        Self {
+            top_n: config.top_n,
+            encoded_subscription: config.encoded_subscription,
+            fetch_timeout_ms: config.fetch_timeout_ms,
+            fetch_concurrency: config.fetch_concurrency,
+            max_subscription_bytes: config.max_subscription_bytes,
+            probe: config.probe.clone(),
+            subscriptions: config.subscriptions.clone(),
+        }
+    }
 }
 
 fn spawn_config_watcher(

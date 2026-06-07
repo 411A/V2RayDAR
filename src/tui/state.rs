@@ -11,13 +11,19 @@ pub enum MenuView {
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum MainItem {
+    OpenConfig,
     Sharing,
     Subscriptions,
     Configurations,
 }
 
 impl MainItem {
-    pub const ALL: [Self; 3] = [Self::Sharing, Self::Subscriptions, Self::Configurations];
+    pub const ALL: [Self; 4] = [
+        Self::OpenConfig,
+        Self::Sharing,
+        Self::Subscriptions,
+        Self::Configurations,
+    ];
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

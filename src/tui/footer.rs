@@ -10,7 +10,7 @@ use super::state::{InputMode, TuiState};
 
 pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
     let input = match state.input_mode {
-        InputMode::Command => format!("  :{}", state.input),
+        InputMode::Command => format!(":{}", state.input),
         _ => String::new(),
     };
     let dirty = if state.dirty { "unsaved" } else { "saved" };
@@ -19,17 +19,19 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
     } else {
         Color::Green
     };
-    let line = Line::from(vec![
-        Span::styled(
-            "Up/Down or j/k nav | Enter select/edit | Esc/Ctrl+H back | :save :q",
-            Style::default().fg(Color::DarkGray),
-        ),
-        Span::raw("   "),
-        Span::styled(dirty, Style::default().fg(dirty_color)),
-        Span::raw("   "),
-        Span::raw(state.status.clone()),
-        Span::styled(input, Style::default().fg(Color::Cyan)),
-    ]);
+    let guide = Line::from(Span::styled(
+        "Up/Down or j/k nav | Enter select/edit | Esc/Ctrl+H back | :save :q",
+        Style::default().fg(Color::DarkGray),
+    ));
+    let mut activity = vec![Span::styled(dirty, Style::default().fg(dirty_color))];
+    if !input.is_empty() {
+        activity.push(Span::raw(" | "));
+        activity.push(Span::styled(input, Style::default().fg(Color::Cyan)));
+    }
+    if !state.status.is_empty() {
+        activity.push(Span::raw(" | "));
+        activity.push(Span::raw(state.status.clone()));
+    }
 
-    frame.render_widget(Paragraph::new(line), area);
+    frame.render_widget(Paragraph::new(vec![guide, Line::from(activity)]), area);
 }

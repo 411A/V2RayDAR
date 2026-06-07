@@ -2,9 +2,10 @@ bind: 127.0.0.1:14127
 top_n: 10
 refresh_seconds: 300
 encoded_subscription: true
-fetch_timeout_ms: 15000
-fetch_concurrency: 16
-max_subscription_bytes: 16777216
+prioritize_stability: false
+fetch_timeout_ms: 30000
+fetch_concurrency: 4
+max_subscription_bytes: 33554432
 
 sharing:
   enabled: false
@@ -14,14 +15,21 @@ sharing:
 probe:
   mode: active
   sing_box_path:
-  connect_timeout_ms: 1500
-  active_timeout_ms: 10000
-  startup_timeout_ms: 2000
-  concurrency: 16
+  connect_timeout_ms: 5000
+  active_timeout_ms: 30000
+  startup_timeout_ms: 5000
+  concurrency: 4
   test_url: https://www.gstatic.com/generate_204
   accepted_statuses: [204, 200]
   download_url:
   download_bytes_limit: 1048576
 
 subscriptions:
-  []
+  - name: first
+    url: https://github.com/Epodonios/v2ray-configs/raw/main/All_Configs_Sub.txt
+    enabled: true
+    priority: 1
+  - name: second
+    url: https://raw.githubusercontent.com/barry-far/V2ray-config/main/All_Configs_base64_Sub.txt
+    enabled: true
+    priority: 2

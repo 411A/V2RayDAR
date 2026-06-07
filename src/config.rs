@@ -4,6 +4,8 @@ use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 
+const DEFAULT_CONFIG_TEMPLATE: &str = include_str!("../configs.example.yaml");
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AppConfig {
     #[serde(default = "default_bind")]
@@ -14,6 +16,8 @@ pub struct AppConfig {
     pub refresh_seconds: u64,
     #[serde(default = "default_encoded_subscription")]
     pub encoded_subscription: bool,
+    #[serde(default = "default_prioritize_stability")]
+    pub prioritize_stability: bool,
     #[serde(default = "default_fetch_timeout_ms")]
     pub fetch_timeout_ms: u64,
     #[serde(default = "default_fetch_concurrency")]
@@ -113,6 +117,11 @@ pub const SETTING_GUIDES: &[SettingGuide] = &[
         help: "Use base64 for v2rayN/v2rayNG. Use .txt for a raw link list.",
     },
     SettingGuide {
+        key: "prioritize_stability",
+        label: "Stable ranking",
+        help: "false favors any quick working config. true promotes configs seen working in 3+ refreshes.",
+    },
+    SettingGuide {
         key: "probe.mode",
         label: "Validation mode",
         help: "Active uses sing-box for real checks. TCP is diagnostic only.",
@@ -176,21 +185,10 @@ impl AppConfig {
     }
 
     pub fn default_for_first_run() -> Self {
-        Self {
-            bind: default_bind(),
-            top_n: default_top_n(),
-            refresh_seconds: default_refresh_seconds(),
-            encoded_subscription: default_encoded_subscription(),
-            fetch_timeout_ms: default_fetch_timeout_ms(),
-            fetch_concurrency: default_fetch_concurrency(),
-            max_subscription_bytes: default_max_subscription_bytes(),
-            probe: ProbeConfig::default(),
-            sharing: SharingConfig {
-                token: generate_token(),
-                ..SharingConfig::default()
-            },
-            subscriptions: Vec::new(),
-        }
+        let mut config = serde_yaml::from_str::<Self>(DEFAULT_CONFIG_TEMPLATE)
+            .expect("default config template is valid");
+        config.sharing.token = generate_token();
+        validate(config).expect("default config template passes validation")
     }
 
     pub fn write_default(path: &Path) -> Result<()> {
@@ -199,8 +197,10 @@ impl AppConfig {
                 .with_context(|| format!("unable to create {}", parent.display()))?;
         }
 
-        let content = serde_yaml::to_string(&Self::default_for_first_run())
-            .context("unable to serialize default config")?;
+        let config = Self::default_for_first_run();
+        validate(config.clone()).context("default config template failed validation")?;
+        let content =
+            serde_yaml::to_string(&config).context("unable to serialize default config")?;
         fs::write(path, content)
             .with_context(|| format!("unable to write default config to {}", path.display()))
     }
@@ -326,6 +326,10 @@ fn default_encoded_subscription() -> bool {
     true
 }
 
+fn default_prioritize_stability() -> bool {
+    false
+}
+
 fn default_sharing_enabled() -> bool {
     false
 }
@@ -339,15 +343,15 @@ fn default_sharing_token() -> String {
 }
 
 fn default_fetch_timeout_ms() -> u64 {
-    15_000
+    30_000
 }
 
 fn default_fetch_concurrency() -> usize {
-    16
+    4
 }
 
 fn default_max_subscription_bytes() -> usize {
-    16 * 1024 * 1024
+    32 * 1024 * 1024
 }
 
 fn default_priority() -> u32 {
@@ -367,19 +371,19 @@ fn default_sing_box_path() -> String {
 }
 
 fn default_connect_timeout_ms() -> u64 {
-    1_500
+    5_000
 }
 
 fn default_active_timeout_ms() -> u64 {
-    10_000
+    30_000
 }
 
 fn default_startup_timeout_ms() -> u64 {
-    2_000
+    5_000
 }
 
 fn default_probe_concurrency() -> usize {
-    16
+    4
 }
 
 fn default_test_url() -> String {

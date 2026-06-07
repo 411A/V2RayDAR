@@ -183,6 +183,7 @@ mod tests {
             top_n: 10,
             refresh_seconds: 300,
             encoded_subscription: true,
+            prioritize_stability: false,
             fetch_timeout_ms: 15_000,
             fetch_concurrency: 4,
             max_subscription_bytes: 16 * 1024 * 1024,

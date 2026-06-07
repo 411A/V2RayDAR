@@ -53,6 +53,7 @@ pub enum ConfigKey {
     TopN,
     RefreshSeconds,
     EncodedSubscription,
+    PrioritizeStability,
     FetchTimeout,
     FetchConcurrency,
     MaxSubscriptionBytes,
@@ -72,11 +73,12 @@ pub enum ConfigKey {
 }
 
 impl ConfigKey {
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 21] = [
         Self::Bind,
         Self::TopN,
         Self::RefreshSeconds,
         Self::EncodedSubscription,
+        Self::PrioritizeStability,
         Self::FetchTimeout,
         Self::FetchConcurrency,
         Self::MaxSubscriptionBytes,

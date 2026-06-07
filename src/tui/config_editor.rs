@@ -12,6 +12,7 @@ pub fn label(key: ConfigKey) -> &'static str {
         ConfigKey::TopN => "top_n",
         ConfigKey::RefreshSeconds => "refresh_seconds",
         ConfigKey::EncodedSubscription => "encoded_subscription",
+        ConfigKey::PrioritizeStability => "prioritize_stability",
         ConfigKey::FetchTimeout => "fetch_timeout_ms",
         ConfigKey::FetchConcurrency => "fetch_concurrency",
         ConfigKey::MaxSubscriptionBytes => "max_subscription_bytes",
@@ -37,6 +38,9 @@ pub fn guide(key: ConfigKey) -> &'static str {
         ConfigKey::TopN => "positive number, e.g. 10",
         ConfigKey::RefreshSeconds => "seconds between refreshes",
         ConfigKey::EncodedSubscription => "true/false for base64 feed",
+        ConfigKey::PrioritizeStability => {
+            "true favors repeat working configs; false favors short wins"
+        }
         ConfigKey::FetchTimeout => "fetch timeout in ms",
         ConfigKey::FetchConcurrency => "parallel fetch count",
         ConfigKey::MaxSubscriptionBytes => "max bytes per subscription",
@@ -62,6 +66,7 @@ pub fn value(config: &crate::config::AppConfig, key: ConfigKey) -> String {
         ConfigKey::TopN => config.top_n.to_string(),
         ConfigKey::RefreshSeconds => config.refresh_seconds.to_string(),
         ConfigKey::EncodedSubscription => config.encoded_subscription.to_string(),
+        ConfigKey::PrioritizeStability => config.prioritize_stability.to_string(),
         ConfigKey::FetchTimeout => config.fetch_timeout_ms.to_string(),
         ConfigKey::FetchConcurrency => config.fetch_concurrency.to_string(),
         ConfigKey::MaxSubscriptionBytes => config.max_subscription_bytes.to_string(),
@@ -98,6 +103,7 @@ pub fn apply(config: &mut crate::config::AppConfig, key: ConfigKey, raw: &str) -
         ConfigKey::TopN => config.top_n = positive(value, "top_n")?,
         ConfigKey::RefreshSeconds => config.refresh_seconds = value.parse()?,
         ConfigKey::EncodedSubscription => config.encoded_subscription = bool_value(value)?,
+        ConfigKey::PrioritizeStability => config.prioritize_stability = bool_value(value)?,
         ConfigKey::FetchTimeout => config.fetch_timeout_ms = nonzero(value, label(key))?,
         ConfigKey::FetchConcurrency => config.fetch_concurrency = positive(value, label(key))?,
         ConfigKey::MaxSubscriptionBytes => {

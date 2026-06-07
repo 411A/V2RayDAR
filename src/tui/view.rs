@@ -20,6 +20,7 @@ pub struct RuntimeView {
 #[derive(Debug, Clone)]
 pub struct RankedView {
     pub rank: usize,
+    pub stability_count: u32,
     pub source: String,
     pub protocol: String,
     pub name: String,
@@ -45,6 +46,7 @@ impl RuntimeView {
                 .take(config.top_n.min(MAX_VISIBLE_RANKED))
                 .map(|item| RankedView {
                     rank: item.rank,
+                    stability_count: item.stability_count,
                     source: item.source.clone(),
                     protocol: item.protocol.clone(),
                     name: item.name.clone(),

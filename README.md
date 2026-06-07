@@ -73,16 +73,17 @@ Release binary:
 target\release\v2raydar.exe
 ```
 
-The terminal output shows the app folder and config path. Edit that generated `config.yaml` and add your subscription sources:
+The terminal output shows the app folder and config path. First-run config starts with slow-network defaults and two public subscription sources:
 
 ```yaml
 bind: 127.0.0.1:14127
 top_n: 10
 refresh_seconds: 300
 encoded_subscription: true
-fetch_timeout_ms: 15000
-fetch_concurrency: 16
-max_subscription_bytes: 16777216
+prioritize_stability: false
+fetch_timeout_ms: 30000
+fetch_concurrency: 4
+max_subscription_bytes: 33554432
 
 sharing:
   enabled: false
@@ -92,20 +93,24 @@ sharing:
 probe:
   mode: active
   sing_box_path:
-  connect_timeout_ms: 1500
-  active_timeout_ms: 10000
-  startup_timeout_ms: 2000
-  concurrency: 16
+  connect_timeout_ms: 5000
+  active_timeout_ms: 30000
+  startup_timeout_ms: 5000
+  concurrency: 4
   test_url: https://www.gstatic.com/generate_204
   accepted_statuses: [204, 200]
   download_url:
   download_bytes_limit: 1048576
 
 subscriptions:
-  - name: primary
-    url: https://your-subscription-url
+  - name: first
+    url: https://github.com/Epodonios/v2ray-configs/raw/main/All_Configs_Sub.txt
     enabled: true
     priority: 1
+  - name: second
+    url: https://raw.githubusercontent.com/barry-far/V2ray-config/main/All_Configs_base64_Sub.txt
+    enabled: true
+    priority: 2
 ```
 
 Run once without starting the HTTP server:
@@ -140,7 +145,7 @@ Use plain terminal output instead of the TUI:
 cargo run -- --config .\configs.yaml --no-tui
 ```
 
-V2RayDAR watches the active config file while it runs. Most fields take effect live, including `top_n`, `refresh_seconds`, `encoded_subscription`, sharing settings, fetch settings, probe settings, and subscriptions. Changing `bind` requires restarting V2RayDAR because the HTTP listener is already open on the old address.
+V2RayDAR watches the active config file while it runs. Most fields take effect live, including `top_n`, `refresh_seconds`, `encoded_subscription`, `prioritize_stability`, sharing settings, fetch settings, probe settings, and subscriptions. Changing `bind` requires restarting V2RayDAR because the HTTP listener is already open on the old address.
 
 For portable mode, keep the app data beside the executable:
 
@@ -193,12 +198,13 @@ Top-level keys:
 | `top_n` | Positive integer | `10` | `1` or higher | Yes | Maximum number of validated working configs exposed by subscription endpoints. |
 | `refresh_seconds` | Integer seconds | `300` | `0` or higher | Yes | Time between automatic subscription refreshes. `0` disables timer refresh, but saved config changes still trigger a reload. |
 | `encoded_subscription` | Boolean | `true` | `true`, `false` | Yes | When `true`, `/subscription` returns a base64-encoded newline list. Keep `true` for v2rayNG/v2rayN unless you know your client wants raw links. |
-| `fetch_timeout_ms` | Integer milliseconds | `15000` | `1` or higher | Yes | Timeout for fetching each subscription source. |
-| `fetch_concurrency` | Positive integer | `16` | `1` or higher | Yes | Number of enabled subscription sources fetched concurrently. |
-| `max_subscription_bytes` | Positive integer bytes | `16777216` | `1` or higher | Yes | Maximum bytes accepted per subscription source to cap memory use. |
+| `prioritize_stability` | Boolean | `false` | `true`, `false` | Yes | When `false`, ranking favors configs that work now, even briefly, which is recommended for highly limited networks. When `true`, configs seen working in at least three refreshes are promoted before lower-history configs even if their current ping is higher. |
+| `fetch_timeout_ms` | Integer milliseconds | `30000` | `1` or higher | Yes | Timeout for fetching each subscription source. |
+| `fetch_concurrency` | Positive integer | `4` | `1` or higher | Yes | Number of enabled subscription sources fetched concurrently. |
+| `max_subscription_bytes` | Positive integer bytes | `33554432` | `1` or higher | Yes | Maximum bytes accepted per subscription source to cap memory use. |
 | `sharing` | Object | See sharing table | Sharing object | Yes | Controls LAN exposure and optional URL token protection. |
 | `probe` | Object | See probe table | Probe object | Yes | Controls validation strategy, sing-box path, timeouts, concurrency, and optional speed measurement. |
-| `subscriptions` | Array | `[]` | Zero or more subscription objects | Yes | Subscription sources to fetch and test. A fresh install starts empty. |
+| `subscriptions` | Array | See example config | Zero or more subscription objects | Yes | Subscription sources to fetch and test. A fresh install starts with the two public subscriptions shown in `configs.example.yaml`; edit or disable them as needed. |
 
 Sharing keys:
 
@@ -214,10 +220,10 @@ Probe keys:
 | --- | --- | --- | --- | --- | --- |
 | `probe.mode` | String enum | `active` | `active`, `tcp` | Yes | `active` starts `sing-box` and loads a real HTTP URL through the candidate config. `tcp` only checks TCP connect and can produce false positives. Use `active` for normal operation. |
 | `probe.sing_box_path` | String path | Empty | Absolute executable path, for example `/usr/local/bin/sing-box`, `/Applications/sing-box/sing-box`, `C:\Tools\sing-box\sing-box.exe` | Yes | sing-box executable used by active probes. The first-run TUI verifies and saves this path when `probe.mode` is `active`. |
-| `probe.connect_timeout_ms` | Integer milliseconds | `1500` | `1` or higher | Yes | TCP connection timeout used only by `probe.mode: tcp`. |
-| `probe.active_timeout_ms` | Integer milliseconds | `10000` | `1` or higher | Yes | Timeout for the HTTP request sent through the candidate config in active mode. |
-| `probe.startup_timeout_ms` | Integer milliseconds | `2000` | `1` or higher | Yes | Timeout while waiting for the temporary local sing-box mixed proxy to become ready. |
-| `probe.concurrency` | Positive integer | `16` | `1` or higher | Yes | Number of configs tested at once. Higher values are faster but spawn more sing-box processes and use more CPU/RAM/network. |
+| `probe.connect_timeout_ms` | Integer milliseconds | `5000` | `1` or higher | Yes | TCP connection timeout used only by `probe.mode: tcp`. |
+| `probe.active_timeout_ms` | Integer milliseconds | `30000` | `1` or higher | Yes | Timeout for the HTTP request sent through the candidate config in active mode. |
+| `probe.startup_timeout_ms` | Integer milliseconds | `5000` | `1` or higher | Yes | Timeout while waiting for the temporary local sing-box mixed proxy to become ready. |
+| `probe.concurrency` | Positive integer | `4` | `1` or higher | Yes | Number of configs tested at once. Higher values are faster but spawn more sing-box processes and use more CPU/RAM/network. |
 | `probe.test_url` | URL string | `https://www.gstatic.com/generate_204` | Any `http://` or `https://` URL reachable from a working proxy | Yes | Connectivity URL loaded through every candidate config. Choose a small, stable URL that works from your network. |
 | `probe.accepted_statuses` | Array of HTTP status codes | `[204, 200]` | HTTP status integers, for example `[204]`, `[200]`, `[200, 204, 301, 302]` | Yes | HTTP statuses treated as active-probe success for `probe.test_url`. |
 | `probe.download_url` | Optional URL string | Empty/null | Empty, `null`, or any `http://`/`https://` URL | Yes | Optional download URL used after the active connectivity probe succeeds. Leave empty to rank by active HTTP latency only. |

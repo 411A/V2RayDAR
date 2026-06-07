@@ -34,6 +34,10 @@ pub fn draw(
             ("top_n", runtime_config.top_n.to_string()),
             ("refresh", format!("{}s", runtime_config.refresh_seconds)),
             (
+                "stability",
+                bool_text(runtime_config.prioritize_stability).to_string(),
+            ),
+            (
                 "max_sub_mb",
                 format_mb(runtime_config.max_subscription_bytes),
             ),

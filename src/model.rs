@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::{collections::HashMap, net::SocketAddr};
 
 use serde::Serialize;
 
@@ -22,6 +22,7 @@ pub struct Candidate {
 #[derive(Debug, Clone, Serialize)]
 pub struct RankedConfig {
     pub rank: usize,
+    pub stability_count: u32,
     pub id: String,
     pub source: String,
     pub priority: u32,
@@ -53,6 +54,7 @@ pub struct RuntimeState {
     pub speedtest_bytes: u64,
     pub fetch_errors: Vec<String>,
     pub ranked: Vec<RankedConfig>,
+    pub stable_working_counts: HashMap<String, u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -61,6 +63,7 @@ pub struct RuntimeConfig {
     pub top_n: usize,
     pub refresh_seconds: u64,
     pub encoded_subscription: bool,
+    pub prioritize_stability: bool,
     pub fetch_timeout_ms: u64,
     pub fetch_concurrency: usize,
     pub max_subscription_bytes: usize,

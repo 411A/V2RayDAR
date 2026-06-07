@@ -84,6 +84,7 @@ async fn probe_tcp(candidate: Candidate, timeout: Duration) -> RankedConfig {
 
     RankedConfig {
         rank: 0,
+        stability_count: 0,
         id: candidate.id,
         source: candidate.source,
         priority: candidate.priority,
@@ -108,6 +109,7 @@ async fn probe_active(candidate: Candidate, config: &ProbeConfig) -> RankedConfi
     match result {
         Ok(active) => RankedConfig {
             rank: 0,
+            stability_count: 0,
             id: candidate.id,
             source: candidate.source,
             priority: candidate.priority,
@@ -308,6 +310,7 @@ async fn write_sing_box_config(id: &str, port: u16, outbound: Value) -> Result<s
 fn failed_config(candidate: Candidate, validation: &str, error: String) -> RankedConfig {
     RankedConfig {
         rank: 0,
+        stability_count: 0,
         id: candidate.id,
         source: candidate.source,
         priority: candidate.priority,

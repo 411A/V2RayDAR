@@ -10,6 +10,7 @@ use super::view::RuntimeView;
 pub fn draw(frame: &mut Frame<'_>, area: Rect, runtime: &RuntimeView, top_n: usize) {
     let header = Row::new([
         "Rank",
+        "Seen",
         "Subscription Name",
         "Protocol",
         "Name",
@@ -28,6 +29,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, runtime: &RuntimeView, top_n: usi
             .unwrap_or_else(|| "-".to_string());
         Row::new([
             Cell::from(item.rank.to_string()),
+            Cell::from(item.stability_count.to_string()),
             Cell::from(item.source.clone()),
             Cell::from(item.protocol.clone()),
             Cell::from(item.name.clone()),
@@ -40,6 +42,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, runtime: &RuntimeView, top_n: usi
         Table::new(
             rows,
             [
+                Constraint::Length(6),
                 Constraint::Length(6),
                 Constraint::Length(22),
                 Constraint::Length(12),

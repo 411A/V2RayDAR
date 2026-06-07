@@ -17,9 +17,9 @@ pub fn draw(
     state.hits = Default::default();
     let areas = layout::main(frame.area());
     top::draw(frame, areas.top, runtime, runtime_config);
-    config_panel::draw(frame, areas.config, state, runtime_config, paths);
     logs_panel::draw(frame, areas.logs, runtime);
     found_panel::draw(frame, areas.found, runtime, runtime_config.top_n);
+    config_panel::draw(frame, areas.config, state, runtime_config, paths);
 
     main_menu_panel::draw(frame, areas.menu, state);
     footer::draw(frame, areas.footer, state);

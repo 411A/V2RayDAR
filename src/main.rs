@@ -10,6 +10,8 @@ mod terminal;
 mod tui;
 
 use std::{
+    cmp::Ordering,
+    collections::HashMap,
     io::{self, Write},
     path::{Path, PathBuf},
     sync::Arc,
@@ -28,7 +30,7 @@ use tracing::{error, info, warn};
 
 use crate::{
     config::AppConfig,
-    model::{RuntimeConfig, RuntimeState},
+    model::{RankedConfig, RuntimeConfig, RuntimeState},
     paths::AppPaths,
     probe::probe_candidates,
     server::serve,
@@ -38,6 +40,7 @@ use crate::{
 };
 
 const MAX_TUI_LOGS: usize = 8;
+const STABLE_WORKING_APPEARANCES: u32 = 2;
 
 #[derive(Debug, Parser)]
 #[command(name = "v2raydar")]
@@ -253,12 +256,11 @@ async fn refresh_once(
         }
     })
     .await?;
-    let ranked = if fetched.candidates.is_empty() {
+    let mut ranked = if fetched.candidates.is_empty() {
         Vec::new()
     } else {
         probe_candidates(fetched.candidates, &config.probe).await
     };
-    let reachable_count = ranked.iter().filter(|item| item.reachable).count();
     let speedtest_bytes = ranked
         .iter()
         .filter_map(|item| item.download_bytes)
@@ -267,6 +269,13 @@ async fn refresh_once(
     let finished_at = Utc::now();
 
     let previous = state.read().await.clone();
+    let mut stable_working_counts = previous.stable_working_counts.clone();
+    apply_stability_ranking(
+        &mut ranked,
+        &mut stable_working_counts,
+        config.prioritize_stability,
+    );
+    let reachable_count = ranked.iter().filter(|item| item.reachable).count();
     let fetch_bytes = previous.fetch_bytes;
     let speedtest_bytes = previous.speedtest_bytes.saturating_add(speedtest_bytes);
     let mut runtime = RuntimeState {
@@ -283,6 +292,7 @@ async fn refresh_once(
         speedtest_bytes,
         fetch_errors: fetched.errors,
         ranked,
+        stable_working_counts,
     };
 
     let summary = format!(
@@ -304,6 +314,55 @@ async fn refresh_once(
     *state.write().await = runtime;
     info!("refresh finished");
     Ok(())
+}
+
+fn apply_stability_ranking(
+    ranked: &mut [RankedConfig],
+    stable_working_counts: &mut HashMap<String, u32>,
+    prioritize_stability: bool,
+) {
+    for item in ranked.iter_mut() {
+        if item.reachable {
+            let count = stable_working_counts.entry(item.uri.clone()).or_default();
+            *count = count.saturating_add(1);
+            item.stability_count = *count;
+        } else {
+            item.stability_count = stable_working_counts.get(&item.uri).copied().unwrap_or(0);
+        }
+    }
+
+    if prioritize_stability {
+        ranked.sort_by(compare_stability_ranked);
+        for (index, item) in ranked.iter_mut().enumerate() {
+            item.rank = index + 1;
+        }
+    }
+}
+
+fn compare_stability_ranked(left: &RankedConfig, right: &RankedConfig) -> Ordering {
+    right
+        .reachable
+        .cmp(&left.reachable)
+        .then_with(|| is_stable(right).cmp(&is_stable(left)))
+        .then_with(|| left.priority.cmp(&right.priority))
+        .then_with(|| {
+            left.latency_ms
+                .unwrap_or(u128::MAX)
+                .cmp(&right.latency_ms.unwrap_or(u128::MAX))
+        })
+        .then_with(|| {
+            right
+                .download_mbps
+                .partial_cmp(&left.download_mbps)
+                .unwrap_or(Ordering::Equal)
+        })
+        .then_with(|| left.protocol.cmp(&right.protocol))
+        .then_with(|| left.name.cmp(&right.name))
+        .then_with(|| left.uri.cmp(&right.uri))
+}
+
+fn is_stable(config: &RankedConfig) -> bool {
+    config.reachable && config.stability_count >= STABLE_WORKING_APPEARANCES
 }
 
 fn spawn_refresh_loop(
@@ -405,6 +464,7 @@ fn spawn_refresh_loop(
 struct RefreshFingerprint {
     top_n: usize,
     encoded_subscription: bool,
+    prioritize_stability: bool,
     fetch_timeout_ms: u64,
     fetch_concurrency: usize,
     max_subscription_bytes: usize,
@@ -417,6 +477,7 @@ impl From<&AppConfig> for RefreshFingerprint {
         Self {
             top_n: config.top_n,
             encoded_subscription: config.encoded_subscription,
+            prioritize_stability: config.prioritize_stability,
             fetch_timeout_ms: config.fetch_timeout_ms,
             fetch_concurrency: config.fetch_concurrency,
             max_subscription_bytes: config.max_subscription_bytes,
@@ -525,6 +586,7 @@ impl From<&AppConfig> for RuntimeConfig {
             top_n: config.top_n,
             refresh_seconds: config.refresh_seconds,
             encoded_subscription: config.encoded_subscription,
+            prioritize_stability: config.prioritize_stability,
             fetch_timeout_ms: config.fetch_timeout_ms,
             fetch_concurrency: config.fetch_concurrency,
             max_subscription_bytes: config.max_subscription_bytes,
@@ -550,5 +612,102 @@ impl From<&AppConfig> for RuntimeConfig {
                 .filter(|source| source.enabled)
                 .count(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Endpoint;
+
+    fn ranked(name: &str, uri: &str, reachable: bool, latency_ms: Option<u128>) -> RankedConfig {
+        RankedConfig {
+            rank: 0,
+            stability_count: 0,
+            id: uri.to_string(),
+            source: "test".to_string(),
+            priority: 1,
+            protocol: "vless".to_string(),
+            name: name.to_string(),
+            endpoint: Endpoint {
+                host: "example.com".to_string(),
+                port: 443,
+            },
+            uri: uri.to_string(),
+            reachable,
+            validation: "active_http".to_string(),
+            latency_ms,
+            http_status: Some(204),
+            download_mbps: None,
+            download_bytes: None,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn stable_ranking_promotes_repeat_working_configs_when_enabled() {
+        let mut ranked = vec![
+            ranked("fast-new", "vless://fast@example.com:443", true, Some(100)),
+            ranked(
+                "slow-stable",
+                "vless://slow@example.com:443",
+                true,
+                Some(5_000),
+            ),
+        ];
+        let mut counts = HashMap::from([("vless://slow@example.com:443".to_string(), 2)]);
+
+        apply_stability_ranking(&mut ranked, &mut counts, true);
+
+        assert_eq!(ranked[0].name, "slow-stable");
+        assert_eq!(ranked[0].rank, 1);
+        assert_eq!(ranked[0].stability_count, 3);
+        assert_eq!(ranked[1].name, "fast-new");
+    }
+
+    #[test]
+    fn stability_counts_do_not_reorder_when_disabled() {
+        let mut ranked = vec![
+            ranked("fast-new", "vless://fast@example.com:443", true, Some(100)),
+            ranked(
+                "slow-stable",
+                "vless://slow@example.com:443",
+                true,
+                Some(5_000),
+            ),
+        ];
+        let mut counts = HashMap::from([("vless://slow@example.com:443".to_string(), 2)]);
+
+        apply_stability_ranking(&mut ranked, &mut counts, false);
+
+        assert_eq!(ranked[0].name, "fast-new");
+        assert_eq!(ranked[1].name, "slow-stable");
+        assert_eq!(ranked[1].stability_count, 3);
+    }
+
+    #[test]
+    fn stable_ranking_keeps_unreachable_configs_after_working_configs() {
+        let mut ranked = vec![
+            ranked(
+                "failed-stable",
+                "vless://failed@example.com:443",
+                false,
+                None,
+            ),
+            ranked(
+                "working-new",
+                "vless://working@example.com:443",
+                true,
+                Some(300),
+            ),
+        ];
+        let mut counts = HashMap::from([("vless://failed@example.com:443".to_string(), 5)]);
+
+        apply_stability_ranking(&mut ranked, &mut counts, true);
+
+        assert_eq!(ranked[0].name, "working-new");
+        assert!(ranked[0].reachable);
+        assert_eq!(ranked[1].name, "failed-stable");
+        assert!(!ranked[1].reachable);
     }
 }

@@ -25,6 +25,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) {
 fn draw_main(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) {
     let rows = MainItem::ALL.iter().enumerate().map(|(index, item)| {
         let (name, value) = match item {
+            MainItem::OpenConfig => ("Open Configs File", "open or reveal config.yaml"),
             MainItem::Sharing => (
                 "Share subscription URL on LAN",
                 if state.editable.sharing.enabled {
@@ -140,15 +141,22 @@ fn draw_new_subscription(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
 }
 
 fn draw_configurations(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) {
-    state.hits.config_rows = row_hits(area, ConfigKey::ALL.len());
-    let rows = ConfigKey::ALL.iter().enumerate().map(|(index, key)| {
-        Row::new([
-            Cell::from(config_editor::label(*key)),
-            Cell::from(config_value(state, *key)),
-            Cell::from(config_editor::guide(*key)),
-        ])
-        .style(row_style(index == state.selected_config, ""))
-    });
+    let visible_rows = visible_row_count(area);
+    let offset = scroll_offset(state.selected_config, ConfigKey::ALL.len(), visible_rows);
+    state.hits.config_rows = row_hits_with_offset(area, ConfigKey::ALL.len(), offset);
+    let rows = ConfigKey::ALL
+        .iter()
+        .enumerate()
+        .skip(offset)
+        .take(visible_rows)
+        .map(|(index, key)| {
+            Row::new([
+                Cell::from(config_editor::label(*key)),
+                Cell::from(config_value(state, *key)),
+                Cell::from(config_editor::guide(*key)),
+            ])
+            .style(row_style(index == state.selected_config, ""))
+        });
     render_table(
         frame,
         area,
@@ -284,11 +292,16 @@ fn action_value(
 }
 
 fn row_hits(area: Rect, count: usize) -> Vec<(usize, Rect)> {
+    row_hits_with_offset(area, count, 0)
+}
+
+fn row_hits_with_offset(area: Rect, count: usize, offset: usize) -> Vec<(usize, Rect)> {
     let mut rows = Vec::new();
     let first_y = area.y.saturating_add(2);
     let last_y = area.y.saturating_add(area.height.saturating_sub(1));
-    for index in 0..count {
-        let y = first_y.saturating_add(index as u16);
+    for index in offset..count {
+        let visible_index = index.saturating_sub(offset);
+        let y = first_y.saturating_add(visible_index as u16);
         if y >= last_y {
             break;
         }
@@ -298,4 +311,16 @@ fn row_hits(area: Rect, count: usize) -> Vec<(usize, Rect)> {
         ));
     }
     rows
+}
+
+fn visible_row_count(area: Rect) -> usize {
+    area.height.saturating_sub(3) as usize
+}
+
+fn scroll_offset(selected: usize, total: usize, visible: usize) -> usize {
+    if visible == 0 || total <= visible {
+        return 0;
+    }
+
+    selected.saturating_add(1).saturating_sub(visible)
 }

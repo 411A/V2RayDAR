@@ -219,6 +219,9 @@ fn activate(state: &mut TuiState, config_path: &Path) -> Result<()> {
 
 fn activate_main(state: &mut TuiState, config_path: &Path) -> Result<()> {
     match MainItem::ALL[state.selected_main] {
+        MainItem::OpenConfig => {
+            state.status = super::open_config::open(config_path);
+        }
         MainItem::Sharing => {
             state.editable.sharing.enabled = !state.editable.sharing.enabled;
             state.dirty = true;

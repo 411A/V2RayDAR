@@ -28,7 +28,7 @@ pub struct AppConfig {
     pub subscriptions: Vec<SubscriptionSource>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
 pub struct SubscriptionSource {
     pub name: String,
     pub url: String,
@@ -38,7 +38,7 @@ pub struct SubscriptionSource {
     pub priority: u32,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
 pub struct ProbeConfig {
     #[serde(default = "default_probe_mode")]
     pub mode: ProbeMode,

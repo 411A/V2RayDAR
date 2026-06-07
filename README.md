@@ -8,7 +8,7 @@ Project name: V2Ray Detection And Reconnaissance, pronounced like `v2ray` + `rad
 
 Phase 1 is a fast scanner and local subscription server:
 
-- Creates a per-user app folder and `config.yaml` on first run.
+- Creates a per-user app folder and `configs.yaml` on first run.
 - Supports `--portable` and `--config` for self-contained or development runs.
 - Runs an interactive mouse-aware ratatui/crossterm TUI by default; use `--no-tui` for plain terminal output.
 - Fetches enabled subscription sources with bounded concurrency.
@@ -29,7 +29,7 @@ Active validation currently converts VMess, VLESS, Trojan, Shadowsocks, Hysteria
 - Internet access from the machine running V2RayDAR so it can fetch subscription URLs.
 - Android and the PC must be on the same network if Android v2rayNG will read the endpoint from the PC.
 
-On first run, the TUI asks for the full `sing-box` executable path, verifies it with `sing-box version`, saves it in `config.yaml`, and then starts normal scanning. If you already use v2rayN on Windows, check the v2rayN installation folder for `sing-box.exe`. Otherwise, download sing-box from:
+On first run, the TUI asks for the full `sing-box` executable path, verifies it with `sing-box version`, saves it in `configs.yaml`, and then starts normal scanning. If you already use v2rayN on Windows, check the v2rayN installation folder for `sing-box.exe`. Otherwise, download sing-box from:
 
 ```text
 https://github.com/SagerNet/sing-box/releases
@@ -160,7 +160,7 @@ To remove generated app data:
 v2raydar --uninstall
 ```
 
-This asks for confirmation, then deletes V2RayDAR's generated app folder, including `config.yaml` and cache files. For scripts, use `v2raydar --uninstall --yes`. It does not delete the executable itself, the separate `sing-box` executable, or arbitrary folders used through `--config`.
+This asks for confirmation, then deletes V2RayDAR's generated app folder, including `configs.yaml` and cache files. For scripts, use `v2raydar --uninstall --yes`. It does not delete the executable itself, the separate `sing-box` executable, or arbitrary folders used through `--config`.
 
 For development or tests with an explicit config path:
 
@@ -357,7 +357,7 @@ Android cannot reach `127.0.0.1` on your PC. On Android, `127.0.0.1` means the A
 To use v2rayNG from Android:
 
 1. Make sure the Android device and the PC running V2RayDAR are on the same Wi-Fi or LAN.
-2. In `config.yaml`, bind V2RayDAR to a LAN-reachable address and enable LAN sharing:
+2. In `configs.yaml`, bind V2RayDAR to a LAN-reachable address and enable LAN sharing:
 
 ```yaml
 bind: 0.0.0.0:27141

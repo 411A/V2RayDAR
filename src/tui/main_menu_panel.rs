@@ -5,7 +5,7 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Row, Table},
 };
 
-use crate::constants::{CONFIG_KEYS, MAIN_ITEMS, SUBSCRIPTION_ACTIONS};
+use crate::constants::{CONFIG_FILE_NAME, CONFIG_KEYS, MAIN_ITEMS, SUBSCRIPTION_ACTIONS};
 
 use super::{
     config_editor,
@@ -27,7 +27,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) {
 fn draw_main(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) {
     let rows = MAIN_ITEMS.iter().enumerate().map(|(index, item)| {
         let (name, value) = match item {
-            MainItem::OpenConfig => ("Open Configs File", "open or reveal config.yaml"),
+            MainItem::OpenConfig => ("Open Configs File", CONFIG_FILE_NAME),
             MainItem::Sharing => (
                 "Share subscription URL on LAN",
                 if state.editable.sharing.enabled {
@@ -37,7 +37,7 @@ fn draw_main(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) {
                 },
             ),
             MainItem::Subscriptions => ("Subscriptions", "enter to manage sources"),
-            MainItem::Configurations => ("Configurations", "enter to edit configs.yaml"),
+            MainItem::Configurations => ("Configurations", "enter to edit config values"),
         };
         Row::new([Cell::from(name), Cell::from(value)])
             .style(row_style(index == state.selected_main, value))

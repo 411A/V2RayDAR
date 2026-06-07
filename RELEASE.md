@@ -35,9 +35,9 @@ shasum -a 256 ./v2raydar-macos-aarch64
 
 ## First Run
 
-V2RayDAR is a single executable. It creates its app folder and `config.yaml` on first run.
+V2RayDAR is a single executable. It creates its app folder and `configs.yaml` on first run.
 
-Active probing requires `sing-box`, which is downloaded separately. On first run, V2RayDAR asks for the local `sing-box` executable path, verifies it with `sing-box version`, saves it in `config.yaml`, and then starts scanning.
+Active probing requires `sing-box`, which is downloaded separately. On first run, V2RayDAR asks for the local `sing-box` executable path, verifies it with `sing-box version`, saves it in `configs.yaml`, and then starts scanning.
 
 Windows users who already have v2rayN should check the v2rayN installation folder for `sing-box.exe`. Otherwise, download sing-box from:
 

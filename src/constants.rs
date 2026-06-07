@@ -10,7 +10,7 @@ pub const CACHE_DIR_NAME: &str = "cache";
 pub const CONFIG_FILE_NAME: &str = "config.yaml";
 pub const DEFAULT_CONFIG_TEMPLATE: &str = include_str!("../configs.example.yaml");
 
-pub const DEFAULT_BIND: &str = "127.0.0.1:14127";
+pub const DEFAULT_BIND: &str = "127.0.0.1:27141";
 pub const DEFAULT_TOP_N: usize = 10;
 pub const DEFAULT_REFRESH_SECONDS: u64 = 300;
 pub const DEFAULT_ENCODED_SUBSCRIPTION: bool = true;

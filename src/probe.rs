@@ -1,5 +1,6 @@
 use std::{
     cmp::Ordering,
+    collections::{HashMap, VecDeque},
     future::Future,
     path::PathBuf,
     process::Stdio,
@@ -243,13 +244,22 @@ struct ActivePreparation {
 struct ProbeStopState {
     half_snapshot_sent: bool,
     stability_search_exhausted: bool,
+    remaining_previous_working: usize,
 }
 
 impl ProbeStopState {
-    fn new() -> Self {
+    fn new(prepared: &[PreparedActiveCandidate], policy: &ProbeStopPolicy) -> Self {
+        let remaining_previous_working = if policy.scan_all_configs || !policy.prioritize_stability
+        {
+            0
+        } else {
+            previous_working_entry_count(prepared, policy)
+        };
         Self {
             half_snapshot_sent: false,
-            stability_search_exhausted: false,
+            stability_search_exhausted: !policy.previous_working_uris.is_empty()
+                && remaining_previous_working == 0,
+            remaining_previous_working,
         }
     }
 }
@@ -266,7 +276,7 @@ async fn probe_active_batched(
         mut prepared,
         mut ranked,
         prepared_candidates,
-    } = prepare_active_candidates(candidates);
+    } = prepare_active_candidates(candidates, stop_policy);
 
     let batch_size = active_probe_batch_size(config.concurrency, config.batch_size);
     let total_batches = prepared.len().div_ceil(batch_size);
@@ -292,13 +302,13 @@ async fn probe_active_batched(
     if !ranked.is_empty() {
         send_probe_delta(&progress, ranked.len(), 0);
     }
-    let mut stop_state = ProbeStopState::new();
+    let mut stop_state = ProbeStopState::new(&prepared, stop_policy);
     let mut batch_index = 0_usize;
     while !prepared.is_empty() {
         batch_index += 1;
-        let batch_len = next_active_batch_len(&prepared, batch_size, stop_policy);
+        let batch_len = next_active_batch_len(&prepared, batch_size);
         let batch = prepared.drain(..batch_len).collect::<Vec<_>>();
-        update_stability_search_boundary(&batch, stop_policy, &mut stop_state);
+        let batch_previous_working = previous_working_entry_count(&batch, stop_policy);
         let batch_candidates = candidate_count(&batch);
         info!(
             batch_index,
@@ -327,7 +337,7 @@ async fn probe_active_batched(
             )
             .await,
         );
-        update_stability_search_after_batch(&prepared, stop_policy, &mut stop_state);
+        update_stability_search_after_batch(batch_previous_working, stop_policy, &mut stop_state);
         let after = ranked.len();
         info!(
             batch_index,
@@ -373,11 +383,14 @@ async fn probe_active_batched(
     ranked
 }
 
-fn prepare_active_candidates(candidates: Vec<Candidate>) -> ActivePreparation {
+fn prepare_active_candidates(
+    candidates: Vec<Candidate>,
+    stop_policy: &ProbeStopPolicy,
+) -> ActivePreparation {
     let mut prepared = Vec::new();
     let mut ranked = Vec::new();
 
-    for candidate in candidates {
+    for candidate in schedule_active_candidates(candidates, stop_policy) {
         match sing_box_outbound_from_share_link(&candidate.uri) {
             Ok(outbound) => prepared.push(PreparedActiveCandidate {
                 candidate,
@@ -394,6 +407,93 @@ fn prepare_active_candidates(candidates: Vec<Candidate>) -> ActivePreparation {
         ranked,
         prepared_candidates,
     }
+}
+
+fn schedule_active_candidates(
+    candidates: Vec<Candidate>,
+    stop_policy: &ProbeStopPolicy,
+) -> Vec<Candidate> {
+    if candidates.len() <= 1 {
+        return candidates;
+    }
+
+    let has_previous =
+        stop_policy.prioritize_stability && !stop_policy.previous_working_uris.is_empty();
+    source_fair_candidates(candidates, |candidate| {
+        has_previous && stop_policy.previous_working_uris.contains(&candidate.uri)
+    })
+}
+
+struct SourceCandidateQueue {
+    source: String,
+    priority: u32,
+    first_index: usize,
+    preferred: VecDeque<Candidate>,
+    regular: VecDeque<Candidate>,
+}
+
+impl SourceCandidateQueue {
+    fn pop_front(&mut self) -> Option<Candidate> {
+        self.preferred
+            .pop_front()
+            .or_else(|| self.regular.pop_front())
+    }
+}
+
+fn source_fair_candidates(
+    candidates: Vec<Candidate>,
+    is_preferred: impl Fn(&Candidate) -> bool,
+) -> Vec<Candidate> {
+    let candidate_count = candidates.len();
+    if candidate_count <= 1 {
+        return candidates;
+    }
+
+    let mut queues = Vec::<SourceCandidateQueue>::new();
+    let mut queue_indexes = HashMap::<(String, u32), usize>::new();
+
+    for (index, candidate) in candidates.into_iter().enumerate() {
+        let preferred = is_preferred(&candidate);
+        let key = (candidate.source.clone(), candidate.priority);
+        let queue_index = match queue_indexes.get(&key).copied() {
+            Some(queue_index) => queue_index,
+            None => {
+                let queue_index = queues.len();
+                queue_indexes.insert(key, queue_index);
+                queues.push(SourceCandidateQueue {
+                    source: candidate.source.clone(),
+                    priority: candidate.priority,
+                    first_index: index,
+                    preferred: VecDeque::new(),
+                    regular: VecDeque::new(),
+                });
+                queue_index
+            }
+        };
+        if preferred {
+            queues[queue_index].preferred.push_back(candidate);
+        } else {
+            queues[queue_index].regular.push_back(candidate);
+        }
+    }
+
+    queues.sort_by(|left, right| {
+        left.priority
+            .cmp(&right.priority)
+            .then_with(|| left.first_index.cmp(&right.first_index))
+            .then_with(|| left.source.cmp(&right.source))
+    });
+
+    let mut scheduled = Vec::with_capacity(candidate_count);
+    while scheduled.len() < candidate_count {
+        for queue in &mut queues {
+            if let Some(candidate) = queue.pop_front() {
+                scheduled.push(candidate);
+            }
+        }
+    }
+
+    scheduled
 }
 
 fn candidate_count(entries: &[PreparedActiveCandidate]) -> usize {
@@ -449,7 +549,7 @@ fn probe_stop_reason(
 
     if state.stability_search_exhausted {
         return Some(format!(
-            "Early stop: first subscription stability search finished; filling {} configs by lowest ping",
+            "Early stop: previous-run stability search finished; filling {} configs by active HTTP results",
             policy.top_n
         ));
     }
@@ -525,56 +625,12 @@ fn stability_snapshot(
     selected
 }
 
-fn next_active_batch_len(
-    prepared: &[PreparedActiveCandidate],
-    batch_size: usize,
-    policy: &ProbeStopPolicy,
-) -> usize {
-    let default = prepared.len().min(batch_size);
-    if policy.scan_all_configs || !policy.prioritize_stability {
-        return default;
-    }
-
-    let Some(source) = policy.stability_search_source.as_deref() else {
-        return default;
-    };
-    let Some(first) = prepared.first() else {
-        return 0;
-    };
-    if first.candidate.source != source {
-        return default;
-    }
-
-    let same_source = prepared
-        .iter()
-        .take_while(|entry| entry.candidate.source == source)
-        .count();
-    default.min(same_source.max(1))
-}
-
-fn update_stability_search_boundary(
-    batch: &[PreparedActiveCandidate],
-    policy: &ProbeStopPolicy,
-    state: &mut ProbeStopState,
-) {
-    if policy.scan_all_configs || !policy.prioritize_stability {
-        return;
-    }
-
-    let Some(source) = policy.stability_search_source.as_deref() else {
-        state.stability_search_exhausted = true;
-        return;
-    };
-    if batch
-        .first()
-        .is_some_and(|entry| entry.candidate.source != source)
-    {
-        state.stability_search_exhausted = true;
-    }
+fn next_active_batch_len(prepared: &[PreparedActiveCandidate], batch_size: usize) -> usize {
+    prepared.len().min(batch_size)
 }
 
 fn update_stability_search_after_batch(
-    remaining: &[PreparedActiveCandidate],
+    tested_previous_working: usize,
     policy: &ProbeStopPolicy,
     state: &mut ProbeStopState,
 ) {
@@ -582,17 +638,33 @@ fn update_stability_search_after_batch(
         return;
     }
 
-    let Some(source) = policy.stability_search_source.as_deref() else {
-        state.stability_search_exhausted = true;
-        return;
-    };
-
-    if remaining
-        .first()
-        .is_none_or(|entry| entry.candidate.source != source)
-    {
+    state.remaining_previous_working = state
+        .remaining_previous_working
+        .saturating_sub(tested_previous_working);
+    if !policy.previous_working_uris.is_empty() && state.remaining_previous_working == 0 {
         state.stability_search_exhausted = true;
     }
+}
+
+fn previous_working_entry_count(
+    entries: &[PreparedActiveCandidate],
+    policy: &ProbeStopPolicy,
+) -> usize {
+    entries
+        .iter()
+        .filter(|entry| entry_has_previous_working_uri(entry, policy))
+        .count()
+}
+
+fn entry_has_previous_working_uri(
+    entry: &PreparedActiveCandidate,
+    policy: &ProbeStopPolicy,
+) -> bool {
+    policy.previous_working_uris.contains(&entry.candidate.uri)
+        || entry
+            .aliases
+            .iter()
+            .any(|alias| policy.previous_working_uris.contains(&alias.uri))
 }
 
 fn send_ranked_snapshot(
@@ -614,9 +686,7 @@ fn active_probe_batch_size(concurrency: usize, configured: Option<usize>) -> usi
 
 fn active_probe_http_concurrency(configured: usize, batch_entries: usize) -> usize {
     configured
-        .max(1)
-        .saturating_mul(ACTIVE_PROBE_BATCH_CONCURRENCY_MULTIPLIER)
-        .min(ACTIVE_PROBE_HTTP_MAX_CONCURRENCY)
+        .clamp(1, ACTIVE_PROBE_HTTP_MAX_CONCURRENCY)
         .min(batch_entries.max(1))
 }
 
@@ -1994,7 +2064,23 @@ mod tests {
             top_n,
             prioritize_stability,
             previous_working_uris,
-            stability_search_source: Some("test".to_string()),
+        }
+    }
+
+    fn candidate(source: &str, priority: u32, name: &str) -> Candidate {
+        Candidate {
+            id: name.to_string(),
+            source: source.to_string(),
+            priority,
+            protocol: "vless".to_string(),
+            name: name.to_string(),
+            endpoint: crate::model::Endpoint {
+                host: "example.com".to_string(),
+                port: 443,
+            },
+            uri: format!(
+                "vless://uuid@example.com:443?security=tls&sni=example.com&type=ws&path=/{name}#{name}"
+            ),
         }
     }
 
@@ -2002,6 +2088,7 @@ mod tests {
         let mut state = ProbeStopState {
             half_snapshot_sent: true,
             stability_search_exhausted: false,
+            remaining_previous_working: 0,
         };
         probe_stop_reason(ranked, policy, &mut state, &None)
     }
@@ -2153,12 +2240,65 @@ mod tests {
 
     #[test]
     fn active_probe_http_concurrency_is_bounded() {
-        assert_eq!(active_probe_http_concurrency(1, 128), 16);
-        assert_eq!(active_probe_http_concurrency(16, 128), 128);
-        assert_eq!(active_probe_http_concurrency(16, 20), 20);
+        assert_eq!(active_probe_http_concurrency(1, 128), 1);
+        assert_eq!(active_probe_http_concurrency(16, 128), 16);
+        assert_eq!(active_probe_http_concurrency(16, 20), 16);
         assert_eq!(
             active_probe_http_concurrency(usize::MAX, 256),
             ACTIVE_PROBE_HTTP_MAX_CONCURRENCY
+        );
+    }
+
+    #[test]
+    fn active_probe_schedule_round_robins_sources_by_priority() {
+        let candidates = vec![
+            candidate("primary", 1, "primary-1"),
+            candidate("primary", 1, "primary-2"),
+            candidate("primary", 1, "primary-3"),
+            candidate("backup", 2, "backup-1"),
+            candidate("backup", 2, "backup-2"),
+        ];
+        let policy = stop_policy(2, false, std::collections::HashSet::new());
+
+        let scheduled = schedule_active_candidates(candidates, &policy);
+        let names = scheduled
+            .iter()
+            .map(|candidate| candidate.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            [
+                "primary-1",
+                "backup-1",
+                "primary-2",
+                "backup-2",
+                "primary-3"
+            ]
+        );
+    }
+
+    #[test]
+    fn active_probe_schedule_prioritizes_previous_working_without_starving_sources() {
+        let candidates = vec![
+            candidate("primary", 1, "primary-new"),
+            candidate("primary", 1, "primary-old"),
+            candidate("backup", 2, "backup-old"),
+            candidate("backup", 2, "backup-new"),
+        ];
+        let previous_working_uris =
+            std::collections::HashSet::from([candidates[1].uri.clone(), candidates[2].uri.clone()]);
+        let policy = stop_policy(2, true, previous_working_uris);
+
+        let scheduled = schedule_active_candidates(candidates, &policy);
+        let names = scheduled
+            .iter()
+            .map(|candidate| candidate.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            ["primary-old", "backup-old", "primary-new", "backup-new"]
         );
     }
 
@@ -2203,7 +2343,8 @@ mod tests {
             },
         ];
 
-        let prepared = prepare_active_candidates(candidates);
+        let policy = stop_policy(2, false, std::collections::HashSet::new());
+        let prepared = prepare_active_candidates(candidates, &policy);
 
         assert_eq!(prepared.prepared.len(), 2);
         assert_eq!(prepared.prepared_candidates, 2);

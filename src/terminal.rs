@@ -1,11 +1,19 @@
-use std::path::Path;
+use std::{path::Path, time::Instant};
 
 use crate::{
     config::AppConfig,
     constants::{LOCALHOST_IP, SETTING_GUIDES},
-    model::RuntimeState,
+    model::{ProgressEvent, RuntimeState},
     paths::AppPaths,
 };
+
+pub fn print_log(message: impl AsRef<str>) {
+    println!(
+        "{} {}",
+        chrono::Local::now().format("%H:%M:%S"),
+        message.as_ref()
+    );
+}
 
 pub fn print_summary(state: &RuntimeState, top_n: usize) {
     println!(
@@ -50,7 +58,7 @@ pub fn print_summary(state: &RuntimeState, top_n: usize) {
     }
 }
 
-pub fn print_startup(config: &AppConfig, paths: &AppPaths) {
+pub fn print_startup(config: &AppConfig, paths: &AppPaths, verbose: bool) {
     let local_url = config.subscription_url(LOCALHOST_IP, false);
 
     println!("V2RayDAR");
@@ -87,8 +95,81 @@ pub fn print_startup(config: &AppConfig, paths: &AppPaths) {
     for guide in SETTING_GUIDES {
         println!("  {:<22} {}", guide.label, guide.help);
     }
-
+    if !verbose {
+        println!("Use --verbose for detailed fetch/probe trace logs.");
+    }
     println!();
+}
+
+pub struct PlainProgressReporter {
+    tested: usize,
+    working: usize,
+    next_probe_report: usize,
+    last_probe_report: Instant,
+}
+
+impl PlainProgressReporter {
+    pub fn new() -> Self {
+        Self {
+            tested: 0,
+            working: 0,
+            next_probe_report: 500,
+            last_probe_report: Instant::now(),
+        }
+    }
+
+    pub fn on_event(&mut self, event: &ProgressEvent) {
+        match event {
+            ProgressEvent::LiveLog(message) => self.on_log(message),
+            ProgressEvent::ProbeDelta { tested, working } => self.on_probe_delta(*tested, *working),
+            ProgressEvent::RankedSnapshot(ranked) => {
+                print_log(format!(
+                    "Early results ready: {} configs published.",
+                    ranked.len()
+                ));
+            }
+        }
+    }
+
+    fn on_log(&self, message: &str) {
+        if should_print_plain_progress(message) {
+            print_log(message);
+        }
+    }
+
+    fn on_probe_delta(&mut self, tested: usize, working: usize) {
+        self.tested = self.tested.saturating_add(tested);
+        self.working = self.working.saturating_add(working);
+        if self.tested < self.next_probe_report && self.last_probe_report.elapsed().as_secs() < 5 {
+            return;
+        }
+
+        print_log(format!(
+            "Probe progress: {} checked, {} working.",
+            self.tested, self.working
+        ));
+        while self.next_probe_report <= self.tested {
+            self.next_probe_report = self.next_probe_report.saturating_add(500);
+        }
+        self.last_probe_report = Instant::now();
+    }
+}
+
+fn should_print_plain_progress(message: &str) -> bool {
+    message.starts_with("Refresh started")
+        || message.starts_with("Subscription load:")
+        || message.starts_with("Loaded subscription")
+        || message.starts_with("Subscription loading finished")
+        || message.starts_with("Probe skipped")
+        || message.starts_with("Probe started")
+        || message.starts_with("Prepared active test")
+        || message.starts_with("Early publish")
+        || message.starts_with("Early stop")
+        || message.starts_with("Active test finished")
+        || message.starts_with("Probe queue finished")
+        || message.starts_with("sing-box unavailable")
+        || message.starts_with("sing-box rejected")
+        || message.starts_with("Active probe batch failed")
 }
 
 fn display_path(path: &Path) -> String {

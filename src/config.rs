@@ -169,8 +169,7 @@ impl AppConfig {
 
         let config = Self::default_for_first_run();
         validate(config.clone()).context("default config template failed validation")?;
-        let content =
-            serde_yaml::to_string(&config).context("unable to serialize default config")?;
+        let content = default_config_template_with_token(&config.sharing.token);
         fs::write(path, content)
             .with_context(|| format!("unable to write default config to {}", path.display()))
     }
@@ -321,6 +320,10 @@ fn generate_token() -> String {
         chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
     );
     URL_SAFE_NO_PAD.encode(fallback)
+}
+
+fn default_config_template_with_token(token: &str) -> String {
+    DEFAULT_CONFIG_TEMPLATE.replace("  token: null", &format!("  token: {token}"))
 }
 
 fn default_bind() -> SocketAddr {

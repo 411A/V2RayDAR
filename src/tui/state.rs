@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::{net::SocketAddr, time::Instant};
 
 use crate::config::AppConfig;
 
@@ -106,6 +106,7 @@ pub struct HitMap {
 
 #[derive(Debug, Clone)]
 pub struct TuiState {
+    pub started_at: Instant,
     pub editable: AppConfig,
     pub active_bind: SocketAddr,
     pub view: MenuView,
@@ -127,6 +128,7 @@ impl TuiState {
     pub fn new(config: AppConfig) -> Self {
         let active_bind = config.bind;
         Self {
+            started_at: Instant::now(),
             editable: config,
             active_bind,
             view: MenuView::Main,

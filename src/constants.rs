@@ -42,6 +42,8 @@ pub const DEFAULT_LOG_FILTER_VERBOSE: &str = "v2raydar=info,tower_http=warn";
 pub const DEFAULT_LOG_FILTER_TUI: &str = "v2raydar=off,tower_http=warn";
 pub const CONFIG_WATCH_INTERVAL: Duration = Duration::from_secs(1);
 pub const LOCALHOST_IP: &str = "127.0.0.1";
+pub const ROUTE_PROBE_ADDR: &str = "8.8.8.8:80";
+pub const INTERFACE_CACHE_TTL: Duration = Duration::from_secs(5);
 
 pub const ACTIVE_PROBE_BATCH_MIN_SIZE: usize = 32;
 pub const ACTIVE_PROBE_BATCH_MAX_SIZE: usize = 128;
@@ -77,6 +79,12 @@ pub const TUI_MAX_VISIBLE_RANKED: usize = 64;
 pub const TUI_SETUP_POLL_INTERVAL: Duration = Duration::from_millis(150);
 pub const BYTE_UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
 pub const FIREWALL_RULE_NAME: &str = "V2RayDAR Subscription Sharing";
+pub const SUBSCRIPTION_READY_WAIT: Duration = Duration::from_secs(20);
+pub const SUBSCRIPTION_READY_POLL: Duration = Duration::from_millis(100);
+pub const WINDOWS_CREATE_NO_WINDOW: u32 = 0x08000000;
+
+#[cfg(test)]
+pub const TEST_REALITY_PUBLIC_KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
 pub const MAIN_ITEMS: [MainItem; 5] = [
     MainItem::OpenConfig,

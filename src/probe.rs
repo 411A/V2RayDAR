@@ -1,5 +1,6 @@
 use std::{
     cmp::Ordering,
+    future::Future,
     path::PathBuf,
     process::Stdio,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -909,6 +910,76 @@ async fn probe_active_batch(
     Ok(ranked)
 }
 
+pub async fn run_with_sing_box_proxy<F, Fut, T>(
+    sing_box_path: &str,
+    uri: &str,
+    startup_timeout: Duration,
+    operation: F,
+) -> Result<T>
+where
+    F: FnOnce(u16) -> Fut,
+    Fut: Future<Output = Result<T>>,
+{
+    let outbound = sing_box_outbound_from_share_link(uri)
+        .context("unable to convert working config into a sing-box retry proxy")?;
+    run_with_sing_box_outbound_proxy(sing_box_path, outbound, startup_timeout, operation).await
+}
+
+async fn run_with_sing_box_outbound_proxy<F, Fut, T>(
+    sing_box_path: &str,
+    outbound: Value,
+    startup_timeout: Duration,
+    operation: F,
+) -> Result<T>
+where
+    F: FnOnce(u16) -> Fut,
+    Fut: Future<Output = Result<T>>,
+{
+    let reservations = reserve_local_ports(1)
+        .await
+        .context("unable to reserve a local proxy port")?;
+    let port = reservations
+        .first()
+        .map(|reservation| reservation.port)
+        .ok_or_else(|| anyhow!("no local proxy port was reserved"))?;
+    let config_path = write_sing_box_outbound_config(&[outbound], &[port])
+        .await
+        .context("unable to write sing-box retry proxy config")?;
+    drop(reservations);
+
+    let child = Command::new(sing_box_path)
+        .arg("run")
+        .arg("-c")
+        .arg(&config_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn();
+
+    let mut child = match child {
+        Ok(child) => child,
+        Err(err) => {
+            let _ = fs::remove_file(config_path).await;
+            return Err(anyhow!(err).context(format!(
+                "failed to start sing-box retry proxy using '{sing_box_path}'"
+            )));
+        }
+    };
+
+    if let Err(err) = wait_for_local_proxies(&mut child, &[port], startup_timeout).await {
+        let stderr = cleanup_sing_box_child(child, config_path).await;
+        return Err(with_sing_box_stderr(err, &stderr));
+    }
+
+    let result = operation(port).await;
+    let stderr = cleanup_sing_box_child(child, config_path).await;
+    if !stderr.is_empty() {
+        debug!(stderr = %stderr, "sing-box retry proxy stderr");
+    }
+    result
+}
+
 fn ranked_configs_for_active_result(
     entry: PreparedActiveCandidate,
     result: Result<ActiveProbeSuccess>,
@@ -1127,19 +1198,35 @@ async fn write_sing_box_batch_config(
     entries: &[PreparedActiveCandidate],
     ports: &[u16],
 ) -> Result<PathBuf> {
+    let outbounds = entries
+        .iter()
+        .map(|entry| entry.outbound.clone())
+        .collect::<Vec<_>>();
+    write_sing_box_outbound_config(&outbounds, ports).await
+}
+
+async fn write_sing_box_outbound_config(outbounds: &[Value], ports: &[u16]) -> Result<PathBuf> {
+    if outbounds.len() != ports.len() {
+        return Err(anyhow!(
+            "sing-box config needs one local port per outbound; got {} outbounds and {} ports",
+            outbounds.len(),
+            ports.len()
+        ));
+    }
+
     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     let path = std::env::temp_dir().join(format!(
         "{SING_BOX_CONFIG_FILE_PREFIX}-{}-{timestamp}.json",
         std::process::id()
     ));
-    let mut inbounds = Vec::with_capacity(entries.len());
-    let mut outbounds = Vec::with_capacity(entries.len());
-    let mut rules = Vec::with_capacity(entries.len());
+    let mut inbounds = Vec::with_capacity(outbounds.len());
+    let mut tagged_outbounds = Vec::with_capacity(outbounds.len());
+    let mut rules = Vec::with_capacity(outbounds.len());
 
-    for (index, (entry, port)) in entries.iter().zip(ports.iter()).enumerate() {
+    for (index, (outbound, port)) in outbounds.iter().zip(ports.iter()).enumerate() {
         let inbound_tag = format!("{SING_BOX_INBOUND_TAG_PREFIX}-{index}");
         let outbound_tag = format!("{SING_BOX_OUTBOUND_TAG_PREFIX}-{index}");
-        let mut outbound = entry.outbound.clone();
+        let mut outbound = outbound.clone();
         outbound
             .as_object_mut()
             .ok_or_else(|| anyhow!("sing-box outbound is not a JSON object"))?
@@ -1151,7 +1238,7 @@ async fn write_sing_box_batch_config(
             "listen": LOCALHOST_IP,
             "listen_port": port
         }));
-        outbounds.push(outbound);
+        tagged_outbounds.push(outbound);
         rules.push(json!({
             "inbound": [
                 inbound_tag
@@ -1166,7 +1253,7 @@ async fn write_sing_box_batch_config(
             "disabled": true
         },
         "inbounds": inbounds,
-        "outbounds": outbounds,
+        "outbounds": tagged_outbounds,
         "route": {
             "rules": rules,
             "final": format!("{SING_BOX_OUTBOUND_TAG_PREFIX}-0"),
@@ -1870,9 +1957,8 @@ fn pad_base64(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::TEST_REALITY_PUBLIC_KEY;
     use base64::{Engine as _, engine::general_purpose::STANDARD};
-
-    const REALITY_PUBLIC_KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
     fn ranked(name: &str, uri: &str, reachable: bool, latency_ms: Option<u128>) -> RankedConfig {
         RankedConfig {
@@ -1923,24 +2009,30 @@ mod tests {
     #[test]
     fn builds_vless_reality_outbound() {
         let outbound = sing_box_outbound_from_share_link(&format!(
-            "vless://uuid@example.com:443?security=reality&sni=www.example.com&pbk={REALITY_PUBLIC_KEY}&sid=abcd&fp=chrome&type=grpc&serviceName=svc#node"
+            "vless://uuid@example.com:443?security=reality&sni=www.example.com&pbk={TEST_REALITY_PUBLIC_KEY}&sid=abcd&fp=chrome&type=grpc&serviceName=svc#node"
         ))
         .expect("vless outbound");
 
         assert_eq!(outbound["type"], "vless");
         assert_eq!(outbound["server"], "example.com");
-        assert_eq!(outbound["tls"]["reality"]["public_key"], REALITY_PUBLIC_KEY);
+        assert_eq!(
+            outbound["tls"]["reality"]["public_key"],
+            TEST_REALITY_PUBLIC_KEY
+        );
         assert_eq!(outbound["transport"]["type"], "grpc");
     }
 
     #[test]
     fn builds_vless_reality_outbound_with_default_utls() {
         let outbound = sing_box_outbound_from_share_link(&format!(
-            "vless://uuid@example.com:443?security=reality&sni=www.example.com&pbk={REALITY_PUBLIC_KEY}&sid=abcd&type=grpc&serviceName=svc#node"
+            "vless://uuid@example.com:443?security=reality&sni=www.example.com&pbk={TEST_REALITY_PUBLIC_KEY}&sid=abcd&type=grpc&serviceName=svc#node"
         ))
         .expect("vless outbound");
 
-        assert_eq!(outbound["tls"]["reality"]["public_key"], REALITY_PUBLIC_KEY);
+        assert_eq!(
+            outbound["tls"]["reality"]["public_key"],
+            TEST_REALITY_PUBLIC_KEY
+        );
         assert_eq!(outbound["tls"]["utls"]["enabled"], true);
         assert_eq!(outbound["tls"]["utls"]["fingerprint"], "chrome");
     }
@@ -1974,7 +2066,7 @@ mod tests {
     #[test]
     fn rejects_invalid_reality_short_id_before_batching() {
         let err = sing_box_outbound_from_share_link(&format!(
-            "vless://uuid@example.com:443?security=reality&sni=www.example.com&pbk={REALITY_PUBLIC_KEY}&sid=bad@id&type=grpc&serviceName=svc#node"
+            "vless://uuid@example.com:443?security=reality&sni=www.example.com&pbk={TEST_REALITY_PUBLIC_KEY}&sid=bad@id&type=grpc&serviceName=svc#node"
         ))
         .expect_err("invalid Reality short_id should fail this candidate only");
 

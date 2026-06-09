@@ -1,4 +1,6 @@
-use chrono::{DateTime, Local, Utc};
+use std::time::Instant;
+
+use chrono::{DateTime, Utc};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -11,7 +13,13 @@ use crate::model::RuntimeConfig;
 
 use super::{util::human_bytes, view::RuntimeView};
 
-pub fn draw(frame: &mut Frame<'_>, area: Rect, runtime: &RuntimeView, config: &RuntimeConfig) {
+pub fn draw(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    runtime: &RuntimeView,
+    config: &RuntimeConfig,
+    app_started_at: Instant,
+) {
     let now = Utc::now();
     let failed = runtime
         .tested_candidates
@@ -28,8 +36,8 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, runtime: &RuntimeView, config: &R
         .unwrap_or_else(|| "-".to_string());
     let cells = [
         (
-            "Time",
-            now.with_timezone(&Local).format("%H:%M:%S").to_string(),
+            "Running For",
+            format_duration_hms(app_started_at.elapsed().as_secs()),
         ),
         ("Refresh", refresh),
         ("Last Scan Time", scan_time),
@@ -65,7 +73,11 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, runtime: &RuntimeView, config: &R
 
 fn refresh_status(runtime: &RuntimeView, refresh_seconds: u64, now: DateTime<Utc>) -> String {
     if runtime.refreshing {
-        return "running".to_string();
+        let elapsed = runtime
+            .refresh_started_at
+            .map(|started_at| now.signed_duration_since(started_at).num_seconds().max(0) as u64)
+            .unwrap_or(0);
+        return format!("running {}", format_duration_ms(elapsed));
     }
 
     if refresh_seconds == 0 {
@@ -78,6 +90,19 @@ fn refresh_status(runtime: &RuntimeView, refresh_seconds: u64, now: DateTime<Utc
     let elapsed = now.signed_duration_since(finished_at).num_seconds().max(0) as u64;
     let remaining = refresh_seconds.saturating_sub(elapsed);
     format!("next {}", format_duration(remaining as u128 * 1000))
+}
+
+fn format_duration_hms(total_seconds: u64) -> String {
+    let hours = total_seconds / 3600;
+    let minutes = (total_seconds % 3600) / 60;
+    let seconds = total_seconds % 60;
+    format!("{hours:02}:{minutes:02}:{seconds:02}")
+}
+
+fn format_duration_ms(total_seconds: u64) -> String {
+    let minutes = total_seconds / 60;
+    let seconds = total_seconds % 60;
+    format!("{minutes:02}:{seconds:02}")
 }
 
 fn format_duration(ms: u128) -> String {

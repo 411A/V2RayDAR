@@ -10,6 +10,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures_util::{StreamExt, stream};
 use percent_encoding::percent_decode_str;
 use reqwest::Client;
+use reqwest::Proxy;
 use reqwest::header::{ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED};
 use serde::{Deserialize, Serialize};
 use tokio::{fs, sync::mpsc::UnboundedSender};
@@ -17,15 +18,24 @@ use tracing::{debug, info, warn};
 
 use crate::{
     config::{AppConfig, SubscriptionSource},
-    constants::{FNV_OFFSET_BASIS, FNV_PRIME, HTTP_EXCHANGE_OVERHEAD_BYTES},
+    constants::{FNV_OFFSET_BASIS, FNV_PRIME, HTTP_EXCHANGE_OVERHEAD_BYTES, LOCALHOST_IP},
     model::{Candidate, ProgressEvent},
     parser::parse_subscription_document,
+    probe::run_with_sing_box_proxy,
 };
 
 #[derive(Debug)]
 pub struct FetchOutcome {
     pub candidates: Vec<Candidate>,
     pub errors: Vec<String>,
+    pub failures: Vec<FetchFailure>,
+    pub successes: Vec<SubscriptionSource>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FetchFailure {
+    pub source: SubscriptionSource,
+    pub error: String,
 }
 
 pub async fn load_candidates_with_cache<F, Fut>(
@@ -43,20 +53,13 @@ where
         return Ok(FetchOutcome {
             candidates: Vec::new(),
             errors: Vec::new(),
+            failures: Vec::new(),
+            successes: Vec::new(),
         });
     }
 
-    let client = Client::builder()
-        .timeout(Duration::from_millis(config.fetch_timeout_ms))
-        .user_agent(concat!("v2raydar/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .context("failed to build HTTP client")?;
-
-    let mut candidates = Vec::new();
-    let mut seen_uris = HashSet::new();
-    let mut errors = Vec::new();
-    let max_bytes = config.max_subscription_bytes;
-    let fetch_concurrency = config.fetch_concurrency;
+    let client =
+        build_http_client(config.fetch_timeout_ms).context("failed to build HTTP client")?;
 
     let sources = config
         .subscriptions
@@ -66,9 +69,9 @@ where
         .collect::<Vec<_>>();
     info!(
         sources = sources.len(),
-        fetch_concurrency,
+        fetch_concurrency = config.fetch_concurrency,
         timeout_ms = config.fetch_timeout_ms,
-        max_bytes,
+        max_bytes = config.max_subscription_bytes,
         "subscription fetch queue built"
     );
     send_progress(
@@ -78,13 +81,117 @@ where
             sources.len()
         ),
     );
+
+    let outcome = fetch_sources_with_client(
+        client,
+        sources,
+        cache_dir,
+        config.max_subscription_bytes,
+        config.fetch_concurrency,
+        &mut report_bytes,
+        progress,
+    )
+    .await;
+
+    Ok(outcome)
+}
+
+pub async fn retry_failed_sources_with_proxy<F, Fut>(
+    config: &AppConfig,
+    failures: &[FetchFailure],
+    proxy_uri: &str,
+    cache_dir: Option<&Path>,
+    report_bytes: F,
+    progress: Option<UnboundedSender<ProgressEvent>>,
+) -> Result<FetchOutcome>
+where
+    F: FnMut(u64) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let sources = failures
+        .iter()
+        .map(|failure| failure.source.clone())
+        .filter(|source| is_http_url(&source.url))
+        .collect::<Vec<_>>();
+
+    if sources.is_empty() {
+        return Ok(FetchOutcome {
+            candidates: Vec::new(),
+            errors: Vec::new(),
+            failures: Vec::new(),
+            successes: Vec::new(),
+        });
+    }
+
+    info!(
+        sources = sources.len(),
+        "retrying failed subscription fetches through first working config"
+    );
+    send_progress(
+        &progress,
+        format!(
+            "Subscription retry: fetching {} failed sources through first working config",
+            sources.len()
+        ),
+    );
+
+    let fetch_timeout_ms = config.fetch_timeout_ms;
+    let max_bytes = config.max_subscription_bytes;
+    let fetch_concurrency = config.fetch_concurrency;
+    let startup_timeout = Duration::from_millis(config.probe.startup_timeout_ms);
+    let sing_box_path = config.probe.sing_box_path.clone();
+    let progress_for_proxy = progress.clone();
+
+    let outcome =
+        run_with_sing_box_proxy(&sing_box_path, proxy_uri, startup_timeout, move |port| {
+            let mut report_bytes = report_bytes;
+            let progress = progress_for_proxy.clone();
+            let sources = sources.clone();
+            async move {
+                let client = build_proxied_http_client(fetch_timeout_ms, port)?;
+                Ok(fetch_sources_with_client(
+                    client,
+                    sources,
+                    cache_dir,
+                    max_bytes,
+                    fetch_concurrency,
+                    &mut report_bytes,
+                    progress,
+                )
+                .await)
+            }
+        })
+        .await?;
+    Ok(outcome)
+}
+
+async fn fetch_sources_with_client<F, Fut>(
+    client: Client,
+    sources: Vec<SubscriptionSource>,
+    cache_dir: Option<&Path>,
+    max_bytes: usize,
+    fetch_concurrency: usize,
+    report_bytes: &mut F,
+    progress: Option<UnboundedSender<ProgressEvent>>,
+) -> FetchOutcome
+where
+    F: FnMut(u64) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let mut candidates = Vec::new();
+    let mut seen_uris = HashSet::new();
+    let mut errors = Vec::new();
+    let mut failures = Vec::new();
+    let mut successes = Vec::new();
     let mut results = stream::iter(sources.into_iter().enumerate().map(|(index, source)| {
         let client = client.clone();
         let cache_dir = cache_dir.map(Path::to_path_buf);
         let progress = progress.clone();
+        let source_for_result = source.clone();
         async move {
             (
                 index,
+                source_for_result,
                 fetch_source(&client, source, cache_dir.as_deref(), max_bytes, progress).await,
             )
         }
@@ -92,10 +199,10 @@ where
     .buffer_unordered(fetch_concurrency);
     let mut fetched_sources = Vec::new();
 
-    while let Some((index, result)) = results.next().await {
+    while let Some((index, source, result)) = results.next().await {
         match result {
             Ok(mut fetched) => {
-                report_subscription_bytes(fetched.bytes_read, &mut report_bytes).await;
+                report_subscription_bytes(fetched.bytes_read, report_bytes).await;
                 let before_dedup = fetched.candidates.len();
                 fetched
                     .candidates
@@ -114,16 +221,19 @@ where
                         before_dedup
                     ),
                 );
+                successes.push(source);
                 fetched_sources.push((index, fetched.candidates));
             }
             Err(err) => {
-                report_subscription_bytes(err.bytes_read, &mut report_bytes).await;
+                report_subscription_bytes(err.bytes_read, report_bytes).await;
                 warn!(error = %err.error, "subscription fetch failed");
                 send_progress(
                     &progress,
                     format!("Subscription fetch failed: {}", err.error),
                 );
-                errors.push(err.error.to_string());
+                let error = err.error.to_string();
+                errors.push(error.clone());
+                failures.push((index, FetchFailure { source, error }));
             }
         }
     }
@@ -131,15 +241,18 @@ where
     for (_, mut fetched) in fetched_sources {
         candidates.append(&mut fetched);
     }
+    failures.sort_by_key(|(index, _)| *index);
+    let failures = failures
+        .into_iter()
+        .map(|(_, failure)| failure)
+        .collect::<Vec<_>>();
 
-    if candidates.is_empty() && !errors.is_empty() {
-        return Err(anyhow!(
-            "no usable configs were loaded; first error: {}",
-            errors[0]
-        ));
+    FetchOutcome {
+        candidates,
+        errors,
+        failures,
+        successes,
     }
-
-    Ok(FetchOutcome { candidates, errors })
 }
 
 async fn report_subscription_bytes<F, Fut>(bytes: u64, report_bytes: &mut F)
@@ -189,6 +302,24 @@ impl From<anyhow::Error> for FetchError {
 struct FetchedSource {
     candidates: Vec<Candidate>,
     bytes_read: u64,
+}
+
+fn build_http_client(timeout_ms: u64) -> Result<Client> {
+    Client::builder()
+        .timeout(Duration::from_millis(timeout_ms))
+        .user_agent(concat!("v2raydar/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .context("failed to build HTTP client")
+}
+
+fn build_proxied_http_client(timeout_ms: u64, port: u16) -> Result<Client> {
+    let proxy_url = format!("http://{LOCALHOST_IP}:{port}");
+    Client::builder()
+        .timeout(Duration::from_millis(timeout_ms))
+        .user_agent(concat!("v2raydar/", env!("CARGO_PKG_VERSION")))
+        .proxy(Proxy::all(&proxy_url)?)
+        .build()
+        .context("failed to build proxied HTTP client")
 }
 
 async fn fetch_source(
@@ -252,6 +383,10 @@ async fn fetch_source(
     })
 }
 
+fn is_http_url(url: &str) -> bool {
+    url.starts_with("http://") || url.starts_with("https://")
+}
+
 fn send_progress(progress: &Option<UnboundedSender<ProgressEvent>>, message: impl Into<String>) {
     if let Some(progress) = progress {
         let _ = progress.send(ProgressEvent::LiveLog(message.into()));
@@ -275,7 +410,7 @@ async fn fetch_body(
     cache_dir: Option<&Path>,
     max_bytes: usize,
 ) -> FetchResult<FetchedBody> {
-    if url.starts_with("http://") || url.starts_with("https://") {
+    if is_http_url(url) {
         return fetch_http_body(client, url, cache_dir, max_bytes).await;
     }
 

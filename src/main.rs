@@ -20,7 +20,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use chrono::{Local, Utc};
 use clap::Parser;
 use tokio::{
@@ -31,18 +31,20 @@ use tokio::{
 use tracing::{error, info, warn};
 
 use crate::{
-    config::AppConfig,
+    config::{AppConfig, ProbeMode},
     constants::{
         CONFIG_WATCH_INTERVAL, DEFAULT_LOG_FILTER_PLAIN, DEFAULT_LOG_FILTER_TUI,
         DEFAULT_LOG_FILTER_VERBOSE, LOCALHOST_IP, MAX_TUI_LOGS, SING_BOX_DOWNLOAD_URL,
         STABLE_WORKING_APPEARANCES,
     },
-    model::{ProbeStopPolicy, ProgressEvent, RankedConfig, RuntimeConfig, RuntimeState},
+    model::{Candidate, ProbeStopPolicy, ProgressEvent, RankedConfig, RuntimeConfig, RuntimeState},
     paths::AppPaths,
     probe::probe_candidates,
     server::serve,
     sing_box::active_probe_needs_setup,
-    subscription::load_candidates_with_cache,
+    subscription::{
+        FetchFailure, FetchOutcome, load_candidates_with_cache, retry_failed_sources_with_proxy,
+    },
     terminal::{PlainProgressReporter, print_log, print_startup, print_summary},
 };
 
@@ -231,6 +233,116 @@ fn print_sing_box_setup_required(paths: &AppPaths) {
     println!("Then run V2RayDAR again.");
 }
 
+async fn probe_refresh_candidates(
+    candidates: Vec<Candidate>,
+    config: &AppConfig,
+    previous_before_refresh: &RuntimeState,
+    state: &Arc<RwLock<RuntimeState>>,
+    progress_tx: &mpsc::UnboundedSender<ProgressEvent>,
+    print_compact_progress: bool,
+    label: &str,
+) -> Vec<RankedConfig> {
+    let candidate_count = candidates.len();
+    if candidates.is_empty() {
+        let message = if label == "Probe" {
+            "Probe skipped: no configs were loaded.".to_string()
+        } else {
+            format!("{label} skipped: no new configs were loaded.")
+        };
+        info!(label, "probe skipped because no candidates were loaded");
+        if print_compact_progress {
+            print_log(&message);
+        }
+        push_tui_progress(
+            state,
+            ProgressEvent::LiveLog(message.trim_end_matches('.').to_string()),
+        )
+        .await;
+        return Vec::new();
+    }
+
+    info!(
+        candidates = candidate_count,
+        mode = ?config.probe.mode,
+        label,
+        "probe started"
+    );
+    if print_compact_progress {
+        print_log(format!(
+            "{label} started: {candidate_count} candidates with {} mode.",
+            format!("{:?}", config.probe.mode).to_ascii_lowercase()
+        ));
+    }
+    push_tui_progress(
+        state,
+        ProgressEvent::LiveLog(format!(
+            "{label} started: {candidate_count} candidates with {:?}",
+            config.probe.mode
+        )),
+    )
+    .await;
+
+    let stop_policy = probe_stop_policy(config, previous_before_refresh, &candidates);
+    probe_candidates(
+        candidates,
+        &config.probe,
+        Some(progress_tx.clone()),
+        &stop_policy,
+    )
+    .await
+}
+
+fn subscription_retry_proxy_uri(
+    config: &AppConfig,
+    ranked: &[RankedConfig],
+    previous: &RuntimeState,
+) -> Option<String> {
+    if config.probe.mode != ProbeMode::Active || config.probe.sing_box_path.trim().is_empty() {
+        return None;
+    }
+
+    ranked
+        .iter()
+        .chain(previous.ranked.iter())
+        .find(|item| item.reachable)
+        .map(|item| item.uri.clone())
+}
+
+fn merged_fetch_errors(
+    initial_failures: &[FetchFailure],
+    retry: Option<&FetchOutcome>,
+) -> Vec<String> {
+    let Some(retry) = retry else {
+        return initial_failures
+            .iter()
+            .map(|failure| failure.error.clone())
+            .collect();
+    };
+
+    let mut errors = Vec::new();
+    for initial in initial_failures {
+        if retry
+            .successes
+            .iter()
+            .any(|source| source == &initial.source)
+        {
+            continue;
+        }
+
+        if let Some(retry_failure) = retry
+            .failures
+            .iter()
+            .find(|failure| failure.source == initial.source)
+        {
+            errors.push(retry_failure.error.clone());
+        } else {
+            errors.push(initial.error.clone());
+        }
+    }
+
+    errors
+}
+
 fn resolve_paths(cli: &Cli) -> Result<AppPaths> {
     if let Some(config_path) = &cli.config {
         return Ok(AppPaths::from_config_override(config_path.clone()));
@@ -300,7 +412,7 @@ async fn refresh_once(
 
     let fetch_started = std::time::Instant::now();
     info!("subscription load started");
-    let fetched = load_candidates_with_cache(
+    let mut fetched = load_candidates_with_cache(
         config,
         Some(cache_dir),
         |bytes| {
@@ -312,10 +424,16 @@ async fn refresh_once(
         Some(progress_tx.clone()),
     )
     .await?;
-    let fetched_count = fetched.candidates.len();
+    let mut fetched_count = fetched.candidates.len();
+    let mut seen_candidate_uris = fetched
+        .candidates
+        .iter()
+        .map(|candidate| candidate.uri.clone())
+        .collect::<HashSet<_>>();
+    let mut fetch_errors = fetched.errors.clone();
     info!(
         candidates = fetched_count,
-        fetch_errors = fetched.errors.len(),
+        fetch_errors = fetch_errors.len(),
         duration_ms = fetch_started.elapsed().as_millis(),
         "subscription load finished"
     );
@@ -323,67 +441,130 @@ async fn refresh_once(
         print_log(format!(
             "Subscription loading finished: {} configs, {} source errors in {}.",
             fetched_count,
-            fetched.errors.len(),
+            fetch_errors.len(),
             format_duration_short(fetch_started.elapsed().as_millis())
         ));
     }
     {
         let mut runtime = state.write().await;
         runtime.total_candidates = fetched_count;
-        runtime.fetch_errors = fetched.errors.clone();
+        runtime.fetch_errors = fetch_errors.clone();
         push_live_log(
             &mut runtime,
             timestamped_log(format!(
                 "Subscription loading finished: {} configs, {} source errors in {}",
                 fetched_count,
-                fetched.errors.len(),
+                fetch_errors.len(),
                 format_duration_short(fetch_started.elapsed().as_millis())
             )),
         );
     }
 
     let probe_started = std::time::Instant::now();
-    let mut ranked = if fetched.candidates.is_empty() {
-        info!("probe skipped because no candidates were loaded");
-        if print_compact_progress {
-            print_log("Probe skipped: no configs were loaded.");
+    let mut ranked = probe_refresh_candidates(
+        std::mem::take(&mut fetched.candidates),
+        config,
+        &previous_before_refresh,
+        &state,
+        &progress_tx,
+        print_compact_progress,
+        "Probe",
+    )
+    .await;
+
+    if !fetched.failures.is_empty() {
+        if let Some(proxy_uri) =
+            subscription_retry_proxy_uri(config, &ranked, &previous_before_refresh)
+        {
+            let retry_started = std::time::Instant::now();
+            match retry_failed_sources_with_proxy(
+                config,
+                &fetched.failures,
+                &proxy_uri,
+                Some(cache_dir),
+                |bytes| {
+                    let state = state.clone();
+                    async move {
+                        add_fetch_bytes(&state, bytes).await;
+                    }
+                },
+                Some(progress_tx.clone()),
+            )
+            .await
+            {
+                Ok(mut retry) => {
+                    let retry_before_dedup = retry.candidates.len();
+                    retry
+                        .candidates
+                        .retain(|candidate| seen_candidate_uris.insert(candidate.uri.clone()));
+                    let retry_count = retry.candidates.len();
+                    fetched_count = fetched_count.saturating_add(retry_count);
+                    fetch_errors = merged_fetch_errors(&fetched.failures, Some(&retry));
+                    info!(
+                        parsed = retry_before_dedup,
+                        unique = retry_count,
+                        remaining_fetch_errors = fetch_errors.len(),
+                        duration_ms = retry_started.elapsed().as_millis(),
+                        "proxied subscription retry finished"
+                    );
+                    if print_compact_progress {
+                        print_log(format!(
+                            "Subscription retry finished: {} new configs, {} source errors in {}.",
+                            retry_count,
+                            fetch_errors.len(),
+                            format_duration_short(retry_started.elapsed().as_millis())
+                        ));
+                    }
+                    {
+                        let mut runtime = state.write().await;
+                        runtime.total_candidates = fetched_count;
+                        runtime.fetch_errors = fetch_errors.clone();
+                        push_live_log(
+                            &mut runtime,
+                            timestamped_log(format!(
+                                "Subscription retry finished: {} new configs from {} fetched links; {} source errors remain",
+                                retry_count,
+                                retry_before_dedup,
+                                fetch_errors.len()
+                            )),
+                        );
+                    }
+                    if retry_count > 0 {
+                        let mut retry_ranked = probe_refresh_candidates(
+                            std::mem::take(&mut retry.candidates),
+                            config,
+                            &previous_before_refresh,
+                            &state,
+                            &progress_tx,
+                            print_compact_progress,
+                            "Retry probe",
+                        )
+                        .await;
+                        ranked.append(&mut retry_ranked);
+                    }
+                }
+                Err(err) => {
+                    let error = err.to_string();
+                    warn!(error = %error, "proxied subscription retry failed");
+                    push_tui_progress(
+                        &state,
+                        ProgressEvent::LiveLog(format!(
+                            "Subscription retry through first working config failed: {error}"
+                        )),
+                    )
+                    .await;
+                }
+            }
+        } else {
+            push_tui_progress(
+                &state,
+                ProgressEvent::LiveLog(
+                    "Subscription retry skipped: no active working config is available".to_string(),
+                ),
+            )
+            .await;
         }
-        push_tui_progress(
-            &state,
-            ProgressEvent::LiveLog("Probe skipped: no configs were loaded".to_string()),
-        )
-        .await;
-        Vec::new()
-    } else {
-        info!(
-            candidates = fetched.candidates.len(),
-            mode = ?config.probe.mode,
-            "probe started"
-        );
-        if print_compact_progress {
-            print_log(format!(
-                "Probe started: {} candidates with {} mode.",
-                fetched_count,
-                format!("{:?}", config.probe.mode).to_ascii_lowercase()
-            ));
-        }
-        push_tui_progress(
-            &state,
-            ProgressEvent::LiveLog(format!(
-                "Probe started: {} candidates with {:?}",
-                fetched_count, config.probe.mode
-            )),
-        )
-        .await;
-        let stop_policy = probe_stop_policy(config, &previous_before_refresh, &fetched.candidates);
-        probe_candidates(
-            fetched.candidates,
-            &config.probe,
-            Some(progress_tx.clone()),
-            &stop_policy,
-        )
-        .await
-    };
+    }
     drop(progress_tx);
     let _ = progress_task.await;
     info!(
@@ -392,6 +573,12 @@ async fn refresh_once(
         duration_ms = probe_started.elapsed().as_millis(),
         "probe finished"
     );
+    if fetched_count == 0 && ranked.is_empty() && !fetch_errors.is_empty() {
+        return Err(anyhow!(
+            "no usable configs were loaded; first error: {}",
+            fetch_errors[0]
+        ));
+    }
     let speedtest_bytes = ranked
         .iter()
         .filter_map(|item| item.download_bytes)
@@ -425,7 +612,7 @@ async fn refresh_once(
         reachable_candidates: reachable_count,
         fetch_bytes,
         speedtest_bytes,
-        fetch_errors: fetched.errors,
+        fetch_errors,
         ranked,
         stable_working_counts,
     };

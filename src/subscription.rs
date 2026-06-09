@@ -18,10 +18,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     config::{AppConfig, SubscriptionSource},
-    constants::{
-        CACHE_MARKER_FILE_NAME, FNV_OFFSET_BASIS, FNV_PRIME, HTTP_EXCHANGE_OVERHEAD_BYTES,
-        LOCALHOST_IP,
-    },
+    constants::{FNV_OFFSET_BASIS, FNV_PRIME, HTTP_EXCHANGE_OVERHEAD_BYTES, LOCALHOST_IP},
     model::{Candidate, ProgressEvent},
     parser::parse_subscription_document,
     probe::run_with_sing_box_proxy,
@@ -640,7 +637,6 @@ async fn write_cache(
 ) {
     if let Some(parent) = cache.body.parent() {
         let _ = fs::create_dir_all(parent).await;
-        let _ = fs::write(parent.join(CACHE_MARKER_FILE_NAME), b"V2RayDAR cache\n").await;
     }
     let metadata = CacheMetadata {
         etag: etag.map(clean_cached_etag),

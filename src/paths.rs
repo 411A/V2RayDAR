@@ -3,9 +3,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, anyhow};
 use tokio::fs;
 
-use crate::constants::{
-    APP_DIR_NAME, APP_DIR_NAME_LOWER, APP_MARKER_FILE_NAME, CACHE_DIR_NAME, CONFIG_FILE_NAME,
-};
+use crate::constants::{APP_DATA_DIR_NAME, APP_NAME, CACHE_DIR_NAME, CONFIG_FILE_NAME};
 
 #[derive(Debug, Clone)]
 pub struct AppPaths {
@@ -13,7 +11,7 @@ pub struct AppPaths {
     pub config_path: PathBuf,
     pub cache_dir: PathBuf,
     pub portable: bool,
-    pub owns_root_dir: bool,
+    pub generated_config: bool,
 }
 
 impl AppPaths {
@@ -27,15 +25,20 @@ impl AppPaths {
         let root_dir = executable
             .parent()
             .ok_or_else(|| anyhow!("unable to resolve executable directory"))?
-            .join(APP_DIR_NAME);
+            .join(APP_DATA_DIR_NAME);
         Ok(Self::from_root(root_dir, true))
     }
 
     pub fn from_config_override(config_path: PathBuf) -> Self {
-        let root_dir = config_path
+        let config_parent = config_path
             .parent()
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("."));
+        let root_dir = config_parent
+            .ancestors()
+            .find(|path| path.file_name().and_then(|name| name.to_str()) == Some(APP_DATA_DIR_NAME))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| config_parent.join(APP_DATA_DIR_NAME));
         Self::from_root_with_config(root_dir, config_path, false, false)
     }
 
@@ -43,11 +46,6 @@ impl AppPaths {
         fs::create_dir_all(&self.root_dir)
             .await
             .with_context(|| format!("unable to create {}", self.root_dir.display()))?;
-        if self.owns_root_dir {
-            fs::write(self.root_dir.join(APP_MARKER_FILE_NAME), b"V2RayDAR\n")
-                .await
-                .with_context(|| format!("unable to mark {}", self.root_dir.display()))?;
-        }
         Ok(())
     }
 
@@ -60,14 +58,14 @@ impl AppPaths {
         root_dir: PathBuf,
         config_path: PathBuf,
         portable: bool,
-        owns_root_dir: bool,
+        generated_config: bool,
     ) -> Self {
         Self {
             config_path,
             cache_dir: root_dir.join(CACHE_DIR_NAME),
             root_dir,
             portable,
-            owns_root_dir,
+            generated_config,
         }
     }
 }
@@ -75,27 +73,31 @@ impl AppPaths {
 fn installed_root_dir() -> Result<PathBuf> {
     if cfg!(target_os = "windows") {
         if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
-            return Ok(PathBuf::from(local_app_data).join(APP_DIR_NAME));
+            return Ok(installed_data_root(PathBuf::from(local_app_data)));
         }
 
-        return Ok(home_dir()?.join("AppData").join("Local").join(APP_DIR_NAME));
+        return Ok(installed_data_root(
+            home_dir()?.join("AppData").join("Local"),
+        ));
     }
 
     if cfg!(target_os = "macos") {
-        return Ok(home_dir()?
-            .join("Library")
-            .join("Application Support")
-            .join(APP_DIR_NAME));
+        return Ok(installed_data_root(
+            home_dir()?.join("Library").join("Application Support"),
+        ));
     }
 
     if let Some(data_home) = std::env::var_os("XDG_DATA_HOME") {
-        return Ok(PathBuf::from(data_home).join(APP_DIR_NAME_LOWER));
+        return Ok(installed_data_root(PathBuf::from(data_home)));
     }
 
-    Ok(home_dir()?
-        .join(".local")
-        .join("share")
-        .join(APP_DIR_NAME_LOWER))
+    Ok(installed_data_root(
+        home_dir()?.join(".local").join("share"),
+    ))
+}
+
+fn installed_data_root(base_dir: PathBuf) -> PathBuf {
+    base_dir.join(APP_NAME).join(APP_DATA_DIR_NAME)
 }
 
 fn home_dir() -> Result<PathBuf> {
@@ -103,4 +105,71 @@ fn home_dir() -> Result<PathBuf> {
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
         .ok_or_else(|| anyhow!("unable to resolve user home directory"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::constants::APP_DATA_DIR_NAME;
+
+    #[test]
+    fn default_paths_keep_config_and_cache_inside_data_root() {
+        let root = PathBuf::from(APP_DATA_DIR_NAME);
+        let paths = AppPaths::from_root(root.clone(), false);
+
+        assert_eq!(paths.root_dir, root);
+        assert_eq!(paths.config_path, paths.root_dir.join(CONFIG_FILE_NAME));
+        assert_eq!(paths.cache_dir, paths.root_dir.join(CACHE_DIR_NAME));
+        assert!(paths.generated_config);
+    }
+
+    #[test]
+    fn installed_data_root_keeps_data_under_app_directory() {
+        let paths = installed_data_root(PathBuf::from("LocalAppData"));
+
+        assert_eq!(
+            paths,
+            PathBuf::from("LocalAppData")
+                .join(APP_NAME)
+                .join(APP_DATA_DIR_NAME)
+        );
+    }
+
+    #[test]
+    fn config_override_uses_sibling_data_root_for_app_state() {
+        let config_path = PathBuf::from("custom").join("configs.yaml");
+        let paths = AppPaths::from_config_override(config_path.clone());
+
+        assert_eq!(paths.config_path, config_path);
+        assert_eq!(
+            paths.root_dir,
+            PathBuf::from("custom").join(APP_DATA_DIR_NAME)
+        );
+        assert_eq!(paths.cache_dir, paths.root_dir.join(CACHE_DIR_NAME));
+        assert!(!paths.generated_config);
+    }
+
+    #[test]
+    fn config_override_reuses_data_root_when_config_is_inside_it() {
+        let config_path = PathBuf::from(APP_DATA_DIR_NAME).join("custom.yaml");
+        let paths = AppPaths::from_config_override(config_path.clone());
+
+        assert_eq!(paths.config_path, config_path);
+        assert_eq!(paths.root_dir, PathBuf::from(APP_DATA_DIR_NAME));
+        assert_eq!(paths.cache_dir, paths.root_dir.join(CACHE_DIR_NAME));
+        assert!(!paths.generated_config);
+    }
+
+    #[test]
+    fn config_override_reuses_data_root_when_config_is_nested_inside_it() {
+        let config_path = PathBuf::from(APP_DATA_DIR_NAME)
+            .join("profiles")
+            .join("custom.yaml");
+        let paths = AppPaths::from_config_override(config_path.clone());
+
+        assert_eq!(paths.config_path, config_path);
+        assert_eq!(paths.root_dir, PathBuf::from(APP_DATA_DIR_NAME));
+        assert_eq!(paths.cache_dir, paths.root_dir.join(CACHE_DIR_NAME));
+        assert!(!paths.generated_config);
+    }
 }

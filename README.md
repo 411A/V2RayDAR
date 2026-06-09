@@ -8,7 +8,7 @@ Project name: V2Ray Detection And Reconnaissance, pronounced like `v2ray` + `rad
 
 Phase 1 is a fast scanner and local subscription server:
 
-- Creates a per-user app folder and `configs.yaml` on first run.
+- Creates `V2RayDAR/v2raydar_data/configs.yaml` under the user's platform app-data folder on first run.
 - Supports `--portable` and `--config` for self-contained or development runs.
 - Runs an interactive mouse-aware ratatui/crossterm TUI by default; use `--no-tui` for plain terminal output.
 - Fetches enabled subscription sources with bounded concurrency.
@@ -30,7 +30,7 @@ Active validation currently converts VMess, VLESS, Trojan, Shadowsocks, Hysteria
 - Internet access from the machine running V2RayDAR so it can fetch subscription URLs.
 - Android and the PC must be on the same network if Android v2rayNG will read the endpoint from the PC.
 
-On first run, the TUI asks for the full `sing-box` executable path, verifies it with `sing-box version`, saves it in `configs.yaml`, and then starts normal scanning. If you already use v2rayN on Windows, check the v2rayN installation folder for `sing-box.exe`. Otherwise, download sing-box from:
+On first run, the TUI asks for the full `sing-box` executable path, verifies it with `sing-box version`, saves it in `V2RayDAR/v2raydar_data/configs.yaml` under the user's platform app-data folder, and then starts normal scanning. If you already use v2rayN on Windows, check the v2rayN installation folder for `sing-box.exe`. Otherwise, download sing-box from:
 
 ```text
 https://github.com/SagerNet/sing-box/releases
@@ -60,7 +60,7 @@ probe:
 
 ## Quick Start
 
-Run V2RayDAR. On first run it creates the app folder and default config automatically. Subscription cache files are created only after HTTP subscriptions are fetched.
+Run V2RayDAR. On first run it creates the `V2RayDAR/v2raydar_data` folder under the user's platform app-data folder and writes the default config automatically. Subscription cache files are created only after HTTP subscriptions are fetched.
 
 Development:
 
@@ -74,7 +74,7 @@ Release binary:
 target\release\v2raydar.exe
 ```
 
-The terminal output shows the app folder and config path. First-run config starts with slow-network defaults and two public subscription sources:
+The terminal output shows the data folder and config path. First-run config starts with slow-network defaults and two public subscription sources:
 
 ```yaml
 bind: 127.0.0.1:27141
@@ -162,7 +162,7 @@ To remove generated app data:
 v2raydar --uninstall
 ```
 
-This asks for confirmation, then deletes V2RayDAR's generated app folder, including `configs.yaml`, cache files, app ownership markers, and V2RayDAR-owned firewall rules/state. For scripts, use `v2raydar --uninstall --yes`. It does not delete the executable itself, the separate `sing-box` executable, non-V2RayDAR firewall rules, or arbitrary folders used through `--config`.
+This asks for confirmation, then deletes V2RayDAR's generated `V2RayDAR/v2raydar_data` folder, including generated `configs.yaml`, cache files, and V2RayDAR-owned firewall rules/state. For scripts, use `v2raydar --uninstall --yes`. It does not delete the executable itself, the separate `sing-box` executable, non-V2RayDAR firewall rules, or config files supplied through `--config` outside `v2raydar_data`.
 
 For development or tests with an explicit config path:
 

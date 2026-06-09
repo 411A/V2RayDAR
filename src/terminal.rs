@@ -70,7 +70,7 @@ pub fn print_startup(config: &AppConfig, paths: &AppPaths, verbose: bool) {
             "installed"
         }
     );
-    println!("App folder: {}", display_path(&paths.root_dir));
+    println!("Data folder: {}", display_path(&paths.root_dir));
     println!("Config: {}", display_path(&paths.config_path));
     println!("Local subscription: {local_url}");
 

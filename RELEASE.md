@@ -35,9 +35,9 @@ shasum -a 256 ./v2raydar-macos-aarch64
 
 ## First Run
 
-V2RayDAR is a single executable. It creates its app folder and `configs.yaml` on first run.
+V2RayDAR is a single executable. It creates `v2raydar_data/configs.yaml` on first run.
 
-Active probing requires `sing-box`, which is downloaded separately. On first run, V2RayDAR asks for the local `sing-box` executable path, verifies it with `sing-box version`, saves it in `configs.yaml`, and then starts scanning.
+Active probing requires `sing-box`, which is downloaded separately. On first run, V2RayDAR asks for the local `sing-box` executable path, verifies it with `sing-box version`, saves it in `v2raydar_data/configs.yaml`, and then starts scanning.
 
 Windows users who already have v2rayN should check the v2rayN installation folder for `sing-box.exe`. Otherwise, download sing-box from:
 
@@ -63,12 +63,12 @@ For portable mode:
 v2raydar --portable --uninstall
 ```
 
-This removes V2RayDAR's generated app folder:
+This removes V2RayDAR's generated `v2raydar_data` folder:
 
-- Windows: `%LOCALAPPDATA%\V2RayDAR`
-- macOS: `~/Library/Application Support/V2RayDAR`
-- Linux: `$XDG_DATA_HOME/v2raydar` or `~/.local/share/v2raydar`
-- Portable: `V2RayDAR` beside the executable
+- Windows: `%LOCALAPPDATA%\v2raydar_data`
+- macOS: `~/Library/Application Support/v2raydar_data`
+- Linux: `$XDG_DATA_HOME/v2raydar_data` or `~/.local/share/v2raydar_data`
+- Portable: `v2raydar_data` beside the executable
 
 The command asks for confirmation. For unattended scripts, add `--yes`:
 
@@ -76,4 +76,4 @@ The command asks for confirmation. For unattended scripts, add `--yes`:
 v2raydar --uninstall --yes
 ```
 
-The command does not remove the downloaded V2RayDAR executable, `sing-box`, or arbitrary folders used through `--config`.
+The command does not remove the downloaded V2RayDAR executable, `sing-box`, or config files supplied through `--config` outside `v2raydar_data`.

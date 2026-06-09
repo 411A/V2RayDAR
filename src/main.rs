@@ -33,8 +33,9 @@ use tracing::{error, info, warn};
 use crate::{
     config::AppConfig,
     constants::{
-        CONFIG_WATCH_INTERVAL, DEFAULT_LOG_FILTER_PLAIN, DEFAULT_LOG_FILTER_TUI, LOCALHOST_IP,
-        MAX_TUI_LOGS, SING_BOX_DOWNLOAD_URL, STABLE_WORKING_APPEARANCES,
+        CONFIG_WATCH_INTERVAL, DEFAULT_LOG_FILTER_PLAIN, DEFAULT_LOG_FILTER_TUI,
+        DEFAULT_LOG_FILTER_VERBOSE, LOCALHOST_IP, MAX_TUI_LOGS, SING_BOX_DOWNLOAD_URL,
+        STABLE_WORKING_APPEARANCES,
     },
     model::{ProbeStopPolicy, ProgressEvent, RankedConfig, RuntimeConfig, RuntimeState},
     paths::AppPaths,
@@ -42,7 +43,7 @@ use crate::{
     server::serve,
     sing_box::active_probe_needs_setup,
     subscription::load_candidates_with_cache,
-    terminal::{print_startup, print_summary},
+    terminal::{PlainProgressReporter, print_log, print_startup, print_summary},
 };
 
 #[derive(Debug, Parser)]
@@ -68,6 +69,9 @@ struct Cli {
     )]
     no_tui: bool,
 
+    #[arg(long, help = "Show detailed fetch/probe logs in plain terminal output")]
+    verbose: bool,
+
     #[arg(
         long,
         help = "Run one refresh and print results without starting the endpoint"
@@ -88,12 +92,13 @@ struct Cli {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     if cli.no_tui || cli.once {
-        tracing_subscriber::fmt()
-            .with_env_filter(
-                tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| DEFAULT_LOG_FILTER_PLAIN.into()),
-            )
-            .init();
+        let filter = if cli.verbose {
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| DEFAULT_LOG_FILTER_VERBOSE.into())
+        } else {
+            tracing_subscriber::EnvFilter::new(DEFAULT_LOG_FILTER_PLAIN)
+        };
+        tracing_subscriber::fmt().with_env_filter(filter).init();
     } else {
         tracing_subscriber::fmt()
             .with_env_filter(tracing_subscriber::EnvFilter::new(DEFAULT_LOG_FILTER_TUI))
@@ -130,20 +135,21 @@ async fn main() -> Result<()> {
     let runtime_config = Arc::new(RwLock::new(RuntimeConfig::from(&config)));
 
     if cli.once {
-        print_startup(&config, &paths);
+        print_startup(&config, &paths, cli.verbose);
         refresh_once(
             &config,
             &paths.cache_dir,
             state.clone(),
             runtime_config.clone(),
             true,
+            !cli.verbose,
         )
         .await?;
         return Ok(());
     }
 
     if cli.no_tui {
-        print_startup(&config, &paths);
+        print_startup(&config, &paths, cli.verbose);
         println!(
             "Serving top {} configs at {}",
             config.top_n,
@@ -162,6 +168,7 @@ async fn main() -> Result<()> {
         state.clone(),
         runtime_config.clone(),
         cli.no_tui,
+        cli.no_tui && !cli.verbose,
     );
     spawn_config_watcher(paths.config_path.clone(), config.bind, config_tx);
 
@@ -242,6 +249,7 @@ async fn refresh_once(
     state: Arc<RwLock<RuntimeState>>,
     runtime_config: Arc<RwLock<RuntimeConfig>>,
     print_terminal_summary: bool,
+    print_compact_progress: bool,
 ) -> Result<()> {
     info!(
         enabled_subscriptions = config
@@ -260,7 +268,14 @@ async fn refresh_once(
     let started_at = Utc::now();
     let started_instant = std::time::Instant::now();
     let previous_before_refresh = state.read().await.clone();
-    let (progress_tx, progress_task) = spawn_tui_progress_forwarder(state.clone());
+    let (progress_tx, progress_task) =
+        spawn_tui_progress_forwarder(state.clone(), print_compact_progress);
+    if print_compact_progress {
+        print_log(format!(
+            "Refresh started at {}.",
+            started_at.with_timezone(&Local).format("%H:%M:%S")
+        ));
+    }
     *runtime_config.write().await = RuntimeConfig::from(config);
     {
         let mut runtime = state.write().await;
@@ -304,6 +319,14 @@ async fn refresh_once(
         duration_ms = fetch_started.elapsed().as_millis(),
         "subscription load finished"
     );
+    if print_compact_progress {
+        print_log(format!(
+            "Subscription loading finished: {} configs, {} source errors in {}.",
+            fetched_count,
+            fetched.errors.len(),
+            format_duration_short(fetch_started.elapsed().as_millis())
+        ));
+    }
     {
         let mut runtime = state.write().await;
         runtime.total_candidates = fetched_count;
@@ -322,6 +345,9 @@ async fn refresh_once(
     let probe_started = std::time::Instant::now();
     let mut ranked = if fetched.candidates.is_empty() {
         info!("probe skipped because no candidates were loaded");
+        if print_compact_progress {
+            print_log("Probe skipped: no configs were loaded.");
+        }
         push_tui_progress(
             &state,
             ProgressEvent::LiveLog("Probe skipped: no configs were loaded".to_string()),
@@ -334,6 +360,13 @@ async fn refresh_once(
             mode = ?config.probe.mode,
             "probe started"
         );
+        if print_compact_progress {
+            print_log(format!(
+                "Probe started: {} candidates with {} mode.",
+                fetched_count,
+                format!("{:?}", config.probe.mode).to_ascii_lowercase()
+            ));
+        }
         push_tui_progress(
             &state,
             ProgressEvent::LiveLog(format!(
@@ -501,6 +534,7 @@ fn spawn_refresh_loop(
     state: Arc<RwLock<RuntimeState>>,
     runtime_config: Arc<RwLock<RuntimeConfig>>,
     print_terminal_summary: bool,
+    print_compact_progress: bool,
 ) {
     tokio::spawn(async move {
         let mut refresh_now = true;
@@ -520,6 +554,7 @@ fn spawn_refresh_loop(
                     state.clone(),
                     runtime_config.clone(),
                     print_terminal_summary,
+                    print_compact_progress,
                 )
                 .await
                 {
@@ -547,6 +582,7 @@ fn spawn_refresh_loop(
                     state.clone(),
                     runtime_config.clone(),
                     print_terminal_summary,
+                    print_compact_progress,
                 )
                 .await
                 {
@@ -564,7 +600,7 @@ fn spawn_refresh_loop(
                     let config = config_rx.borrow().clone();
                     last_refresh_fingerprint = Some(RefreshFingerprint::from(&config));
                     mark_refresh_pending(&state).await;
-                    if let Err(err) = refresh_once(&config, &cache_dir, state.clone(), runtime_config.clone(), print_terminal_summary).await {
+                    if let Err(err) = refresh_once(&config, &cache_dir, state.clone(), runtime_config.clone(), print_terminal_summary, print_compact_progress).await {
                         error!(error = %err, "refresh failed");
                         record_refresh_error(&state, err.to_string()).await;
                     }
@@ -581,7 +617,7 @@ fn spawn_refresh_loop(
                         continue;
                     }
                     last_refresh_fingerprint = Some(fingerprint);
-                    if let Err(err) = refresh_once(&config, &cache_dir, state.clone(), runtime_config.clone(), print_terminal_summary).await {
+                    if let Err(err) = refresh_once(&config, &cache_dir, state.clone(), runtime_config.clone(), print_terminal_summary, print_compact_progress).await {
                         error!(error = %err, "refresh after config reload failed");
                         record_refresh_error(&state, err.to_string()).await;
                     }
@@ -713,13 +749,18 @@ async fn add_fetch_bytes(state: &Arc<RwLock<RuntimeState>>, bytes: u64) {
 
 fn spawn_tui_progress_forwarder(
     state: Arc<RwLock<RuntimeState>>,
+    print_compact_progress: bool,
 ) -> (
     mpsc::UnboundedSender<ProgressEvent>,
     tokio::task::JoinHandle<()>,
 ) {
     let (tx, mut rx) = mpsc::unbounded_channel::<ProgressEvent>();
     let task = tokio::spawn(async move {
+        let mut reporter = print_compact_progress.then(PlainProgressReporter::new);
         while let Some(event) = rx.recv().await {
+            if let Some(reporter) = reporter.as_mut() {
+                reporter.on_event(&event);
+            }
             push_tui_progress(&state, event).await;
         }
     });

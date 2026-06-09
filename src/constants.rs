@@ -37,7 +37,8 @@ pub const DEFAULT_DOWNLOAD_BYTES_LIMIT: usize = 1_048_576;
 pub const MAX_TUI_LOGS: usize = 512;
 pub const STABLE_WORKING_APPEARANCES: u32 = 2;
 
-pub const DEFAULT_LOG_FILTER_PLAIN: &str = "v2raydar=info,tower_http=warn";
+pub const DEFAULT_LOG_FILTER_PLAIN: &str = "v2raydar=warn,tower_http=warn";
+pub const DEFAULT_LOG_FILTER_VERBOSE: &str = "v2raydar=info,tower_http=warn";
 pub const DEFAULT_LOG_FILTER_TUI: &str = "v2raydar=off,tower_http=warn";
 pub const CONFIG_WATCH_INTERVAL: Duration = Duration::from_secs(1);
 pub const LOCALHOST_IP: &str = "127.0.0.1";

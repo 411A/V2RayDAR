@@ -162,7 +162,7 @@ To remove generated app data:
 v2raydar --uninstall
 ```
 
-This asks for confirmation, then deletes V2RayDAR's generated app folder, including `configs.yaml` and cache files. For scripts, use `v2raydar --uninstall --yes`. It does not delete the executable itself, the separate `sing-box` executable, or arbitrary folders used through `--config`.
+This asks for confirmation, then deletes V2RayDAR's generated app folder, including `configs.yaml`, cache files, app ownership markers, and V2RayDAR-owned firewall rules/state. For scripts, use `v2raydar --uninstall --yes`. It does not delete the executable itself, the separate `sing-box` executable, non-V2RayDAR firewall rules, or arbitrary folders used through `--config`.
 
 For development or tests with an explicit config path:
 

@@ -14,6 +14,7 @@ Phase 1 is a fast scanner and local subscription server:
 - Fetches enabled subscription sources with bounded concurrency.
 - Parses common share links such as `vmess://`, `vless://`, `trojan://`, `ss://`, `ssr://`, `hysteria2://`, `hy2://`, and `tuic://`.
 - Starts `sing-box` for active validation and sends an HTTP request through each candidate config.
+- Samples active probes across subscription sources so a large first source does not delay connectable configs from later sources.
 - Ranks configs that successfully load the configured test URL through the proxy.
 - Exposes the top N configs from a local HTTP endpoint.
 
@@ -201,7 +202,7 @@ Top-level keys:
 | `refresh_seconds` | Integer seconds | `300` | `0` or higher | Yes | Time between automatic subscription refreshes. `0` disables timer refresh, but saved config changes still trigger a reload. |
 | `encoded_subscription` | Boolean | `true` | `true`, `false` | Yes | When `true`, `/subscription` returns a base64-encoded newline list. Keep `true` for v2rayNG/v2rayN unless you know your client wants raw links. |
 | `prioritize_stability` | Boolean | `false` | `true`, `false` | Yes | When `false`, ranking favors configs that work now, even briefly, which is recommended for highly limited networks. When `true`, configs seen working in at least three refreshes are promoted before lower-history configs even if their current ping is higher. |
-| `scan_all_configs` | Boolean | `true` | `true`, `false` | Yes | When `true`, every loaded config is validated. When `false`, active sing-box probing stops after enough working configs are found; with stability priority enabled, at least half of the returned configs must have also worked in the previous refresh. |
+| `scan_all_configs` | Boolean | `true` | `true`, `false` | Yes | When `true`, every loaded config is validated. When `false`, active sing-box probing samples across enabled sources and stops after enough working configs are found; with stability priority enabled, at least half of the returned configs must have also worked in the previous refresh when those configs are still present. |
 | `fetch_timeout_ms` | Integer milliseconds | `30000` | `1` or higher | Yes | Timeout for fetching each subscription source. |
 | `fetch_concurrency` | Positive integer | `4` | `1` or higher | Yes | Number of enabled subscription sources fetched concurrently. |
 | `max_subscription_bytes` | Positive integer bytes | `33554432` | `1` or higher | Yes | Maximum bytes accepted per subscription source to cap memory use. |
@@ -226,7 +227,7 @@ Probe keys:
 | `probe.connect_timeout_ms` | Integer milliseconds | `5000` | `1` or higher | Yes | TCP connection timeout used only by `probe.mode: tcp`. |
 | `probe.active_timeout_ms` | Integer milliseconds | `30000` | `1` or higher | Yes | Timeout for the HTTP request sent through the candidate config in active mode. |
 | `probe.startup_timeout_ms` | Integer milliseconds | `5000` | `1` or higher | Yes | Timeout while waiting for the temporary local sing-box mixed proxy to become ready. |
-| `probe.concurrency` | Positive integer | `4` | `1` or higher | Yes | Number of configs actively tested at once. Higher values can be faster but use more CPU/RAM/network. |
+| `probe.concurrency` | Positive integer | `4` | `1` or higher | Yes | Maximum number of active HTTP checks run at once. Higher values can be faster but use more CPU/RAM/network. |
 | `probe.batch_size` | Optional positive integer | Empty/null | Empty, `null`, or `1` or higher | Yes | Number of configs loaded into one sing-box process in active mode. Leave empty for adaptive batching. Larger batches reduce process startup overhead; `probe.concurrency` still controls simultaneous network checks. |
 | `probe.test_url` | URL string | `https://www.gstatic.com/generate_204` | Any `http://` or `https://` URL reachable from a working proxy | Yes | Connectivity URL loaded through every candidate config. Choose a small, stable URL that works from your network. |
 | `probe.accepted_statuses` | Array of HTTP status codes | `[204, 200]` | HTTP status integers, for example `[204]`, `[200]`, `[200, 204, 301, 302]` | Yes | HTTP statuses treated as active-probe success for `probe.test_url`. |

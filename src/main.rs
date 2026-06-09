@@ -656,7 +656,6 @@ fn probe_stop_policy(
         scan_all_configs: config.scan_all_configs,
         top_n: config.top_n,
         prioritize_stability: config.prioritize_stability,
-        stability_search_source: candidates.first().map(|candidate| candidate.source.clone()),
         previous_working_uris: previous
             .ranked
             .iter()

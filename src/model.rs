@@ -75,7 +75,6 @@ pub struct ProbeStopPolicy {
     pub top_n: usize,
     pub prioritize_stability: bool,
     pub previous_working_uris: HashSet<String>,
-    pub stability_search_source: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

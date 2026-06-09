@@ -407,6 +407,12 @@ struct CacheMetadata {
     last_modified: Option<String>,
 }
 
+impl CacheMetadata {
+    fn if_none_match(&self) -> Option<String> {
+        self.etag.as_deref().map(if_none_match_etag)
+    }
+}
+
 async fn fetch_body(
     client: &Client,
     url: &str,
@@ -460,9 +466,9 @@ async fn fetch_http_body(
 
     let mut request = client.get(url);
     let mut request_bytes = estimated_request_bytes(url);
-    if let Some(etag) = metadata.etag.as_deref() {
-        request = request.header(IF_NONE_MATCH, etag);
-        request_bytes = request_bytes.saturating_add(header_wire_bytes("If-None-Match", etag));
+    if let Some(etag) = metadata.if_none_match() {
+        request = request.header(IF_NONE_MATCH, &etag);
+        request_bytes = request_bytes.saturating_add(header_wire_bytes("If-None-Match", &etag));
     }
     if let Some(last_modified) = metadata.last_modified.as_deref() {
         request = request.header(IF_MODIFIED_SINCE, last_modified);
@@ -551,7 +557,15 @@ fn cache_key(value: &str) -> String {
 
 async fn read_cache_metadata(path: &Path) -> Result<CacheMetadata> {
     let bytes = fs::read(path).await?;
-    Ok(serde_json::from_slice(&bytes)?)
+    let metadata: CacheMetadata = serde_json::from_slice(&bytes)?;
+    if metadata
+        .etag
+        .as_deref()
+        .is_some_and(|etag| etag.contains('"'))
+    {
+        return Err(anyhow!("discarding cache metadata with quoted etag"));
+    }
+    Ok(metadata)
 }
 
 fn header_string(
@@ -629,7 +643,7 @@ async fn write_cache(
         let _ = fs::write(parent.join(CACHE_MARKER_FILE_NAME), b"V2RayDAR cache\n").await;
     }
     let metadata = CacheMetadata {
-        etag,
+        etag: etag.map(clean_cached_etag),
         last_modified,
     };
     if fs::write(&cache.body, body).await.is_ok()
@@ -637,6 +651,30 @@ async fn write_cache(
     {
         let _ = fs::write(&cache.metadata, bytes).await;
     }
+}
+
+fn clean_cached_etag(value: String) -> String {
+    let value = value.trim();
+    if let Some(tag) = value.strip_prefix("W/") {
+        format!("W/{}", trim_quotes(tag.trim()))
+    } else {
+        trim_quotes(value).to_string()
+    }
+}
+
+fn if_none_match_etag(value: &str) -> String {
+    if let Some(tag) = value.strip_prefix("W/") {
+        format!("W/\"{tag}\"")
+    } else {
+        format!("\"{value}\"")
+    }
+}
+
+fn trim_quotes(value: &str) -> &str {
+    value
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .unwrap_or(value)
 }
 
 fn parse_data_url(url: &str) -> Result<Vec<u8>> {
@@ -658,4 +696,70 @@ fn parse_data_url(url: &str) -> Result<Vec<u8>> {
         .decode_utf8_lossy()
         .as_bytes()
         .to_vec())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_metadata_path(name: &str) -> PathBuf {
+        let unique = format!(
+            "v2raydar-cache-metadata-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .expect("system time is after unix epoch")
+                .as_nanos()
+        );
+        std::env::temp_dir().join(unique)
+    }
+
+    #[test]
+    fn cache_metadata_stores_etag_without_http_quotes() {
+        let metadata = CacheMetadata {
+            etag: Some(clean_cached_etag(
+                "\"541c5c68f354e332e6ce6a114e106522fac0f43bcbefb1e983e4f1388c5709e0\"".to_string(),
+            )),
+            last_modified: None,
+        };
+
+        assert_eq!(
+            metadata.etag.as_deref(),
+            Some("541c5c68f354e332e6ce6a114e106522fac0f43bcbefb1e983e4f1388c5709e0")
+        );
+        assert_eq!(
+            serde_json::to_string(&metadata).expect("metadata serializes"),
+            "{\"etag\":\"541c5c68f354e332e6ce6a114e106522fac0f43bcbefb1e983e4f1388c5709e0\",\"last_modified\":null}"
+        );
+    }
+
+    #[test]
+    fn cache_metadata_requotes_etag_for_conditional_http_requests() {
+        let metadata = CacheMetadata {
+            etag: Some(
+                "541c5c68f354e332e6ce6a114e106522fac0f43bcbefb1e983e4f1388c5709e0".to_string(),
+            ),
+            last_modified: None,
+        };
+
+        assert_eq!(
+            metadata.if_none_match().as_deref(),
+            Some("\"541c5c68f354e332e6ce6a114e106522fac0f43bcbefb1e983e4f1388c5709e0\"")
+        );
+    }
+
+    #[tokio::test]
+    async fn quoted_cache_metadata_is_discarded() {
+        let path = temp_metadata_path("quoted");
+        fs::write(
+            &path,
+            "{\"etag\":\"\\\"541c5c68f354e332e6ce6a114e106522fac0f43bcbefb1e983e4f1388c5709e0\\\"\",\"last_modified\":null}",
+        )
+        .await
+        .expect("test metadata can be written");
+
+        assert!(read_cache_metadata(&path).await.is_err());
+
+        let _ = fs::remove_file(path).await;
+    }
 }

@@ -6,7 +6,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use super::state::{InputMode, TuiState};
+use super::state::{InputMode, MenuView, TuiState};
 
 pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
     let input = match state.input_mode {
@@ -19,8 +19,13 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
     } else {
         Color::Green
     };
+    let guide_text = if state.view == MenuView::Logs {
+        "Up/k older | Down/j newer | Esc/Ctrl+H back | :q"
+    } else {
+        "Up/Down or j/k nav | Enter select/edit | Esc/Ctrl+H back | :save :q"
+    };
     let guide = Line::from(Span::styled(
-        "Up/Down or j/k nav | Enter select/edit | Esc/Ctrl+H back | :save :q",
+        guide_text,
         Style::default().fg(Color::DarkGray),
     ));
     let mut activity = vec![Span::styled(dirty, Style::default().fg(dirty_color))];

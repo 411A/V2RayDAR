@@ -11,27 +11,63 @@ use reqwest::Proxy;
 use serde_json::{Map, Value, json};
 use tokio::{
     fs,
+    io::AsyncReadExt,
     net::{TcpListener, TcpStream},
     process::Command,
+    sync::mpsc::UnboundedSender,
     time::Instant,
 };
+use tracing::{debug, info, warn};
 use url::Url;
 
 use crate::{
     config::{ProbeConfig, ProbeMode},
     constants::{
         ACTIVE_PROBE_BATCH_CONCURRENCY_MULTIPLIER, ACTIVE_PROBE_BATCH_MAX_SIZE,
-        ACTIVE_PROBE_BATCH_MIN_SIZE, LOCAL_PROXY_WAIT_INTERVAL, LOCALHOST_IP,
-        SING_BOX_CONFIG_FILE_PREFIX, SING_BOX_INBOUND_TAG_PREFIX, SING_BOX_OUTBOUND_TAG_PREFIX,
+        ACTIVE_PROBE_BATCH_MIN_SIZE, ACTIVE_PROBE_HTTP_MAX_CONCURRENCY,
+        LOCAL_PROXY_CONNECT_TIMEOUT, LOCAL_PROXY_WAIT_INTERVAL, LOCALHOST_IP,
+        SING_BOX_CLEANUP_TIMEOUT, SING_BOX_CONFIG_FILE_PREFIX, SING_BOX_INBOUND_TAG_PREFIX,
+        SING_BOX_OUTBOUND_TAG_PREFIX,
     },
-    model::{Candidate, RankedConfig},
+    model::{Candidate, ProbeStopPolicy, ProgressEvent, RankedConfig},
 };
 
 pub async fn probe_candidates(
     candidates: Vec<Candidate>,
     config: &ProbeConfig,
+    progress: Option<UnboundedSender<ProgressEvent>>,
+    stop_policy: &ProbeStopPolicy,
 ) -> Vec<RankedConfig> {
+    info!(
+        mode = ?config.mode,
+        candidates = candidates.len(),
+        concurrency = config.concurrency,
+        batch_size = ?config.batch_size,
+        "probe candidate queue received"
+    );
+    send_progress(
+        &progress,
+        format!(
+            "Testing {} loaded configs with {:?} mode (concurrency {})",
+            candidates.len(),
+            config.mode,
+            config.concurrency
+        ),
+    );
     if config.mode == ProbeMode::Active && !sing_box_available(&config.sing_box_path).await {
+        warn!(
+            sing_box_path = %config.sing_box_path,
+            "sing-box availability check failed"
+        );
+        let failed = candidates.len();
+        send_progress(
+            &progress,
+            format!(
+                "sing-box unavailable at '{}'; marking {failed} configs failed",
+                config.sing_box_path
+            ),
+        );
+        send_probe_delta(&progress, failed, 0);
         return rank_configs(
             candidates
                 .into_iter()
@@ -50,17 +86,34 @@ pub async fn probe_candidates(
     }
 
     let ranked = match config.mode {
-        ProbeMode::Active => probe_active_batched(candidates, config).await,
+        ProbeMode::Active => {
+            probe_active_batched(candidates, config, progress.clone(), stop_policy).await
+        }
         ProbeMode::Tcp => {
-            stream::iter(candidates.into_iter().map(|candidate| async move {
+            if !stop_policy.scan_all_configs {
+                send_progress(
+                    &progress,
+                    "Early stop is disabled in TCP diagnostic mode; active sing-box validation is required for shortcut results",
+                );
+            }
+            let mut results = stream::iter(candidates.into_iter().map(|candidate| async move {
                 probe_tcp(candidate, Duration::from_millis(config.connect_timeout_ms)).await
             }))
-            .buffer_unordered(config.concurrency)
-            .collect::<Vec<_>>()
-            .await
+            .buffer_unordered(config.concurrency);
+            let mut ranked = Vec::new();
+            while let Some(result) = results.next().await {
+                send_probe_delta(&progress, 1, usize::from(result.reachable));
+                ranked.push(result);
+            }
+            ranked
         }
     };
 
+    info!(ranked = ranked.len(), "probe candidate queue completed");
+    send_progress(
+        &progress,
+        format!("Probe queue finished: {} results", ranked.len()),
+    );
     rank_configs(ranked)
 }
 
@@ -110,11 +163,26 @@ async fn probe_tcp(candidate: Candidate, timeout: Duration) -> RankedConfig {
 
 struct PreparedActiveCandidate {
     candidate: Candidate,
+    aliases: Vec<Candidate>,
     outbound: Value,
+}
+
+impl PreparedActiveCandidate {
+    fn candidate_count(&self) -> usize {
+        1 + self.aliases.len()
+    }
+
+    fn into_candidates(self) -> Vec<Candidate> {
+        let mut candidates = Vec::with_capacity(self.candidate_count());
+        candidates.push(self.candidate);
+        candidates.extend(self.aliases);
+        candidates
+    }
 }
 
 struct BatchProbeFailure {
     entries: Vec<PreparedActiveCandidate>,
+    failed_entry: Option<PreparedActiveCandidate>,
     error: anyhow::Error,
     retry_split: bool,
 }
@@ -123,6 +191,7 @@ impl BatchProbeFailure {
     fn retryable(entries: Vec<PreparedActiveCandidate>, error: anyhow::Error) -> Self {
         Self {
             entries,
+            failed_entry: None,
             error,
             retry_split: true,
         }
@@ -131,6 +200,20 @@ impl BatchProbeFailure {
     fn unrecoverable(entries: Vec<PreparedActiveCandidate>, error: anyhow::Error) -> Self {
         Self {
             entries,
+            failed_entry: None,
+            error,
+            retry_split: false,
+        }
+    }
+
+    fn invalid_entry(
+        entries: Vec<PreparedActiveCandidate>,
+        failed_entry: PreparedActiveCandidate,
+        error: anyhow::Error,
+    ) -> Self {
+        Self {
+            entries,
+            failed_entry: Some(failed_entry),
             error,
             retry_split: false,
         }
@@ -149,10 +232,147 @@ struct ActiveProbeSuccess {
     download_bytes: Option<usize>,
 }
 
+struct ActivePreparation {
+    prepared: Vec<PreparedActiveCandidate>,
+    ranked: Vec<RankedConfig>,
+    prepared_candidates: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ProbeStopState {
+    half_snapshot_sent: bool,
+    stability_search_exhausted: bool,
+}
+
+impl ProbeStopState {
+    fn new() -> Self {
+        Self {
+            half_snapshot_sent: false,
+            stability_search_exhausted: false,
+        }
+    }
+}
+
 async fn probe_active_batched(
     candidates: Vec<Candidate>,
     config: &ProbeConfig,
+    progress: Option<UnboundedSender<ProgressEvent>>,
+    stop_policy: &ProbeStopPolicy,
 ) -> Vec<RankedConfig> {
+    let started = Instant::now();
+    let input_count = candidates.len();
+    let ActivePreparation {
+        mut prepared,
+        mut ranked,
+        prepared_candidates,
+    } = prepare_active_candidates(candidates);
+
+    let batch_size = active_probe_batch_size(config.concurrency, config.batch_size);
+    let total_batches = prepared.len().div_ceil(batch_size);
+    info!(
+        input = input_count,
+        prepared = prepared_candidates,
+        test_definitions = prepared.len(),
+        parse_failed = ranked.len(),
+        batch_size,
+        total_batches,
+        "active probe preparation finished"
+    );
+    send_progress(
+        &progress,
+        format!(
+            "Prepared active test: {} sing-box definitions represent {} loaded configs; {} unsupported configs skipped; {} batches",
+            prepared.len(),
+            prepared_candidates,
+            ranked.len(),
+            total_batches
+        ),
+    );
+    if !ranked.is_empty() {
+        send_probe_delta(&progress, ranked.len(), 0);
+    }
+    let mut stop_state = ProbeStopState::new();
+    let mut batch_index = 0_usize;
+    while !prepared.is_empty() {
+        batch_index += 1;
+        let batch_len = next_active_batch_len(&prepared, batch_size, stop_policy);
+        let batch = prepared.drain(..batch_len).collect::<Vec<_>>();
+        update_stability_search_boundary(&batch, stop_policy, &mut stop_state);
+        let batch_candidates = candidate_count(&batch);
+        info!(
+            batch_index,
+            total_batches,
+            entries = batch.len(),
+            candidates = batch_candidates,
+            "active probe batch started"
+        );
+        send_progress(
+            &progress,
+            format!(
+                "Batch {batch_index}/{total_batches}: testing {batch_candidates} configs ({} sing-box definitions)",
+                batch.len()
+            ),
+        );
+        let batch_started = Instant::now();
+        let before = ranked.len();
+        ranked.extend(
+            probe_active_batch_with_fallback(
+                batch,
+                config,
+                &progress,
+                stop_policy,
+                &mut stop_state,
+                &ranked,
+            )
+            .await,
+        );
+        update_stability_search_after_batch(&prepared, stop_policy, &mut stop_state);
+        let after = ranked.len();
+        info!(
+            batch_index,
+            total_batches,
+            produced = after.saturating_sub(before),
+            duration_ms = batch_started.elapsed().as_millis(),
+            "active probe batch finished"
+        );
+        send_progress(
+            &progress,
+            format!(
+                "Batch {batch_index}/{total_batches} finished: {} configs checked in {}",
+                after.saturating_sub(before),
+                format_duration_short(batch_started.elapsed())
+            ),
+        );
+        if let Some(reason) = probe_stop_reason(&ranked, stop_policy, &mut stop_state, &progress) {
+            info!(
+                batch_index,
+                total_batches,
+                ranked = ranked.len(),
+                reachable = ranked.iter().filter(|item| item.reachable).count(),
+                "active probe early stop reached"
+            );
+            send_progress(&progress, reason);
+            break;
+        }
+    }
+
+    info!(
+        ranked = ranked.len(),
+        duration_ms = started.elapsed().as_millis(),
+        "active probe batches finished"
+    );
+    send_progress(
+        &progress,
+        format!(
+            "Active test finished: {} configs checked in {}",
+            ranked.len(),
+            format_duration_short(started.elapsed())
+        ),
+    );
+    ranked
+}
+
+fn prepare_active_candidates(candidates: Vec<Candidate>) -> ActivePreparation {
     let mut prepared = Vec::new();
     let mut ranked = Vec::new();
 
@@ -160,20 +380,227 @@ async fn probe_active_batched(
         match sing_box_outbound_from_share_link(&candidate.uri) {
             Ok(outbound) => prepared.push(PreparedActiveCandidate {
                 candidate,
+                aliases: Vec::new(),
                 outbound,
             }),
             Err(err) => ranked.push(failed_config(candidate, "active_http", err.to_string())),
         }
     }
 
-    let batch_size = active_probe_batch_size(config.concurrency, config.batch_size);
-    while !prepared.is_empty() {
-        let batch_len = prepared.len().min(batch_size);
-        let batch = prepared.drain(..batch_len).collect::<Vec<_>>();
-        ranked.extend(probe_active_batch_with_fallback(batch, config).await);
+    let prepared_candidates = candidate_count(&prepared);
+    ActivePreparation {
+        prepared,
+        ranked,
+        prepared_candidates,
+    }
+}
+
+fn candidate_count(entries: &[PreparedActiveCandidate]) -> usize {
+    entries
+        .iter()
+        .map(PreparedActiveCandidate::candidate_count)
+        .sum()
+}
+
+fn probe_stop_reason(
+    ranked: &[RankedConfig],
+    policy: &ProbeStopPolicy,
+    state: &mut ProbeStopState,
+    progress: &Option<UnboundedSender<ProgressEvent>>,
+) -> Option<String> {
+    if policy.scan_all_configs || policy.top_n == 0 {
+        return None;
     }
 
+    let reachable = ranked.iter().filter(|item| item.reachable).count();
+    if !policy.prioritize_stability {
+        return (reachable >= policy.top_n).then(|| {
+            format!(
+                "Early stop: found {reachable}/{} working configs with active sing-box checks",
+                policy.top_n
+            )
+        });
+    }
+
+    let first_half = policy.top_n / 2;
+    let second_half = policy.top_n.saturating_sub(first_half);
+    if first_half > 0 && reachable >= first_half && !state.half_snapshot_sent {
+        state.half_snapshot_sent = true;
+        send_ranked_snapshot(progress, stability_snapshot(ranked, policy, first_half));
+        send_progress(
+            progress,
+            format!("Early publish: found first {first_half} working configs"),
+        );
+    }
+
+    if reachable < policy.top_n {
+        return None;
+    }
+
+    let found_previous = stable_reachable_count(ranked, policy);
+    let required_previous = second_half.min(policy.previous_working_uris.len());
+    if found_previous >= required_previous {
+        return Some(format!(
+            "Early stop: found {reachable}/{} working configs, including {found_previous}/{required_previous} seen working in the previous run",
+            policy.top_n
+        ));
+    }
+
+    if state.stability_search_exhausted {
+        return Some(format!(
+            "Early stop: first subscription stability search finished; filling {} configs by lowest ping",
+            policy.top_n
+        ));
+    }
+
+    None
+}
+
+fn probe_stop_reason_with_batch(
+    previous_ranked: &[RankedConfig],
+    current_batch_ranked: &[RankedConfig],
+    ranked: &[RankedConfig],
+    policy: &ProbeStopPolicy,
+    state: &mut ProbeStopState,
+    progress: &Option<UnboundedSender<ProgressEvent>>,
+) -> Option<String> {
+    if policy.scan_all_configs {
+        return None;
+    }
+
+    let combined = previous_ranked
+        .iter()
+        .chain(current_batch_ranked.iter())
+        .chain(ranked.iter())
+        .cloned()
+        .collect::<Vec<_>>();
+    probe_stop_reason(&combined, policy, state, progress)
+}
+
+fn stable_reachable_count(ranked: &[RankedConfig], policy: &ProbeStopPolicy) -> usize {
     ranked
+        .iter()
+        .filter(|item| item.reachable && policy.previous_working_uris.contains(&item.uri))
+        .count()
+}
+
+fn stability_snapshot(
+    ranked: &[RankedConfig],
+    policy: &ProbeStopPolicy,
+    limit: usize,
+) -> Vec<RankedConfig> {
+    let mut working = ranked
+        .iter()
+        .filter(|item| item.reachable)
+        .cloned()
+        .collect::<Vec<_>>();
+    working.sort_by(compare_ranked);
+
+    if !policy.prioritize_stability {
+        working.truncate(limit);
+        return working;
+    }
+
+    let mut selected = Vec::new();
+    let mut used_uris = std::collections::HashSet::new();
+    for item in working
+        .iter()
+        .filter(|item| policy.previous_working_uris.contains(&item.uri))
+    {
+        if selected.len() >= limit {
+            break;
+        }
+        used_uris.insert(item.uri.clone());
+        selected.push(item.clone());
+    }
+    for item in working {
+        if selected.len() >= limit {
+            break;
+        }
+        if used_uris.insert(item.uri.clone()) {
+            selected.push(item);
+        }
+    }
+    selected
+}
+
+fn next_active_batch_len(
+    prepared: &[PreparedActiveCandidate],
+    batch_size: usize,
+    policy: &ProbeStopPolicy,
+) -> usize {
+    let default = prepared.len().min(batch_size);
+    if policy.scan_all_configs || !policy.prioritize_stability {
+        return default;
+    }
+
+    let Some(source) = policy.stability_search_source.as_deref() else {
+        return default;
+    };
+    let Some(first) = prepared.first() else {
+        return 0;
+    };
+    if first.candidate.source != source {
+        return default;
+    }
+
+    let same_source = prepared
+        .iter()
+        .take_while(|entry| entry.candidate.source == source)
+        .count();
+    default.min(same_source.max(1))
+}
+
+fn update_stability_search_boundary(
+    batch: &[PreparedActiveCandidate],
+    policy: &ProbeStopPolicy,
+    state: &mut ProbeStopState,
+) {
+    if policy.scan_all_configs || !policy.prioritize_stability {
+        return;
+    }
+
+    let Some(source) = policy.stability_search_source.as_deref() else {
+        state.stability_search_exhausted = true;
+        return;
+    };
+    if batch
+        .first()
+        .is_some_and(|entry| entry.candidate.source != source)
+    {
+        state.stability_search_exhausted = true;
+    }
+}
+
+fn update_stability_search_after_batch(
+    remaining: &[PreparedActiveCandidate],
+    policy: &ProbeStopPolicy,
+    state: &mut ProbeStopState,
+) {
+    if policy.scan_all_configs || !policy.prioritize_stability || state.stability_search_exhausted {
+        return;
+    }
+
+    let Some(source) = policy.stability_search_source.as_deref() else {
+        state.stability_search_exhausted = true;
+        return;
+    };
+
+    if remaining
+        .first()
+        .is_none_or(|entry| entry.candidate.source != source)
+    {
+        state.stability_search_exhausted = true;
+    }
+}
+
+fn send_ranked_snapshot(
+    progress: &Option<UnboundedSender<ProgressEvent>>,
+    ranked: Vec<RankedConfig>,
+) {
+    if let Some(progress) = progress {
+        let _ = progress.send(ProgressEvent::RankedSnapshot(ranked));
+    }
 }
 
 fn active_probe_batch_size(concurrency: usize, configured: Option<usize>) -> usize {
@@ -184,31 +611,102 @@ fn active_probe_batch_size(concurrency: usize, configured: Option<usize>) -> usi
     })
 }
 
+fn active_probe_http_concurrency(configured: usize, batch_entries: usize) -> usize {
+    configured
+        .max(1)
+        .saturating_mul(ACTIVE_PROBE_BATCH_CONCURRENCY_MULTIPLIER)
+        .min(ACTIVE_PROBE_HTTP_MAX_CONCURRENCY)
+        .min(batch_entries.max(1))
+}
+
 async fn probe_active_batch_with_fallback(
     batch: Vec<PreparedActiveCandidate>,
     config: &ProbeConfig,
+    progress: &Option<UnboundedSender<ProgressEvent>>,
+    stop_policy: &ProbeStopPolicy,
+    stop_state: &mut ProbeStopState,
+    previous_ranked: &[RankedConfig],
 ) -> Vec<RankedConfig> {
     let mut pending = vec![batch];
     let mut ranked = Vec::new();
 
     while let Some(batch) = pending.pop() {
-        match probe_active_batch(batch, config).await {
+        let batch_len = batch.len();
+        match probe_active_batch(
+            batch,
+            config,
+            progress,
+            stop_policy,
+            stop_state,
+            previous_ranked,
+            &ranked,
+        )
+        .await
+        {
             Ok(mut batch_ranked) => ranked.append(&mut batch_ranked),
-            Err(failure) if failure.retry_split && failure.entries.len() > 1 => {
-                let mut left = failure.entries;
-                let right = left.split_off(left.len() / 2);
-                pending.push(right);
-                pending.push(left);
-            }
-            Err(failure) => {
+            Err(mut failure) => {
                 let error = failure.error.to_string();
-                ranked.extend(
-                    failure
-                        .entries
-                        .into_iter()
-                        .map(|entry| failed_config(entry.candidate, "active_http", error.clone())),
-                );
+                if let Some(failed_entry) = failure.failed_entry.take() {
+                    warn!(
+                        remaining = failure.entries.len(),
+                        failed_candidates = failed_entry.candidate_count(),
+                        error = %error,
+                        "active probe batch rejected one generated outbound"
+                    );
+                    send_progress(
+                        progress,
+                        format!(
+                            "sing-box rejected one generated test config; retrying {} remaining definitions",
+                            failure.entries.len()
+                        ),
+                    );
+                    send_probe_delta(progress, failed_entry.candidate_count(), 0);
+                    ranked.extend(failed_configs(failed_entry, "active_http", error));
+                    if !failure.entries.is_empty() {
+                        pending.push(failure.entries);
+                    }
+                } else if failure.retry_split && failure.entries.len() > 1 {
+                    warn!(
+                        entries = failure.entries.len(),
+                        error = %failure.error,
+                        "active probe batch failed; splitting"
+                    );
+                    send_progress(
+                        progress,
+                        format!(
+                            "Batch could not start cleanly; splitting {} server definitions and retrying",
+                            failure.entries.len()
+                        ),
+                    );
+                    let mut left = failure.entries;
+                    let right = left.split_off(left.len() / 2);
+                    pending.push(right);
+                    pending.push(left);
+                } else {
+                    warn!(
+                        entries = batch_len,
+                        error = %error,
+                        "active probe batch failed"
+                    );
+                    send_progress(progress, format!("Active probe batch failed: {error}"));
+                    let failed_count = candidate_count(&failure.entries);
+                    send_probe_delta(progress, failed_count, 0);
+                    ranked.extend(
+                        failure
+                            .entries
+                            .into_iter()
+                            .flat_map(|entry| failed_configs(entry, "active_http", error.clone())),
+                    );
+                }
             }
+        }
+        let combined = previous_ranked
+            .iter()
+            .chain(ranked.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        if probe_stop_reason(&combined, stop_policy, stop_state, progress).is_some() {
+            break;
         }
     }
 
@@ -218,11 +716,26 @@ async fn probe_active_batch_with_fallback(
 async fn probe_active_batch(
     entries: Vec<PreparedActiveCandidate>,
     config: &ProbeConfig,
+    progress: &Option<UnboundedSender<ProgressEvent>>,
+    stop_policy: &ProbeStopPolicy,
+    stop_state: &mut ProbeStopState,
+    previous_ranked: &[RankedConfig],
+    current_batch_ranked: &[RankedConfig],
 ) -> std::result::Result<Vec<RankedConfig>, BatchProbeFailure> {
     if entries.is_empty() {
         return Ok(Vec::new());
     }
 
+    let started = Instant::now();
+    debug!(
+        entries = entries.len(),
+        "active probe reserving local ports"
+    );
+    let entry_candidates = candidate_count(&entries);
+    send_progress(
+        progress,
+        format!("Starting sing-box test process for {entry_candidates} configs"),
+    );
     let reservations = match reserve_local_ports(entries.len()).await {
         Ok(reservations) => reservations,
         Err(err) => {
@@ -236,6 +749,7 @@ async fn probe_active_batch(
         .iter()
         .map(|reservation| reservation.port)
         .collect::<Vec<_>>();
+    debug!(entries = entries.len(), ports = ?ports, "active probe local ports reserved");
     let config_path = match write_sing_box_batch_config(&entries, &ports).await {
         Ok(path) => path,
         Err(err) => {
@@ -254,11 +768,19 @@ async fn probe_active_batch(
         .arg(&config_path)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
         .spawn();
 
     let mut child = match child {
-        Ok(child) => child,
+        Ok(child) => {
+            debug!(
+                entries = entries.len(),
+                config_path = %config_path.display(),
+                "sing-box batch process spawned"
+            );
+            child
+        }
         Err(err) => {
             let _ = fs::remove_file(config_path).await;
             return Err(BatchProbeFailure::unrecoverable(
@@ -278,51 +800,156 @@ async fn probe_active_batch(
     )
     .await
     {
-        cleanup_sing_box_child(child, config_path).await;
+        let stderr = cleanup_sing_box_child(child, config_path).await;
+        let err = with_sing_box_stderr(err, &stderr);
+        if let Some(index) =
+            sing_box_failed_outbound_index(&stderr).filter(|index| *index < entries.len())
+        {
+            let mut remaining = entries;
+            let failed_entry = remaining.remove(index);
+            warn!(
+                failed_outbound_index = index,
+                failed_candidates = failed_entry.candidate_count(),
+                remaining = remaining.len(),
+                error = %err,
+                "sing-box rejected generated outbound"
+            );
+            return Err(BatchProbeFailure::invalid_entry(
+                remaining,
+                failed_entry,
+                err,
+            ));
+        }
+        warn!(
+            entries = entries.len(),
+            duration_ms = started.elapsed().as_millis(),
+            error = %err,
+            "sing-box local proxies were not ready"
+        );
+        send_progress(
+            progress,
+            format!("sing-box test process was not ready: {err}"),
+        );
         return Err(BatchProbeFailure::retryable(entries, err));
     }
-
-    let ranked = stream::iter(entries.into_iter().zip(ports.into_iter()).map(
-        |(entry, port)| async move { probe_active_target(entry.candidate, port, config).await },
+    debug!(
+        entries = entries.len(),
+        duration_ms = started.elapsed().as_millis(),
+        "sing-box local proxies ready"
+    );
+    let total_entries = entries.len();
+    let total_candidates = candidate_count(&entries);
+    let http_concurrency = active_probe_http_concurrency(config.concurrency, total_entries);
+    let progress_interval = http_concurrency.min(total_entries);
+    let mut probe_results = stream::iter(entries.into_iter().zip(ports.into_iter()).map(
+        |(entry, port)| async move {
+            let result = probe_active_target_inner(port, config).await;
+            ranked_configs_for_active_result(entry, result)
+        },
     ))
-    .buffer_unordered(config.concurrency)
-    .collect::<Vec<_>>()
-    .await;
+    .buffer_unordered(http_concurrency);
+    let mut ranked = Vec::with_capacity(total_candidates);
+    let mut completed = 0;
+    while let Some(mut results) = probe_results.next().await {
+        completed += 1;
+        let tested_delta = results.len();
+        let working_delta = results.iter().filter(|item| item.reachable).count();
+        ranked.append(&mut results);
+        send_probe_delta(progress, tested_delta, working_delta);
+        if completed == total_entries || completed % progress_interval == 0 {
+            info!(
+                completed_probes = completed,
+                total_probes = total_entries,
+                ranked_candidates = ranked.len(),
+                total_candidates,
+                reachable = ranked.iter().filter(|item| item.reachable).count(),
+                duration_ms = started.elapsed().as_millis(),
+                "active probe batch progress"
+            );
+            send_progress(
+                progress,
+                format!(
+                    "Batch progress: {}/{} configs checked, {} working",
+                    ranked.len(),
+                    total_candidates,
+                    ranked.iter().filter(|item| item.reachable).count()
+                ),
+            );
+        }
+        if let Some(reason) = probe_stop_reason_with_batch(
+            previous_ranked,
+            current_batch_ranked,
+            &ranked,
+            stop_policy,
+            stop_state,
+            progress,
+        ) {
+            info!(
+                completed_probes = completed,
+                total_probes = total_entries,
+                ranked_candidates = ranked.len(),
+                total_candidates,
+                reachable = ranked.iter().filter(|item| item.reachable).count(),
+                "active probe batch stopped early"
+            );
+            send_progress(progress, reason);
+            break;
+        }
+    }
 
-    cleanup_sing_box_child(child, config_path).await;
+    let stderr = cleanup_sing_box_child(child, config_path).await;
+    if !stderr.is_empty() {
+        debug!(stderr = %stderr, "sing-box batch stderr");
+    }
+    debug!(
+        ranked = ranked.len(),
+        duration_ms = started.elapsed().as_millis(),
+        "active probe batch process finished"
+    );
     Ok(ranked)
 }
 
-async fn probe_active_target(
-    candidate: Candidate,
-    port: u16,
-    config: &ProbeConfig,
-) -> RankedConfig {
-    match probe_active_target_inner(port, config).await {
-        Ok(active) => RankedConfig {
-            rank: 0,
-            stability_count: 0,
-            id: candidate.id,
-            source: candidate.source,
-            priority: candidate.priority,
-            protocol: candidate.protocol,
-            name: candidate.name,
-            endpoint: candidate.endpoint,
-            uri: candidate.uri,
-            reachable: true,
-            validation: "active_http".to_string(),
-            latency_ms: Some(active.latency_ms),
-            http_status: Some(active.http_status),
-            download_mbps: active.download_mbps,
-            download_bytes: active.download_bytes,
-            error: None,
-        },
-        Err(err) => failed_config(candidate, "active_http", err.to_string()),
+fn ranked_configs_for_active_result(
+    entry: PreparedActiveCandidate,
+    result: Result<ActiveProbeSuccess>,
+) -> Vec<RankedConfig> {
+    match result {
+        Ok(active) => entry
+            .into_candidates()
+            .into_iter()
+            .map(|candidate| successful_config(candidate, &active))
+            .collect(),
+        Err(err) => {
+            let error = err.to_string();
+            failed_configs(entry, "active_http", error)
+        }
+    }
+}
+
+fn successful_config(candidate: Candidate, active: &ActiveProbeSuccess) -> RankedConfig {
+    RankedConfig {
+        rank: 0,
+        stability_count: 0,
+        id: candidate.id,
+        source: candidate.source,
+        priority: candidate.priority,
+        protocol: candidate.protocol,
+        name: candidate.name,
+        endpoint: candidate.endpoint,
+        uri: candidate.uri,
+        reachable: true,
+        validation: "active_http".to_string(),
+        latency_ms: Some(active.latency_ms),
+        http_status: Some(active.http_status),
+        download_mbps: active.download_mbps,
+        download_bytes: active.download_bytes,
+        error: None,
     }
 }
 
 async fn probe_active_target_inner(port: u16, config: &ProbeConfig) -> Result<ActiveProbeSuccess> {
     let proxy_url = format!("http://{LOCALHOST_IP}:{port}");
+    debug!(port, test_url = %config.test_url, "active HTTP probe started");
     let client = reqwest::Client::builder()
         .timeout(Duration::from_millis(config.active_timeout_ms))
         .proxy(Proxy::all(&proxy_url)?)
@@ -332,6 +959,10 @@ async fn probe_active_target_inner(port: u16, config: &ProbeConfig) -> Result<Ac
     let response = client.get(&config.test_url).send().await?;
     let latency_ms = started.elapsed().as_millis();
     let status = response.status().as_u16();
+    debug!(
+        port,
+        status, latency_ms, "active HTTP probe response received"
+    );
     if !config.accepted_statuses.contains(&status) {
         return Err(anyhow!(
             "active HTTP probe returned status {}; accepted statuses are {:?}",
@@ -407,7 +1038,9 @@ async fn measure_download(
 }
 
 async fn sing_box_available(path: &str) -> bool {
-    Command::new(path)
+    debug!(sing_box_path = %path, "checking sing-box availability");
+    let started = Instant::now();
+    let available = Command::new(path)
         .arg("version")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -415,7 +1048,14 @@ async fn sing_box_available(path: &str) -> bool {
         .status()
         .await
         .map(|status| status.success())
-        .unwrap_or(false)
+        .unwrap_or(false);
+    info!(
+        sing_box_path = %path,
+        available,
+        duration_ms = started.elapsed().as_millis(),
+        "sing-box availability check finished"
+    );
+    available
 }
 
 async fn reserve_local_ports(count: usize) -> Result<Vec<ReservedLocalPort>> {
@@ -439,14 +1079,32 @@ async fn wait_for_local_proxies(
 ) -> Result<()> {
     let started = Instant::now();
     let mut ready = vec![false; ports.len()];
+    debug!(
+        ports = ports.len(),
+        timeout_ms = timeout.as_millis(),
+        "waiting for sing-box local proxies"
+    );
     loop {
         if let Some(status) = child.try_wait()? {
             return Err(anyhow!("sing-box exited before proxy was ready: {status}"));
         }
 
         for (index, port) in ports.iter().enumerate() {
-            if !ready[index] && TcpStream::connect((LOCALHOST_IP, *port)).await.is_ok() {
+            if !ready[index]
+                && tokio::time::timeout(
+                    LOCAL_PROXY_CONNECT_TIMEOUT,
+                    TcpStream::connect((LOCALHOST_IP, *port)),
+                )
+                .await
+                .is_ok_and(|result| result.is_ok())
+            {
                 ready[index] = true;
+                debug!(
+                    port,
+                    ready = ready.iter().filter(|is_ready| **is_ready).count(),
+                    total = ports.len(),
+                    "sing-box local proxy became ready"
+                );
             }
         }
 
@@ -520,10 +1178,74 @@ async fn write_sing_box_batch_config(
     Ok(path)
 }
 
-async fn cleanup_sing_box_child(mut child: tokio::process::Child, config_path: PathBuf) {
-    let _ = child.kill().await;
-    let _ = child.wait().await;
+async fn cleanup_sing_box_child(mut child: tokio::process::Child, config_path: PathBuf) -> String {
+    let _ = child.start_kill();
+    let _ = tokio::time::timeout(SING_BOX_CLEANUP_TIMEOUT, child.wait()).await;
+    let stderr: String =
+        (tokio::time::timeout(SING_BOX_CLEANUP_TIMEOUT, read_child_stderr(&mut child)).await)
+            .unwrap_or_default();
     let _ = fs::remove_file(config_path).await;
+    stderr
+}
+
+async fn read_child_stderr(child: &mut tokio::process::Child) -> String {
+    let mut bytes = Vec::new();
+    if let Some(mut stderr) = child.stderr.take() {
+        let _ = stderr.read_to_end(&mut bytes).await;
+    }
+    String::from_utf8_lossy(&bytes).trim().to_string()
+}
+
+fn with_sing_box_stderr(err: anyhow::Error, stderr: &str) -> anyhow::Error {
+    if stderr.is_empty() {
+        return err;
+    }
+    anyhow!("{err}; sing-box stderr: {stderr}")
+}
+
+fn send_progress(progress: &Option<UnboundedSender<ProgressEvent>>, message: impl Into<String>) {
+    if let Some(progress) = progress {
+        let _ = progress.send(ProgressEvent::LiveLog(message.into()));
+    }
+}
+
+fn send_probe_delta(
+    progress: &Option<UnboundedSender<ProgressEvent>>,
+    tested: usize,
+    working: usize,
+) {
+    if let Some(progress) = progress
+        && tested > 0
+    {
+        let _ = progress.send(ProgressEvent::ProbeDelta { tested, working });
+    }
+}
+
+fn format_duration_short(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+    if seconds < 60 {
+        return format!("{seconds}s");
+    }
+
+    let minutes = seconds / 60;
+    let seconds = seconds % 60;
+    format!("{minutes}m {seconds}s")
+}
+
+fn sing_box_failed_outbound_index(stderr: &str) -> Option<usize> {
+    let marker = "outbound[";
+    let mut search = stderr;
+    while let Some(position) = search.find(marker) {
+        let after_marker = &search[position + marker.len()..];
+        let end = after_marker.find(']')?;
+        let index = &after_marker[..end];
+        if !index.is_empty() && index.chars().all(|value| value.is_ascii_digit()) {
+            return index.parse().ok();
+        }
+        search = &after_marker[end + 1..];
+    }
+
+    None
 }
 
 fn failed_config(candidate: Candidate, validation: &str, error: String) -> RankedConfig {
@@ -545,6 +1267,18 @@ fn failed_config(candidate: Candidate, validation: &str, error: String) -> Ranke
         download_bytes: None,
         error: Some(error),
     }
+}
+
+fn failed_configs(
+    entry: PreparedActiveCandidate,
+    validation: &str,
+    error: String,
+) -> Vec<RankedConfig> {
+    entry
+        .into_candidates()
+        .into_iter()
+        .map(|candidate| failed_config(candidate, validation, error.clone()))
+        .collect()
 }
 
 fn compare_ranked(left: &RankedConfig, right: &RankedConfig) -> Ordering {
@@ -618,12 +1352,15 @@ fn standard_outbound(uri: &str, protocol: StandardProtocol) -> Result<Value> {
             let mut outbound = base_outbound("vless", &host, port);
             outbound.insert("uuid".to_string(), json!(uuid));
             if let Some(flow) = first_param(&params, &["flow"]) {
-                outbound.insert("flow".to_string(), json!(flow));
+                let flow = supported_vless_flow(&flow)?;
+                if !flow.is_empty() {
+                    outbound.insert("flow".to_string(), json!(flow));
+                }
             }
-            if let Some(tls) = tls_config(&params, false, &host) {
+            if let Some(tls) = tls_config(&params, false, &host)? {
                 outbound.insert("tls".to_string(), tls);
             }
-            if let Some(transport) = transport_config(&params) {
+            if let Some(transport) = transport_config(&params)? {
                 outbound.insert("transport".to_string(), transport);
             }
             Ok(Value::Object(outbound))
@@ -636,10 +1373,10 @@ fn standard_outbound(uri: &str, protocol: StandardProtocol) -> Result<Value> {
 
             let mut outbound = base_outbound("trojan", &host, port);
             outbound.insert("password".to_string(), json!(password));
-            if let Some(tls) = tls_config(&params, true, &host) {
+            if let Some(tls) = tls_config(&params, true, &host)? {
                 outbound.insert("tls".to_string(), tls);
             }
-            if let Some(transport) = transport_config(&params) {
+            if let Some(transport) = transport_config(&params)? {
                 outbound.insert("transport".to_string(), transport);
             }
             Ok(Value::Object(outbound))
@@ -654,7 +1391,7 @@ fn standard_outbound(uri: &str, protocol: StandardProtocol) -> Result<Value> {
             outbound.insert("password".to_string(), json!(password));
             outbound.insert(
                 "tls".to_string(),
-                tls_config(&params, true, &host).unwrap_or_else(|| json!({"enabled": true})),
+                tls_config(&params, true, &host)?.unwrap_or_else(|| json!({"enabled": true})),
             );
             if let Some(obfs) = first_param(&params, &["obfs"]) {
                 let mut obfs_config = Map::new();
@@ -678,7 +1415,7 @@ fn standard_outbound(uri: &str, protocol: StandardProtocol) -> Result<Value> {
             outbound.insert("password".to_string(), json!(password));
             outbound.insert(
                 "tls".to_string(),
-                tls_config(&params, true, &host).unwrap_or_else(|| json!({"enabled": true})),
+                tls_config(&params, true, &host)?.unwrap_or_else(|| json!({"enabled": true})),
             );
             if let Some(value) = first_param(&params, &["congestion_control", "congestion"]) {
                 outbound.insert("congestion_control".to_string(), json!(value));
@@ -741,7 +1478,7 @@ fn vmess_outbound(uri: &str) -> Result<Value> {
     if let Some(host) = json_string(&json, &["host"]) {
         params.insert("host".to_string(), host);
     }
-    if let Some(transport) = transport_config(&params) {
+    if let Some(transport) = transport_config(&params)? {
         outbound.insert("transport".to_string(), transport);
     }
 
@@ -775,6 +1512,7 @@ fn shadowsocks_outbound(uri: &str) -> Result<Value> {
         .ok_or_else(|| anyhow!("Shadowsocks user info must be method:password"))?;
     let (host, port) = parse_host_port(endpoint)?;
 
+    let method = normalize_shadowsocks_method(method)?;
     let mut outbound = base_outbound("shadowsocks", &host, port);
     outbound.insert("method".to_string(), json!(method));
     outbound.insert("password".to_string(), json!(password));
@@ -793,6 +1531,27 @@ fn shadowsocks_outbound(uri: &str) -> Result<Value> {
     Ok(Value::Object(outbound))
 }
 
+fn normalize_shadowsocks_method(method: &str) -> Result<String> {
+    match method.to_ascii_lowercase().as_str() {
+        "ss" => Err(anyhow!("unsupported Shadowsocks method: ss")),
+        "chacha20-poly1305" => Ok("chacha20-ietf-poly1305".to_string()),
+        "xchacha20-poly1305" => Ok("xchacha20-ietf-poly1305".to_string()),
+        normalized => Ok(normalized.to_string()),
+    }
+}
+
+fn supported_vless_flow(flow: &str) -> Result<String> {
+    let flow = flow.trim();
+    if flow.is_empty() || flow.eq_ignore_ascii_case("none") {
+        return Ok(String::new());
+    }
+
+    match flow.to_ascii_lowercase().as_str() {
+        "xtls-rprx-vision" => Ok("xtls-rprx-vision".to_string()),
+        unsupported => Err(anyhow!("unsupported VLESS flow: {unsupported}")),
+    }
+}
+
 fn base_outbound(protocol: &str, host: &str, port: u16) -> Map<String, Value> {
     let mut outbound = Map::new();
     outbound.insert("type".to_string(), json!(protocol));
@@ -806,7 +1565,7 @@ fn tls_config(
     params: &std::collections::BTreeMap<String, String>,
     default_enabled: bool,
     host: &str,
-) -> Option<Value> {
+) -> Result<Option<Value>> {
     let security = first_param(params, &["security", "tls"]).unwrap_or_default();
     let reality_key = first_param(params, &["pbk", "public_key", "reality_pbk"]);
     let enabled = default_enabled
@@ -815,20 +1574,54 @@ fn tls_config(
         || reality_key.is_some();
 
     if !enabled || security.eq_ignore_ascii_case("none") {
-        return None;
+        return Ok(None);
     }
 
-    Some(tls_config_from_values(
+    if let Some(public_key) = reality_key.as_deref() {
+        validate_reality_public_key(public_key)?;
+    }
+    let reality_short_id = first_param(params, &["sid", "short_id"]);
+    if let Some(short_id) = reality_short_id.as_deref() {
+        validate_reality_short_id(short_id)?;
+    }
+
+    Ok(Some(tls_config_from_values(
         true,
         first_param(params, &["sni", "serverName", "peer"]).or_else(|| Some(host.to_string())),
         first_param(params, &["alpn"]),
         first_param(params, &["fp", "fingerprint"]),
         reality_key,
-        first_param(params, &["sid", "short_id"]),
+        reality_short_id,
         first_param(params, &["allowInsecure", "insecure", "skip-cert-verify"])
             .map(|value| truthy(&value))
             .unwrap_or(false),
-    ))
+    )))
+}
+
+fn validate_reality_public_key(public_key: &str) -> Result<()> {
+    let decoded = decode_base64_bytes(public_key)
+        .ok_or_else(|| anyhow!("invalid Reality public key: not base64"))?;
+    if decoded.len() != 32 {
+        return Err(anyhow!(
+            "invalid Reality public key: decoded length is {}, expected 32",
+            decoded.len()
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_reality_short_id(short_id: &str) -> Result<()> {
+    if short_id.len() > 16 || !short_id.len().is_multiple_of(2) {
+        return Err(anyhow!(
+            "invalid Reality short_id: expected an even-length hex value up to 16 characters"
+        ));
+    }
+    if !short_id.chars().all(|value| value.is_ascii_hexdigit()) {
+        return Err(anyhow!("invalid Reality short_id: expected hex"));
+    }
+
+    Ok(())
 }
 
 fn tls_config_from_values(
@@ -841,6 +1634,9 @@ fn tls_config_from_values(
     insecure: bool,
 ) -> Value {
     let mut tls = Map::new();
+    let reality_enabled = reality_public_key
+        .as_deref()
+        .is_some_and(|value| !value.is_empty());
     tls.insert("enabled".to_string(), json!(enabled));
     if let Some(server_name) = server_name.filter(|value| !value.is_empty()) {
         tls.insert("server_name".to_string(), json!(server_name));
@@ -866,6 +1662,14 @@ fn tls_config_from_values(
                 "fingerprint": fingerprint
             }),
         );
+    } else if reality_enabled {
+        tls.insert(
+            "utls".to_string(),
+            json!({
+                "enabled": true,
+                "fingerprint": "chrome"
+            }),
+        );
     }
     if let Some(public_key) = reality_public_key.filter(|value| !value.is_empty()) {
         let mut reality = Map::new();
@@ -880,12 +1684,15 @@ fn tls_config_from_values(
     Value::Object(tls)
 }
 
-fn transport_config(params: &std::collections::BTreeMap<String, String>) -> Option<Value> {
-    let transport_type = first_param(params, &["type", "net", "network"])?.to_ascii_lowercase();
+fn transport_config(params: &std::collections::BTreeMap<String, String>) -> Result<Option<Value>> {
+    let Some(transport_type) = first_param(params, &["type", "net", "network"]) else {
+        return Ok(None);
+    };
+    let transport_type = transport_type.to_ascii_lowercase();
     let path = first_param(params, &["path"]).unwrap_or_default();
     let host = first_param(params, &["host"]);
 
-    match transport_type.as_str() {
+    let transport = match transport_type.as_str() {
         "tcp" | "" => None,
         "ws" | "websocket" => {
             let mut transport = Map::new();
@@ -933,8 +1740,14 @@ fn transport_config(params: &std::collections::BTreeMap<String, String>) -> Opti
             }
             Some(Value::Object(transport))
         }
-        unsupported => Some(json!({ "type": unsupported })),
-    }
+        unsupported => {
+            return Err(anyhow!(
+                "active sing-box probe does not support transport type '{unsupported}'"
+            ));
+        }
+    };
+
+    Ok(transport)
 }
 
 fn query_map(url: &Url) -> std::collections::BTreeMap<String, String> {
@@ -1024,6 +1837,10 @@ fn percent_decode(value: &str) -> String {
 }
 
 fn decode_base64_to_string(value: &str) -> Option<String> {
+    decode_base64_bytes(value).and_then(|decoded| String::from_utf8(decoded).ok())
+}
+
+fn decode_base64_bytes(value: &str) -> Option<Vec<u8>> {
     let normalized = value.trim().replace(['\r', '\n'], "");
     let padded = pad_base64(&normalized);
     for candidate in [normalized, padded] {
@@ -1033,10 +1850,8 @@ fn decode_base64_to_string(value: &str) -> Option<String> {
             &base64::engine::general_purpose::STANDARD_NO_PAD,
             &base64::engine::general_purpose::URL_SAFE_NO_PAD,
         ] {
-            if let Ok(decoded) = base64::Engine::decode(engine, candidate.as_bytes())
-                && let Ok(text) = String::from_utf8(decoded)
-            {
-                return Some(text);
+            if let Ok(decoded) = base64::Engine::decode(engine, candidate.as_bytes()) {
+                return Some(decoded);
             }
         }
     }
@@ -1057,17 +1872,129 @@ mod tests {
     use super::*;
     use base64::{Engine as _, engine::general_purpose::STANDARD};
 
+    const REALITY_PUBLIC_KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+    fn ranked(name: &str, uri: &str, reachable: bool, latency_ms: Option<u128>) -> RankedConfig {
+        RankedConfig {
+            rank: 0,
+            stability_count: 0,
+            id: uri.to_string(),
+            source: "test".to_string(),
+            priority: 1,
+            protocol: "vless".to_string(),
+            name: name.to_string(),
+            endpoint: crate::model::Endpoint {
+                host: "example.com".to_string(),
+                port: 443,
+            },
+            uri: uri.to_string(),
+            reachable,
+            validation: "active_http".to_string(),
+            latency_ms,
+            http_status: Some(204),
+            download_mbps: None,
+            download_bytes: None,
+            error: None,
+        }
+    }
+
+    fn stop_policy(
+        top_n: usize,
+        prioritize_stability: bool,
+        previous_working_uris: std::collections::HashSet<String>,
+    ) -> ProbeStopPolicy {
+        ProbeStopPolicy {
+            scan_all_configs: false,
+            top_n,
+            prioritize_stability,
+            previous_working_uris,
+            stability_search_source: Some("test".to_string()),
+        }
+    }
+
+    fn stop_reason(ranked: &[RankedConfig], policy: &ProbeStopPolicy) -> Option<String> {
+        let mut state = ProbeStopState {
+            half_snapshot_sent: true,
+            stability_search_exhausted: false,
+        };
+        probe_stop_reason(ranked, policy, &mut state, &None)
+    }
+
     #[test]
     fn builds_vless_reality_outbound() {
-        let outbound = sing_box_outbound_from_share_link(
-            "vless://uuid@example.com:443?security=reality&sni=www.example.com&pbk=pub&sid=abcd&fp=chrome&type=grpc&serviceName=svc#node",
-        )
+        let outbound = sing_box_outbound_from_share_link(&format!(
+            "vless://uuid@example.com:443?security=reality&sni=www.example.com&pbk={REALITY_PUBLIC_KEY}&sid=abcd&fp=chrome&type=grpc&serviceName=svc#node"
+        ))
         .expect("vless outbound");
 
         assert_eq!(outbound["type"], "vless");
         assert_eq!(outbound["server"], "example.com");
-        assert_eq!(outbound["tls"]["reality"]["public_key"], "pub");
+        assert_eq!(outbound["tls"]["reality"]["public_key"], REALITY_PUBLIC_KEY);
         assert_eq!(outbound["transport"]["type"], "grpc");
+    }
+
+    #[test]
+    fn builds_vless_reality_outbound_with_default_utls() {
+        let outbound = sing_box_outbound_from_share_link(&format!(
+            "vless://uuid@example.com:443?security=reality&sni=www.example.com&pbk={REALITY_PUBLIC_KEY}&sid=abcd&type=grpc&serviceName=svc#node"
+        ))
+        .expect("vless outbound");
+
+        assert_eq!(outbound["tls"]["reality"]["public_key"], REALITY_PUBLIC_KEY);
+        assert_eq!(outbound["tls"]["utls"]["enabled"], true);
+        assert_eq!(outbound["tls"]["utls"]["fingerprint"], "chrome");
+    }
+
+    #[test]
+    fn rejects_unsupported_transport_before_batching() {
+        let err = sing_box_outbound_from_share_link(
+            "vless://uuid@example.com:443?security=tls&sni=www.example.com&type=xhttp#node",
+        )
+        .expect_err("unsupported transport should fail this candidate only");
+
+        assert!(
+            err.to_string().contains("transport type 'xhttp'"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_reality_public_key_before_batching() {
+        let err = sing_box_outbound_from_share_link(
+            "vless://uuid@example.com:443?security=reality&sni=www.example.com&pbk=pub&sid=abcd&type=grpc&serviceName=svc#node",
+        )
+        .expect_err("invalid Reality key should fail this candidate only");
+
+        assert!(
+            err.to_string().contains("invalid Reality public key"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_reality_short_id_before_batching() {
+        let err = sing_box_outbound_from_share_link(&format!(
+            "vless://uuid@example.com:443?security=reality&sni=www.example.com&pbk={REALITY_PUBLIC_KEY}&sid=bad@id&type=grpc&serviceName=svc#node"
+        ))
+        .expect_err("invalid Reality short_id should fail this candidate only");
+
+        assert!(
+            err.to_string().contains("invalid Reality short_id"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_vless_flow_before_batching() {
+        let err = sing_box_outbound_from_share_link(
+            "vless://uuid@example.com:443?security=tls&sni=www.example.com&flow=xtls-rprx-vision-udp443#node",
+        )
+        .expect_err("unsupported flow should fail this candidate only");
+
+        assert!(
+            err.to_string().contains("unsupported VLESS flow"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -1096,6 +2023,29 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_legacy_shadowsocks_method_alias() {
+        let outbound = sing_box_outbound_from_share_link(
+            "ss://Y2hhY2hhMjAtcG9seTEzMDU6cGFzcw@example.net:8388#SS",
+        )
+        .expect("shadowsocks outbound");
+
+        assert_eq!(outbound["method"], "chacha20-ietf-poly1305");
+    }
+
+    #[test]
+    fn rejects_unknown_shadowsocks_method_before_batching() {
+        let outbound = sing_box_outbound_from_share_link("ss://c3M6cGFzcw@example.net:8388#SS")
+            .expect_err("unknown Shadowsocks method should fail this candidate only");
+
+        assert!(
+            outbound
+                .to_string()
+                .contains("unsupported Shadowsocks method"),
+            "unexpected error: {outbound}"
+        );
+    }
+
+    #[test]
     fn active_probe_batch_size_is_bounded() {
         assert_eq!(
             active_probe_batch_size(1, None),
@@ -1107,6 +2057,132 @@ mod tests {
             ACTIVE_PROBE_BATCH_MAX_SIZE
         );
         assert_eq!(active_probe_batch_size(4, Some(10)), 10);
+    }
+
+    #[test]
+    fn active_probe_http_concurrency_is_bounded() {
+        assert_eq!(active_probe_http_concurrency(1, 128), 16);
+        assert_eq!(active_probe_http_concurrency(16, 128), 128);
+        assert_eq!(active_probe_http_concurrency(16, 20), 20);
+        assert_eq!(
+            active_probe_http_concurrency(usize::MAX, 256),
+            ACTIVE_PROBE_HTTP_MAX_CONCURRENCY
+        );
+    }
+
+    #[test]
+    fn extracts_sing_box_failed_outbound_index() {
+        let stderr = "FATAL[0000] create service: initialize outbound[7]: unknown method";
+
+        assert_eq!(sing_box_failed_outbound_index(stderr), Some(7));
+        assert_eq!(sing_box_failed_outbound_index("no outbound marker"), None);
+    }
+
+    #[test]
+    fn active_preparation_keeps_equivalent_outbounds_separate() {
+        let candidates = vec![
+            Candidate {
+                id: "one".to_string(),
+                source: "test".to_string(),
+                priority: 1,
+                protocol: "vless".to_string(),
+                name: "one".to_string(),
+                endpoint: crate::model::Endpoint {
+                    host: "example.com".to_string(),
+                    port: 443,
+                },
+                uri:
+                    "vless://uuid@example.com:443?security=tls&sni=example.com&type=ws&path=/ws#one"
+                        .to_string(),
+            },
+            Candidate {
+                id: "two".to_string(),
+                source: "test".to_string(),
+                priority: 1,
+                protocol: "vless".to_string(),
+                name: "two".to_string(),
+                endpoint: crate::model::Endpoint {
+                    host: "example.com".to_string(),
+                    port: 443,
+                },
+                uri:
+                    "vless://uuid@example.com:443?security=tls&sni=example.com&type=ws&path=/ws#two"
+                        .to_string(),
+            },
+        ];
+
+        let prepared = prepare_active_candidates(candidates);
+
+        assert_eq!(prepared.prepared.len(), 2);
+        assert_eq!(prepared.prepared_candidates, 2);
+        assert!(
+            prepared
+                .prepared
+                .iter()
+                .all(|entry| entry.aliases.is_empty())
+        );
+    }
+
+    #[test]
+    fn early_stop_without_stability_waits_for_top_n_working() {
+        let policy = stop_policy(2, false, std::collections::HashSet::new());
+        let ranked = vec![
+            ranked("one", "vless://one@example.com:443", true, Some(10)),
+            ranked("two", "vless://two@example.com:443", true, Some(20)),
+        ];
+
+        assert!(stop_reason(&ranked, &policy).is_some());
+    }
+
+    #[test]
+    fn early_stop_with_stability_requires_previous_run_half() {
+        let policy = stop_policy(
+            4,
+            true,
+            std::collections::HashSet::from([
+                "vless://old-1@example.com:443".to_string(),
+                "vless://old-2@example.com:443".to_string(),
+            ]),
+        );
+        let ranked = vec![
+            ranked("new-1", "vless://new-1@example.com:443", true, Some(10)),
+            ranked("new-2", "vless://new-2@example.com:443", true, Some(20)),
+            ranked("old-1", "vless://old-1@example.com:443", true, Some(30)),
+            ranked("old-2", "vless://old-2@example.com:443", true, Some(40)),
+        ];
+
+        assert!(stop_reason(&ranked, &policy).is_some());
+    }
+
+    #[test]
+    fn early_stop_with_stability_does_not_block_without_previous_run_matches() {
+        let policy = stop_policy(2, true, std::collections::HashSet::new());
+        let ranked = vec![
+            ranked("new-1", "vless://new-1@example.com:443", true, Some(10)),
+            ranked("new-2", "vless://new-2@example.com:443", true, Some(20)),
+        ];
+
+        assert!(stop_reason(&ranked, &policy).is_some());
+    }
+
+    #[test]
+    fn early_stop_with_stability_keeps_scanning_for_missing_previous_run_match() {
+        let policy = stop_policy(
+            4,
+            true,
+            std::collections::HashSet::from([
+                "vless://old-1@example.com:443".to_string(),
+                "vless://old-2@example.com:443".to_string(),
+            ]),
+        );
+        let ranked = vec![
+            ranked("new-1", "vless://new-1@example.com:443", true, Some(10)),
+            ranked("new-2", "vless://new-2@example.com:443", true, Some(20)),
+            ranked("new-3", "vless://new-3@example.com:443", true, Some(30)),
+            ranked("old-1", "vless://old-1@example.com:443", true, Some(40)),
+        ];
+
+        assert!(stop_reason(&ranked, &policy).is_none());
     }
 
     #[tokio::test]
@@ -1125,6 +2201,7 @@ mod tests {
                     },
                     uri: "ss://one".to_string(),
                 },
+                aliases: Vec::new(),
                 outbound: json!({
                     "type": "direct",
                     "tag": "will-be-replaced"
@@ -1143,6 +2220,7 @@ mod tests {
                     },
                     uri: "ss://two".to_string(),
                 },
+                aliases: Vec::new(),
                 outbound: json!({
                     "type": "direct"
                 }),

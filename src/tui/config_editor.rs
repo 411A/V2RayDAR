@@ -13,6 +13,7 @@ pub fn label(key: ConfigKey) -> &'static str {
         ConfigKey::RefreshSeconds => "refresh_seconds",
         ConfigKey::EncodedSubscription => "encoded_subscription",
         ConfigKey::PrioritizeStability => "prioritize_stability",
+        ConfigKey::ScanAllConfigs => "scan_all_configs",
         ConfigKey::FetchTimeout => "fetch_timeout_ms",
         ConfigKey::FetchConcurrency => "fetch_concurrency",
         ConfigKey::MaxSubscriptionBytes => "max_subscription_bytes",
@@ -42,6 +43,9 @@ pub fn guide(key: ConfigKey) -> &'static str {
         ConfigKey::PrioritizeStability => {
             "true favors repeat working configs; false favors short wins"
         }
+        ConfigKey::ScanAllConfigs => {
+            "true scans every config; false stops after enough working configs"
+        }
         ConfigKey::FetchTimeout => "fetch timeout in ms",
         ConfigKey::FetchConcurrency => "parallel fetch count",
         ConfigKey::MaxSubscriptionBytes => "max bytes per subscription",
@@ -69,6 +73,7 @@ pub fn value(config: &crate::config::AppConfig, key: ConfigKey) -> String {
         ConfigKey::RefreshSeconds => config.refresh_seconds.to_string(),
         ConfigKey::EncodedSubscription => config.encoded_subscription.to_string(),
         ConfigKey::PrioritizeStability => config.prioritize_stability.to_string(),
+        ConfigKey::ScanAllConfigs => config.scan_all_configs.to_string(),
         ConfigKey::FetchTimeout => config.fetch_timeout_ms.to_string(),
         ConfigKey::FetchConcurrency => config.fetch_concurrency.to_string(),
         ConfigKey::MaxSubscriptionBytes => config.max_subscription_bytes.to_string(),
@@ -111,13 +116,14 @@ pub fn apply(config: &mut crate::config::AppConfig, key: ConfigKey, raw: &str) -
         ConfigKey::RefreshSeconds => config.refresh_seconds = value.parse()?,
         ConfigKey::EncodedSubscription => config.encoded_subscription = bool_value(value)?,
         ConfigKey::PrioritizeStability => config.prioritize_stability = bool_value(value)?,
+        ConfigKey::ScanAllConfigs => config.scan_all_configs = bool_value(value)?,
         ConfigKey::FetchTimeout => config.fetch_timeout_ms = nonzero(value, label(key))?,
         ConfigKey::FetchConcurrency => config.fetch_concurrency = positive(value, label(key))?,
         ConfigKey::MaxSubscriptionBytes => {
             config.max_subscription_bytes = positive(value, label(key))?
         }
         ConfigKey::ProbeMode => config.probe.mode = probe_mode(value)?,
-        ConfigKey::SingBoxPath => config.probe.sing_box_path = sing_box::normalize_path(value),
+        ConfigKey::SingBoxPath => config.probe.sing_box_path = optional_string(value),
         ConfigKey::ConnectTimeout => config.probe.connect_timeout_ms = nonzero(value, label(key))?,
         ConfigKey::ActiveTimeout => config.probe.active_timeout_ms = nonzero(value, label(key))?,
         ConfigKey::StartupTimeout => config.probe.startup_timeout_ms = nonzero(value, label(key))?,
@@ -132,7 +138,7 @@ pub fn apply(config: &mut crate::config::AppConfig, key: ConfigKey, raw: &str) -
             config.probe.download_bytes_limit = positive(value, label(key))?
         }
         ConfigKey::TokenRequired => config.sharing.require_token = bool_value(value)?,
-        ConfigKey::Token => config.sharing.token = value.to_string(),
+        ConfigKey::Token => config.sharing.token = optional_string(value),
         ConfigKey::ResetDefaults => {}
     }
     Ok(())
@@ -193,9 +199,19 @@ fn statuses(value: &str) -> Result<Vec<u16>> {
 }
 
 fn optional(value: &str) -> Option<String> {
+    let value = optional_string(value);
     match value.to_ascii_lowercase().as_str() {
-        "" | "off" | "none" | "null" => None,
-        _ => Some(value.to_string()),
+        "" | "off" | "none" => None,
+        _ => Some(value),
+    }
+}
+
+fn optional_string(value: &str) -> String {
+    let value = sing_box::normalize_path(value);
+    if value.eq_ignore_ascii_case("null") {
+        String::new()
+    } else {
+        value
     }
 }
 

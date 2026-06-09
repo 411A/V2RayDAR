@@ -15,7 +15,7 @@ pub fn main(area: Rect) -> MainLayout {
         Constraint::Length(5),
         Constraint::Length(5),
         Constraint::Length(7),
-        Constraint::Length(8),
+        Constraint::Length(12),
         Constraint::Fill(1),
         Constraint::Length(2),
     ])

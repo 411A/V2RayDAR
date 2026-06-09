@@ -2,16 +2,17 @@ use std::{fs, net::SocketAddr, path::Path};
 
 use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::constants::{
     DEFAULT_ACCEPTED_STATUSES, DEFAULT_ACTIVE_TIMEOUT_MS, DEFAULT_BIND, DEFAULT_CONFIG_TEMPLATE,
     DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_DOWNLOAD_BYTES_LIMIT, DEFAULT_ENCODED_SUBSCRIPTION,
     DEFAULT_FETCH_CONCURRENCY, DEFAULT_FETCH_TIMEOUT_MS, DEFAULT_MAX_SUBSCRIPTION_BYTES,
     DEFAULT_PRIORITIZE_STABILITY, DEFAULT_PROBE_BATCH_SIZE, DEFAULT_PROBE_CONCURRENCY,
-    DEFAULT_REFRESH_SECONDS, DEFAULT_REQUIRE_TOKEN, DEFAULT_SHARING_ENABLED, DEFAULT_SHARING_TOKEN,
-    DEFAULT_SING_BOX_PATH, DEFAULT_STARTUP_TIMEOUT_MS, DEFAULT_SUBSCRIPTION_ENABLED,
-    DEFAULT_SUBSCRIPTION_PRIORITY, DEFAULT_TEST_URL, DEFAULT_TOP_N,
+    DEFAULT_REFRESH_SECONDS, DEFAULT_REQUIRE_TOKEN, DEFAULT_SCAN_ALL_CONFIGS,
+    DEFAULT_SHARING_ENABLED, DEFAULT_SHARING_TOKEN, DEFAULT_SING_BOX_PATH,
+    DEFAULT_STARTUP_TIMEOUT_MS, DEFAULT_SUBSCRIPTION_ENABLED, DEFAULT_SUBSCRIPTION_PRIORITY,
+    DEFAULT_TEST_URL, DEFAULT_TOP_N,
 };
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -26,6 +27,8 @@ pub struct AppConfig {
     pub encoded_subscription: bool,
     #[serde(default = "default_prioritize_stability")]
     pub prioritize_stability: bool,
+    #[serde(default = "default_scan_all_configs")]
+    pub scan_all_configs: bool,
     #[serde(default = "default_fetch_timeout_ms")]
     pub fetch_timeout_ms: u64,
     #[serde(default = "default_fetch_concurrency")]
@@ -54,7 +57,10 @@ pub struct SubscriptionSource {
 pub struct ProbeConfig {
     #[serde(default = "default_probe_mode")]
     pub mode: ProbeMode,
-    #[serde(default = "default_sing_box_path")]
+    #[serde(
+        default = "default_sing_box_path",
+        deserialize_with = "deserialize_string_or_null_as_default"
+    )]
     pub sing_box_path: String,
     #[serde(default = "default_connect_timeout_ms")]
     pub connect_timeout_ms: u64,
@@ -70,7 +76,7 @@ pub struct ProbeConfig {
     pub test_url: String,
     #[serde(default = "default_accepted_statuses")]
     pub accepted_statuses: Vec<u16>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
     pub download_url: Option<String>,
     #[serde(default = "default_download_bytes_limit")]
     pub download_bytes_limit: usize,
@@ -89,7 +95,10 @@ pub struct SharingConfig {
     pub enabled: bool,
     #[serde(default = "default_require_token")]
     pub require_token: bool,
-    #[serde(default = "default_sharing_token")]
+    #[serde(
+        default = "default_sharing_token",
+        deserialize_with = "deserialize_string_or_null_as_default"
+    )]
     pub token: String,
 }
 
@@ -183,7 +192,11 @@ impl AppConfig {
     }
 }
 
-fn validate(config: AppConfig) -> Result<AppConfig> {
+fn validate(mut config: AppConfig) -> Result<AppConfig> {
+    config.probe.sing_box_path = normalize_string_or_null(&config.probe.sing_box_path);
+    config.probe.download_url = normalize_optional_string(config.probe.download_url.as_deref());
+    config.sharing.token = normalize_string_or_null(&config.sharing.token);
+
     if config.top_n == 0 {
         return Err(anyhow!("top_n must be greater than 0"));
     }
@@ -259,6 +272,43 @@ fn validate(config: AppConfig) -> Result<AppConfig> {
     Ok(config)
 }
 
+fn deserialize_string_or_null_as_default<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(normalize_string_or_null(
+        Option::<String>::deserialize(deserializer)?
+            .as_deref()
+            .unwrap_or_default(),
+    ))
+}
+
+fn deserialize_optional_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(normalize_optional_string(
+        Option::<String>::deserialize(deserializer)?.as_deref(),
+    ))
+}
+
+fn normalize_string_or_null(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.eq_ignore_ascii_case("null") {
+        String::new()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn normalize_optional_string(value: Option<&str>) -> Option<String> {
+    let value = normalize_string_or_null(value.unwrap_or_default());
+    match value.to_ascii_lowercase().as_str() {
+        "" | "off" | "none" => None,
+        _ => Some(value),
+    }
+}
+
 fn generate_token() -> String {
     let mut bytes = [0_u8; 32];
     if getrandom::fill(&mut bytes).is_ok() {
@@ -291,6 +341,10 @@ fn default_encoded_subscription() -> bool {
 
 fn default_prioritize_stability() -> bool {
     DEFAULT_PRIORITIZE_STABILITY
+}
+
+fn default_scan_all_configs() -> bool {
+    DEFAULT_SCAN_ALL_CONFIGS
 }
 
 fn default_sharing_enabled() -> bool {
@@ -381,8 +435,8 @@ mod tests {
             &path,
             r#"
 subscriptions:
-  - name: local
-    url: data:,vless://uuid@example.com:443%23demo
+    - name: local
+      url: data:,vless://uuid@example.com:443%23demo
 "#,
         )
         .expect("temp config can be written");
@@ -418,10 +472,10 @@ subscriptions:
             &path,
             r#"
 probe:
-  active_timeout_ms: 0
+    active_timeout_ms: 0
 subscriptions:
-  - name: local
-    url: data:,vless://uuid@example.com:443%23demo
+    - name: local
+      url: data:,vless://uuid@example.com:443%23demo
 "#,
         )
         .expect("temp config can be written");
@@ -441,10 +495,10 @@ subscriptions:
             &path,
             r#"
 probe:
-  batch_size: 0
+    batch_size: 0
 subscriptions:
-  - name: local
-    url: data:,vless://uuid@example.com:443%23demo
+    - name: local
+      url: data:,vless://uuid@example.com:443%23demo
 "#,
         )
         .expect("temp config can be written");
@@ -464,10 +518,10 @@ subscriptions:
             &path,
             r#"
 probe:
-  accepted_statuses: [99]
+    accepted_statuses: [99]
 subscriptions:
-  - name: local
-    url: data:,vless://uuid@example.com:443%23demo
+    - name: local
+      url: data:,vless://uuid@example.com:443%23demo
 "#,
         )
         .expect("temp config can be written");
@@ -475,5 +529,79 @@ subscriptions:
         fs::remove_file(&path).ok();
 
         assert!(error.to_string().contains("valid HTTP status codes"));
+    }
+
+    #[test]
+    fn accepts_null_probe_and_sharing_strings() {
+        let config = load_inline_config(
+            "null-values",
+            r#"
+sharing:
+    token: null
+probe:
+    sing_box_path: null
+    download_url: null
+subscriptions:
+    - name: local
+      url: data:,vless://uuid@example.com:443%23demo
+"#,
+        );
+
+        assert_eq!(config.sharing.token, "");
+        assert_eq!(config.probe.sing_box_path, "");
+        assert_eq!(config.probe.download_url, None);
+    }
+
+    #[test]
+    fn accepts_empty_probe_and_sharing_strings() {
+        let config = load_inline_config(
+            "empty-values",
+            r#"
+sharing:
+    token: ""
+probe:
+    sing_box_path: ""
+    download_url: ""
+subscriptions:
+    - name: local
+      url: data:,vless://uuid@example.com:443%23demo
+"#,
+        );
+
+        assert_eq!(config.sharing.token, "");
+        assert_eq!(config.probe.sing_box_path, "");
+        assert_eq!(config.probe.download_url, None);
+    }
+
+    #[test]
+    fn normalizes_legacy_literal_null_strings() {
+        let config = load_inline_config(
+            "literal-null-values",
+            r#"
+sharing:
+    token: "null"
+probe:
+    sing_box_path: "null"
+    download_url: "null"
+subscriptions:
+    - name: local
+      url: data:,vless://uuid@example.com:443%23demo
+"#,
+        );
+
+        assert_eq!(config.sharing.token, "");
+        assert_eq!(config.probe.sing_box_path, "");
+        assert_eq!(config.probe.download_url, None);
+    }
+
+    fn load_inline_config(name: &str, content: &str) -> AppConfig {
+        let path = std::env::temp_dir().join(format!(
+            "v2raydar-config-test-{name}-{}.yaml",
+            std::process::id()
+        ));
+        fs::write(&path, content).expect("temp config can be written");
+        let config = AppConfig::load(&path).expect("config loads");
+        fs::remove_file(&path).ok();
+        config
     }
 }

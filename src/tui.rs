@@ -77,7 +77,10 @@ pub async fn run(
             .saturating_duration_since(Instant::now())
             .min(TUI_INPUT_POLL_INTERVAL);
         if event::poll(poll_timeout).unwrap_or(false)
-            && matches!(drain_events(&mut tui, &paths)?, EventResult::Quit)
+            && matches!(
+                drain_events(&mut tui, &paths, &runtime_config)?,
+                EventResult::Quit
+            )
         {
             break Ok(());
         }
@@ -87,11 +90,18 @@ pub async fn run(
     result.and(restore_result)
 }
 
-fn drain_events(tui: &mut TuiState, paths: &AppPaths) -> Result<EventResult> {
+fn drain_events(
+    tui: &mut TuiState,
+    paths: &AppPaths,
+    runtime_config: &Arc<RwLock<RuntimeConfig>>,
+) -> Result<EventResult> {
     for _ in 0..TUI_MAX_EVENTS_PER_FRAME {
         match event::read() {
             Ok(Event::Key(key)) => {
-                if matches!(handle_key(tui, key, &paths.config_path)?, EventResult::Quit) {
+                if matches!(
+                    handle_key(tui, key, &paths.config_path, runtime_config)?,
+                    EventResult::Quit
+                ) {
                     return Ok(EventResult::Quit);
                 }
             }

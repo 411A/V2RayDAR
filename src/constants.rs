@@ -15,6 +15,7 @@ pub const DEFAULT_TOP_N: usize = 10;
 pub const DEFAULT_REFRESH_SECONDS: u64 = 300;
 pub const DEFAULT_ENCODED_SUBSCRIPTION: bool = true;
 pub const DEFAULT_PRIORITIZE_STABILITY: bool = false;
+pub const DEFAULT_SCAN_ALL_CONFIGS: bool = true;
 pub const DEFAULT_SHARING_ENABLED: bool = false;
 pub const DEFAULT_REQUIRE_TOKEN: bool = false;
 pub const DEFAULT_SHARING_TOKEN: &str = "";
@@ -33,7 +34,7 @@ pub const DEFAULT_TEST_URL: &str = "https://www.gstatic.com/generate_204";
 pub const DEFAULT_ACCEPTED_STATUSES: &[u16] = &[204, 200];
 pub const DEFAULT_DOWNLOAD_BYTES_LIMIT: usize = 1_048_576;
 
-pub const MAX_TUI_LOGS: usize = 8;
+pub const MAX_TUI_LOGS: usize = 512;
 pub const STABLE_WORKING_APPEARANCES: u32 = 2;
 
 pub const DEFAULT_LOG_FILTER_PLAIN: &str = "v2raydar=info,tower_http=warn";
@@ -44,7 +45,10 @@ pub const LOCALHOST_IP: &str = "127.0.0.1";
 pub const ACTIVE_PROBE_BATCH_MIN_SIZE: usize = 32;
 pub const ACTIVE_PROBE_BATCH_MAX_SIZE: usize = 128;
 pub const ACTIVE_PROBE_BATCH_CONCURRENCY_MULTIPLIER: usize = 16;
+pub const ACTIVE_PROBE_HTTP_MAX_CONCURRENCY: usize = 128;
 pub const LOCAL_PROXY_WAIT_INTERVAL: Duration = Duration::from_millis(25);
+pub const LOCAL_PROXY_CONNECT_TIMEOUT: Duration = Duration::from_millis(5);
+pub const SING_BOX_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 pub const SING_BOX_CONFIG_FILE_PREFIX: &str = "v2raydar-sing-box";
 pub const SING_BOX_INBOUND_TAG_PREFIX: &str = "mixed-in";
 pub const SING_BOX_OUTBOUND_TAG_PREFIX: &str = "proxy";
@@ -73,11 +77,12 @@ pub const TUI_SETUP_POLL_INTERVAL: Duration = Duration::from_millis(150);
 pub const BYTE_UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
 pub const FIREWALL_RULE_NAME: &str = "V2RayDAR Subscription Sharing";
 
-pub const MAIN_ITEMS: [MainItem; 4] = [
+pub const MAIN_ITEMS: [MainItem; 5] = [
     MainItem::OpenConfig,
     MainItem::Sharing,
     MainItem::Subscriptions,
     MainItem::Configurations,
+    MainItem::Logs,
 ];
 pub const SUBSCRIPTION_ACTIONS: [SubscriptionAction; 6] = [
     SubscriptionAction::EditName,
@@ -87,12 +92,13 @@ pub const SUBSCRIPTION_ACTIONS: [SubscriptionAction; 6] = [
     SubscriptionAction::Delete,
     SubscriptionAction::Back,
 ];
-pub const CONFIG_KEYS: [ConfigKey; 22] = [
+pub const CONFIG_KEYS: [ConfigKey; 23] = [
     ConfigKey::Bind,
     ConfigKey::TopN,
     ConfigKey::RefreshSeconds,
     ConfigKey::EncodedSubscription,
     ConfigKey::PrioritizeStability,
+    ConfigKey::ScanAllConfigs,
     ConfigKey::FetchTimeout,
     ConfigKey::FetchConcurrency,
     ConfigKey::MaxSubscriptionBytes,
@@ -123,7 +129,7 @@ pub const SETTING_GUIDES: &[SettingGuide] = &[
     SettingGuide {
         key: "bind",
         label: "Listen address",
-        help: "127.0.0.1 stays private. 0.0.0.0 or a LAN IP allows nearby devices.",
+        help: "127.0.0.1 stays private. Use the device LAN IP for sharing; 0.0.0.0 listens on all interfaces.",
     },
     SettingGuide {
         key: "sharing.enabled",
@@ -149,6 +155,11 @@ pub const SETTING_GUIDES: &[SettingGuide] = &[
         key: "prioritize_stability",
         label: "Stable ranking",
         help: "false favors any quick working config. true promotes configs seen working in 3+ refreshes.",
+    },
+    SettingGuide {
+        key: "scan_all_configs",
+        label: "Full scan",
+        help: "true checks every loaded config. false stops once enough sing-box-validated configs are found.",
     },
     SettingGuide {
         key: "probe.mode",

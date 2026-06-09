@@ -2,27 +2,30 @@ bind: 127.0.0.1:27141
 top_n: 10
 refresh_seconds: 300
 encoded_subscription: true
-prioritize_stability: false
+prioritize_stability: true
+scan_all_configs: false
 fetch_timeout_ms: 30000
-fetch_concurrency: 4
+fetch_concurrency: 8
 max_subscription_bytes: 33554432
 
 sharing:
   enabled: false
   require_token: false
-  token:
+  token: null
 
 probe:
   mode: active
-  sing_box_path:
+  sing_box_path: null
   connect_timeout_ms: 5000
   active_timeout_ms: 30000
   startup_timeout_ms: 5000
-  concurrency: 4
-  batch_size:
+  concurrency: 8
+  batch_size: 20
   test_url: https://www.gstatic.com/generate_204
   accepted_statuses: [204, 200]
-  download_url:
+  download_url: null
+  # Or:
+  # download_url: https://archive.org/download/steamboat-willie_1928/steamboat-willie_1928.ia.mp4
   download_bytes_limit: 1048576
 
 subscriptions:

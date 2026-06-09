@@ -1,7 +1,7 @@
 use std::{
     env,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
 };
 
 pub fn open(path: &Path) -> String {
@@ -60,20 +60,6 @@ fn open_windows_vscode(path: &Path) -> Option<String> {
             .and_then(|value| value.to_str())
             .is_some_and(|value| value.eq_ignore_ascii_case("cmd"))
         {
-            if try_spawn(
-                "cmd",
-                &[
-                    "/C".to_string(),
-                    "start".to_string(),
-                    "".to_string(),
-                    candidate.display().to_string(),
-                    path_arg(path),
-                ],
-            )
-            .is_ok()
-            {
-                return Some("Opening config with VS Code".to_string());
-            }
             continue;
         }
 
@@ -176,11 +162,31 @@ fn open_linux(path: &Path) -> String {
 }
 
 fn try_spawn(command: &str, args: &[String]) -> std::io::Result<()> {
-    Command::new(command).args(args).spawn().map(|_| ())
+    let mut command = Command::new(command);
+    command.args(args);
+    spawn_detached(&mut command)
 }
 
 fn try_spawn_path(command: &Path, args: &[String]) -> std::io::Result<()> {
-    Command::new(command).args(args).spawn().map(|_| ())
+    let mut command = Command::new(command);
+    command.args(args);
+    spawn_detached(&mut command)
+}
+
+fn spawn_detached(command: &mut Command) -> std::io::Result<()> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    command.spawn().map(|_| ())
 }
 
 fn try_spawn_terminal(editor: &str, path: &Path) -> std::io::Result<()> {

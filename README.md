@@ -81,6 +81,7 @@ top_n: 10
 refresh_seconds: 300
 encoded_subscription: true
 prioritize_stability: false
+scan_all_configs: true
 fetch_timeout_ms: 30000
 fetch_concurrency: 4
 max_subscription_bytes: 33554432
@@ -146,7 +147,7 @@ Use plain terminal output instead of the TUI:
 cargo run -- --config .\configs.yaml --no-tui
 ```
 
-V2RayDAR watches the active config file while it runs. Most fields take effect live, including `top_n`, `refresh_seconds`, `encoded_subscription`, `prioritize_stability`, sharing settings, fetch settings, probe settings, and subscriptions. Changing `bind` requires restarting V2RayDAR because the HTTP listener is already open on the old address.
+V2RayDAR watches the active config file while it runs. Most fields take effect live, including `top_n`, `refresh_seconds`, `encoded_subscription`, `prioritize_stability`, `scan_all_configs`, sharing settings, fetch settings, probe settings, and subscriptions. Changing `bind` requires restarting V2RayDAR because the HTTP listener is already open on the old address.
 
 For portable mode, keep the app data beside the executable:
 
@@ -195,11 +196,12 @@ Top-level keys:
 
 | Key | Type | Default | Possible values | Hot reload | Description |
 | --- | --- | --- | --- | --- | --- |
-| `bind` | Socket address | `127.0.0.1:27141` | `IP:PORT`, for example `127.0.0.1:27141`, `0.0.0.0:27141`, `192.168.1.23:27141` | Restart required | HTTP bind address for `/subscription`, `/subscription.txt`, `/results`, and `/health`. Use `127.0.0.1` for same-machine clients. Use `0.0.0.0` or a LAN IP for Android/LAN clients. |
+| `bind` | Socket address | `127.0.0.1:27141` | `IP:PORT`, for example `127.0.0.1:27141`, `192.168.1.23:27141`, `0.0.0.0:27141` | Restart required | HTTP bind address for `/subscription`, `/subscription.txt`, `/results`, and `/health`. Use `127.0.0.1` for same-machine clients. Use the device LAN IP for Android/LAN clients; `0.0.0.0` listens on every interface and is broader than needed. |
 | `top_n` | Positive integer | `10` | `1` or higher | Yes | Maximum number of validated working configs exposed by subscription endpoints. |
 | `refresh_seconds` | Integer seconds | `300` | `0` or higher | Yes | Time between automatic subscription refreshes. `0` disables timer refresh, but saved config changes still trigger a reload. |
 | `encoded_subscription` | Boolean | `true` | `true`, `false` | Yes | When `true`, `/subscription` returns a base64-encoded newline list. Keep `true` for v2rayNG/v2rayN unless you know your client wants raw links. |
 | `prioritize_stability` | Boolean | `false` | `true`, `false` | Yes | When `false`, ranking favors configs that work now, even briefly, which is recommended for highly limited networks. When `true`, configs seen working in at least three refreshes are promoted before lower-history configs even if their current ping is higher. |
+| `scan_all_configs` | Boolean | `true` | `true`, `false` | Yes | When `true`, every loaded config is validated. When `false`, active sing-box probing stops after enough working configs are found; with stability priority enabled, at least half of the returned configs must have also worked in the previous refresh. |
 | `fetch_timeout_ms` | Integer milliseconds | `30000` | `1` or higher | Yes | Timeout for fetching each subscription source. |
 | `fetch_concurrency` | Positive integer | `4` | `1` or higher | Yes | Number of enabled subscription sources fetched concurrently. |
 | `max_subscription_bytes` | Positive integer bytes | `33554432` | `1` or higher | Yes | Maximum bytes accepted per subscription source to cap memory use. |
@@ -267,10 +269,10 @@ When the app is running with the default config:
 - `http://127.0.0.1:27141/results` returns JSON diagnostics with all ranked configs.
 - `http://127.0.0.1:27141/health` returns `ok`.
 
-LAN clients are blocked by default. To allow LAN access, set:
+LAN clients are blocked by default. To allow LAN access, bind to the server device LAN IP and enable sharing:
 
 ```yaml
-bind: 0.0.0.0:27141
+bind: 192.168.1.23:27141
 sharing:
   enabled: true
   require_token: false
@@ -285,7 +287,7 @@ http://192.168.1.23:27141/subscription
 For tokenized LAN access:
 
 ```yaml
-bind: 0.0.0.0:27141
+bind: 192.168.1.23:27141
 sharing:
   enabled: true
   require_token: true
@@ -332,7 +334,7 @@ http://127.0.0.1:27141/subscription
 If v2rayN is on another Windows machine in the same LAN, bind V2RayDAR to a LAN-reachable address, enable LAN sharing, and use the server PC's LAN IP:
 
 ```yaml
-bind: 0.0.0.0:27141
+bind: 192.168.1.23:27141
 sharing:
   enabled: true
   require_token: false
@@ -360,7 +362,7 @@ To use v2rayNG from Android:
 2. In `configs.yaml`, bind V2RayDAR to a LAN-reachable address and enable LAN sharing:
 
 ```yaml
-bind: 0.0.0.0:27141
+bind: 192.168.1.23:27141
 sharing:
   enabled: true
   require_token: false
@@ -424,7 +426,7 @@ If Android cannot open `/health`, check:
 
 The default `bind` is `127.0.0.1:27141`, which is only reachable from the same machine. The default `sharing.enabled` is `false`, so LAN clients cannot read subscription data even if you later bind to a LAN address until sharing is enabled.
 
-If you use `0.0.0.0:27141` and `sharing.enabled: true`, anyone on the reachable network may be able to fetch your top configs unless `sharing.require_token` is enabled. Use a trusted LAN, firewall rules, tokenized URLs, or a more specific bind address when possible.
+If you use `0.0.0.0:27141` and `sharing.enabled: true`, the endpoint listens on every interface. Anyone on a reachable network may be able to fetch your top configs unless `sharing.require_token` is enabled. Prefer a specific LAN IP such as `192.168.1.23:27141` when possible.
 
 Do not expose the endpoint to the public internet.
 
@@ -439,7 +441,7 @@ No configs are imported by the client:
 Android cannot reach V2RayDAR:
 
 - Do not use `127.0.0.1` from Android.
-- Use `bind: 0.0.0.0:27141`.
+- Use the PC LAN IP, for example `bind: 192.168.1.23:27141`.
 - Set `sharing.enabled: true`.
 - Use `http://PC_LAN_IP:27141/subscription`.
 - If `sharing.require_token: true`, include `?token=...` in the URL.

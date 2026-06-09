@@ -1,3 +1,5 @@
+use std::net::SocketAddr;
+
 use crate::config::AppConfig;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -7,6 +9,7 @@ pub enum MenuView {
     NewSubscription,
     SubscriptionActions,
     Configurations,
+    Logs,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -15,6 +18,7 @@ pub enum MainItem {
     Sharing,
     Subscriptions,
     Configurations,
+    Logs,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -34,6 +38,7 @@ pub enum ConfigKey {
     RefreshSeconds,
     EncodedSubscription,
     PrioritizeStability,
+    ScanAllConfigs,
     FetchTimeout,
     FetchConcurrency,
     MaxSubscriptionBytes,
@@ -102,11 +107,13 @@ pub struct HitMap {
 #[derive(Debug, Clone)]
 pub struct TuiState {
     pub editable: AppConfig,
+    pub active_bind: SocketAddr,
     pub view: MenuView,
     pub selected_main: usize,
     pub selected_subscription: usize,
     pub selected_action: usize,
     pub selected_config: usize,
+    pub selected_log: usize,
     pub input_mode: InputMode,
     pub input: String,
     pub new_subscription: Option<SubscriptionDraft>,
@@ -118,13 +125,16 @@ pub struct TuiState {
 
 impl TuiState {
     pub fn new(config: AppConfig) -> Self {
+        let active_bind = config.bind;
         Self {
             editable: config,
+            active_bind,
             view: MenuView::Main,
             selected_main: 0,
             selected_subscription: 0,
             selected_action: 0,
             selected_config: 0,
+            selected_log: 0,
             input_mode: InputMode::None,
             input: String::new(),
             new_subscription: None,

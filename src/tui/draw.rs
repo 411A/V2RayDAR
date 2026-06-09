@@ -21,6 +21,6 @@ pub fn draw(
     found_panel::draw(frame, areas.found, runtime, runtime_config.top_n);
     config_panel::draw(frame, areas.config, state, runtime_config, paths);
 
-    main_menu_panel::draw(frame, areas.menu, state);
+    main_menu_panel::draw(frame, areas.menu, state, runtime);
     footer::draw(frame, areas.footer, state);
 }

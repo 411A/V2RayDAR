@@ -10,13 +10,23 @@ use axum::{
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::Deserialize;
-use tokio::{net::TcpListener, sync::RwLock};
-use tracing::info;
+use tokio::{
+    net::TcpListener,
+    sync::RwLock,
+    time::{Duration, Instant, sleep},
+};
+use tracing::{info, warn};
 
-use crate::model::{RuntimeConfig, RuntimeState};
+use crate::{
+    model::{RuntimeConfig, RuntimeState},
+    network::primary_lan_ip,
+};
 
 type SharedState = Arc<RwLock<RuntimeState>>;
 type SharedConfig = Arc<RwLock<RuntimeConfig>>;
+
+const SUBSCRIPTION_READY_WAIT: Duration = Duration::from_secs(20);
+const SUBSCRIPTION_READY_POLL: Duration = Duration::from_millis(100);
 
 #[derive(Clone)]
 struct HttpState {
@@ -26,14 +36,24 @@ struct HttpState {
 
 pub async fn serve(bind: SocketAddr, runtime: SharedState, config: SharedConfig) -> Result<()> {
     let state = HttpState { runtime, config };
+    let router = router(state.clone());
 
-    let router = Router::new()
+    tokio::select! {
+        result = serve_listener(bind, router.clone()) => result,
+        result = serve_lan_sharing(bind, router, state.config.clone()) => result,
+    }
+}
+
+fn router(state: HttpState) -> Router {
+    Router::new()
         .route("/health", get(health))
         .route("/results", get(results))
         .route("/subscription", get(subscription))
         .route("/subscription.txt", get(subscription_txt))
-        .with_state(state);
+        .with_state(state)
+}
 
+async fn serve_listener(bind: SocketAddr, router: Router) -> Result<()> {
     let listener = TcpListener::bind(bind)
         .await
         .with_context(|| bind_error_context(bind))?;
@@ -44,6 +64,61 @@ pub async fn serve(bind: SocketAddr, runtime: SharedState, config: SharedConfig)
     )
     .await?;
     Ok(())
+}
+
+async fn serve_lan_sharing(
+    local_bind: SocketAddr,
+    router: Router,
+    config: SharedConfig,
+) -> Result<()> {
+    let mut active: Option<(SocketAddr, tokio::task::JoinHandle<Result<()>>)> = None;
+
+    loop {
+        let runtime_config = config.read().await;
+        let desired = desired_lan_bind(local_bind, &runtime_config);
+        drop(runtime_config);
+        let active_bind = active.as_ref().map(|(bind, _)| *bind);
+
+        if desired != active_bind {
+            if let Some((bind, task)) = active.take() {
+                task.abort();
+                info!(bind = %bind, "LAN sharing listener stopped");
+            }
+
+            if let Some(bind) = desired {
+                let router = router.clone();
+                let task = tokio::spawn(async move { serve_listener(bind, router).await });
+                info!(bind = %bind, "LAN sharing listener starting");
+                active = Some((bind, task));
+            }
+        }
+
+        if let Some((bind, task)) = active.as_ref()
+            && task.is_finished()
+        {
+            let bind = *bind;
+            let (_, task) = active.take().expect("active task exists");
+            match task.await {
+                Ok(Ok(())) => info!(bind = %bind, "LAN sharing listener exited"),
+                Ok(Err(error)) => {
+                    warn!(bind = %bind, error = %error, "LAN sharing listener failed")
+                }
+                Err(error) => {
+                    warn!(bind = %bind, error = %error, "LAN sharing listener task failed")
+                }
+            }
+        }
+
+        sleep(Duration::from_secs(1)).await;
+    }
+}
+
+fn desired_lan_bind(local_bind: SocketAddr, config: &RuntimeConfig) -> Option<SocketAddr> {
+    if !config.sharing_enabled || !local_bind.ip().is_loopback() {
+        return None;
+    }
+
+    primary_lan_ip().map(|ip| SocketAddr::new(ip, local_bind.port()))
 }
 
 fn bind_error_context(bind: SocketAddr) -> String {
@@ -104,7 +179,37 @@ async fn subscription_response(
     }
 
     let config = state.config.read().await.clone();
-    let runtime = state.runtime.read().await;
+    let runtime = subscription_snapshot(&state.runtime).await;
+    let mut body = subscription_body(&runtime, &config);
+
+    if encoded {
+        body = STANDARD.encode(body);
+    }
+
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        body,
+    )
+        .into_response()
+}
+
+async fn subscription_snapshot(state: &SharedState) -> RuntimeState {
+    let started = Instant::now();
+    loop {
+        let runtime = state.read().await.clone();
+        if !runtime.refreshing
+            || runtime.ranked.iter().any(|item| item.reachable)
+            || started.elapsed() >= SUBSCRIPTION_READY_WAIT
+        {
+            return runtime;
+        }
+
+        sleep(SUBSCRIPTION_READY_POLL).await;
+    }
+}
+
+fn subscription_body(runtime: &RuntimeState, config: &RuntimeConfig) -> String {
     let mut body = runtime
         .ranked
         .iter()
@@ -117,17 +222,7 @@ async fn subscription_response(
     if !body.is_empty() {
         body.push('\n');
     }
-
-    if encoded {
-        body = STANDARD.encode(body);
-    }
-
-    (
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-        body,
-    )
-        .into_response()
+    body
 }
 
 async fn authorize(
@@ -192,8 +287,8 @@ mod tests {
             DEFAULT_ACCEPTED_STATUSES, DEFAULT_ACTIVE_TIMEOUT_MS, DEFAULT_BIND,
             DEFAULT_DOWNLOAD_BYTES_LIMIT, DEFAULT_ENCODED_SUBSCRIPTION, DEFAULT_FETCH_CONCURRENCY,
             DEFAULT_FETCH_TIMEOUT_MS, DEFAULT_MAX_SUBSCRIPTION_BYTES, DEFAULT_PRIORITIZE_STABILITY,
-            DEFAULT_PROBE_CONCURRENCY, DEFAULT_REFRESH_SECONDS, DEFAULT_STARTUP_TIMEOUT_MS,
-            DEFAULT_TEST_URL, DEFAULT_TOP_N, LOCALHOST_IP,
+            DEFAULT_PROBE_CONCURRENCY, DEFAULT_REFRESH_SECONDS, DEFAULT_SCAN_ALL_CONFIGS,
+            DEFAULT_STARTUP_TIMEOUT_MS, DEFAULT_TEST_URL, DEFAULT_TOP_N, LOCALHOST_IP,
         },
         model::RuntimeConfig,
     };
@@ -205,6 +300,7 @@ mod tests {
             refresh_seconds: DEFAULT_REFRESH_SECONDS,
             encoded_subscription: DEFAULT_ENCODED_SUBSCRIPTION,
             prioritize_stability: DEFAULT_PRIORITIZE_STABILITY,
+            scan_all_configs: DEFAULT_SCAN_ALL_CONFIGS,
             fetch_timeout_ms: DEFAULT_FETCH_TIMEOUT_MS,
             fetch_concurrency: DEFAULT_FETCH_CONCURRENCY,
             max_subscription_bytes: DEFAULT_MAX_SUBSCRIPTION_BYTES,

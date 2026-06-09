@@ -1,11 +1,16 @@
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 
 use anyhow::Result;
 use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 
-use crate::constants::{CONFIG_KEYS, MAIN_ITEMS, SUBSCRIPTION_ACTIONS};
+use tokio::sync::RwLock;
+
+use crate::{
+    constants::{CONFIG_KEYS, MAIN_ITEMS, SUBSCRIPTION_ACTIONS},
+    model::RuntimeConfig,
+};
 
 use super::{
     action_handlers::run_action,
@@ -18,7 +23,12 @@ pub enum EventResult {
     Quit,
 }
 
-pub fn handle_key(state: &mut TuiState, key: KeyEvent, config_path: &Path) -> Result<EventResult> {
+pub fn handle_key(
+    state: &mut TuiState,
+    key: KeyEvent,
+    config_path: &Path,
+    runtime_config: &Arc<RwLock<RuntimeConfig>>,
+) -> Result<EventResult> {
     if key.kind != KeyEventKind::Press {
         return Ok(EventResult::Continue);
     }
@@ -40,7 +50,7 @@ pub fn handle_key(state: &mut TuiState, key: KeyEvent, config_path: &Path) -> Re
         | InputMode::Priority
         | InputMode::ConfigValue(_)
         | InputMode::ResetConfirm => handle_input_key(state, key),
-        InputMode::None => handle_normal_key(state, key, config_path),
+        InputMode::None => handle_normal_key(state, key, config_path, runtime_config),
     }
 }
 
@@ -48,11 +58,12 @@ fn handle_normal_key(
     state: &mut TuiState,
     key: KeyEvent,
     config_path: &Path,
+    runtime_config: &Arc<RwLock<RuntimeConfig>>,
 ) -> Result<EventResult> {
     match key.code {
         KeyCode::Char('q') => return Ok(EventResult::Quit),
         KeyCode::Esc => go_back(state),
-        KeyCode::Enter => activate(state, config_path)?,
+        KeyCode::Enter => activate(state, config_path, runtime_config)?,
         KeyCode::Up | KeyCode::Char('k') => move_up(state),
         KeyCode::Down | KeyCode::Char('j') => move_down(state),
         KeyCode::Char(':') => start_input(state, InputMode::Command, ""),
@@ -169,6 +180,7 @@ fn move_up(state: &mut TuiState) {
             state.selected_action = state.selected_action.saturating_sub(1)
         }
         MenuView::Configurations => state.selected_config = state.selected_config.saturating_sub(1),
+        MenuView::Logs => state.selected_log = state.selected_log.saturating_add(1),
     }
 }
 
@@ -188,12 +200,17 @@ fn move_down(state: &mut TuiState) {
         MenuView::Configurations => {
             state.selected_config = (state.selected_config + 1).min(CONFIG_KEYS.len() - 1);
         }
+        MenuView::Logs => state.selected_log = state.selected_log.saturating_sub(1),
     }
 }
 
-fn activate(state: &mut TuiState, config_path: &Path) -> Result<()> {
+fn activate(
+    state: &mut TuiState,
+    config_path: &Path,
+    runtime_config: &Arc<RwLock<RuntimeConfig>>,
+) -> Result<()> {
     match state.view {
-        MenuView::Main => activate_main(state, config_path),
+        MenuView::Main => activate_main(state, config_path, runtime_config),
         MenuView::Subscriptions => {
             if state.selected_subscription == 0 {
                 run_action(state, Action::Add, config_path)?;
@@ -204,6 +221,7 @@ fn activate(state: &mut TuiState, config_path: &Path) -> Result<()> {
         }
         MenuView::NewSubscription => Ok(()),
         MenuView::SubscriptionActions => activate_subscription_action(state, config_path),
+        MenuView::Logs => Ok(()),
         MenuView::Configurations => {
             let key = CONFIG_KEYS[state.selected_config];
             if key == ConfigKey::ResetDefaults {
@@ -218,15 +236,25 @@ fn activate(state: &mut TuiState, config_path: &Path) -> Result<()> {
     }
 }
 
-fn activate_main(state: &mut TuiState, config_path: &Path) -> Result<()> {
+fn activate_main(
+    state: &mut TuiState,
+    config_path: &Path,
+    runtime_config: &Arc<RwLock<RuntimeConfig>>,
+) -> Result<()> {
     match MAIN_ITEMS[state.selected_main] {
         MainItem::OpenConfig => {
-            state.status = super::open_config::open(config_path);
+            let message = super::open_config::open(config_path);
+            if message.starts_with("Edit config manually:") {
+                state.status = message;
+            } else {
+                state.status.clear();
+            }
         }
         MainItem::Sharing => {
             state.editable.sharing.enabled = !state.editable.sharing.enabled;
             state.dirty = true;
             super::util::save_config(config_path, &state.editable)?;
+            update_live_runtime_config(runtime_config, state);
             state.dirty = false;
             state.status = match super::firewall::apply(
                 state.editable.sharing.enabled,
@@ -245,8 +273,22 @@ fn activate_main(state: &mut TuiState, config_path: &Path) -> Result<()> {
         }
         MainItem::Subscriptions => state.view = MenuView::Subscriptions,
         MainItem::Configurations => state.view = MenuView::Configurations,
+        MainItem::Logs => {
+            state.view = MenuView::Logs;
+            state.selected_log = 0;
+        }
     }
     Ok(())
+}
+
+fn update_live_runtime_config(runtime_config: &Arc<RwLock<RuntimeConfig>>, state: &mut TuiState) {
+    match runtime_config.try_write() {
+        Ok(mut config) => *config = RuntimeConfig::from(&state.editable),
+        Err(_) => {
+            state.status =
+                "Config saved; live server update is waiting for config reload".to_string();
+        }
+    }
 }
 
 fn activate_subscription_action(state: &mut TuiState, config_path: &Path) -> Result<()> {
@@ -267,7 +309,7 @@ fn activate_subscription_action(state: &mut TuiState, config_path: &Path) -> Res
 fn go_back(state: &mut TuiState) {
     state.view = match state.view {
         MenuView::Main => MenuView::Main,
-        MenuView::Subscriptions | MenuView::Configurations => MenuView::Main,
+        MenuView::Subscriptions | MenuView::Configurations | MenuView::Logs => MenuView::Main,
         MenuView::NewSubscription => {
             state.input_mode = InputMode::None;
             state.input.clear();

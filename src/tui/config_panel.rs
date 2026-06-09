@@ -6,17 +6,26 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 
-use crate::{model::RuntimeConfig, paths::AppPaths};
+use crate::{model::RuntimeConfig, network::sharing_status, paths::AppPaths};
 
 use super::{state::TuiState, util::bool_text};
 
 pub fn draw(
     frame: &mut Frame<'_>,
     area: Rect,
-    _state: &TuiState,
-    runtime_config: &RuntimeConfig,
+    state: &TuiState,
+    _runtime_config: &RuntimeConfig,
     _paths: &AppPaths,
 ) {
+    let live_config = RuntimeConfig::from(&state.editable);
+    let mut sharing = sharing_status(&live_config);
+    if live_config.sharing_enabled
+        && live_config.bind != state.active_bind
+        && state.active_bind.ip().is_loopback()
+        && !live_config.bind.ip().is_loopback()
+    {
+        sharing.discoverable.push_str(" (restart V2RayDAR)");
+    }
     let block = Block::default()
         .borders(Borders::ALL)
         .title("Current Configuration");
@@ -30,19 +39,27 @@ pub fn draw(
         service,
         "Service",
         vec![
-            ("bind", runtime_config.bind.to_string()),
-            ("top_n", runtime_config.top_n.to_string()),
-            ("refresh", format!("{}s", runtime_config.refresh_seconds)),
+            ("bind", live_config.bind.to_string()),
+            ("top_n", live_config.top_n.to_string()),
+            ("refresh", format!("{}s", live_config.refresh_seconds)),
             (
                 "stability",
-                bool_text(runtime_config.prioritize_stability).to_string(),
+                bool_text(live_config.prioritize_stability).to_string(),
             ),
             (
-                "max_sub_mb",
-                format_mb(runtime_config.max_subscription_bytes),
+                "scan_all",
+                bool_text(live_config.scan_all_configs).to_string(),
             ),
-            ("probe", runtime_config.probe_mode.clone()),
-            ("batch", format_batch_size(runtime_config.probe_batch_size)),
+            (
+                "subscriptions",
+                format!(
+                    "{}/{}",
+                    live_config.enabled_subscription_count, live_config.subscription_count
+                ),
+            ),
+            ("max_sub_mb", format_mb(live_config.max_subscription_bytes)),
+            ("probe", live_config.probe_mode.clone()),
+            ("batch", format_batch_size(live_config.probe_batch_size)),
         ],
     );
     draw_group(
@@ -50,20 +67,10 @@ pub fn draw(
         network,
         "Network",
         vec![
-            (
-                "sharing",
-                bool_text(runtime_config.sharing_enabled).to_string(),
-            ),
-            ("token", bool_text(runtime_config.require_token).to_string()),
-            (
-                "discoverable",
-                if runtime_config.sharing_enabled && !runtime_config.bind.ip().is_loopback() {
-                    "yes".to_string()
-                } else {
-                    "no".to_string()
-                },
-            ),
-            ("firewall", firewall_hint(runtime_config)),
+            ("sharing", sharing.sharing.to_string()),
+            ("token", bool_text(live_config.require_token).to_string()),
+            ("discoverable", sharing.discoverable),
+            ("firewall", sharing.firewall),
         ],
     );
 }
@@ -92,18 +99,10 @@ fn draw_group(
     ))];
     lines.extend(rows.into_iter().map(|(key, value)| {
         Line::from(vec![
-            Span::styled(format!("{key:<13}"), Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("{key:<14}"), Style::default().fg(Color::DarkGray)),
             Span::styled(value, Style::default().fg(Color::White)),
         ])
     }));
 
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
-}
-
-fn firewall_hint(config: &RuntimeConfig) -> String {
-    if config.sharing_enabled && !config.bind.ip().is_loopback() {
-        "allow inbound TCP if clients cannot reach /health".to_string()
-    } else {
-        "not required for local-only bind".to_string()
-    }
 }

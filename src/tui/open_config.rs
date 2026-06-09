@@ -4,6 +4,9 @@ use std::{
     process::{Command, Stdio},
 };
 
+#[cfg(target_os = "windows")]
+use crate::constants::WINDOWS_CREATE_NO_WINDOW;
+
 pub fn open(path: &Path) -> String {
     if let Some(message) = open_vscode(path) {
         return message;
@@ -182,8 +185,7 @@ fn spawn_detached(command: &mut Command) -> std::io::Result<()> {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        command.creation_flags(CREATE_NO_WINDOW);
+        command.creation_flags(WINDOWS_CREATE_NO_WINDOW);
     }
 
     command.spawn().map(|_| ())

@@ -3,13 +3,13 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
     process::Command,
     sync::{Mutex, OnceLock},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
-use crate::model::RuntimeConfig;
-
-const ROUTE_PROBE_ADDR: &str = "8.8.8.8:80";
-const INTERFACE_CACHE_TTL: Duration = Duration::from_secs(5);
+use crate::{
+    constants::{INTERFACE_CACHE_TTL, ROUTE_PROBE_ADDR},
+    model::RuntimeConfig,
+};
 
 type InterfaceIpCache = Option<(Instant, Vec<IpAddr>)>;
 

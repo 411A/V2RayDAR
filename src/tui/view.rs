@@ -7,6 +7,7 @@ use crate::{
 
 #[derive(Debug, Clone, Default)]
 pub struct RuntimeView {
+    pub refresh_started_at: Option<DateTime<Utc>>,
     pub refresh_finished_at: Option<DateTime<Utc>>,
     pub refresh_duration_ms: Option<u128>,
     pub refreshing: bool,
@@ -34,6 +35,7 @@ pub struct RankedView {
 impl RuntimeView {
     pub fn from_state(runtime: &RuntimeState, config: &RuntimeConfig) -> Self {
         Self {
+            refresh_started_at: parse_time(runtime.refresh_started_at.as_deref()),
             refresh_finished_at: parse_time(runtime.refresh_finished_at.as_deref()),
             refresh_duration_ms: runtime.refresh_duration_ms,
             refreshing: runtime.refreshing,

@@ -18,15 +18,13 @@ use tokio::{
 use tracing::{info, warn};
 
 use crate::{
+    constants::{SUBSCRIPTION_READY_POLL, SUBSCRIPTION_READY_WAIT},
     model::{RuntimeConfig, RuntimeState},
     network::primary_lan_ip,
 };
 
 type SharedState = Arc<RwLock<RuntimeState>>;
 type SharedConfig = Arc<RwLock<RuntimeConfig>>;
-
-const SUBSCRIPTION_READY_WAIT: Duration = Duration::from_secs(20);
-const SUBSCRIPTION_READY_POLL: Duration = Duration::from_millis(100);
 
 #[derive(Clone)]
 struct HttpState {

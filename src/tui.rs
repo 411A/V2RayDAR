@@ -19,6 +19,7 @@ mod util;
 mod view;
 
 use std::{
+    path::Path,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -99,7 +100,7 @@ fn drain_events(
         match event::read() {
             Ok(Event::Key(key)) => {
                 if matches!(
-                    handle_key(tui, key, &paths.config_path, runtime_config)?,
+                    handle_key(tui, key, paths, runtime_config)?,
                     EventResult::Quit
                 ) {
                     return Ok(EventResult::Quit);
@@ -127,6 +128,10 @@ fn drain_events(
 
 pub async fn run_sing_box_setup(config: &mut AppConfig, paths: &AppPaths) -> Result<()> {
     setup::run(config, paths).await
+}
+
+pub fn remove_owned_firewall_rules(state_dir: &Path) -> Result<Vec<String>> {
+    firewall::remove_owned_rules(state_dir)
 }
 
 pub fn restore_terminal() -> Result<()> {

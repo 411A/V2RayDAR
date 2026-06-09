@@ -1,20 +1,173 @@
-use std::process::Command;
+use std::{fs, path::Path, process::Command};
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
+use serde::{Deserialize, Serialize};
 
-use crate::constants::FIREWALL_RULE_NAME;
+use crate::constants::{FIREWALL_RULE_NAME, FIREWALL_STATE_APP_ID, FIREWALL_STATE_FILE_NAME};
 
-pub fn apply(enabled: bool, port: u16) -> Result<String> {
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct FirewallState {
+    #[serde(default)]
+    app: String,
+    rules: Vec<OwnedFirewallRule>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct OwnedFirewallRule {
+    backend: FirewallBackend,
+    port: u16,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum FirewallBackend {
+    WindowsNetsh,
+    LinuxUfw,
+    LinuxFirewalld,
+}
+
+pub fn apply(state_dir: &Path, enabled: bool, port: u16) -> Result<String> {
+    let state_path = firewall_state_path(state_dir);
     if cfg!(target_os = "windows") {
-        windows(enabled, port)
+        read_state(&state_path)?;
+        windows(enabled, port)?;
+        if enabled {
+            record_rule(&state_path, FirewallBackend::WindowsNetsh, port)?;
+            Ok(format!(
+                "Sharing enabled; Windows firewall allows TCP {port}"
+            ))
+        } else {
+            remove_recorded_backend(&state_path, FirewallBackend::WindowsNetsh)?;
+            Ok("Sharing disabled; Windows firewall rule removed".to_string())
+        }
     } else if cfg!(target_os = "linux") {
-        linux(enabled, port)
+        linux(&state_path, enabled, port)
     } else {
         Ok("Firewall auto-change is unsupported on this OS".to_string())
     }
 }
 
-fn windows(enabled: bool, port: u16) -> Result<String> {
+pub fn remove_owned_rules(state_dir: &Path) -> Result<Vec<String>> {
+    let mut messages = Vec::new();
+    let mut failures = Vec::new();
+    let state_path = firewall_state_path(state_dir);
+    let mut state = read_state(&state_path)?;
+
+    if cfg!(target_os = "windows") {
+        let had_record = state
+            .rules
+            .iter()
+            .any(|rule| rule.backend == FirewallBackend::WindowsNetsh);
+        match remove_windows_rule() {
+            Ok(()) => {
+                messages.push("removed Windows firewall rule".to_string());
+                state
+                    .rules
+                    .retain(|rule| rule.backend != FirewallBackend::WindowsNetsh);
+            }
+            Err(error) if had_record => {
+                failures.push(format!("Windows firewall rule was not removed: {error}"));
+            }
+            Err(error) => messages.push(format!(
+                "Windows firewall rule was not removed or was already absent: {error}"
+            )),
+        }
+    }
+
+    let mut remaining_rules = Vec::new();
+    for rule in state.rules {
+        if cfg!(target_os = "windows") && rule.backend == FirewallBackend::WindowsNetsh {
+            remaining_rules.push(rule);
+            continue;
+        }
+        match remove_owned_rule(rule.clone()) {
+            Ok(message) => messages.push(message),
+            Err(error) => {
+                failures.push(format!("firewall rule was not removed: {error}"));
+                remaining_rules.push(rule);
+            }
+        }
+    }
+    state.rules = remaining_rules;
+    write_state(&state_path, &state)?;
+
+    if !failures.is_empty() {
+        return Err(anyhow!(
+            "unable to remove all V2RayDAR-owned firewall rules: {}",
+            failures.join("; ")
+        ));
+    }
+
+    Ok(messages)
+}
+
+fn firewall_state_path(state_dir: &Path) -> std::path::PathBuf {
+    state_dir.join(FIREWALL_STATE_FILE_NAME)
+}
+
+fn linux(state_path: &Path, enabled: bool, port: u16) -> Result<String> {
+    read_state(state_path)?;
+
+    if command_exists("ufw") {
+        if enabled {
+            let existed = ufw_allows_port(port)?;
+            run("ufw", &["allow", &format!("{port}/tcp")])?;
+            if !existed {
+                record_rule(state_path, FirewallBackend::LinuxUfw, port)?;
+            }
+            let ownership = if existed {
+                "pre-existing rule left user-owned"
+            } else {
+                "owned rule recorded"
+            };
+            return Ok(format!(
+                "Sharing enabled; ufw allows TCP {port}; {ownership}"
+            ));
+        } else {
+            return if remove_recorded_rule(state_path, FirewallBackend::LinuxUfw, port)? {
+                Ok(format!(
+                    "Sharing disabled; removed owned ufw TCP {port} rule"
+                ))
+            } else {
+                Ok(format!(
+                    "Sharing disabled; no V2RayDAR-owned ufw TCP {port} rule was recorded"
+                ))
+            };
+        }
+    }
+
+    if command_exists("firewall-cmd") {
+        if enabled {
+            let existed = firewalld_allows_port(port)?;
+            firewalld_port("--add-port", port)?;
+            if !existed {
+                record_rule(state_path, FirewallBackend::LinuxFirewalld, port)?;
+            }
+            let ownership = if existed {
+                "pre-existing rule left user-owned"
+            } else {
+                "owned rule recorded"
+            };
+            return Ok(format!(
+                "Sharing enabled; firewalld allows TCP {port}; {ownership}"
+            ));
+        } else {
+            return if remove_recorded_rule(state_path, FirewallBackend::LinuxFirewalld, port)? {
+                Ok(format!(
+                    "Sharing disabled; removed owned firewalld TCP {port} rule"
+                ))
+            } else {
+                Ok(format!(
+                    "Sharing disabled; no V2RayDAR-owned firewalld TCP {port} rule was recorded"
+                ))
+            };
+        }
+    }
+
+    Ok("Sharing changed; no supported Linux firewall tool found".to_string())
+}
+
+fn windows(enabled: bool, port: u16) -> Result<()> {
     if enabled {
         run(
             "netsh",
@@ -29,53 +182,124 @@ fn windows(enabled: bool, port: u16) -> Result<String> {
                 "protocol=TCP",
                 &format!("localport={port}"),
             ],
-        )?;
-        Ok(format!(
-            "Sharing enabled; Windows firewall allows TCP {port}"
-        ))
+        )
     } else {
-        run(
-            "netsh",
-            &[
-                "advfirewall",
-                "firewall",
-                "delete",
-                "rule",
-                &format!("name={FIREWALL_RULE_NAME}"),
-            ],
-        )?;
-        Ok("Sharing disabled; Windows firewall rule removed".to_string())
+        remove_windows_rule()
     }
 }
 
-fn linux(enabled: bool, port: u16) -> Result<String> {
-    if command_exists("ufw") {
-        let action = if enabled { "allow" } else { "delete" };
-        run("ufw", &[action, &format!("{port}/tcp")])?;
-        return Ok(format!(
-            "Sharing {}; ufw updated for TCP {port}",
-            on_off(enabled)
-        ));
+fn remove_windows_rule() -> Result<()> {
+    run(
+        "netsh",
+        &[
+            "advfirewall",
+            "firewall",
+            "delete",
+            "rule",
+            &format!("name={FIREWALL_RULE_NAME}"),
+        ],
+    )
+}
+
+fn remove_owned_rule(rule: OwnedFirewallRule) -> Result<String> {
+    match rule.backend {
+        FirewallBackend::WindowsNetsh => {
+            remove_windows_rule()?;
+            Ok("removed Windows firewall rule".to_string())
+        }
+        FirewallBackend::LinuxUfw => {
+            run("ufw", &["delete", "allow", &format!("{}/tcp", rule.port)])?;
+            Ok(format!("removed ufw TCP {} rule", rule.port))
+        }
+        FirewallBackend::LinuxFirewalld => {
+            firewalld_port("--remove-port", rule.port)?;
+            Ok(format!("removed firewalld TCP {} rule", rule.port))
+        }
+    }
+}
+
+fn firewalld_port(action: &str, port: u16) -> Result<()> {
+    run(
+        "firewall-cmd",
+        &[action, &format!("{port}/tcp"), "--permanent"],
+    )?;
+    let _ = run("firewall-cmd", &["--reload"]);
+    Ok(())
+}
+
+fn record_rule(state_path: &Path, backend: FirewallBackend, port: u16) -> Result<()> {
+    let mut state = read_state(state_path)?;
+    if !state
+        .rules
+        .iter()
+        .any(|rule| rule.backend == backend && rule.port == port)
+    {
+        state.rules.push(OwnedFirewallRule { backend, port });
+    }
+    write_state(state_path, &state)
+}
+
+fn remove_recorded_backend(state_path: &Path, backend: FirewallBackend) -> Result<()> {
+    let mut state = read_state(state_path)?;
+    state.rules.retain(|rule| rule.backend != backend);
+    write_state(state_path, &state)
+}
+
+fn remove_recorded_rule(state_path: &Path, backend: FirewallBackend, port: u16) -> Result<bool> {
+    let mut state = read_state(state_path)?;
+    if !state
+        .rules
+        .iter()
+        .any(|rule| rule.backend == backend && rule.port == port)
+    {
+        return Ok(false);
     }
 
-    if command_exists("firewall-cmd") {
-        let action = if enabled {
-            "--add-port"
-        } else {
-            "--remove-port"
-        };
-        run(
-            "firewall-cmd",
-            &[action, &format!("{port}/tcp"), "--permanent"],
-        )?;
-        let _ = run("firewall-cmd", &["--reload"]);
-        return Ok(format!(
-            "Sharing {}; firewalld updated for TCP {port}",
-            on_off(enabled)
-        ));
+    remove_owned_rule(OwnedFirewallRule { backend, port })?;
+    state
+        .rules
+        .retain(|rule| !(rule.backend == backend && rule.port == port));
+    write_state(state_path, &state)?;
+    Ok(true)
+}
+
+fn read_state(path: &Path) -> Result<FirewallState> {
+    match fs::read(path) {
+        Ok(bytes) => {
+            let state: FirewallState = serde_json::from_slice(&bytes)
+                .with_context(|| format!("unable to parse {}", path.display()))?;
+            if state.app != FIREWALL_STATE_APP_ID {
+                return Err(anyhow!(
+                    "refusing to use {}; it is not marked as V2RayDAR-owned",
+                    path.display()
+                ));
+            }
+            Ok(state)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(empty_state()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn write_state(path: &Path, state: &FirewallState) -> Result<()> {
+    if state.rules.is_empty() {
+        let _ = fs::remove_file(path);
+        return Ok(());
     }
 
-    Ok("Sharing changed; no supported Linux firewall tool found".to_string())
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("unable to create {}", parent.display()))?;
+    }
+    fs::write(path, serde_json::to_vec_pretty(state)?)?;
+    Ok(())
+}
+
+fn empty_state() -> FirewallState {
+    FirewallState {
+        app: FIREWALL_STATE_APP_ID.to_string(),
+        rules: Vec::new(),
+    }
 }
 
 fn command_exists(command: &str) -> bool {
@@ -84,6 +308,34 @@ fn command_exists(command: &str) -> bool {
         .output()
         .map(|output| output.status.success())
         .unwrap_or(false)
+}
+
+fn ufw_allows_port(port: u16) -> Result<bool> {
+    let output = Command::new("ufw").arg("status").output()?;
+    if !output.status.success() {
+        return Err(anyhow!("unable to inspect ufw status before changing it"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let port_tcp = format!("{port}/tcp");
+    Ok(stdout.lines().any(|line| {
+        let mut columns = line.split_whitespace();
+        columns.next() == Some(port_tcp.as_str())
+            && columns.any(|column| column.eq_ignore_ascii_case("allow"))
+    }))
+}
+
+fn firewalld_allows_port(port: u16) -> Result<bool> {
+    let output = Command::new("firewall-cmd")
+        .args(["--permanent", &format!("--query-port={port}/tcp")])
+        .output()?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(anyhow!(
+            "unable to inspect firewalld status before changing it"
+        )),
+    }
 }
 
 fn run(command: &str, args: &[&str]) -> Result<()> {
@@ -95,8 +347,4 @@ fn run(command: &str, args: &[&str]) -> Result<()> {
             "firewall command failed; run as admin/root if needed"
         ))
     }
-}
-
-fn on_off(enabled: bool) -> &'static str {
-    if enabled { "enabled" } else { "disabled" }
 }

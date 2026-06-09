@@ -33,9 +33,10 @@ use tracing::{error, info, warn};
 use crate::{
     config::{AppConfig, ProbeMode},
     constants::{
+        APP_MARKER_FILE_NAME, CACHE_DIR_NAME, CACHE_MARKER_FILE_NAME, CONFIG_FILE_NAME,
         CONFIG_WATCH_INTERVAL, DEFAULT_LOG_FILTER_PLAIN, DEFAULT_LOG_FILTER_TUI,
-        DEFAULT_LOG_FILTER_VERBOSE, LOCALHOST_IP, MAX_TUI_LOGS, SING_BOX_DOWNLOAD_URL,
-        STABLE_WORKING_APPEARANCES,
+        DEFAULT_LOG_FILTER_VERBOSE, FIREWALL_STATE_FILE_NAME, LOCALHOST_IP, MAX_TUI_LOGS,
+        SING_BOX_DOWNLOAD_URL, STABLE_WORKING_APPEARANCES,
     },
     model::{Candidate, ProbeStopPolicy, ProgressEvent, RankedConfig, RuntimeConfig, RuntimeState},
     paths::AppPaths,
@@ -185,27 +186,24 @@ async fn main() -> Result<()> {
 }
 
 async fn uninstall(paths: &AppPaths, config_override: bool, assume_yes: bool) -> Result<()> {
-    if config_override {
+    let targets = uninstall_targets(paths, config_override).await?;
+    let firewall_cleanup = has_firewall_cleanup(paths);
+    if targets.is_empty() && !firewall_cleanup {
         println!(
-            "--uninstall does not remove arbitrary --config directories. Remove {} manually if needed.",
+            "Nothing to remove; no V2RayDAR-owned files were found for {}.",
             paths.config_path.display()
         );
         return Ok(());
     }
 
-    if !paths.root_dir.exists() {
-        println!(
-            "Nothing to remove; {} does not exist.",
-            paths.root_dir.display()
-        );
-        return Ok(());
-    }
-
     if !assume_yes {
-        println!(
-            "This will permanently remove generated app data: {}",
-            paths.root_dir.display()
-        );
+        println!("This will permanently remove V2RayDAR-owned app data and firewall rules:");
+        for target in &targets {
+            println!("  {}", target.display());
+        }
+        if firewall_cleanup {
+            println!("  V2RayDAR-owned firewall rules");
+        }
         print!("Type DELETE to continue: ");
         io::stdout().flush().ok();
         let mut answer = String::new();
@@ -216,12 +214,186 @@ async fn uninstall(paths: &AppPaths, config_override: bool, assume_yes: bool) ->
         }
     }
 
-    println!("Removing generated app data: {}", paths.root_dir.display());
-    fs::remove_dir_all(&paths.root_dir)
-        .await
-        .with_context(|| format!("unable to remove {}", paths.root_dir.display()))?;
-    println!("Removed generated app data. Delete the V2RayDAR executable manually if desired.");
+    if firewall_cleanup {
+        for message in tui::remove_owned_firewall_rules(&paths.root_dir)? {
+            println!("Firewall cleanup: {message}");
+        }
+    }
+
+    for target in targets {
+        remove_uninstall_target(&target).await?;
+        println!("Removed {}", target.display());
+    }
+
+    println!(
+        "V2RayDAR uninstall cleanup finished. Delete the V2RayDAR executable manually if desired."
+    );
     Ok(())
+}
+
+async fn uninstall_targets(paths: &AppPaths, config_override: bool) -> Result<Vec<PathBuf>> {
+    if !config_override {
+        if !paths.root_dir.exists() {
+            return Ok(Vec::new());
+        }
+        if can_remove_entire_app_root(paths).await? {
+            return Ok(vec![paths.root_dir.clone()]);
+        }
+        if paths.root_dir.join(APP_MARKER_FILE_NAME).exists() {
+            return known_app_root_targets(paths).await;
+        }
+
+        return Err(anyhow!(
+            "refusing to remove {}; it is not marked as V2RayDAR-owned and contains non-app files",
+            paths.root_dir.display()
+        ));
+    }
+
+    let mut targets = Vec::new();
+    if paths.config_path.exists() {
+        targets.push(paths.config_path.clone());
+    }
+    if is_marked_known_cache_dir(&paths.cache_dir).await? {
+        targets.push(paths.cache_dir.clone());
+    }
+
+    Ok(targets)
+}
+
+async fn can_remove_entire_app_root(paths: &AppPaths) -> Result<bool> {
+    let contains_only_known_artifacts = contains_only_known_app_artifacts(&paths.root_dir).await?;
+    if paths.root_dir.join(APP_MARKER_FILE_NAME).exists() {
+        return Ok(contains_only_known_artifacts);
+    }
+
+    Ok(paths.owns_root_dir && contains_only_known_artifacts)
+}
+
+async fn contains_only_known_app_artifacts(path: &Path) -> Result<bool> {
+    let mut entries = fs::read_dir(path)
+        .await
+        .with_context(|| format!("unable to inspect {}", path.display()))?;
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .with_context(|| format!("unable to inspect {}", path.display()))?
+    {
+        if !is_known_app_root_entry(&entry).await? {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
+}
+
+async fn is_known_app_root_entry(entry: &fs::DirEntry) -> Result<bool> {
+    let file_name = entry.file_name();
+    let Some(name) = file_name.to_str() else {
+        return Ok(false);
+    };
+
+    let file_type = entry
+        .file_type()
+        .await
+        .with_context(|| format!("unable to inspect {}", entry.path().display()))?;
+
+    match name {
+        CONFIG_FILE_NAME | APP_MARKER_FILE_NAME | FIREWALL_STATE_FILE_NAME => {
+            Ok(file_type.is_file())
+        }
+        CACHE_DIR_NAME => Ok(file_type.is_dir() && is_known_cache_dir(&entry.path()).await?),
+        _ => Ok(false),
+    }
+}
+
+async fn known_app_root_targets(paths: &AppPaths) -> Result<Vec<PathBuf>> {
+    let mut targets = Vec::new();
+    push_existing(&mut targets, paths.config_path.clone());
+    if is_known_cache_dir(&paths.cache_dir).await? {
+        targets.push(paths.cache_dir.clone());
+    }
+    push_existing(&mut targets, paths.root_dir.join(APP_MARKER_FILE_NAME));
+    Ok(targets)
+}
+
+fn push_existing(targets: &mut Vec<PathBuf>, path: PathBuf) {
+    if path.exists() {
+        targets.push(path);
+    }
+}
+
+fn has_firewall_cleanup(paths: &AppPaths) -> bool {
+    cfg!(target_os = "windows") || paths.root_dir.join(FIREWALL_STATE_FILE_NAME).exists()
+}
+
+async fn is_known_cache_dir(path: &Path) -> Result<bool> {
+    if !path.is_dir() {
+        return Ok(false);
+    }
+
+    let mut entries = fs::read_dir(path)
+        .await
+        .with_context(|| format!("unable to inspect {}", path.display()))?;
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .with_context(|| format!("unable to inspect {}", path.display()))?
+    {
+        if !is_known_cache_entry(&entry).await? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+async fn is_marked_known_cache_dir(path: &Path) -> Result<bool> {
+    Ok(path.join(CACHE_MARKER_FILE_NAME).is_file() && is_known_cache_dir(path).await?)
+}
+
+async fn is_known_cache_entry(entry: &fs::DirEntry) -> Result<bool> {
+    let file_name = entry.file_name();
+    let Some(name) = file_name.to_str() else {
+        return Ok(false);
+    };
+    let file_type = entry
+        .file_type()
+        .await
+        .with_context(|| format!("unable to inspect {}", entry.path().display()))?;
+
+    Ok(file_type.is_file()
+        && (name == CACHE_MARKER_FILE_NAME || is_subscription_cache_file_name(name)))
+}
+
+fn is_subscription_cache_file_name(name: &str) -> bool {
+    if let Some(key) = name.strip_suffix(".body") {
+        return is_cache_key(key);
+    }
+    if let Some(key) = name.strip_suffix(".json") {
+        return is_cache_key(key);
+    }
+    false
+}
+
+fn is_cache_key(value: &str) -> bool {
+    value.len() == 16
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+async fn remove_uninstall_target(path: &Path) -> Result<()> {
+    let metadata = fs::metadata(path)
+        .await
+        .with_context(|| format!("unable to inspect {}", path.display()))?;
+    if metadata.is_dir() {
+        fs::remove_dir_all(path)
+            .await
+            .with_context(|| format!("unable to remove {}", path.display()))
+    } else {
+        fs::remove_file(path)
+            .await
+            .with_context(|| format!("unable to remove {}", path.display()))
+    }
 }
 
 fn print_sing_box_setup_required(paths: &AppPaths) {
@@ -1077,6 +1249,46 @@ mod tests {
     use super::*;
     use crate::model::Endpoint;
 
+    fn temp_uninstall_root(name: &str) -> PathBuf {
+        let unique = format!(
+            "v2raydar-{name}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .expect("system time is after unix epoch")
+                .as_nanos()
+        );
+        std::env::temp_dir().join(unique)
+    }
+
+    fn test_paths(root_dir: PathBuf, owns_root_dir: bool) -> AppPaths {
+        AppPaths {
+            config_path: root_dir.join(CONFIG_FILE_NAME),
+            cache_dir: root_dir.join(CACHE_DIR_NAME),
+            root_dir,
+            portable: false,
+            owns_root_dir,
+        }
+    }
+
+    fn write_file(path: &Path, content: &str) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("parent directory can be created");
+        }
+        std::fs::write(path, content).expect("test file can be written");
+    }
+
+    fn create_marked_cache(cache_dir: &Path) {
+        std::fs::create_dir_all(cache_dir).expect("cache directory can be created");
+        write_file(&cache_dir.join(CACHE_MARKER_FILE_NAME), "V2RayDAR cache\n");
+        write_file(&cache_dir.join("0123456789abcdef.body"), "body");
+        write_file(&cache_dir.join("0123456789abcdef.json"), "{}");
+    }
+
+    fn remove_test_root(path: &Path) {
+        let _ = std::fs::remove_dir_all(path);
+    }
+
     fn ranked(name: &str, uri: &str, reachable: bool, latency_ms: Option<u128>) -> RankedConfig {
         RankedConfig {
             rank: 0,
@@ -1189,5 +1401,83 @@ mod tests {
         let state = state.read().await;
         assert_eq!(state.reachable_candidates, 5);
         assert_eq!(state.ranked.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn uninstall_removes_entire_unmarked_owned_root_with_only_app_artifacts() {
+        let root = temp_uninstall_root("owned-clean");
+        let paths = test_paths(root.clone(), true);
+        write_file(&paths.config_path, "subscriptions: []\n");
+        create_marked_cache(&paths.cache_dir);
+
+        let targets = uninstall_targets(&paths, false)
+            .await
+            .expect("clean app root is removable");
+
+        assert_eq!(targets, vec![root.clone()]);
+        remove_test_root(&root);
+    }
+
+    #[tokio::test]
+    async fn uninstall_refuses_unmarked_owned_root_with_unknown_files() {
+        let root = temp_uninstall_root("owned-unknown");
+        let paths = test_paths(root.clone(), true);
+        write_file(&paths.config_path, "subscriptions: []\n");
+        write_file(&root.join("notes.txt"), "user data");
+
+        let error = uninstall_targets(&paths, false)
+            .await
+            .expect_err("unknown files must block whole-root deletion");
+
+        assert!(error.to_string().contains("refusing to remove"));
+        remove_test_root(&root);
+    }
+
+    #[tokio::test]
+    async fn uninstall_marked_root_with_unknown_files_only_targets_known_artifacts() {
+        let root = temp_uninstall_root("marked-partial");
+        let paths = test_paths(root.clone(), true);
+        write_file(&paths.config_path, "subscriptions: []\n");
+        write_file(&root.join(APP_MARKER_FILE_NAME), "V2RayDAR\n");
+        write_file(&root.join("notes.txt"), "user data");
+        create_marked_cache(&paths.cache_dir);
+
+        let targets = uninstall_targets(&paths, false)
+            .await
+            .expect("marked mixed root falls back to known artifacts");
+
+        assert_eq!(
+            targets,
+            vec![
+                paths.config_path.clone(),
+                paths.cache_dir.clone(),
+                root.join(APP_MARKER_FILE_NAME),
+            ]
+        );
+        remove_test_root(&root);
+    }
+
+    #[tokio::test]
+    async fn custom_config_uninstall_keeps_parent_and_requires_marked_cache() {
+        let root = temp_uninstall_root("custom-config");
+        let config_path = root.join("custom.yaml");
+        let paths = AppPaths::from_config_override(config_path.clone());
+        write_file(&config_path, "subscriptions: []\n");
+        write_file(&root.join("notes.txt"), "user data");
+        std::fs::create_dir_all(&paths.cache_dir).expect("cache directory can be created");
+
+        let targets = uninstall_targets(&paths, true)
+            .await
+            .expect("custom config target selection succeeds");
+
+        assert_eq!(targets, vec![config_path.clone()]);
+
+        create_marked_cache(&paths.cache_dir);
+        let targets = uninstall_targets(&paths, true)
+            .await
+            .expect("marked custom cache target selection succeeds");
+
+        assert_eq!(targets, vec![config_path, paths.cache_dir.clone()]);
+        remove_test_root(&root);
     }
 }

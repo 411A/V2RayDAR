@@ -1,0 +1,9 @@
+{
+  "app": "V2RayDAR",
+  "rules": [
+    {
+      "backend": "windows_netsh",
+      "port": 27141
+    }
+  ]
+}

@@ -10,6 +10,7 @@ use tokio::sync::RwLock;
 use crate::{
     constants::{CONFIG_KEYS, MAIN_ITEMS, SUBSCRIPTION_ACTIONS},
     model::RuntimeConfig,
+    paths::AppPaths,
 };
 
 use super::{
@@ -26,7 +27,7 @@ pub enum EventResult {
 pub fn handle_key(
     state: &mut TuiState,
     key: KeyEvent,
-    config_path: &Path,
+    paths: &AppPaths,
     runtime_config: &Arc<RwLock<RuntimeConfig>>,
 ) -> Result<EventResult> {
     if key.kind != KeyEventKind::Press {
@@ -43,32 +44,32 @@ pub fn handle_key(
     }
 
     match state.input_mode {
-        InputMode::Command => handle_command_key(state, key, config_path),
+        InputMode::Command => handle_command_key(state, key, &paths.config_path),
         InputMode::NewSubscription(_)
         | InputMode::Name
         | InputMode::Url
         | InputMode::Priority
         | InputMode::ConfigValue(_)
         | InputMode::ResetConfirm => handle_input_key(state, key),
-        InputMode::None => handle_normal_key(state, key, config_path, runtime_config),
+        InputMode::None => handle_normal_key(state, key, paths, runtime_config),
     }
 }
 
 fn handle_normal_key(
     state: &mut TuiState,
     key: KeyEvent,
-    config_path: &Path,
+    paths: &AppPaths,
     runtime_config: &Arc<RwLock<RuntimeConfig>>,
 ) -> Result<EventResult> {
     match key.code {
         KeyCode::Char('q') => return Ok(EventResult::Quit),
         KeyCode::Esc => go_back(state),
-        KeyCode::Enter => activate(state, config_path, runtime_config)?,
+        KeyCode::Enter => activate(state, paths, runtime_config)?,
         KeyCode::Up | KeyCode::Char('k') => move_up(state),
         KeyCode::Down | KeyCode::Char('j') => move_down(state),
         KeyCode::Char(':') => start_input(state, InputMode::Command, ""),
-        KeyCode::Char(' ') => run_action(state, Action::Toggle, config_path)?,
-        KeyCode::Char('s') => run_action(state, Action::Save, config_path)?,
+        KeyCode::Char(' ') => run_action(state, Action::Toggle, &paths.config_path)?,
+        KeyCode::Char('s') => run_action(state, Action::Save, &paths.config_path)?,
         _ => {}
     }
 
@@ -206,21 +207,21 @@ fn move_down(state: &mut TuiState) {
 
 fn activate(
     state: &mut TuiState,
-    config_path: &Path,
+    paths: &AppPaths,
     runtime_config: &Arc<RwLock<RuntimeConfig>>,
 ) -> Result<()> {
     match state.view {
-        MenuView::Main => activate_main(state, config_path, runtime_config),
+        MenuView::Main => activate_main(state, paths, runtime_config),
         MenuView::Subscriptions => {
             if state.selected_subscription == 0 {
-                run_action(state, Action::Add, config_path)?;
+                run_action(state, Action::Add, &paths.config_path)?;
             } else {
                 state.view = MenuView::SubscriptionActions;
             }
             Ok(())
         }
         MenuView::NewSubscription => Ok(()),
-        MenuView::SubscriptionActions => activate_subscription_action(state, config_path),
+        MenuView::SubscriptionActions => activate_subscription_action(state, &paths.config_path),
         MenuView::Logs => Ok(()),
         MenuView::Configurations => {
             let key = CONFIG_KEYS[state.selected_config];
@@ -238,12 +239,12 @@ fn activate(
 
 fn activate_main(
     state: &mut TuiState,
-    config_path: &Path,
+    paths: &AppPaths,
     runtime_config: &Arc<RwLock<RuntimeConfig>>,
 ) -> Result<()> {
     match MAIN_ITEMS[state.selected_main] {
         MainItem::OpenConfig => {
-            let message = super::open_config::open(config_path);
+            let message = super::open_config::open(&paths.config_path);
             if message.starts_with("Edit config manually:") {
                 state.status = message;
             } else {
@@ -253,10 +254,11 @@ fn activate_main(
         MainItem::Sharing => {
             state.editable.sharing.enabled = !state.editable.sharing.enabled;
             state.dirty = true;
-            super::util::save_config(config_path, &state.editable)?;
+            super::util::save_config(&paths.config_path, &state.editable)?;
             update_live_runtime_config(runtime_config, state);
             state.dirty = false;
             state.status = match super::firewall::apply(
+                &paths.root_dir,
                 state.editable.sharing.enabled,
                 state.editable.bind.port(),
             ) {

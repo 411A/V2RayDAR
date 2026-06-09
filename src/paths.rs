@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, anyhow};
 use tokio::fs;
 
-use crate::constants::{APP_DIR_NAME, APP_DIR_NAME_LOWER, CACHE_DIR_NAME, CONFIG_FILE_NAME};
+use crate::constants::{
+    APP_DIR_NAME, APP_DIR_NAME_LOWER, APP_MARKER_FILE_NAME, CACHE_DIR_NAME, CONFIG_FILE_NAME,
+};
 
 #[derive(Debug, Clone)]
 pub struct AppPaths {
@@ -11,6 +13,7 @@ pub struct AppPaths {
     pub config_path: PathBuf,
     pub cache_dir: PathBuf,
     pub portable: bool,
+    pub owns_root_dir: bool,
 }
 
 impl AppPaths {
@@ -33,27 +36,38 @@ impl AppPaths {
             .parent()
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("."));
-        Self::from_root_with_config(root_dir, config_path, false)
+        Self::from_root_with_config(root_dir, config_path, false, false)
     }
 
     pub async fn ensure(&self) -> Result<()> {
         fs::create_dir_all(&self.root_dir)
             .await
             .with_context(|| format!("unable to create {}", self.root_dir.display()))?;
+        if self.owns_root_dir {
+            fs::write(self.root_dir.join(APP_MARKER_FILE_NAME), b"V2RayDAR\n")
+                .await
+                .with_context(|| format!("unable to mark {}", self.root_dir.display()))?;
+        }
         Ok(())
     }
 
     fn from_root(root_dir: PathBuf, portable: bool) -> Self {
         let config_path = root_dir.join(CONFIG_FILE_NAME);
-        Self::from_root_with_config(root_dir, config_path, portable)
+        Self::from_root_with_config(root_dir, config_path, portable, true)
     }
 
-    fn from_root_with_config(root_dir: PathBuf, config_path: PathBuf, portable: bool) -> Self {
+    fn from_root_with_config(
+        root_dir: PathBuf,
+        config_path: PathBuf,
+        portable: bool,
+        owns_root_dir: bool,
+    ) -> Self {
         Self {
             config_path,
             cache_dir: root_dir.join(CACHE_DIR_NAME),
             root_dir,
             portable,
+            owns_root_dir,
         }
     }
 }

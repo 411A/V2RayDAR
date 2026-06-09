@@ -3,7 +3,7 @@ use std::{fs, path::Path, process::Command};
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 
-use crate::constants::{FIREWALL_RULE_NAME, FIREWALL_STATE_APP_ID, FIREWALL_STATE_FILE_NAME};
+use crate::constants::{APP_NAME, FIREWALL_RULE_NAME, FIREWALL_STATE_FILE_NAME};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct FirewallState {
@@ -268,7 +268,7 @@ fn read_state(path: &Path) -> Result<FirewallState> {
         Ok(bytes) => {
             let state: FirewallState = serde_json::from_slice(&bytes)
                 .with_context(|| format!("unable to parse {}", path.display()))?;
-            if state.app != FIREWALL_STATE_APP_ID {
+            if state.app != APP_NAME {
                 return Err(anyhow!(
                     "refusing to use {}; it is not marked as V2RayDAR-owned",
                     path.display()
@@ -297,7 +297,7 @@ fn write_state(path: &Path, state: &FirewallState) -> Result<()> {
 
 fn empty_state() -> FirewallState {
     FirewallState {
-        app: FIREWALL_STATE_APP_ID.to_string(),
+        app: APP_NAME.to_string(),
         rules: Vec::new(),
     }
 }

@@ -4,14 +4,13 @@ use serde::Serialize;
 
 use crate::tui::state::{ConfigKey, MainItem, SubscriptionAction};
 
-pub const APP_DIR_NAME: &str = "V2RayDAR";
-pub const APP_DIR_NAME_LOWER: &str = "v2raydar";
+pub const APP_NAME: &str = "V2RayDAR";
+pub const APP_DATA_DIR_NAME: &str = "v2raydar_data";
 pub const CACHE_DIR_NAME: &str = "cache";
 pub const CONFIG_FILE_NAME: &str = "configs.yaml";
-pub const APP_MARKER_FILE_NAME: &str = ".v2raydar";
-pub const CACHE_MARKER_FILE_NAME: &str = ".v2raydar-cache";
 pub const FIREWALL_STATE_FILE_NAME: &str = ".v2raydar-firewall.json";
-pub const FIREWALL_STATE_APP_ID: &str = "V2RayDAR";
+pub const LEGACY_APP_MARKER_FILE_NAME: &str = ".v2raydar";
+pub const LEGACY_CACHE_MARKER_FILE_NAME: &str = ".v2raydar-cache";
 pub const DEFAULT_CONFIG_TEMPLATE: &str = include_str!("../configs.example.yaml");
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:27141";

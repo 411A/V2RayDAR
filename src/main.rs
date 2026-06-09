@@ -1,6 +1,7 @@
 mod config;
 mod constants;
 mod model;
+mod network;
 mod parser;
 mod paths;
 mod probe;
@@ -12,7 +13,7 @@ mod tui;
 
 use std::{
     cmp::Ordering,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::{self, Write},
     path::{Path, PathBuf},
     sync::Arc,
@@ -24,7 +25,7 @@ use chrono::{Local, Utc};
 use clap::Parser;
 use tokio::{
     fs,
-    sync::{RwLock, watch},
+    sync::{RwLock, mpsc, watch},
     time,
 };
 use tracing::{error, info, warn};
@@ -35,7 +36,7 @@ use crate::{
         CONFIG_WATCH_INTERVAL, DEFAULT_LOG_FILTER_PLAIN, DEFAULT_LOG_FILTER_TUI, LOCALHOST_IP,
         MAX_TUI_LOGS, SING_BOX_DOWNLOAD_URL, STABLE_WORKING_APPEARANCES,
     },
-    model::{RankedConfig, RuntimeConfig, RuntimeState},
+    model::{ProbeStopPolicy, ProgressEvent, RankedConfig, RuntimeConfig, RuntimeState},
     paths::AppPaths,
     probe::probe_candidates,
     server::serve,
@@ -86,17 +87,19 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let default_log_filter = if cli.no_tui || cli.once {
-        DEFAULT_LOG_FILTER_PLAIN
+    if cli.no_tui || cli.once {
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| DEFAULT_LOG_FILTER_PLAIN.into()),
+            )
+            .init();
     } else {
-        DEFAULT_LOG_FILTER_TUI
-    };
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| default_log_filter.into()),
-        )
-        .init();
+        tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::new(DEFAULT_LOG_FILTER_TUI))
+            .with_writer(io::sink)
+            .init();
+    }
     let paths = resolve_paths(&cli)?;
 
     if cli.uninstall {
@@ -240,29 +243,122 @@ async fn refresh_once(
     runtime_config: Arc<RwLock<RuntimeConfig>>,
     print_terminal_summary: bool,
 ) -> Result<()> {
-    info!("refresh started");
+    info!(
+        enabled_subscriptions = config
+            .subscriptions
+            .iter()
+            .filter(|source| source.enabled)
+            .count(),
+        fetch_concurrency = config.fetch_concurrency,
+        fetch_timeout_ms = config.fetch_timeout_ms,
+        probe_mode = ?config.probe.mode,
+        probe_concurrency = config.probe.concurrency,
+        active_timeout_ms = config.probe.active_timeout_ms,
+        startup_timeout_ms = config.probe.startup_timeout_ms,
+        "refresh started"
+    );
     let started_at = Utc::now();
     let started_instant = std::time::Instant::now();
+    let previous_before_refresh = state.read().await.clone();
+    let (progress_tx, progress_task) = spawn_tui_progress_forwarder(state.clone());
     *runtime_config.write().await = RuntimeConfig::from(config);
     {
         let mut runtime = state.write().await;
         runtime.refreshing = true;
         runtime.refresh_started_at = Some(started_at.to_rfc3339());
         runtime.last_error = None;
+        runtime.refresh_finished_at = None;
+        runtime.refresh_duration_ms = None;
+        runtime.total_candidates = 0;
+        runtime.tested_candidates = 0;
+        runtime.reachable_candidates = 0;
+        runtime.fetch_errors.clear();
+        runtime.live_logs.clear();
+        push_live_log(
+            &mut runtime,
+            timestamped_log(format!(
+                "Refresh started at {}",
+                started_at.with_timezone(&Local).format("%H:%M:%S")
+            )),
+        );
     }
 
-    let fetched = load_candidates_with_cache(config, Some(cache_dir), |bytes| {
-        let state = state.clone();
-        async move {
-            add_fetch_bytes(&state, bytes).await;
-        }
-    })
+    let fetch_started = std::time::Instant::now();
+    info!("subscription load started");
+    let fetched = load_candidates_with_cache(
+        config,
+        Some(cache_dir),
+        |bytes| {
+            let state = state.clone();
+            async move {
+                add_fetch_bytes(&state, bytes).await;
+            }
+        },
+        Some(progress_tx.clone()),
+    )
     .await?;
+    let fetched_count = fetched.candidates.len();
+    info!(
+        candidates = fetched_count,
+        fetch_errors = fetched.errors.len(),
+        duration_ms = fetch_started.elapsed().as_millis(),
+        "subscription load finished"
+    );
+    {
+        let mut runtime = state.write().await;
+        runtime.total_candidates = fetched_count;
+        runtime.fetch_errors = fetched.errors.clone();
+        push_live_log(
+            &mut runtime,
+            timestamped_log(format!(
+                "Subscription loading finished: {} configs, {} source errors in {}",
+                fetched_count,
+                fetched.errors.len(),
+                format_duration_short(fetch_started.elapsed().as_millis())
+            )),
+        );
+    }
+
+    let probe_started = std::time::Instant::now();
     let mut ranked = if fetched.candidates.is_empty() {
+        info!("probe skipped because no candidates were loaded");
+        push_tui_progress(
+            &state,
+            ProgressEvent::LiveLog("Probe skipped: no configs were loaded".to_string()),
+        )
+        .await;
         Vec::new()
     } else {
-        probe_candidates(fetched.candidates, &config.probe).await
+        info!(
+            candidates = fetched.candidates.len(),
+            mode = ?config.probe.mode,
+            "probe started"
+        );
+        push_tui_progress(
+            &state,
+            ProgressEvent::LiveLog(format!(
+                "Probe started: {} candidates with {:?}",
+                fetched_count, config.probe.mode
+            )),
+        )
+        .await;
+        let stop_policy = probe_stop_policy(config, &previous_before_refresh, &fetched.candidates);
+        probe_candidates(
+            fetched.candidates,
+            &config.probe,
+            Some(progress_tx.clone()),
+            &stop_policy,
+        )
+        .await
     };
+    drop(progress_tx);
+    let _ = progress_task.await;
+    info!(
+        ranked = ranked.len(),
+        reachable = ranked.iter().filter(|item| item.reachable).count(),
+        duration_ms = probe_started.elapsed().as_millis(),
+        "probe finished"
+    );
     let speedtest_bytes = ranked
         .iter()
         .filter_map(|item| item.download_bytes)
@@ -270,25 +366,29 @@ async fn refresh_once(
         .sum::<u64>();
     let finished_at = Utc::now();
 
-    let previous = state.read().await.clone();
-    let mut stable_working_counts = previous.stable_working_counts.clone();
+    let progress_state = state.read().await.clone();
+    let mut stable_working_counts = previous_before_refresh.stable_working_counts.clone();
     apply_stability_ranking(
         &mut ranked,
         &mut stable_working_counts,
         config.prioritize_stability,
     );
     let reachable_count = ranked.iter().filter(|item| item.reachable).count();
-    let fetch_bytes = previous.fetch_bytes;
-    let speedtest_bytes = previous.speedtest_bytes.saturating_add(speedtest_bytes);
+    let fetch_bytes = progress_state.fetch_bytes;
+    let speedtest_bytes = progress_state
+        .speedtest_bytes
+        .saturating_add(speedtest_bytes);
     let mut runtime = RuntimeState {
         last_refresh: Some(started_at.to_rfc3339()),
         last_error: None,
-        logs: previous.logs,
+        logs: progress_state.logs,
+        live_logs: progress_state.live_logs,
         refresh_started_at: Some(started_at.to_rfc3339()),
         refresh_finished_at: Some(finished_at.to_rfc3339()),
         refresh_duration_ms: Some(started_instant.elapsed().as_millis()),
         refreshing: false,
-        total_candidates: ranked.len(),
+        total_candidates: fetched_count,
+        tested_candidates: ranked.len(),
         reachable_candidates: reachable_count,
         fetch_bytes,
         speedtest_bytes,
@@ -297,25 +397,53 @@ async fn refresh_once(
         stable_working_counts,
     };
 
+    let failed_count = runtime
+        .tested_candidates
+        .saturating_sub(runtime.reachable_candidates);
     let summary = format!(
-        "{} Refresh Started; {} Refresh Ended ➔  Checked {} configs, {} reachable, {} fetch errors.",
+        "Started {}, End: {} (Took {}), {} Fetched, {} Failed, {} Working.",
         started_at.with_timezone(&Local).format("%H:%M:%S"),
         finished_at.with_timezone(&Local).format("%H:%M:%S"),
+        format_minutes_seconds(runtime.refresh_duration_ms.unwrap_or_default()),
         runtime.total_candidates,
-        runtime.reachable_candidates,
-        runtime.fetch_errors.len()
+        failed_count,
+        runtime.reachable_candidates
     );
     push_runtime_log(&mut runtime, summary);
-    for error in runtime.fetch_errors.clone() {
-        push_runtime_log(&mut runtime, format!("fetch error: {error}"));
-    }
 
     if print_terminal_summary {
         print_summary(&runtime, config.top_n);
     }
     *state.write().await = runtime;
-    info!("refresh finished");
+    info!(
+        duration_ms = started_instant.elapsed().as_millis(),
+        "refresh finished"
+    );
     Ok(())
+}
+
+fn probe_stop_policy(
+    config: &AppConfig,
+    previous: &RuntimeState,
+    candidates: &[crate::model::Candidate],
+) -> ProbeStopPolicy {
+    let current_uris = candidates
+        .iter()
+        .map(|candidate| candidate.uri.as_str())
+        .collect::<HashSet<_>>();
+
+    ProbeStopPolicy {
+        scan_all_configs: config.scan_all_configs,
+        top_n: config.top_n,
+        prioritize_stability: config.prioritize_stability,
+        stability_search_source: candidates.first().map(|candidate| candidate.source.clone()),
+        previous_working_uris: previous
+            .ranked
+            .iter()
+            .filter(|item| item.reachable && current_uris.contains(item.uri.as_str()))
+            .map(|item| item.uri.clone())
+            .collect(),
+    }
 }
 
 fn apply_stability_ranking(
@@ -435,6 +563,7 @@ fn spawn_refresh_loop(
                 _ = &mut sleep => {
                     let config = config_rx.borrow().clone();
                     last_refresh_fingerprint = Some(RefreshFingerprint::from(&config));
+                    mark_refresh_pending(&state).await;
                     if let Err(err) = refresh_once(&config, &cache_dir, state.clone(), runtime_config.clone(), print_terminal_summary).await {
                         error!(error = %err, "refresh failed");
                         record_refresh_error(&state, err.to_string()).await;
@@ -462,11 +591,19 @@ fn spawn_refresh_loop(
     });
 }
 
+async fn mark_refresh_pending(state: &Arc<RwLock<RuntimeState>>) {
+    let mut state = state.write().await;
+    state.refreshing = true;
+    state.refresh_started_at = Some(Utc::now().to_rfc3339());
+    state.refresh_finished_at = None;
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 struct RefreshFingerprint {
     top_n: usize,
     encoded_subscription: bool,
     prioritize_stability: bool,
+    scan_all_configs: bool,
     fetch_timeout_ms: u64,
     fetch_concurrency: usize,
     max_subscription_bytes: usize,
@@ -480,6 +617,7 @@ impl From<&AppConfig> for RefreshFingerprint {
             top_n: config.top_n,
             encoded_subscription: config.encoded_subscription,
             prioritize_stability: config.prioritize_stability,
+            scan_all_configs: config.scan_all_configs,
             fetch_timeout_ms: config.fetch_timeout_ms,
             fetch_concurrency: config.fetch_concurrency,
             max_subscription_bytes: config.max_subscription_bytes,
@@ -559,9 +697,9 @@ async fn record_refresh_error(state: &Arc<RwLock<RuntimeState>>, error: String) 
     state.refreshing = false;
     state.refresh_finished_at = Some(Utc::now().to_rfc3339());
     state.total_candidates = 0;
+    state.tested_candidates = 0;
     state.reachable_candidates = 0;
     state.fetch_errors = vec![error.clone()];
-    state.ranked.clear();
     push_runtime_log(&mut state, format!("refresh error: {error}"));
 }
 
@@ -573,12 +711,100 @@ async fn add_fetch_bytes(state: &Arc<RwLock<RuntimeState>>, bytes: u64) {
     state.fetch_bytes = state.fetch_bytes.saturating_add(bytes);
 }
 
+fn spawn_tui_progress_forwarder(
+    state: Arc<RwLock<RuntimeState>>,
+) -> (
+    mpsc::UnboundedSender<ProgressEvent>,
+    tokio::task::JoinHandle<()>,
+) {
+    let (tx, mut rx) = mpsc::unbounded_channel::<ProgressEvent>();
+    let task = tokio::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            push_tui_progress(&state, event).await;
+        }
+    });
+    (tx, task)
+}
+
+async fn push_tui_progress(state: &Arc<RwLock<RuntimeState>>, event: ProgressEvent) {
+    let mut state = state.write().await;
+    match event {
+        ProgressEvent::LiveLog(message) => push_live_log(&mut state, timestamped_log(message)),
+        ProgressEvent::ProbeDelta { tested, working } => {
+            state.tested_candidates = state.tested_candidates.saturating_add(tested);
+            state.reachable_candidates = state.reachable_candidates.saturating_add(working);
+        }
+        ProgressEvent::RankedSnapshot(mut ranked) => {
+            apply_snapshot_ranks(&mut ranked);
+            state.ranked = ranked;
+        }
+    }
+}
+
+fn apply_snapshot_ranks(ranked: &mut [RankedConfig]) {
+    ranked.sort_by(compare_ranked_snapshot);
+    for (index, item) in ranked.iter_mut().enumerate() {
+        item.rank = index + 1;
+    }
+}
+
+fn compare_ranked_snapshot(left: &RankedConfig, right: &RankedConfig) -> Ordering {
+    right
+        .reachable
+        .cmp(&left.reachable)
+        .then_with(|| left.priority.cmp(&right.priority))
+        .then_with(|| {
+            left.latency_ms
+                .unwrap_or(u128::MAX)
+                .cmp(&right.latency_ms.unwrap_or(u128::MAX))
+        })
+        .then_with(|| {
+            right
+                .download_mbps
+                .partial_cmp(&left.download_mbps)
+                .unwrap_or(Ordering::Equal)
+        })
+        .then_with(|| left.protocol.cmp(&right.protocol))
+        .then_with(|| left.name.cmp(&right.name))
+        .then_with(|| left.uri.cmp(&right.uri))
+}
+
+fn timestamped_log(message: impl Into<String>) -> String {
+    format!("{} {}", Local::now().format("%H:%M:%S"), message.into())
+}
+
 fn push_runtime_log(state: &mut RuntimeState, message: String) {
     state.logs.push(message);
     if state.logs.len() > MAX_TUI_LOGS {
         let extra = state.logs.len() - MAX_TUI_LOGS;
         state.logs.drain(0..extra);
     }
+}
+
+fn push_live_log(state: &mut RuntimeState, message: String) {
+    state.live_logs.push(message);
+    if state.live_logs.len() > MAX_TUI_LOGS {
+        let extra = state.live_logs.len() - MAX_TUI_LOGS;
+        state.live_logs.drain(0..extra);
+    }
+}
+
+fn format_duration_short(ms: u128) -> String {
+    let seconds = (ms / 1000) as u64;
+    if seconds < 60 {
+        return format!("{seconds}s");
+    }
+
+    let minutes = seconds / 60;
+    let seconds = seconds % 60;
+    format!("{minutes}m {seconds}s")
+}
+
+fn format_minutes_seconds(ms: u128) -> String {
+    let total_seconds = (ms / 1000) as u64;
+    let minutes = total_seconds / 60;
+    let seconds = total_seconds % 60;
+    format!("{minutes:02}:{seconds:02} minutes")
 }
 
 impl From<&AppConfig> for RuntimeConfig {
@@ -589,6 +815,7 @@ impl From<&AppConfig> for RuntimeConfig {
             refresh_seconds: config.refresh_seconds,
             encoded_subscription: config.encoded_subscription,
             prioritize_stability: config.prioritize_stability,
+            scan_all_configs: config.scan_all_configs,
             fetch_timeout_ms: config.fetch_timeout_ms,
             fetch_concurrency: config.fetch_concurrency,
             max_subscription_bytes: config.max_subscription_bytes,
@@ -712,5 +939,28 @@ mod tests {
         assert!(ranked[0].reachable);
         assert_eq!(ranked[1].name, "failed-stable");
         assert!(!ranked[1].reachable);
+    }
+
+    #[tokio::test]
+    async fn ranked_snapshot_does_not_overwrite_live_working_counter() {
+        let state = Arc::new(RwLock::new(RuntimeState {
+            reachable_candidates: 5,
+            ..RuntimeState::default()
+        }));
+
+        push_tui_progress(
+            &state,
+            ProgressEvent::RankedSnapshot(vec![ranked(
+                "early",
+                "vless://early@example.com:443",
+                true,
+                Some(100),
+            )]),
+        )
+        .await;
+
+        let state = state.read().await;
+        assert_eq!(state.reachable_candidates, 5);
+        assert_eq!(state.ranked.len(), 1);
     }
 }

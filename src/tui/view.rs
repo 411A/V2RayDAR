@@ -11,10 +11,12 @@ pub struct RuntimeView {
     pub refresh_duration_ms: Option<u128>,
     pub refreshing: bool,
     pub total_candidates: usize,
+    pub tested_candidates: usize,
     pub reachable_candidates: usize,
     pub fetch_bytes: u64,
     pub speedtest_bytes: u64,
     pub logs: Vec<String>,
+    pub live_logs: Vec<String>,
     pub ranked: Vec<RankedView>,
 }
 
@@ -36,10 +38,12 @@ impl RuntimeView {
             refresh_duration_ms: runtime.refresh_duration_ms,
             refreshing: runtime.refreshing,
             total_candidates: runtime.total_candidates,
+            tested_candidates: runtime.tested_candidates,
             reachable_candidates: runtime.reachable_candidates,
             fetch_bytes: runtime.fetch_bytes,
             speedtest_bytes: runtime.speedtest_bytes,
             logs: runtime.logs.clone(),
+            live_logs: runtime.live_logs.clone(),
             ranked: runtime
                 .ranked
                 .iter()

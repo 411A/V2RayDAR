@@ -14,7 +14,7 @@ use super::{util::human_bytes, view::RuntimeView};
 pub fn draw(frame: &mut Frame<'_>, area: Rect, runtime: &RuntimeView, config: &RuntimeConfig) {
     let now = Utc::now();
     let failed = runtime
-        .total_candidates
+        .tested_candidates
         .saturating_sub(runtime.reachable_candidates);
     let refresh = refresh_status(runtime, config.refresh_seconds, now);
     let speedtest = if config.speedtest_enabled {

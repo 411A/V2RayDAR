@@ -2,6 +2,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Rect},
     style::{Color, Modifier, Style},
+    text::Line,
     widgets::{Block, Borders, Cell, Row, Table},
 };
 
@@ -12,15 +13,17 @@ use super::{
     state::{
         ConfigKey, InputMode, MainItem, MenuView, NewSubscriptionStep, SubscriptionAction, TuiState,
     },
+    view::RuntimeView,
 };
 
-pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) {
+pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState, runtime: &RuntimeView) {
     match state.view {
         MenuView::Main => draw_main(frame, area, state),
         MenuView::Subscriptions => super::subscriptions_panel::draw(frame, area, state),
         MenuView::NewSubscription => draw_new_subscription(frame, area, state),
         MenuView::SubscriptionActions => draw_subscription_actions(frame, area, state),
         MenuView::Configurations => draw_configurations(frame, area, state),
+        MenuView::Logs => draw_logs(frame, area, state, runtime),
     }
 }
 
@@ -38,6 +41,7 @@ fn draw_main(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) {
             ),
             MainItem::Subscriptions => ("Subscriptions", "enter to manage sources"),
             MainItem::Configurations => ("Configurations", "enter to edit config values"),
+            MainItem::Logs => ("Live Logs", "enter to inspect refresh progress"),
         };
         Row::new([Cell::from(name), Cell::from(value)])
             .style(row_style(index == state.selected_main, value))
@@ -50,6 +54,33 @@ fn draw_main(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) {
         vec!["Item", "Value"],
         vec![Constraint::Length(34), Constraint::Fill(1)],
         rows,
+    );
+}
+
+fn draw_logs(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState, runtime: &RuntimeView) {
+    let visible_rows = visible_row_count(area).max(1);
+    let total = runtime.live_logs.len();
+    let max_offset = total.saturating_sub(visible_rows);
+    state.selected_log = state.selected_log.min(max_offset);
+    let start = max_offset.saturating_sub(state.selected_log);
+    let lines = if runtime.live_logs.is_empty() {
+        vec![Line::from("Waiting for refresh logs...")]
+    } else {
+        runtime
+            .live_logs
+            .iter()
+            .skip(start)
+            .take(visible_rows)
+            .map(|line| Line::from(line.clone()))
+            .collect()
+    };
+
+    frame.render_widget(
+        ratatui::widgets::Paragraph::new(lines)
+            .style(Style::default().fg(Color::Gray))
+            .block(Block::default().borders(Borders::ALL).title("Live Logs"))
+            .wrap(ratatui::widgets::Wrap { trim: true }),
+        area,
     );
 }
 

@@ -39,6 +39,12 @@
 >
 > Please report issues and feedback.
 
+🖥️ Windows TUI Preview:
+
+<p align="center">
+  <img src="assets/Windows_TUI_v0.2.3.png" alt="Windows TUI" width="100%">
+</p>
+
 ## Quick start
 
 1. **Get sing-box**. Active probing needs the [sing-box](https://github.com/SagerNet/sing-box/releases) binary. If you already use v2rayN, look inside its folder for `sing-box.exe`.

@@ -24,7 +24,7 @@ Active validation currently converts VMess, VLESS, Trojan, Shadowsocks, Hysteria
 
 ## Requirements
 
-- Release users only need the V2RayDAR executable for their operating system.
+- Release users only need the V2RayDAR artifact for their operating system.
 - Source builds require a Rust toolchain with Cargo.
 - Active probing requires a separate `sing-box` executable configured with `probe.sing_box_path`.
 - Internet access from the machine running V2RayDAR so it can fetch subscription URLs.

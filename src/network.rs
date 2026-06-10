@@ -102,28 +102,16 @@ fn discoverable_hosts_from_ips(ips: Vec<IpAddr>) -> Vec<String> {
         .collect()
 }
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
-pub fn discoverable_subscription_url(config: &RuntimeConfig) -> Option<String> {
-    discoverable_hosts(config)
-        .first()
-        .map(|host| config.subscription_url(host, false))
-}
-
->>>>>>> b1c2ff2 (fixup! 🧑‍💻 refactor: Store generated app data under v2raydar_data)
-=======
 pub fn discoverable_subscription_url(config: &RuntimeConfig) -> Option<String> {
     discoverable_hosts(config)
         .first()
         .map(|host| config.subscription_url(host, true))
 }
 
->>>>>>> dbe9734 (🚸 chore: Refine sharing token handling and endpoint display)
 fn format_discoverable_url(config: &RuntimeConfig, hosts: &[String]) -> String {
     hosts
         .first()
-        .map(|host| config.subscription_url(host, false))
+        .map(|host| config.subscription_url(host, true))
         .unwrap_or_default()
 }
 

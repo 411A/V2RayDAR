@@ -18,13 +18,13 @@ pub const DEFAULT_BIND: &str = "127.0.0.1:27141";
 pub const DEFAULT_TOP_N: usize = 10;
 pub const DEFAULT_REFRESH_SECONDS: u64 = 300;
 pub const DEFAULT_ENCODED_SUBSCRIPTION: bool = true;
-pub const DEFAULT_PRIORITIZE_STABILITY: bool = false;
-pub const DEFAULT_SCAN_ALL_CONFIGS: bool = true;
+pub const DEFAULT_PRIORITIZE_STABILITY: bool = true;
+pub const DEFAULT_SCAN_ALL_CONFIGS: bool = false;
 pub const DEFAULT_SHARING_ENABLED: bool = false;
 pub const DEFAULT_REQUIRE_TOKEN: bool = false;
 pub const DEFAULT_SHARING_TOKEN: &str = "";
 pub const DEFAULT_FETCH_TIMEOUT_MS: u64 = 30_000;
-pub const DEFAULT_FETCH_CONCURRENCY: usize = 4;
+pub const DEFAULT_FETCH_CONCURRENCY: usize = 8;
 pub const DEFAULT_MAX_SUBSCRIPTION_BYTES: usize = 32 * 1024 * 1024;
 pub const DEFAULT_SUBSCRIPTION_PRIORITY: u32 = 100;
 pub const DEFAULT_SUBSCRIPTION_ENABLED: bool = true;
@@ -32,8 +32,8 @@ pub const DEFAULT_SING_BOX_PATH: &str = "";
 pub const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 5_000;
 pub const DEFAULT_ACTIVE_TIMEOUT_MS: u64 = 30_000;
 pub const DEFAULT_STARTUP_TIMEOUT_MS: u64 = 5_000;
-pub const DEFAULT_PROBE_CONCURRENCY: usize = 4;
-pub const DEFAULT_PROBE_BATCH_SIZE: Option<usize> = None;
+pub const DEFAULT_PROBE_CONCURRENCY: usize = 8;
+pub const DEFAULT_PROBE_BATCH_SIZE: Option<usize> = Some(20);
 pub const DEFAULT_TEST_URL: &str = "https://www.gstatic.com/generate_204";
 pub const DEFAULT_ACCEPTED_STATUSES: &[u16] = &[204, 200];
 pub const DEFAULT_DOWNLOAD_BYTES_LIMIT: usize = 1_048_576;
@@ -177,7 +177,7 @@ pub const SETTING_GUIDES: &[SettingGuide] = &[
     SettingGuide {
         key: "prioritize_stability",
         label: "Stable ranking",
-        help: "false favors any quick working config. true promotes configs seen working in 3+ refreshes.",
+        help: "false favors any quick working config. true promotes configs seen working in 2+ refreshes.",
     },
     SettingGuide {
         key: "scan_all_configs",

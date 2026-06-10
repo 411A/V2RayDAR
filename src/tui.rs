@@ -15,7 +15,7 @@ mod setup;
 pub(crate) mod state;
 mod subscriptions_panel;
 mod top;
-mod util;
+pub(crate) mod util;
 mod view;
 
 use std::{

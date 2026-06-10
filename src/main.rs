@@ -128,7 +128,7 @@ async fn main() -> Result<()> {
         paths.ensure().await?;
     }
 
-    let mut config = AppConfig::load(&paths.config_path)
+    let mut config = load_config_and_persist_generated_token(&paths.config_path)
         .with_context(|| format!("failed to load config from {}", paths.config_path.display()))?;
 
     if active_probe_needs_setup(&config, &paths).await {
@@ -162,7 +162,7 @@ async fn main() -> Result<()> {
         println!(
             "Serving top {} configs at {}",
             config.top_n,
-            config.subscription_url(LOCALHOST_IP, false)
+            config.subscription_url(LOCALHOST_IP, true)
         );
         println!(
             "Watching {} for live config changes.",
@@ -582,6 +582,14 @@ fn resolve_paths(cli: &Cli) -> Result<AppPaths> {
     }
 
     AppPaths::installed()
+}
+
+fn load_config_and_persist_generated_token(path: &Path) -> Result<AppConfig> {
+    let (config, generated_token_requested) = AppConfig::load_with_generated_token_flag(path)?;
+    if generated_token_requested {
+        tui::util::save_config(path, &config)?;
+    }
+    Ok(config)
 }
 
 async fn refresh_once(
@@ -1105,7 +1113,7 @@ fn spawn_config_watcher(
             }
 
             last_modified = Some(modified);
-            match AppConfig::load(&config_path) {
+            match load_config_and_persist_generated_token(&config_path) {
                 Ok(config) => {
                     if config.bind != initial_bind {
                         warn!(

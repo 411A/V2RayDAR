@@ -3,6 +3,7 @@ use std::{fs, net::SocketAddr, path::Path};
 use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Deserializer, Serialize};
+use serde_yaml::Value;
 
 use crate::constants::{
     DEFAULT_ACCEPTED_STATUSES, DEFAULT_ACTIVE_TIMEOUT_MS, DEFAULT_BIND, DEFAULT_CONFIG_TEMPLATE,
@@ -97,7 +98,7 @@ pub struct SharingConfig {
     pub require_token: bool,
     #[serde(
         default = "default_sharing_token",
-        deserialize_with = "deserialize_string_or_null_as_default"
+        deserialize_with = "deserialize_sharing_token"
     )]
     pub token: String,
 }
@@ -132,6 +133,10 @@ impl Default for SharingConfig {
 
 impl AppConfig {
     pub fn load(path: &Path) -> Result<Self> {
+        Ok(Self::load_with_generated_token_flag(path)?.0)
+    }
+
+    pub fn load_with_generated_token_flag(path: &Path) -> Result<(Self, bool)> {
         let content = fs::read_to_string(path)
             .with_context(|| format!("unable to read {}", path.display()))?;
         let extension = path
@@ -151,13 +156,13 @@ impl AppConfig {
             }
         };
 
-        validate(config)
+        let generated_token_requested = sharing_token_requests_generation(&content);
+        Ok((validate(config)?, generated_token_requested))
     }
 
     pub fn default_for_first_run() -> Self {
-        let mut config = serde_yaml::from_str::<Self>(DEFAULT_CONFIG_TEMPLATE)
+        let config = serde_yaml::from_str::<Self>(DEFAULT_CONFIG_TEMPLATE)
             .expect("default config template is valid");
-        config.sharing.token = generate_token();
         validate(config).expect("default config template passes validation")
     }
 
@@ -169,8 +174,7 @@ impl AppConfig {
 
         let config = Self::default_for_first_run();
         validate(config.clone()).context("default config template failed validation")?;
-        let content = default_config_template_with_token(&config.sharing.token);
-        fs::write(path, content)
+        fs::write(path, DEFAULT_CONFIG_TEMPLATE)
             .with_context(|| format!("unable to write default config to {}", path.display()))
     }
 
@@ -182,7 +186,7 @@ impl AppConfig {
         };
         let mut url = format!("http://{}:{}/{}", host, self.bind.port(), endpoint);
 
-        if self.sharing.require_token {
+        if should_include_token_in_url(&self.sharing.token) {
             url.push_str("?token=");
             url.push_str(&self.sharing.token);
         }
@@ -194,7 +198,7 @@ impl AppConfig {
 fn validate(mut config: AppConfig) -> Result<AppConfig> {
     config.probe.sing_box_path = normalize_string_or_null(&config.probe.sing_box_path);
     config.probe.download_url = normalize_optional_string(config.probe.download_url.as_deref());
-    config.sharing.token = normalize_string_or_null(&config.sharing.token);
+    config.sharing.token = normalize_sharing_token(&config.sharing.token);
 
     if config.top_n == 0 {
         return Err(anyhow!("top_n must be greater than 0"));
@@ -268,6 +272,12 @@ fn validate(mut config: AppConfig) -> Result<AppConfig> {
         }
     }
 
+    if config.sharing.require_token && config.sharing.token.is_empty() {
+        return Err(anyhow!(
+            "sharing.token must be a string or true when sharing.require_token is true"
+        ));
+    }
+
     Ok(config)
 }
 
@@ -280,6 +290,22 @@ where
             .as_deref()
             .unwrap_or_default(),
     ))
+}
+
+fn deserialize_sharing_token<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(match Option::<Value>::deserialize(deserializer)? {
+        Some(Value::Bool(true)) => generate_token(),
+        Some(Value::Bool(false)) | Some(Value::Null) | None => String::new(),
+        Some(Value::String(value)) => normalize_sharing_token(&value),
+        Some(_) => {
+            return Err(serde::de::Error::custom(
+                "sharing.token must be null, true, false, or a string",
+            ));
+        }
+    })
 }
 
 fn deserialize_optional_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
@@ -298,6 +324,45 @@ fn normalize_string_or_null(value: &str) -> String {
     } else {
         trimmed.to_string()
     }
+}
+
+pub fn normalize_sharing_token(value: &str) -> String {
+    let value = normalize_string_or_null(value);
+    if value.eq_ignore_ascii_case("true") {
+        generate_token()
+    } else {
+        value
+    }
+}
+
+pub fn should_include_token_in_url(token: &str) -> bool {
+    !token.trim().is_empty()
+}
+
+fn sharing_token_requests_generation(content: &str) -> bool {
+    let Ok(document) = serde_yaml::from_str::<Value>(content) else {
+        return false;
+    };
+    let Some(sharing) = mapping_value(&document, "sharing") else {
+        return false;
+    };
+    let Some(token) = mapping_value(sharing, "token") else {
+        return false;
+    };
+
+    match token {
+        Value::Bool(true) => true,
+        Value::String(value) => value.trim().eq_ignore_ascii_case("true"),
+        _ => false,
+    }
+}
+
+fn mapping_value<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
+    let Value::Mapping(mapping) = value else {
+        return None;
+    };
+
+    mapping.get(Value::String(key.to_string()))
 }
 
 fn normalize_optional_string(value: Option<&str>) -> Option<String> {
@@ -320,10 +385,6 @@ fn generate_token() -> String {
         chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
     );
     URL_SAFE_NO_PAD.encode(fallback)
-}
-
-fn default_config_template_with_token(token: &str) -> String {
-    DEFAULT_CONFIG_TEMPLATE.replace("  token: null", &format!("  token: {token}"))
 }
 
 fn default_bind() -> SocketAddr {
@@ -597,14 +658,108 @@ subscriptions:
         assert_eq!(config.probe.download_url, None);
     }
 
+    #[test]
+    fn default_config_keeps_token_null() {
+        let path = std::env::temp_dir().join(format!(
+            "v2raydar-config-test-default-token-{}.yaml",
+            std::process::id()
+        ));
+        AppConfig::write_default(&path).expect("default config writes");
+        let saved = fs::read_to_string(&path).expect("default config can be read");
+        let config = AppConfig::load(&path).expect("default config loads");
+        fs::remove_file(&path).ok();
+
+        assert!(saved.contains("  token: null"));
+        assert_eq!(config.sharing.token, "");
+        assert_eq!(
+            config.subscription_url("127.0.0.1", false),
+            "http://127.0.0.1:27141/subscription"
+        );
+    }
+
+    #[test]
+    fn token_true_generates_token_and_requests_persistence() {
+        let (config, generated) = load_inline_config_with_generation_flag(
+            "token-true",
+            r#"
+sharing:
+    token: true
+subscriptions:
+    - name: local
+      url: data:,vless://uuid@example.com:443%23demo
+"#,
+        );
+
+        assert!(generated);
+        assert!(!config.sharing.token.is_empty());
+        assert!(
+            config
+                .subscription_url("127.0.0.1", false)
+                .contains("?token=")
+        );
+    }
+
+    #[test]
+    fn string_token_is_used_in_subscription_url() {
+        let (config, generated) = load_inline_config_with_generation_flag(
+            "token-string",
+            r#"
+sharing:
+    token: user-token
+subscriptions:
+    - name: local
+      url: data:,vless://uuid@example.com:443%23demo
+"#,
+        );
+
+        assert!(!generated);
+        assert_eq!(config.sharing.token, "user-token");
+        assert_eq!(
+            config.subscription_url("127.0.0.1", false),
+            "http://127.0.0.1:27141/subscription?token=user-token"
+        );
+    }
+
+    #[test]
+    fn require_token_rejects_null_token() {
+        let path = write_inline_config(
+            "require-token-null",
+            r#"
+sharing:
+    require_token: true
+    token: null
+subscriptions:
+    - name: local
+      url: data:,vless://uuid@example.com:443%23demo
+"#,
+        );
+
+        let error = AppConfig::load(&path).expect_err("missing required token should fail");
+        fs::remove_file(&path).ok();
+
+        assert!(error.to_string().contains("sharing.token"));
+    }
+
     fn load_inline_config(name: &str, content: &str) -> AppConfig {
+        let path = write_inline_config(name, content);
+        let config = AppConfig::load(&path).expect("config loads");
+        fs::remove_file(&path).ok();
+        config
+    }
+
+    fn load_inline_config_with_generation_flag(name: &str, content: &str) -> (AppConfig, bool) {
+        let path = write_inline_config(name, content);
+        let result = AppConfig::load_with_generated_token_flag(&path).expect("config loads");
+        fs::remove_file(&path).ok();
+        result
+    }
+
+    fn write_inline_config(name: &str, content: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
             "v2raydar-config-test-{name}-{}.yaml",
             std::process::id()
         ));
         fs::write(&path, content).expect("temp config can be written");
-        let config = AppConfig::load(&path).expect("config loads");
-        fs::remove_file(&path).ok();
-        config
+        path
     }
 }

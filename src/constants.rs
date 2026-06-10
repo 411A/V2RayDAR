@@ -80,6 +80,15 @@ pub const TUI_INPUT_POLL_INTERVAL: Duration = Duration::from_millis(16);
 pub const TUI_MAX_EVENTS_PER_FRAME: usize = 64;
 pub const TUI_MAX_VISIBLE_RANKED: usize = 64;
 pub const TUI_SETUP_POLL_INTERVAL: Duration = Duration::from_millis(150);
+pub const TUI_CONFIG_PANEL_HEIGHT: u16 = 12;
+pub const TUI_CONFIG_PANEL_ENDPOINT_HEIGHT: u16 = 14;
+pub const TUI_CONFIG_GROUP_HEIGHT: u16 = 10;
+pub const TUI_CONFIG_KEY_WIDTH: usize = 14;
+pub const TUI_ANSI_UNDERLINE_ENABLE: &str = "\x1b[4m";
+pub const TUI_ANSI_UNDERLINE_DISABLE: &str = "\x1b[24m";
+pub const TUI_OSC8_LINK_PREFIX: &str = "\x1b]8;;";
+pub const TUI_OSC8_LINK_SEPARATOR: &str = "\x1b\\";
+pub const TUI_OSC8_LINK_SUFFIX: &str = "\x1b]8;;\x1b\\";
 pub const BYTE_UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
 pub const FIREWALL_RULE_NAME: &str = "V2RayDAR Subscription Sharing";
 pub const SUBSCRIPTION_READY_WAIT: Duration = Duration::from_secs(20);
@@ -156,7 +165,7 @@ pub const SETTING_GUIDES: &[SettingGuide] = &[
     SettingGuide {
         key: "sharing.token",
         label: "Token value",
-        help: "Auto-generated on first run. Regenerate if the URL was shared too widely.",
+        help: "null disables URL tokens. Set true to generate one, or provide a string.",
     },
     SettingGuide {
         key: "encoded_subscription",

@@ -25,14 +25,6 @@ jobs:
             target: x86_64-unknown-linux-gnu
             binary: v2raydar
             asset: v2raydar-linux-x86_64
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            binary: v2raydar
-            asset: v2raydar-macos-x86_64
-          - os: macos-14
-            target: aarch64-apple-darwin
-            binary: v2raydar
-            asset: v2raydar-macos-aarch64
 
     steps:
       - name: Checkout
@@ -73,6 +65,129 @@ jobs:
           path: dist/${{ matrix.asset }}
           if-no-files-found: error
 
+  build-macos:
+    name: Build v2raydar-macos-universal.app.zip
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache Cargo build state
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/x86_64-apple-darwin
+            target/aarch64-apple-darwin
+          key: cargo-build-${{ runner.os }}-macos-universal-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-build-${{ runner.os }}-macos-universal-
+
+      - name: Install Rust targets
+        shell: bash
+        run: |
+          rustup default stable
+          rustup target add x86_64-apple-darwin aarch64-apple-darwin
+
+      - name: Build release binaries
+        shell: bash
+        run: |
+          cargo build --release --locked --target x86_64-apple-darwin
+          cargo build --release --locked --target aarch64-apple-darwin
+
+      - name: Stage universal app bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          asset="v2raydar-macos-universal.app.zip"
+          app="dist/V2RayDAR.app"
+          version="$(awk -F '"' '/^version = / { print $2; exit }' Cargo.toml)"
+
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          lipo -create \
+            -output "$app/Contents/MacOS/v2raydar-bin" \
+            "target/x86_64-apple-darwin/release/v2raydar" \
+            "target/aarch64-apple-darwin/release/v2raydar"
+          chmod +x "$app/Contents/MacOS/v2raydar-bin"
+          lipo -info "$app/Contents/MacOS/v2raydar-bin"
+
+          cat > "$app/Contents/MacOS/V2RayDAR" <<'EOF'
+          #!/bin/sh
+          set -eu
+
+          dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+          app="$dir/v2raydar-bin"
+
+          if [ -t 1 ]; then
+            exec "$app" "$@"
+          fi
+
+          APP_PATH="$app" osascript <<'APPLESCRIPT'
+          set appPath to system attribute "APP_PATH"
+          tell application "Terminal"
+            activate
+            do script quoted form of appPath
+          end tell
+          APPLESCRIPT
+          EOF
+          chmod +x "$app/Contents/MacOS/V2RayDAR"
+
+          cat > "$app/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleDevelopmentRegion</key>
+            <string>en</string>
+            <key>CFBundleExecutable</key>
+            <string>V2RayDAR</string>
+            <key>CFBundleIconFile</key>
+            <string>V2RayDAR</string>
+            <key>CFBundleIdentifier</key>
+            <string>app.v2raydar.V2RayDAR</string>
+            <key>CFBundleInfoDictionaryVersion</key>
+            <string>6.0</string>
+            <key>CFBundleName</key>
+            <string>V2RayDAR</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleShortVersionString</key>
+            <string>${version}</string>
+            <key>CFBundleVersion</key>
+            <string>${GITHUB_RUN_NUMBER}</string>
+            <key>LSMinimumSystemVersion</key>
+            <string>10.13</string>
+            <key>NSHighResolutionCapable</key>
+            <true/>
+          </dict>
+          </plist>
+          EOF
+
+          iconset="dist/V2RayDAR.iconset"
+          mkdir -p "$iconset"
+          sips -z 16 16 "assets/V2RayDAR_logo_v1.png" --out "$iconset/icon_16x16.png" >/dev/null
+          sips -z 32 32 "assets/V2RayDAR_logo_v1.png" --out "$iconset/icon_16x16@2x.png" >/dev/null
+          sips -z 32 32 "assets/V2RayDAR_logo_v1.png" --out "$iconset/icon_32x32.png" >/dev/null
+          sips -z 64 64 "assets/V2RayDAR_logo_v1.png" --out "$iconset/icon_32x32@2x.png" >/dev/null
+          sips -z 128 128 "assets/V2RayDAR_logo_v1.png" --out "$iconset/icon_128x128.png" >/dev/null
+          sips -z 256 256 "assets/V2RayDAR_logo_v1.png" --out "$iconset/icon_128x128@2x.png" >/dev/null
+          sips -z 256 256 "assets/V2RayDAR_logo_v1.png" --out "$iconset/icon_256x256.png" >/dev/null
+          sips -z 512 512 "assets/V2RayDAR_logo_v1.png" --out "$iconset/icon_256x256@2x.png" >/dev/null
+          sips -z 512 512 "assets/V2RayDAR_logo_v1.png" --out "$iconset/icon_512x512.png" >/dev/null
+          sips -z 1024 1024 "assets/V2RayDAR_logo_v1.png" --out "$iconset/icon_512x512@2x.png" >/dev/null
+          iconutil -c icns "$iconset" -o "$app/Contents/Resources/V2RayDAR.icns"
+
+          ditto -c -k --sequesterRsrc --keepParent "$app" "dist/$asset"
+
+      - name: Upload app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2raydar-macos-universal.app.zip
+          path: dist/v2raydar-macos-universal.app.zip
+          if-no-files-found: error
+
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -108,7 +223,7 @@ jobs:
 
   publish:
     name: Publish GitHub release
-    needs: [build, test]
+    needs: [build, build-macos, test]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     env:

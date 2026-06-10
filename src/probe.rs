@@ -912,6 +912,7 @@ async fn probe_active_batch_with_fallback(
     BatchProbeOutcome { ranked, stats }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn probe_active_batch(
     entries: Vec<PreparedActiveCandidate>,
     config: &ProbeConfig,

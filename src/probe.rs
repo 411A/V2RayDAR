@@ -4,6 +4,10 @@ use std::{
     future::Future,
     path::PathBuf,
     process::Stdio,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering as AtomicOrdering},
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -27,9 +31,9 @@ use crate::{
     constants::{
         ACTIVE_PROBE_BATCH_CONCURRENCY_MULTIPLIER, ACTIVE_PROBE_BATCH_MAX_SIZE,
         ACTIVE_PROBE_BATCH_MIN_SIZE, ACTIVE_PROBE_HTTP_MAX_CONCURRENCY,
-        LOCAL_PROXY_CONNECT_TIMEOUT, LOCAL_PROXY_WAIT_INTERVAL, LOCALHOST_IP,
-        SING_BOX_CLEANUP_TIMEOUT, SING_BOX_CONFIG_FILE_PREFIX, SING_BOX_INBOUND_TAG_PREFIX,
-        SING_BOX_OUTBOUND_TAG_PREFIX,
+        ACTIVE_PROBE_PROCESS_MAX_CONCURRENCY, LOCAL_PROXY_CONNECT_TIMEOUT,
+        LOCAL_PROXY_WAIT_INTERVAL, LOCALHOST_IP, SING_BOX_CLEANUP_TIMEOUT,
+        SING_BOX_CONFIG_FILE_PREFIX, SING_BOX_INBOUND_TAG_PREFIX, SING_BOX_OUTBOUND_TAG_PREFIX,
     },
     model::{Candidate, ProbeStopPolicy, ProgressEvent, RankedConfig},
 };
@@ -247,6 +251,49 @@ struct ProbeStopState {
     remaining_previous_working: usize,
 }
 
+struct ActiveBatchSizer {
+    current: usize,
+    min: usize,
+    max: usize,
+}
+
+impl ActiveBatchSizer {
+    fn new(concurrency: usize, configured: Option<usize>) -> Self {
+        let initial = active_probe_batch_size(concurrency, configured);
+        let max = ACTIVE_PROBE_BATCH_MAX_SIZE;
+        Self {
+            current: initial.min(max).max(1),
+            min: concurrency.clamp(1, ACTIVE_PROBE_BATCH_MIN_SIZE),
+            max: max.max(1),
+        }
+    }
+
+    fn next_len(&self, remaining: usize) -> usize {
+        remaining.min(self.current)
+    }
+
+    fn observe(&mut self, stats: &BatchProbeStats) {
+        if stats.splits > 0 || stats.failed_candidates > 0 {
+            self.current = (self.current / 2).max(self.min).max(1);
+        } else if stats.started_cleanly && stats.produced >= self.current {
+            self.current = self
+                .current
+                .saturating_mul(2)
+                .min(self.max)
+                .max(self.min)
+                .max(1);
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct BatchProbeStats {
+    started_cleanly: bool,
+    produced: usize,
+    splits: usize,
+    failed_candidates: usize,
+}
+
 impl ProbeStopState {
     fn new(prepared: &[PreparedActiveCandidate], policy: &ProbeStopPolicy) -> Self {
         let remaining_previous_working = if policy.scan_all_configs || !policy.prioritize_stability
@@ -278,86 +325,122 @@ async fn probe_active_batched(
         prepared_candidates,
     } = prepare_active_candidates(candidates, stop_policy);
 
-    let batch_size = active_probe_batch_size(config.concurrency, config.batch_size);
-    let total_batches = prepared.len().div_ceil(batch_size);
+    let process_concurrency = active_probe_process_concurrency(config.process_concurrency);
+    let mut batch_sizer = ActiveBatchSizer::new(config.concurrency, config.batch_size);
     info!(
         input = input_count,
         prepared = prepared_candidates,
         test_definitions = prepared.len(),
         parse_failed = ranked.len(),
-        batch_size,
-        total_batches,
+        batch_size = batch_sizer.current,
+        max_batch_size = batch_sizer.max,
+        process_concurrency,
         "active probe preparation finished"
     );
     send_progress(
         &progress,
         format!(
-            "Prepared active test: {} sing-box definitions represent {} loaded configs; {} unsupported configs skipped; {} batches",
+            "Prepared active test: {} sing-box definitions represent {} loaded configs; {} unsupported configs skipped",
             prepared.len(),
             prepared_candidates,
-            ranked.len(),
-            total_batches
+            ranked.len()
         ),
     );
     if !ranked.is_empty() {
         send_probe_delta(&progress, ranked.len(), 0);
     }
     let mut stop_state = ProbeStopState::new(&prepared, stop_policy);
+    let cancel = Arc::new(AtomicBool::new(false));
     let mut batch_index = 0_usize;
-    while !prepared.is_empty() {
-        batch_index += 1;
-        let batch_len = next_active_batch_len(&prepared, batch_size);
-        let batch = prepared.drain(..batch_len).collect::<Vec<_>>();
-        let batch_previous_working = previous_working_entry_count(&batch, stop_policy);
-        let batch_candidates = candidate_count(&batch);
-        info!(
-            batch_index,
-            total_batches,
-            entries = batch.len(),
-            candidates = batch_candidates,
-            "active probe batch started"
-        );
-        send_progress(
-            &progress,
-            format!(
-                "Batch {batch_index}/{total_batches}: testing {batch_candidates} configs ({} sing-box definitions)",
-                batch.len()
-            ),
-        );
-        let batch_started = Instant::now();
+    while !prepared.is_empty() && !cancel.load(AtomicOrdering::Relaxed) {
         let before = ranked.len();
-        ranked.extend(
-            probe_active_batch_with_fallback(
-                batch,
-                config,
+        let mut wave = Vec::new();
+        let mut wave_previous_working = 0_usize;
+        for _ in 0..process_concurrency {
+            if prepared.is_empty() {
+                break;
+            }
+            batch_index += 1;
+            let batch_len = batch_sizer.next_len(prepared.len());
+            let batch = prepared.drain(..batch_len).collect::<Vec<_>>();
+            wave_previous_working = wave_previous_working
+                .saturating_add(previous_working_entry_count(&batch, stop_policy));
+            let batch_candidates = candidate_count(&batch);
+            info!(
+                batch_index,
+                remaining = prepared.len(),
+                batch_size = batch_sizer.current,
+                entries = batch.len(),
+                candidates = batch_candidates,
+                "active probe batch queued"
+            );
+            send_progress(
                 &progress,
-                stop_policy,
-                &mut stop_state,
-                &ranked,
-            )
-            .await,
-        );
-        update_stability_search_after_batch(batch_previous_working, stop_policy, &mut stop_state);
+                format!(
+                    "Batch {batch_index}: testing {batch_candidates} configs ({} sing-box definitions)",
+                    batch.len()
+                ),
+            );
+            wave.push((batch_index, batch));
+        }
+
+        let wave_started = Instant::now();
+        let mut outcomes = stream::iter(wave.into_iter().map(|(batch_index, batch)| {
+            let progress = progress.clone();
+            let cancel = cancel.clone();
+            async move {
+                let batch_started = Instant::now();
+                let batch_stop_policy = stop_policy.clone();
+                let mut batch_stop_state = ProbeStopState::new(&batch, &batch_stop_policy);
+                let outcome = probe_active_batch_with_fallback(
+                    batch,
+                    config,
+                    &progress,
+                    &batch_stop_policy,
+                    &mut batch_stop_state,
+                    &[],
+                    cancel,
+                )
+                .await;
+                (batch_index, batch_started.elapsed(), outcome)
+            }
+        }))
+        .buffer_unordered(process_concurrency);
+
+        while let Some((finished_batch_index, batch_duration, batch_outcome)) =
+            outcomes.next().await
+        {
+            batch_sizer.observe(&batch_outcome.stats);
+            ranked.extend(batch_outcome.ranked);
+            info!(
+                batch_index = finished_batch_index,
+                produced = ranked.len().saturating_sub(before),
+                next_batch_size = batch_sizer.current,
+                duration_ms = batch_duration.as_millis(),
+                "active probe batch finished"
+            );
+            if !cancel.load(AtomicOrdering::Relaxed)
+                && let Some(reason) =
+                    probe_stop_reason(&ranked, stop_policy, &mut stop_state, &progress)
+            {
+                cancel.store(true, AtomicOrdering::Relaxed);
+                send_progress(&progress, reason);
+            }
+        }
+        update_stability_search_after_batch(wave_previous_working, stop_policy, &mut stop_state);
         let after = ranked.len();
-        info!(
-            batch_index,
-            total_batches,
-            produced = after.saturating_sub(before),
-            duration_ms = batch_started.elapsed().as_millis(),
-            "active probe batch finished"
-        );
         send_progress(
             &progress,
             format!(
-                "Batch {batch_index}/{total_batches} finished: {} configs checked in {}",
+                "Batch wave finished: {} configs checked in {}",
                 after.saturating_sub(before),
-                format_duration_short(batch_started.elapsed())
+                format_duration_short(wave_started.elapsed())
             ),
         );
         if let Some(reason) = probe_stop_reason(&ranked, stop_policy, &mut stop_state, &progress) {
+            cancel.store(true, AtomicOrdering::Relaxed);
             info!(
                 batch_index,
-                total_batches,
                 ranked = ranked.len(),
                 reachable = ranked.iter().filter(|item| item.reachable).count(),
                 "active probe early stop reached"
@@ -372,6 +455,7 @@ async fn probe_active_batched(
         duration_ms = started.elapsed().as_millis(),
         "active probe batches finished"
     );
+    enrich_top_speedtests(&mut ranked, config, &progress, stop_policy).await;
     send_progress(
         &progress,
         format!(
@@ -387,16 +471,25 @@ fn prepare_active_candidates(
     candidates: Vec<Candidate>,
     stop_policy: &ProbeStopPolicy,
 ) -> ActivePreparation {
-    let mut prepared = Vec::new();
+    let mut prepared = Vec::<PreparedActiveCandidate>::new();
+    let mut prepared_by_outbound = HashMap::<String, usize>::new();
     let mut ranked = Vec::new();
 
     for candidate in schedule_active_candidates(candidates, stop_policy) {
         match sing_box_outbound_from_share_link(&candidate.uri) {
-            Ok(outbound) => prepared.push(PreparedActiveCandidate {
-                candidate,
-                aliases: Vec::new(),
-                outbound,
-            }),
+            Ok(outbound) => {
+                let key = normalized_outbound_key(&outbound);
+                if let Some(index) = prepared_by_outbound.get(&key).copied() {
+                    prepared[index].aliases.push(candidate);
+                } else {
+                    prepared_by_outbound.insert(key, prepared.len());
+                    prepared.push(PreparedActiveCandidate {
+                        candidate,
+                        aliases: Vec::new(),
+                        outbound,
+                    });
+                }
+            }
             Err(err) => ranked.push(failed_config(candidate, "active_http", err.to_string())),
         }
     }
@@ -407,6 +500,10 @@ fn prepare_active_candidates(
         ranked,
         prepared_candidates,
     }
+}
+
+fn normalized_outbound_key(outbound: &Value) -> String {
+    serde_json::to_string(outbound).unwrap_or_else(|_| outbound.to_string())
 }
 
 fn schedule_active_candidates(
@@ -625,10 +722,6 @@ fn stability_snapshot(
     selected
 }
 
-fn next_active_batch_len(prepared: &[PreparedActiveCandidate], batch_size: usize) -> usize {
-    prepared.len().min(batch_size)
-}
-
 fn update_stability_search_after_batch(
     tested_previous_working: usize,
     policy: &ProbeStopPolicy,
@@ -685,9 +778,28 @@ fn active_probe_batch_size(concurrency: usize, configured: Option<usize>) -> usi
 }
 
 fn active_probe_http_concurrency(configured: usize, batch_entries: usize) -> usize {
+    let configured = configured.clamp(1, ACTIVE_PROBE_HTTP_MAX_CONCURRENCY);
+    let adaptive_limit = batch_entries
+        .max(1)
+        .isqrt()
+        .saturating_mul(configured)
+        .clamp(1, ACTIVE_PROBE_HTTP_MAX_CONCURRENCY);
+    adaptive_limit.min(batch_entries.max(1))
+}
+
+fn active_probe_process_concurrency(configured: Option<usize>) -> usize {
+    let detected = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1);
+    let automatic = (detected / 2).clamp(1, ACTIVE_PROBE_PROCESS_MAX_CONCURRENCY);
     configured
-        .clamp(1, ACTIVE_PROBE_HTTP_MAX_CONCURRENCY)
-        .min(batch_entries.max(1))
+        .unwrap_or(automatic)
+        .clamp(1, ACTIVE_PROBE_PROCESS_MAX_CONCURRENCY)
+}
+
+struct BatchProbeOutcome {
+    ranked: Vec<RankedConfig>,
+    stats: BatchProbeStats,
 }
 
 async fn probe_active_batch_with_fallback(
@@ -697,11 +809,16 @@ async fn probe_active_batch_with_fallback(
     stop_policy: &ProbeStopPolicy,
     stop_state: &mut ProbeStopState,
     previous_ranked: &[RankedConfig],
-) -> Vec<RankedConfig> {
+    cancel: Arc<AtomicBool>,
+) -> BatchProbeOutcome {
     let mut pending = vec![batch];
     let mut ranked = Vec::new();
+    let mut stats = BatchProbeStats::default();
 
     while let Some(batch) = pending.pop() {
+        if cancel.load(AtomicOrdering::Relaxed) {
+            break;
+        }
         let batch_len = batch.len();
         match probe_active_batch(
             batch,
@@ -711,13 +828,21 @@ async fn probe_active_batch_with_fallback(
             stop_state,
             previous_ranked,
             &ranked,
+            cancel.clone(),
         )
         .await
         {
-            Ok(mut batch_ranked) => ranked.append(&mut batch_ranked),
+            Ok(mut batch_ranked) => {
+                stats.started_cleanly = true;
+                stats.produced = stats.produced.saturating_add(batch_ranked.len());
+                ranked.append(&mut batch_ranked);
+            }
             Err(mut failure) => {
                 let error = failure.error.to_string();
                 if let Some(failed_entry) = failure.failed_entry.take() {
+                    stats.failed_candidates = stats
+                        .failed_candidates
+                        .saturating_add(failed_entry.candidate_count());
                     warn!(
                         remaining = failure.entries.len(),
                         failed_candidates = failed_entry.candidate_count(),
@@ -737,6 +862,7 @@ async fn probe_active_batch_with_fallback(
                         pending.push(failure.entries);
                     }
                 } else if failure.retry_split && failure.entries.len() > 1 {
+                    stats.splits = stats.splits.saturating_add(1);
                     warn!(
                         entries = failure.entries.len(),
                         error = %failure.error,
@@ -761,6 +887,7 @@ async fn probe_active_batch_with_fallback(
                     );
                     send_progress(progress, format!("Active probe batch failed: {error}"));
                     let failed_count = candidate_count(&failure.entries);
+                    stats.failed_candidates = stats.failed_candidates.saturating_add(failed_count);
                     send_probe_delta(progress, failed_count, 0);
                     ranked.extend(
                         failure
@@ -777,11 +904,12 @@ async fn probe_active_batch_with_fallback(
             .cloned()
             .collect::<Vec<_>>();
         if probe_stop_reason(&combined, stop_policy, stop_state, progress).is_some() {
+            cancel.store(true, AtomicOrdering::Relaxed);
             break;
         }
     }
 
-    ranked
+    BatchProbeOutcome { ranked, stats }
 }
 
 async fn probe_active_batch(
@@ -792,8 +920,12 @@ async fn probe_active_batch(
     stop_state: &mut ProbeStopState,
     previous_ranked: &[RankedConfig],
     current_batch_ranked: &[RankedConfig],
+    cancel: Arc<AtomicBool>,
 ) -> std::result::Result<Vec<RankedConfig>, BatchProbeFailure> {
     if entries.is_empty() {
+        return Ok(Vec::new());
+    }
+    if cancel.load(AtomicOrdering::Relaxed) {
         return Ok(Vec::new());
     }
 
@@ -903,6 +1035,13 @@ async fn probe_active_batch(
         );
         return Err(BatchProbeFailure::retryable(entries, err));
     }
+    if cancel.load(AtomicOrdering::Relaxed) {
+        let stderr = cleanup_sing_box_child(child, config_path).await;
+        if !stderr.is_empty() {
+            debug!(stderr = %stderr, "sing-box batch stderr after cancellation");
+        }
+        return Ok(Vec::new());
+    }
     debug!(
         entries = entries.len(),
         duration_ms = started.elapsed().as_millis(),
@@ -922,6 +1061,9 @@ async fn probe_active_batch(
     let mut ranked = Vec::with_capacity(total_candidates);
     let mut completed = 0;
     while let Some(mut results) = probe_results.next().await {
+        if cancel.load(AtomicOrdering::Relaxed) {
+            break;
+        }
         completed += 1;
         let tested_delta = results.len();
         let working_delta = results.iter().filter(|item| item.reachable).count();
@@ -964,6 +1106,7 @@ async fn probe_active_batch(
                 "active probe batch stopped early"
             );
             send_progress(progress, reason);
+            cancel.store(true, AtomicOrdering::Relaxed);
             break;
         }
     }
@@ -1112,27 +1255,107 @@ async fn probe_active_target_inner(port: u16, config: &ProbeConfig) -> Result<Ac
         ));
     }
 
-    let (download_mbps, download_bytes) = match config
+    Ok(ActiveProbeSuccess {
+        latency_ms,
+        http_status: status,
+        download_mbps: None,
+        download_bytes: None,
+    })
+}
+
+async fn enrich_top_speedtests(
+    ranked: &mut [RankedConfig],
+    config: &ProbeConfig,
+    progress: &Option<UnboundedSender<ProgressEvent>>,
+    stop_policy: &ProbeStopPolicy,
+) {
+    let Some(download_url) = config
         .download_url
         .as_deref()
         .map(str::trim)
         .filter(|url| !url.is_empty())
-    {
-        Some(download_url) => {
-            match measure_download(&client, download_url, config.download_bytes_limit).await {
-                Ok(measurement) => (Some(measurement.mbps), Some(measurement.bytes)),
-                Err(_) => (None, None),
-            }
-        }
-        None => (None, None),
+    else {
+        return;
     };
 
-    Ok(ActiveProbeSuccess {
-        latency_ms,
-        http_status: status,
-        download_mbps,
-        download_bytes,
+    let mut indices = ranked
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| item.reachable)
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    if indices.is_empty() {
+        return;
+    }
+
+    indices.sort_by(|left, right| compare_ranked(&ranked[*left], &ranked[*right]));
+    let limit = speedtest_probe_limit(indices.len(), stop_policy);
+    indices.truncate(limit);
+    send_progress(
+        progress,
+        format!("Speedtest: measuring {limit} top reachable configs"),
+    );
+
+    let concurrency = speedtest_probe_concurrency(config.concurrency, limit);
+    let startup_timeout = Duration::from_millis(config.startup_timeout_ms);
+    let sing_box_path = config.sing_box_path.clone();
+    let bytes_limit = config.download_bytes_limit;
+    let targets = indices
+        .iter()
+        .map(|index| (*index, ranked[*index].uri.clone()))
+        .collect::<Vec<_>>();
+    let mut results = stream::iter(targets.into_iter().map(|(index, uri)| {
+        let sing_box_path = sing_box_path.clone();
+        async move {
+            let measurement = measure_download_with_sing_box(
+                &sing_box_path,
+                &uri,
+                startup_timeout,
+                download_url,
+                bytes_limit,
+            )
+            .await
+            .ok();
+            (index, measurement)
+        }
+    }))
+    .buffer_unordered(concurrency);
+
+    while let Some((index, measurement)) = results.next().await {
+        if let Some(measurement) = measurement {
+            ranked[index].download_mbps = Some(measurement.mbps);
+            ranked[index].download_bytes = Some(measurement.bytes);
+        }
+    }
+}
+
+fn speedtest_probe_limit(reachable: usize, stop_policy: &ProbeStopPolicy) -> usize {
+    if stop_policy.scan_all_configs {
+        return reachable.min(stop_policy.top_n.max(1));
+    }
+
+    reachable.min(stop_policy.top_n.max(1))
+}
+
+fn speedtest_probe_concurrency(configured: usize, targets: usize) -> usize {
+    configured.clamp(1, 4).min(targets.max(1))
+}
+
+async fn measure_download_with_sing_box(
+    sing_box_path: &str,
+    uri: &str,
+    startup_timeout: Duration,
+    download_url: &str,
+    bytes_limit: usize,
+) -> Result<DownloadMeasurement> {
+    run_with_sing_box_proxy(sing_box_path, uri, startup_timeout, |port| async move {
+        let proxy_url = format!("http://{LOCALHOST_IP}:{port}");
+        let client = reqwest::Client::builder()
+            .proxy(Proxy::all(&proxy_url)?)
+            .build()?;
+        measure_download(&client, download_url, bytes_limit).await
     })
+    .await
 }
 
 struct DownloadMeasurement {
@@ -2240,12 +2463,53 @@ mod tests {
 
     #[test]
     fn active_probe_http_concurrency_is_bounded() {
-        assert_eq!(active_probe_http_concurrency(1, 128), 1);
-        assert_eq!(active_probe_http_concurrency(16, 128), 16);
-        assert_eq!(active_probe_http_concurrency(16, 20), 16);
+        assert_eq!(active_probe_http_concurrency(1, 128), 11);
+        assert_eq!(active_probe_http_concurrency(16, 128), 128);
+        assert_eq!(active_probe_http_concurrency(16, 20), 20);
         assert_eq!(
             active_probe_http_concurrency(usize::MAX, 256),
             ACTIVE_PROBE_HTTP_MAX_CONCURRENCY
+        );
+    }
+
+    #[test]
+    fn active_batch_sizer_grows_beyond_configured_start_after_clean_batch() {
+        let mut sizer = ActiveBatchSizer::new(8, Some(20));
+        assert_eq!(sizer.current, 20);
+
+        sizer.observe(&BatchProbeStats {
+            started_cleanly: true,
+            produced: 20,
+            ..BatchProbeStats::default()
+        });
+
+        assert_eq!(sizer.current, 40);
+    }
+
+    #[test]
+    fn active_batch_sizer_shrinks_after_splits() {
+        let mut sizer = ActiveBatchSizer::new(8, Some(20));
+
+        sizer.observe(&BatchProbeStats {
+            splits: 1,
+            ..BatchProbeStats::default()
+        });
+
+        assert!(sizer.current < 20);
+        assert!(sizer.current >= sizer.min);
+    }
+
+    #[test]
+    fn active_probe_process_concurrency_is_bounded() {
+        assert_eq!(active_probe_process_concurrency(Some(0)), 1);
+        assert_eq!(active_probe_process_concurrency(Some(1)), 1);
+        assert_eq!(
+            active_probe_process_concurrency(Some(usize::MAX)),
+            ACTIVE_PROBE_PROCESS_MAX_CONCURRENCY
+        );
+        assert!(
+            active_probe_process_concurrency(None) >= 1
+                && active_probe_process_concurrency(None) <= ACTIVE_PROBE_PROCESS_MAX_CONCURRENCY
         );
     }
 
@@ -2311,7 +2575,7 @@ mod tests {
     }
 
     #[test]
-    fn active_preparation_keeps_equivalent_outbounds_separate() {
+    fn active_preparation_deduplicates_equivalent_outbounds() {
         let candidates = vec![
             Candidate {
                 id: "one".to_string(),
@@ -2346,14 +2610,9 @@ mod tests {
         let policy = stop_policy(2, false, std::collections::HashSet::new());
         let prepared = prepare_active_candidates(candidates, &policy);
 
-        assert_eq!(prepared.prepared.len(), 2);
+        assert_eq!(prepared.prepared.len(), 1);
         assert_eq!(prepared.prepared_candidates, 2);
-        assert!(
-            prepared
-                .prepared
-                .iter()
-                .all(|entry| entry.aliases.is_empty())
-        );
+        assert_eq!(prepared.prepared[0].aliases.len(), 1);
     }
 
     #[test]

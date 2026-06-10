@@ -20,6 +20,7 @@ pub fn label(key: ConfigKey) -> &'static str {
         ConfigKey::FetchTimeout => "fetch_timeout_ms",
         ConfigKey::FetchConcurrency => "fetch_concurrency",
         ConfigKey::MaxSubscriptionBytes => "max_subscription_bytes",
+        ConfigKey::UseCacheOnly => "use_cache_only",
         ConfigKey::EmergencyConfig => "emergency_config",
         ConfigKey::ProbeMode => "probe.mode",
         ConfigKey::SingBoxPath => "probe.sing_box_path",
@@ -28,6 +29,7 @@ pub fn label(key: ConfigKey) -> &'static str {
         ConfigKey::StartupTimeout => "probe.startup_timeout_ms",
         ConfigKey::ProbeConcurrency => "probe.concurrency",
         ConfigKey::ProbeBatchSize => "probe.batch_size",
+        ConfigKey::ProbeProcessConcurrency => "probe.process_concurrency",
         ConfigKey::TestUrl => "probe.test_url",
         ConfigKey::AcceptedStatuses => "probe.accepted_statuses",
         ConfigKey::DownloadUrl => "probe.download_url",
@@ -53,6 +55,7 @@ pub fn guide(key: ConfigKey) -> &'static str {
         ConfigKey::FetchTimeout => "fetch timeout in ms",
         ConfigKey::FetchConcurrency => "parallel fetch count",
         ConfigKey::MaxSubscriptionBytes => "max bytes per subscription",
+        ConfigKey::UseCacheOnly => "true uses cached subscriptions only",
         ConfigKey::EmergencyConfig => "null or direct share link",
         ConfigKey::ProbeMode => "active or tcp",
         ConfigKey::SingBoxPath => "full path to sing-box executable",
@@ -61,6 +64,7 @@ pub fn guide(key: ConfigKey) -> &'static str {
         ConfigKey::StartupTimeout => "sing-box startup timeout ms",
         ConfigKey::ProbeConcurrency => "parallel probe count",
         ConfigKey::ProbeBatchSize => "configs per sing-box process; auto/null",
+        ConfigKey::ProbeProcessConcurrency => "parallel sing-box processes; auto/null",
         ConfigKey::TestUrl => "URL used for active probe",
         ConfigKey::AcceptedStatuses => "HTTP codes, e.g. 204,200",
         ConfigKey::DownloadUrl => "speedtest URL or off/null",
@@ -82,6 +86,7 @@ pub fn value(config: &crate::config::AppConfig, key: ConfigKey) -> String {
         ConfigKey::FetchTimeout => config.fetch_timeout_ms.to_string(),
         ConfigKey::FetchConcurrency => config.fetch_concurrency.to_string(),
         ConfigKey::MaxSubscriptionBytes => config.max_subscription_bytes.to_string(),
+        ConfigKey::UseCacheOnly => config.use_cache_only.to_string(),
         ConfigKey::EmergencyConfig => config.emergency_config.clone().unwrap_or_default(),
         ConfigKey::ProbeMode => format!("{:?}", config.probe.mode).to_ascii_lowercase(),
         ConfigKey::SingBoxPath => config.probe.sing_box_path.clone(),
@@ -92,6 +97,11 @@ pub fn value(config: &crate::config::AppConfig, key: ConfigKey) -> String {
         ConfigKey::ProbeBatchSize => config
             .probe
             .batch_size
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "auto".to_string()),
+        ConfigKey::ProbeProcessConcurrency => config
+            .probe
+            .process_concurrency
             .map(|value| value.to_string())
             .unwrap_or_else(|| "auto".to_string()),
         ConfigKey::TestUrl => config.probe.test_url.clone(),
@@ -128,6 +138,7 @@ pub fn apply(config: &mut crate::config::AppConfig, key: ConfigKey, raw: &str) -
         ConfigKey::MaxSubscriptionBytes => {
             config.max_subscription_bytes = positive(value, label(key))?
         }
+        ConfigKey::UseCacheOnly => config.use_cache_only = bool_value(value)?,
         ConfigKey::EmergencyConfig => config.emergency_config = optional(value),
         ConfigKey::ProbeMode => config.probe.mode = probe_mode(value)?,
         ConfigKey::SingBoxPath => config.probe.sing_box_path = optional_string(value),
@@ -137,6 +148,9 @@ pub fn apply(config: &mut crate::config::AppConfig, key: ConfigKey, raw: &str) -
         ConfigKey::ProbeConcurrency => config.probe.concurrency = positive(value, label(key))?,
         ConfigKey::ProbeBatchSize => {
             config.probe.batch_size = optional_positive(value, label(key))?
+        }
+        ConfigKey::ProbeProcessConcurrency => {
+            config.probe.process_concurrency = optional_positive(value, label(key))?
         }
         ConfigKey::TestUrl => config.probe.test_url = required(value, label(key))?,
         ConfigKey::AcceptedStatuses => config.probe.accepted_statuses = statuses(value)?,

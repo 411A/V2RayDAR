@@ -87,6 +87,17 @@ fn update_top_level_scalars(document: &mut YamlDocument, previous: &AppConfig, c
             config.max_subscription_bytes.to_string(),
         );
     }
+    if previous.emergency_config != config.emergency_config {
+        document.set_top_level_scalar(
+            "emergency_config",
+            config
+                .emergency_config
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .map(yaml_scalar)
+                .unwrap_or_else(|| "null".to_string()),
+        );
+    }
 }
 
 fn update_sharing_section(document: &mut YamlDocument, previous: &AppConfig, config: &AppConfig) {

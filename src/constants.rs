@@ -7,6 +7,7 @@ use crate::tui::state::{ConfigKey, MainItem, SubscriptionAction};
 pub const APP_NAME: &str = "V2RayDAR";
 pub const APP_DATA_DIR_NAME: &str = "v2raydar_data";
 pub const CACHE_DIR_NAME: &str = "cache";
+pub const CACHE_METADATA_FILE_NAME: &str = "metadata.json";
 pub const CONFIG_FILE_NAME: &str = "configs.yaml";
 pub const FIREWALL_STATE_FILE_NAME: &str = ".v2raydar-firewall.json";
 pub const LEGACY_APP_MARKER_FILE_NAME: &str = ".v2raydar";
@@ -61,9 +62,6 @@ pub const SING_BOX_OUTBOUND_TAG_PREFIX: &str = "proxy";
 pub const SING_BOX_DOWNLOAD_URL: &str = "https://github.com/SagerNet/sing-box/releases";
 
 pub const HTTP_EXCHANGE_OVERHEAD_BYTES: u64 = 1024;
-pub const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
-pub const FNV_PRIME: u64 = 0x100000001b3;
-
 pub const SUPPORTED_URI_SCHEMES: &[&str] = &[
     "vmess://",
     "vless://",
@@ -98,10 +96,11 @@ pub const WINDOWS_CREATE_NO_WINDOW: u32 = 0x08000000;
 #[cfg(test)]
 pub const TEST_REALITY_PUBLIC_KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
-pub const MAIN_ITEMS: [MainItem; 5] = [
+pub const MAIN_ITEMS: [MainItem; 6] = [
     MainItem::OpenConfig,
     MainItem::Sharing,
     MainItem::Subscriptions,
+    MainItem::CleanCache,
     MainItem::Configurations,
     MainItem::Logs,
 ];
@@ -113,7 +112,7 @@ pub const SUBSCRIPTION_ACTIONS: [SubscriptionAction; 6] = [
     SubscriptionAction::Delete,
     SubscriptionAction::Back,
 ];
-pub const CONFIG_KEYS: [ConfigKey; 23] = [
+pub const CONFIG_KEYS: [ConfigKey; 24] = [
     ConfigKey::Bind,
     ConfigKey::TopN,
     ConfigKey::RefreshSeconds,
@@ -123,6 +122,7 @@ pub const CONFIG_KEYS: [ConfigKey; 23] = [
     ConfigKey::FetchTimeout,
     ConfigKey::FetchConcurrency,
     ConfigKey::MaxSubscriptionBytes,
+    ConfigKey::EmergencyConfig,
     ConfigKey::ProbeMode,
     ConfigKey::SingBoxPath,
     ConfigKey::ConnectTimeout,

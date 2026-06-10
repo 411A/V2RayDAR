@@ -86,6 +86,9 @@ scan_all_configs: true
 fetch_timeout_ms: 30000
 fetch_concurrency: 4
 max_subscription_bytes: 33554432
+# Cache fallback is used only when every enabled subscription URL fails; fresh reachable URLs always win.
+# Optional direct share link used through sing-box to fetch subscriptions on restricted networks.
+emergency_config: null
 
 sharing:
   enabled: false
@@ -128,7 +131,7 @@ Run continuously and serve the endpoint:
 cargo run
 ```
 
-The interactive TUI is the default continuous mode. It shows a real-time top dashboard, current YAML-backed service settings, the LAN-visible subscription URL when available, recent logs, current found configs, and a subscription editor. Use Up/Down or `j`/`k` to select subscription rows, mouse clicks to select rows, Space to enable/disable the selected row, and `s` to save. Editing and destructive actions are command-mode only: type `:` and then commands such as `add`, `name`, `url`, `priority`, `delete`, `save`, or `q`.
+The interactive TUI is the default continuous mode. It shows a real-time top dashboard, current YAML-backed service settings, the LAN-visible subscription URL when available, recent logs, current found configs, and a subscription editor. Use Up/Down or `j`/`k` to select subscription rows, mouse clicks to select rows, Space to enable/disable the selected row, and `s` to save. The main menu also includes `Clean Cache`, which asks for confirmation before deleting cached subscription snapshots. Editing and destructive actions are command-mode only: type `:` and then commands such as `add`, `name`, `url`, `priority`, `delete`, `save`, or `q`.
 
 Windows PowerShell with the project-root `configs.yaml`:
 
@@ -206,6 +209,7 @@ Top-level keys:
 | `fetch_timeout_ms` | Integer milliseconds | `30000` | `1` or higher | Yes | Timeout for fetching each subscription source. |
 | `fetch_concurrency` | Positive integer | `4` | `1` or higher | Yes | Number of enabled subscription sources fetched concurrently. |
 | `max_subscription_bytes` | Positive integer bytes | `33554432` | `1` or higher | Yes | Maximum bytes accepted per subscription source to cap memory use. |
+| `emergency_config` | String or null | `null` | `null` or one direct sing-box-compatible share link | Yes | Optional emergency config used through sing-box to retry failed subscription fetches on restricted networks. Requires active mode and a configured `probe.sing_box_path`. |
 | `sharing` | Object | See sharing table | Sharing object | Yes | Controls LAN exposure and optional URL token protection. |
 | `probe` | Object | See probe table | Probe object | Yes | Controls validation strategy, sing-box path, timeouts, concurrency, and optional speed measurement. |
 | `subscriptions` | Array | See example config | Zero or more subscription objects | Yes | Subscription sources to fetch and test. A fresh install starts with the two public subscriptions shown in `configs.example.yaml`; edit or disable them as needed. |
@@ -260,6 +264,8 @@ Supported subscription source URL formats:
 | File URL | `file:///home/user/sub.txt` | Reads a local subscription file. |
 | Local path | `/home/user/sub.txt`, `C:\Users\me\sub.txt` | Reads a local subscription file directly. |
 | Data URL | `data:,vless://uuid@example.com:443%23demo` | Useful for tests or tiny inline subscriptions. |
+
+HTTP subscription responses are stored as UTC-timestamped `.txt` snapshots in `cache`, with `cache/metadata.json` mapping each subscription URL to its snapshots. V2RayDAR uses those cached configs only when every enabled subscription URL fails after fresh fetch attempts, including the emergency/proxied retry path. If any enabled subscription URL is reachable, fresh data is used and cache fallback is skipped.
 
 ## Local Endpoints
 

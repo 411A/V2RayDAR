@@ -319,7 +319,7 @@ mod tests {
         let status = sharing_status_from_hosts(&config, &hosts);
         assert_eq!(
             status.discoverable,
-            "yes http://192.168.43.1:27141/subscription"
+            "yes http://192.168.43.1:27141/subscription.txt"
         );
         assert_eq!(status.firewall, "allowed TCP 27141");
     }
@@ -337,7 +337,7 @@ mod tests {
         assert_eq!(hosts, vec!["192.168.1.87".to_string()]);
         assert_eq!(
             status.discoverable,
-            "yes http://192.168.1.87:27141/subscription"
+            "yes http://192.168.1.87:27141/subscription.txt"
         );
     }
 

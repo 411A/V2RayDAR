@@ -40,6 +40,7 @@ fn draw_main(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) {
                 },
             ),
             MainItem::Subscriptions => ("Subscriptions", "enter to manage sources"),
+            MainItem::CleanCache => ("Clean Cache", "delete cached subscription snapshots"),
             MainItem::Configurations => ("Configurations", "enter to edit config values"),
             MainItem::Logs => ("Live Logs", "enter to inspect refresh progress"),
         };

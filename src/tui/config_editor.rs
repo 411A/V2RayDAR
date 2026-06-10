@@ -20,6 +20,7 @@ pub fn label(key: ConfigKey) -> &'static str {
         ConfigKey::FetchTimeout => "fetch_timeout_ms",
         ConfigKey::FetchConcurrency => "fetch_concurrency",
         ConfigKey::MaxSubscriptionBytes => "max_subscription_bytes",
+        ConfigKey::EmergencyConfig => "emergency_config",
         ConfigKey::ProbeMode => "probe.mode",
         ConfigKey::SingBoxPath => "probe.sing_box_path",
         ConfigKey::ConnectTimeout => "probe.connect_timeout_ms",
@@ -52,6 +53,7 @@ pub fn guide(key: ConfigKey) -> &'static str {
         ConfigKey::FetchTimeout => "fetch timeout in ms",
         ConfigKey::FetchConcurrency => "parallel fetch count",
         ConfigKey::MaxSubscriptionBytes => "max bytes per subscription",
+        ConfigKey::EmergencyConfig => "null or direct share link",
         ConfigKey::ProbeMode => "active or tcp",
         ConfigKey::SingBoxPath => "full path to sing-box executable",
         ConfigKey::ConnectTimeout => "connect timeout in ms",
@@ -80,6 +82,7 @@ pub fn value(config: &crate::config::AppConfig, key: ConfigKey) -> String {
         ConfigKey::FetchTimeout => config.fetch_timeout_ms.to_string(),
         ConfigKey::FetchConcurrency => config.fetch_concurrency.to_string(),
         ConfigKey::MaxSubscriptionBytes => config.max_subscription_bytes.to_string(),
+        ConfigKey::EmergencyConfig => config.emergency_config.clone().unwrap_or_default(),
         ConfigKey::ProbeMode => format!("{:?}", config.probe.mode).to_ascii_lowercase(),
         ConfigKey::SingBoxPath => config.probe.sing_box_path.clone(),
         ConfigKey::ConnectTimeout => config.probe.connect_timeout_ms.to_string(),
@@ -125,6 +128,7 @@ pub fn apply(config: &mut crate::config::AppConfig, key: ConfigKey, raw: &str) -
         ConfigKey::MaxSubscriptionBytes => {
             config.max_subscription_bytes = positive(value, label(key))?
         }
+        ConfigKey::EmergencyConfig => config.emergency_config = optional(value),
         ConfigKey::ProbeMode => config.probe.mode = probe_mode(value)?,
         ConfigKey::SingBoxPath => config.probe.sing_box_path = optional_string(value),
         ConfigKey::ConnectTimeout => config.probe.connect_timeout_ms = nonzero(value, label(key))?,

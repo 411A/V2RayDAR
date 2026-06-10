@@ -40,6 +40,9 @@ pub fn start_input(state: &mut TuiState, mode: InputMode, value: &str) {
             "Type {} to reset non-subscription settings",
             state.reset_code.as_deref().unwrap_or("code")
         ),
+        InputMode::CleanCacheConfirm => {
+            "Type DELETE to clean cached subscription snapshots".to_string()
+        }
         _ => "Edit mode; Enter applies, Esc cancels".to_string(),
     };
 }
@@ -78,6 +81,7 @@ fn commit_input(state: &mut TuiState) {
         InputMode::Priority => commit_priority(state),
         InputMode::ConfigValue(key) => commit_config(state, key),
         InputMode::ResetConfirm => commit_reset(state),
+        InputMode::CleanCacheConfirm => {}
     }
 }
 

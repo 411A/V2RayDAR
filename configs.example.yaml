@@ -35,11 +35,112 @@ probe:
   download_bytes_limit: 1048576
 
 subscriptions:
-  - name: first
-    url: https://github.com/Epodonios/v2ray-configs/raw/main/All_Configs_Sub.txt
+  - name: src-1
+    url: https://raw.githubusercontent.com/masir-sefid/Sub/main/@Masir_Sefid.txt
     enabled: true
     priority: 1
-  - name: second
-    url: https://raw.githubusercontent.com/barry-far/V2ray-config/main/All_Configs_base64_Sub.txt
+
+  - name: src-2
+    url: https://github.com/Epodonios/v2ray-configs/raw/main/All_Configs_Sub.txt
     enabled: true
     priority: 2
+
+  - name: src-3
+    url: https://raw.githubusercontent.com/ALIILAPRO/v2rayNG-Config/main/sub.txt
+    enabled: true
+    priority: 3
+
+  - name: src-4
+    url: https://raw.githubusercontent.com/zieng2/wl/main/vless_universal.txt
+    enabled: true
+    priority: 4
+
+  - name: src-5
+    url: https://raw.githubusercontent.com/barry-far/V2ray-config/main/All_Configs_base64_Sub.txt
+    enabled: true
+    priority: 5
+
+  - name: src-6
+    url: https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile.txt
+    enabled: true
+    priority: 6
+
+  - name: src-7
+    url: https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile-2.txt
+    enabled: true
+    priority: 7
+
+  - name: src-8
+    url: https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/BLACK_VLESS_RUS_mobile.txt
+    enabled: true
+    priority: 8
+
+  - name: src-9
+    url: https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-CIDR-RU-checked.txt
+    enabled: true
+    priority: 9
+
+  - name: src-10
+    url: https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/BLACK_VLESS_RUS.txt
+    enabled: true
+    priority: 10
+
+  - name: src-11
+    url: https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/BLACK_SS+All_RUS.txt
+    enabled: true
+    priority: 11
+
+  - name: src-12
+    url: https://raw.githubusercontent.com/F0rc3Run/F0rc3Run/main/splitted-by-protocol/vless.txt
+    enabled: true
+    priority: 12
+
+  - name: src-13
+    url: https://raw.githubusercontent.com/barry-far/V2ray-config/main/Sub1.txt
+    enabled: true
+    priority: 13
+
+  - name: src-14
+    url: https://raw.githubusercontent.com/barry-far/V2ray-Config/main/Sub2.txt
+    enabled: true
+    priority: 14
+
+  - name: src-15
+    url: https://raw.githubusercontent.com/barry-far/V2ray-Config/main/Sub3.txt
+    enabled: true
+    priority: 15
+
+  - name: src-16
+    url: https://raw.githubusercontent.com/ebrasha/free-v2ray-public-list/refs/heads/main/V2Ray-Config-By-EbraSha.txt
+    enabled: true
+    priority: 16
+
+  - name: src-17
+    url: https://raw.githubusercontent.com/MohammadBahemmat/V2ray-Collector/main/subscriptions/all.txt
+    enabled: true
+    priority: 17
+
+  - name: src-18
+    url: https://raw.githubusercontent.com/mahdibland/V2RayAggregator/master/sub/sub_merge.txt
+    enabled: true
+    priority: 18
+
+  - name: src-19
+    url: https://raw.githubusercontent.com/mfuu/v2ray/master/v2ray.txt
+    enabled: true
+    priority: 19
+
+  - name: src-20
+    url: https://raw.githubusercontent.com/ermaozi/get_subscribe/main/subscribe/v2ray.txt
+    enabled: true
+    priority: 20
+
+  - name: src-21
+    url: https://raw.githubusercontent.com/ThomasJasperthecat/sub/main/sublist1.txt
+    enabled: true
+    priority: 21
+
+  - name: src-22
+    url: https://sub.iampedi5.live/sub/base64.txt
+    enabled: true
+    priority: 22

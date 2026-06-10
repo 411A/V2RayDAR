@@ -68,6 +68,7 @@ fn handle_normal_key(
         KeyCode::Enter => activate(state, paths, runtime_config)?,
         KeyCode::Up | KeyCode::Char('k') => move_up(state),
         KeyCode::Down | KeyCode::Char('j') => move_down(state),
+        KeyCode::Char('e') | KeyCode::Char('E') => edit_selected_subscription(state),
         KeyCode::Char(':') => start_input(state, InputMode::Command, ""),
         KeyCode::Char(' ') => run_action(state, Action::Toggle, &paths.config_path)?,
         KeyCode::Char('s') => run_action(state, Action::Save, &paths.config_path)?,
@@ -217,7 +218,7 @@ fn activate(
             if state.selected_subscription == 0 {
                 run_action(state, Action::Add, &paths.config_path)?;
             } else {
-                state.view = MenuView::SubscriptionActions;
+                run_action(state, Action::Toggle, &paths.config_path)?;
             }
             Ok(())
         }
@@ -236,6 +237,19 @@ fn activate(
             Ok(())
         }
     }
+}
+
+fn edit_selected_subscription(state: &mut TuiState) {
+    if state.view != MenuView::Subscriptions {
+        return;
+    }
+
+    if state.selected_subscription == 0 {
+        state.status = "Press Enter to add a new subscription".to_string();
+        return;
+    }
+
+    state.view = MenuView::SubscriptionActions;
 }
 
 fn activate_main(

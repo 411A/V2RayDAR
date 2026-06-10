@@ -8,7 +8,7 @@ use ratatui::{
 use super::state::TuiState;
 
 pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) {
-    let header = Row::new(["#", "Status", "Priority", "Name", "URL"]).style(
+    let header = Row::new(["#", "✓/✗", "Priority", "Name", "URL"]).style(
         Style::default()
             .fg(Color::DarkGray)
             .add_modifier(Modifier::BOLD),
@@ -16,7 +16,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) {
     let add_row = std::iter::once(
         Row::new([
             Cell::from("+"),
-            Cell::from("new"),
+            Cell::from("+"),
             Cell::from("-"),
             Cell::from("New Subscription"),
             Cell::from("Enter to start guided setup"),
@@ -31,7 +31,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) {
         |(index, source)| {
             let row_index = index + 1;
             let selected = row_index == state.selected_subscription;
-            let status = if source.enabled { "on" } else { "off" };
+            let enabled = if source.enabled { "✓" } else { "✗" };
             let style = if selected {
                 Style::default().fg(Color::Black).bg(Color::Cyan)
             } else if source.enabled {
@@ -41,7 +41,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) {
             };
             Row::new([
                 Cell::from(row_index.to_string()),
-                Cell::from(status),
+                Cell::from(enabled),
                 Cell::from(source.priority.to_string()),
                 Cell::from(source.name.clone()),
                 Cell::from(source.url.clone()),
@@ -56,7 +56,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) {
             rows,
             [
                 Constraint::Length(4),
-                Constraint::Length(8),
+                Constraint::Length(4),
                 Constraint::Length(10),
                 Constraint::Length(20),
                 Constraint::Fill(1),

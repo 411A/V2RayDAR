@@ -17,6 +17,7 @@ pub enum MainItem {
     OpenConfig,
     Sharing,
     Subscriptions,
+    CleanCache,
     Configurations,
     Logs,
 }
@@ -42,6 +43,7 @@ pub enum ConfigKey {
     FetchTimeout,
     FetchConcurrency,
     MaxSubscriptionBytes,
+    EmergencyConfig,
     ProbeMode,
     SingBoxPath,
     ConnectTimeout,
@@ -79,6 +81,7 @@ pub enum InputMode {
     Priority,
     ConfigValue(ConfigKey),
     ResetConfirm,
+    CleanCacheConfirm,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

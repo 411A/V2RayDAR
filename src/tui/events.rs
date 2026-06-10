@@ -1,4 +1,4 @@
-use std::{path::Path, sync::Arc};
+use std::{fs, path::Path, sync::Arc};
 
 use anyhow::Result;
 use crossterm::event::{
@@ -8,7 +8,7 @@ use crossterm::event::{
 use tokio::sync::RwLock;
 
 use crate::{
-    constants::{CONFIG_KEYS, MAIN_ITEMS, SUBSCRIPTION_ACTIONS},
+    constants::{CACHE_METADATA_FILE_NAME, CONFIG_KEYS, MAIN_ITEMS, SUBSCRIPTION_ACTIONS},
     model::RuntimeConfig,
     paths::AppPaths,
 };
@@ -51,6 +51,7 @@ pub fn handle_key(
         | InputMode::Priority
         | InputMode::ConfigValue(_)
         | InputMode::ResetConfirm => handle_input_key(state, key),
+        InputMode::CleanCacheConfirm => handle_clean_cache_key(state, key, &paths.cache_dir),
         InputMode::None => handle_normal_key(state, key, paths, runtime_config),
     }
 }
@@ -274,6 +275,7 @@ fn activate_main(
             };
         }
         MainItem::Subscriptions => state.view = MenuView::Subscriptions,
+        MainItem::CleanCache => start_input(state, InputMode::CleanCacheConfirm, ""),
         MainItem::Configurations => state.view = MenuView::Configurations,
         MainItem::Logs => {
             state.view = MenuView::Logs;
@@ -281,6 +283,67 @@ fn activate_main(
         }
     }
     Ok(())
+}
+
+fn handle_clean_cache_key(
+    state: &mut TuiState,
+    key: KeyEvent,
+    cache_dir: &Path,
+) -> Result<EventResult> {
+    match key.code {
+        KeyCode::Esc => {
+            state.input.clear();
+            state.input_mode = InputMode::None;
+            state.status = "Clean cache cancelled".to_string();
+        }
+        KeyCode::Enter => {
+            if state.input.trim() == "DELETE" {
+                let removed = clean_cache_artifacts(cache_dir)?;
+                state.status = format!("Clean cache finished: removed {removed} files");
+            } else {
+                state.status = "Type DELETE to clean cache".to_string();
+                return Ok(EventResult::Continue);
+            }
+            state.input.clear();
+            state.input_mode = InputMode::None;
+        }
+        KeyCode::Backspace => {
+            state.input.pop();
+        }
+        KeyCode::Char(value) => {
+            state.input.push(value);
+        }
+        _ => {}
+    }
+
+    Ok(EventResult::Continue)
+}
+
+fn clean_cache_artifacts(cache_dir: &Path) -> Result<usize> {
+    if !cache_dir.is_dir() {
+        return Ok(0);
+    }
+
+    let mut removed = 0usize;
+    for entry in fs::read_dir(cache_dir)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if !file_type.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
+            continue;
+        };
+        if name == CACHE_METADATA_FILE_NAME
+            || crate::subscription::is_cache_snapshot_file_name(name)
+        {
+            fs::remove_file(entry.path())?;
+            removed = removed.saturating_add(1);
+        }
+    }
+
+    Ok(removed)
 }
 
 fn update_live_runtime_config(runtime_config: &Arc<RwLock<RuntimeConfig>>, state: &mut TuiState) {

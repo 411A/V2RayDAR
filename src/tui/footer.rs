@@ -11,7 +11,8 @@ use super::state::{InputMode, MenuView, TuiState};
 pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
     let input = match state.input_mode {
         InputMode::Command => format!(":{}", state.input),
-        _ => String::new(),
+        InputMode::None => String::new(),
+        _ => state.input.clone(),
     };
     let dirty = if state.dirty { "unsaved" } else { "saved" };
     let dirty_color = if state.dirty {

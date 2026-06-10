@@ -33,10 +33,11 @@ use tracing::{error, info, warn};
 use crate::{
     config::{AppConfig, ProbeMode},
     constants::{
-        APP_DATA_DIR_NAME, APP_NAME, CACHE_DIR_NAME, CONFIG_FILE_NAME, CONFIG_WATCH_INTERVAL,
-        DEFAULT_LOG_FILTER_PLAIN, DEFAULT_LOG_FILTER_TUI, DEFAULT_LOG_FILTER_VERBOSE,
-        FIREWALL_STATE_FILE_NAME, LEGACY_APP_MARKER_FILE_NAME, LEGACY_CACHE_MARKER_FILE_NAME,
-        LOCALHOST_IP, MAX_TUI_LOGS, SING_BOX_DOWNLOAD_URL, STABLE_WORKING_APPEARANCES,
+        APP_DATA_DIR_NAME, APP_NAME, CACHE_DIR_NAME, CACHE_METADATA_FILE_NAME, CONFIG_FILE_NAME,
+        CONFIG_WATCH_INTERVAL, DEFAULT_LOG_FILTER_PLAIN, DEFAULT_LOG_FILTER_TUI,
+        DEFAULT_LOG_FILTER_VERBOSE, FIREWALL_STATE_FILE_NAME, LEGACY_APP_MARKER_FILE_NAME,
+        LEGACY_CACHE_MARKER_FILE_NAME, LOCALHOST_IP, MAX_TUI_LOGS, SING_BOX_DOWNLOAD_URL,
+        STABLE_WORKING_APPEARANCES,
     },
     model::{Candidate, ProbeStopPolicy, ProgressEvent, RankedConfig, RuntimeConfig, RuntimeState},
     paths::AppPaths,
@@ -44,7 +45,8 @@ use crate::{
     server::serve,
     sing_box::active_probe_needs_setup,
     subscription::{
-        FetchFailure, FetchOutcome, load_candidates_with_cache, retry_failed_sources_with_proxy,
+        FetchFailure, FetchOutcome, load_cached_candidates, load_candidates_with_cache,
+        retry_failed_sources_with_proxy,
     },
     terminal::{PlainProgressReporter, print_log, print_startup, print_summary},
 };
@@ -422,6 +424,9 @@ async fn is_known_cache_entry(entry: &fs::DirEntry) -> Result<bool> {
 }
 
 fn is_subscription_cache_file_name(name: &str) -> bool {
+    if name == CACHE_METADATA_FILE_NAME || subscription::is_cache_snapshot_file_name(name) {
+        return true;
+    }
     if let Some(key) = name.strip_suffix(".body") {
         return is_cache_key(key);
     }
@@ -528,6 +533,13 @@ fn subscription_retry_proxy_uri(
 ) -> Option<String> {
     if config.probe.mode != ProbeMode::Active || config.probe.sing_box_path.trim().is_empty() {
         return None;
+    }
+
+    if let Some(uri) = config.emergency_config.as_deref() {
+        let uri = uri.trim();
+        if !uri.is_empty() {
+            return Some(uri.to_string());
+        }
     }
 
     ranked
@@ -661,6 +673,7 @@ async fn refresh_once(
         Some(progress_tx.clone()),
     )
     .await?;
+    let mut fresh_success_count = fetched.successes.len();
     let mut fetched_count = fetched.candidates.len();
     let mut seen_candidate_uris = fetched
         .candidates
@@ -736,6 +749,7 @@ async fn refresh_once(
                         .retain(|candidate| seen_candidate_uris.insert(candidate.uri.clone()));
                     let retry_count = retry.candidates.len();
                     fetched_count = fetched_count.saturating_add(retry_count);
+                    fresh_success_count = fresh_success_count.saturating_add(retry.successes.len());
                     fetch_errors = merged_fetch_errors(&fetched.failures, Some(&retry));
                     info!(
                         parsed = retry_before_dedup,
@@ -796,10 +810,88 @@ async fn refresh_once(
             push_tui_progress(
                 &state,
                 ProgressEvent::LiveLog(
-                    "Subscription retry skipped: no active working config is available".to_string(),
+                    "Subscription retry skipped: no emergency or active working config is available"
+                        .to_string(),
                 ),
             )
             .await;
+        }
+    }
+    if fresh_success_count == 0 {
+        let cache_started = std::time::Instant::now();
+        match load_cached_candidates(
+            config,
+            cache_dir,
+            |bytes| {
+                let state = state.clone();
+                async move {
+                    add_fetch_bytes(&state, bytes).await;
+                }
+            },
+            Some(progress_tx.clone()),
+        )
+        .await
+        {
+            Ok(mut cached) => {
+                let cache_before_dedup = cached.candidates.len();
+                cached
+                    .candidates
+                    .retain(|candidate| seen_candidate_uris.insert(candidate.uri.clone()));
+                let cache_count = cached.candidates.len();
+                fetched_count = fetched_count.saturating_add(cache_count);
+                if !cached.errors.is_empty() {
+                    fetch_errors = cached.errors.clone();
+                }
+                info!(
+                    parsed = cache_before_dedup,
+                    unique = cache_count,
+                    cache_errors = cached.errors.len(),
+                    duration_ms = cache_started.elapsed().as_millis(),
+                    "cached subscription fallback finished"
+                );
+                if print_compact_progress {
+                    print_log(format!(
+                        "Cache fallback finished: {} configs, {} source errors in {}.",
+                        cache_count,
+                        cached.errors.len(),
+                        format_duration_short(cache_started.elapsed().as_millis())
+                    ));
+                }
+                {
+                    let mut runtime = state.write().await;
+                    runtime.total_candidates = fetched_count;
+                    runtime.fetch_errors = fetch_errors.clone();
+                    push_live_log(
+                        &mut runtime,
+                        timestamped_log(format!(
+                            "Cache fallback finished: {} configs from {} cached links",
+                            cache_count, cache_before_dedup
+                        )),
+                    );
+                }
+                if cache_count > 0 {
+                    let mut cached_ranked = probe_refresh_candidates(
+                        std::mem::take(&mut cached.candidates),
+                        config,
+                        &previous_before_refresh,
+                        &state,
+                        &progress_tx,
+                        print_compact_progress,
+                        "Cache probe",
+                    )
+                    .await;
+                    ranked.append(&mut cached_ranked);
+                }
+            }
+            Err(err) => {
+                let error = err.to_string();
+                warn!(error = %error, "cached subscription fallback failed");
+                push_tui_progress(
+                    &state,
+                    ProgressEvent::LiveLog(format!("Cache fallback failed: {error}")),
+                )
+                .await;
+            }
         }
     }
     drop(progress_tx);

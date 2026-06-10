@@ -1,7 +1,7 @@
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     future::Future,
-    path::{Path, PathBuf},
+    path::Path,
     time::Duration,
 };
 
@@ -11,14 +11,13 @@ use futures_util::{StreamExt, stream};
 use percent_encoding::percent_decode_str;
 use reqwest::Client;
 use reqwest::Proxy;
-use reqwest::header::{ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED};
 use serde::{Deserialize, Serialize};
 use tokio::{fs, sync::mpsc::UnboundedSender};
 use tracing::{debug, info, warn};
 
 use crate::{
     config::{AppConfig, SubscriptionSource},
-    constants::{FNV_OFFSET_BASIS, FNV_PRIME, HTTP_EXCHANGE_OVERHEAD_BYTES, LOCALHOST_IP},
+    constants::{CACHE_METADATA_FILE_NAME, HTTP_EXCHANGE_OVERHEAD_BYTES, LOCALHOST_IP},
     model::{Candidate, ProgressEvent},
     parser::parse_subscription_document,
     probe::run_with_sing_box_proxy,
@@ -36,6 +35,12 @@ pub struct FetchOutcome {
 pub struct FetchFailure {
     pub source: SubscriptionSource,
     pub error: String,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum FetchMode {
+    FreshOnly,
+    CacheOnly,
 }
 
 pub async fn load_candidates_with_cache<F, Fut>(
@@ -85,15 +90,57 @@ where
     let outcome = fetch_sources_with_client(
         client,
         sources,
-        cache_dir,
-        config.max_subscription_bytes,
-        config.fetch_concurrency,
+        FetchContext {
+            cache_dir,
+            max_bytes: config.max_subscription_bytes,
+            concurrency: config.fetch_concurrency,
+            progress,
+            mode: FetchMode::FreshOnly,
+        },
         &mut report_bytes,
-        progress,
     )
     .await;
 
     Ok(outcome)
+}
+
+pub async fn load_cached_candidates<F, Fut>(
+    config: &AppConfig,
+    cache_dir: &Path,
+    mut report_bytes: F,
+    progress: Option<UnboundedSender<ProgressEvent>>,
+) -> Result<FetchOutcome>
+where
+    F: FnMut(u64) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let client =
+        build_http_client(config.fetch_timeout_ms).context("failed to build HTTP client")?;
+    let sources = config
+        .subscriptions
+        .iter()
+        .filter(|source| source.enabled)
+        .cloned()
+        .collect::<Vec<_>>();
+
+    send_progress(
+        &progress,
+        "All subscription fetches failed; trying cached subscription snapshots",
+    );
+
+    Ok(fetch_sources_with_client(
+        client,
+        sources,
+        FetchContext {
+            cache_dir: Some(cache_dir),
+            max_bytes: config.max_subscription_bytes,
+            concurrency: config.fetch_concurrency,
+            progress,
+            mode: FetchMode::CacheOnly,
+        },
+        &mut report_bytes,
+    )
+    .await)
 }
 
 pub async fn retry_failed_sources_with_proxy<F, Fut>(
@@ -125,12 +172,12 @@ where
 
     info!(
         sources = sources.len(),
-        "retrying failed subscription fetches through first working config"
+        "retrying failed subscription fetches through sing-box proxy"
     );
     send_progress(
         &progress,
         format!(
-            "Subscription retry: fetching {} failed sources through first working config",
+            "Subscription retry: fetching {} failed sources through sing-box proxy",
             sources.len()
         ),
     );
@@ -152,11 +199,14 @@ where
                 Ok(fetch_sources_with_client(
                     client,
                     sources,
-                    cache_dir,
-                    max_bytes,
-                    fetch_concurrency,
+                    FetchContext {
+                        cache_dir,
+                        max_bytes,
+                        concurrency: fetch_concurrency,
+                        progress,
+                        mode: FetchMode::FreshOnly,
+                    },
                     &mut report_bytes,
-                    progress,
                 )
                 .await)
             }
@@ -165,14 +215,20 @@ where
     Ok(outcome)
 }
 
+#[derive(Clone)]
+struct FetchContext<'a> {
+    cache_dir: Option<&'a Path>,
+    max_bytes: usize,
+    concurrency: usize,
+    progress: Option<UnboundedSender<ProgressEvent>>,
+    mode: FetchMode,
+}
+
 async fn fetch_sources_with_client<F, Fut>(
     client: Client,
     sources: Vec<SubscriptionSource>,
-    cache_dir: Option<&Path>,
-    max_bytes: usize,
-    fetch_concurrency: usize,
+    context: FetchContext<'_>,
     report_bytes: &mut F,
-    progress: Option<UnboundedSender<ProgressEvent>>,
 ) -> FetchOutcome
 where
     F: FnMut(u64) -> Fut,
@@ -185,18 +241,28 @@ where
     let mut successes = Vec::new();
     let mut results = stream::iter(sources.into_iter().enumerate().map(|(index, source)| {
         let client = client.clone();
-        let cache_dir = cache_dir.map(Path::to_path_buf);
-        let progress = progress.clone();
+        let cache_dir = context.cache_dir.map(Path::to_path_buf);
+        let progress = context.progress.clone();
+        let mode = context.mode;
+        let max_bytes = context.max_bytes;
         let source_for_result = source.clone();
         async move {
             (
                 index,
                 source_for_result,
-                fetch_source(&client, source, cache_dir.as_deref(), max_bytes, progress).await,
+                fetch_source(
+                    &client,
+                    source,
+                    cache_dir.as_deref(),
+                    max_bytes,
+                    progress,
+                    mode,
+                )
+                .await,
             )
         }
     }))
-    .buffer_unordered(fetch_concurrency);
+    .buffer_unordered(context.concurrency);
     let mut fetched_sources = Vec::new();
 
     while let Some((index, source, result)) = results.next().await {
@@ -214,7 +280,7 @@ where
                     "subscription fetch result accepted"
                 );
                 send_progress(
-                    &progress,
+                    &context.progress,
                     format!(
                         "Subscription parsed: {} unique configs from {} links",
                         fetched.candidates.len(),
@@ -228,7 +294,7 @@ where
                 report_subscription_bytes(err.bytes_read, report_bytes).await;
                 warn!(error = %err.error, "subscription fetch failed");
                 send_progress(
-                    &progress,
+                    &context.progress,
                     format!("Subscription fetch failed: {}", err.error),
                 );
                 let error = err.error.to_string();
@@ -328,6 +394,7 @@ async fn fetch_source(
     cache_dir: Option<&Path>,
     max_bytes: usize,
     progress: Option<UnboundedSender<ProgressEvent>>,
+    mode: FetchMode,
 ) -> FetchResult<FetchedSource> {
     let started = std::time::Instant::now();
     info!(
@@ -340,7 +407,7 @@ async fn fetch_source(
         &progress,
         format!("Fetching subscription '{}'", source.name),
     );
-    let fetched = fetch_body(client, &source.url, cache_dir, max_bytes)
+    let fetched = fetch_body(client, &source.url, cache_dir, max_bytes, mode)
         .await
         .map_err(|err| {
             err.with_error_context(format!("failed to fetch subscription '{}'", source.name))
@@ -400,14 +467,7 @@ struct FetchedBody {
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct CacheMetadata {
-    etag: Option<String>,
-    last_modified: Option<String>,
-}
-
-impl CacheMetadata {
-    fn if_none_match(&self) -> Option<String> {
-        self.etag.as_deref().map(if_none_match_etag)
-    }
+    subscriptions: BTreeMap<String, Vec<String>>,
 }
 
 async fn fetch_body(
@@ -415,9 +475,20 @@ async fn fetch_body(
     url: &str,
     cache_dir: Option<&Path>,
     max_bytes: usize,
+    mode: FetchMode,
 ) -> FetchResult<FetchedBody> {
     if is_http_url(url) {
-        return fetch_http_body(client, url, cache_dir, max_bytes).await;
+        return match mode {
+            FetchMode::FreshOnly => fetch_http_body(client, url, cache_dir, max_bytes).await,
+            FetchMode::CacheOnly => fetch_cached_http_body(url, cache_dir, max_bytes).await,
+        };
+    }
+
+    if mode == FetchMode::CacheOnly {
+        return Err(FetchError::new(
+            anyhow!("cache fallback only supports HTTP subscriptions"),
+            0,
+        ));
     }
 
     if url.starts_with("data:") {
@@ -446,34 +517,16 @@ async fn fetch_http_body(
     cache_dir: Option<&Path>,
     max_bytes: usize,
 ) -> FetchResult<FetchedBody> {
-    let cache = cache_dir.map(|dir| cache_paths(dir, url));
-    let metadata = match &cache {
-        Some(cache) => read_cache_metadata(&cache.metadata)
-            .await
-            .unwrap_or_default(),
-        None => CacheMetadata::default(),
-    };
     debug!(
         url,
-        has_cache = cache.is_some(),
-        has_etag = metadata.etag.is_some(),
-        has_last_modified = metadata.last_modified.is_some(),
+        has_cache = cache_dir.is_some(),
         "HTTP subscription request prepared"
     );
 
-    let mut request = client.get(url);
-    let mut request_bytes = estimated_request_bytes(url);
-    if let Some(etag) = metadata.if_none_match() {
-        request = request.header(IF_NONE_MATCH, &etag);
-        request_bytes = request_bytes.saturating_add(header_wire_bytes("If-None-Match", &etag));
-    }
-    if let Some(last_modified) = metadata.last_modified.as_deref() {
-        request = request.header(IF_MODIFIED_SINCE, last_modified);
-        request_bytes =
-            request_bytes.saturating_add(header_wire_bytes("If-Modified-Since", last_modified));
-    }
+    let request_bytes = estimated_request_bytes(url);
 
-    let response = request
+    let response = client
+        .get(url)
         .send()
         .await
         .map_err(|err| FetchError::new(err.into(), request_bytes))?;
@@ -485,35 +538,9 @@ async fn fetch_http_body(
     );
     let response_bytes = estimated_response_bytes(&response);
     let exchange_bytes = request_bytes.saturating_add(response_bytes);
-    if response.status() == reqwest::StatusCode::NOT_MODIFIED {
-        let Some(cache) = cache else {
-            return Err(FetchError::new(
-                anyhow!("server returned 304 without a local cache"),
-                exchange_bytes,
-            ));
-        };
-        let body = fs::read(&cache.body)
-            .await
-            .map_err(|err| FetchError::new(err.into(), exchange_bytes))?;
-        ensure_body_size(body.len(), max_bytes)
-            .map_err(|err| FetchError::new(err, exchange_bytes))?;
-        info!(
-            url,
-            body_bytes = body.len(),
-            bytes_read = exchange_bytes,
-            "HTTP subscription loaded from cache after 304"
-        );
-        return Ok(FetchedBody {
-            body,
-            bytes_read: exchange_bytes,
-        });
-    }
-
     let response = response
         .error_for_status()
         .map_err(|err| FetchError::new(err.into(), exchange_bytes))?;
-    let etag = header_string(response.headers(), ETAG);
-    let last_modified = header_string(response.headers(), LAST_MODIFIED);
     let body = read_limited_response(response, max_bytes)
         .await
         .map_err(|err| err.add_bytes(exchange_bytes))?;
@@ -524,55 +551,65 @@ async fn fetch_http_body(
         bytes_read,
         "HTTP subscription body read"
     );
-    if let Some(cache) = cache {
-        write_cache(&cache, &body, etag, last_modified).await;
+    if let Some(cache_dir) = cache_dir {
+        write_cache_snapshot(cache_dir, url, &body).await;
     }
     Ok(FetchedBody { bytes_read, body })
 }
 
-struct CachePaths {
-    body: PathBuf,
-    metadata: PathBuf,
-}
+async fn fetch_cached_http_body(
+    url: &str,
+    cache_dir: Option<&Path>,
+    max_bytes: usize,
+) -> FetchResult<FetchedBody> {
+    let Some(cache_dir) = cache_dir else {
+        return Err(FetchError::new(anyhow!("no cache directory configured"), 0));
+    };
+    let metadata = read_cache_metadata(&cache_dir.join(CACHE_METADATA_FILE_NAME))
+        .await
+        .map_err(|err| FetchError::new(err, 0))?;
+    let Some(files) = metadata.subscriptions.get(url) else {
+        return Err(FetchError::new(
+            anyhow!("no cached subscription snapshots for {url}"),
+            0,
+        ));
+    };
 
-fn cache_paths(cache_dir: &Path, url: &str) -> CachePaths {
-    let key = cache_key(url);
-    CachePaths {
-        body: cache_dir.join(format!("{key}.body")),
-        metadata: cache_dir.join(format!("{key}.json")),
+    for file_name in files.iter().rev() {
+        if !is_cache_snapshot_file_name(file_name) {
+            continue;
+        }
+        let path = cache_dir.join(file_name);
+        match fs::read(&path).await {
+            Ok(body) => {
+                ensure_body_size(body.len(), max_bytes)
+                    .map_err(|err| FetchError::new(err, body.len() as u64))?;
+                info!(
+                    url,
+                    file = %file_name,
+                    body_bytes = body.len(),
+                    "HTTP subscription loaded from cache snapshot"
+                );
+                return Ok(FetchedBody {
+                    bytes_read: 0,
+                    body,
+                });
+            }
+            Err(err) => {
+                warn!(url, file = %file_name, error = %err, "cached subscription snapshot unreadable");
+            }
+        }
     }
-}
 
-fn cache_key(value: &str) -> String {
-    let mut hash = FNV_OFFSET_BASIS;
-    for byte in value.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-    format!("{hash:016x}")
+    Err(FetchError::new(
+        anyhow!("no readable cached subscription snapshots for {url}"),
+        0,
+    ))
 }
 
 async fn read_cache_metadata(path: &Path) -> Result<CacheMetadata> {
     let bytes = fs::read(path).await?;
-    let metadata: CacheMetadata = serde_json::from_slice(&bytes)?;
-    if metadata
-        .etag
-        .as_deref()
-        .is_some_and(|etag| etag.contains('"'))
-    {
-        return Err(anyhow!("discarding cache metadata with quoted etag"));
-    }
-    Ok(metadata)
-}
-
-fn header_string(
-    headers: &reqwest::header::HeaderMap,
-    name: reqwest::header::HeaderName,
-) -> Option<String> {
-    headers
-        .get(name)
-        .and_then(|value| value.to_str().ok())
-        .map(ToString::to_string)
+    serde_json::from_slice(&bytes).context("invalid subscription cache metadata")
 }
 
 fn estimated_request_bytes(url: &str) -> u64 {
@@ -586,10 +623,6 @@ fn estimated_response_bytes(response: &reqwest::Response) -> u64 {
         .map(|(name, value)| name.as_str().len() as u64 + value.as_bytes().len() as u64 + 4)
         .sum::<u64>()
         .saturating_add(64)
-}
-
-fn header_wire_bytes(name: &str, value: &str) -> u64 {
-    name.len() as u64 + value.len() as u64 + 4
 }
 
 async fn read_limited_response(
@@ -629,48 +662,37 @@ fn ensure_body_size(size: usize, max_bytes: usize) -> Result<()> {
     ))
 }
 
-async fn write_cache(
-    cache: &CachePaths,
-    body: &[u8],
-    etag: Option<String>,
-    last_modified: Option<String>,
-) {
-    if let Some(parent) = cache.body.parent() {
-        let _ = fs::create_dir_all(parent).await;
+async fn write_cache_snapshot(cache_dir: &Path, url: &str, body: &[u8]) {
+    let _ = fs::create_dir_all(cache_dir).await;
+    let file_name = cache_snapshot_file_name();
+    if fs::write(cache_dir.join(&file_name), body).await.is_err() {
+        return;
     }
-    let metadata = CacheMetadata {
-        etag: etag.map(clean_cached_etag),
-        last_modified,
-    };
-    if fs::write(&cache.body, body).await.is_ok()
-        && let Ok(bytes) = serde_json::to_vec(&metadata)
-    {
-        let _ = fs::write(&cache.metadata, bytes).await;
-    }
-}
-
-fn clean_cached_etag(value: String) -> String {
-    let value = value.trim();
-    if let Some(tag) = value.strip_prefix("W/") {
-        format!("W/{}", trim_quotes(tag.trim()))
-    } else {
-        trim_quotes(value).to_string()
+    let metadata_path = cache_dir.join(CACHE_METADATA_FILE_NAME);
+    let mut metadata = read_cache_metadata(&metadata_path)
+        .await
+        .unwrap_or_default();
+    metadata
+        .subscriptions
+        .entry(url.to_string())
+        .or_default()
+        .push(file_name);
+    if let Ok(bytes) = serde_json::to_vec_pretty(&metadata) {
+        let _ = fs::write(metadata_path, bytes).await;
     }
 }
 
-fn if_none_match_etag(value: &str) -> String {
-    if let Some(tag) = value.strip_prefix("W/") {
-        format!("W/\"{tag}\"")
-    } else {
-        format!("\"{value}\"")
-    }
+fn cache_snapshot_file_name() -> String {
+    chrono::Utc::now()
+        .format("%Y-%m-%d_%H-%M-%S%.3f.txt")
+        .to_string()
 }
 
-fn trim_quotes(value: &str) -> &str {
-    value
-        .strip_prefix('"')
-        .and_then(|value| value.strip_suffix('"'))
-        .unwrap_or(value)
+pub fn is_cache_snapshot_file_name(name: &str) -> bool {
+    name.len() >= "2026-06-08_22-08-09.985.txt".len()
+        && name.ends_with(".txt")
+        && !name.contains('/')
+        && !name.contains('\\')
 }
 
 fn parse_data_url(url: &str) -> Result<Vec<u8>> {
@@ -698,64 +720,11 @@ fn parse_data_url(url: &str) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
 
-    fn temp_metadata_path(name: &str) -> PathBuf {
-        let unique = format!(
-            "v2raydar-cache-metadata-{name}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::SystemTime::UNIX_EPOCH)
-                .expect("system time is after unix epoch")
-                .as_nanos()
-        );
-        std::env::temp_dir().join(unique)
-    }
-
     #[test]
-    fn cache_metadata_stores_etag_without_http_quotes() {
-        let metadata = CacheMetadata {
-            etag: Some(clean_cached_etag(
-                "\"541c5c68f354e332e6ce6a114e106522fac0f43bcbefb1e983e4f1388c5709e0\"".to_string(),
-            )),
-            last_modified: None,
-        };
-
-        assert_eq!(
-            metadata.etag.as_deref(),
-            Some("541c5c68f354e332e6ce6a114e106522fac0f43bcbefb1e983e4f1388c5709e0")
-        );
-        assert_eq!(
-            serde_json::to_string(&metadata).expect("metadata serializes"),
-            "{\"etag\":\"541c5c68f354e332e6ce6a114e106522fac0f43bcbefb1e983e4f1388c5709e0\",\"last_modified\":null}"
-        );
-    }
-
-    #[test]
-    fn cache_metadata_requotes_etag_for_conditional_http_requests() {
-        let metadata = CacheMetadata {
-            etag: Some(
-                "541c5c68f354e332e6ce6a114e106522fac0f43bcbefb1e983e4f1388c5709e0".to_string(),
-            ),
-            last_modified: None,
-        };
-
-        assert_eq!(
-            metadata.if_none_match().as_deref(),
-            Some("\"541c5c68f354e332e6ce6a114e106522fac0f43bcbefb1e983e4f1388c5709e0\"")
-        );
-    }
-
-    #[tokio::test]
-    async fn quoted_cache_metadata_is_discarded() {
-        let path = temp_metadata_path("quoted");
-        fs::write(
-            &path,
-            "{\"etag\":\"\\\"541c5c68f354e332e6ce6a114e106522fac0f43bcbefb1e983e4f1388c5709e0\\\"\",\"last_modified\":null}",
-        )
-        .await
-        .expect("test metadata can be written");
-
-        assert!(read_cache_metadata(&path).await.is_err());
-
-        let _ = fs::remove_file(path).await;
+    fn cache_snapshot_file_names_are_safe() {
+        let file_name = cache_snapshot_file_name();
+        assert!(is_cache_snapshot_file_name(&file_name));
+        assert!(!is_cache_snapshot_file_name("../bad.txt"));
+        assert!(!is_cache_snapshot_file_name("metadata.json"));
     }
 }

@@ -36,6 +36,8 @@ pub struct AppConfig {
     pub fetch_concurrency: usize,
     #[serde(default = "default_max_subscription_bytes")]
     pub max_subscription_bytes: usize,
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
+    pub emergency_config: Option<String>,
     #[serde(default)]
     pub probe: ProbeConfig,
     #[serde(default)]
@@ -198,6 +200,7 @@ impl AppConfig {
 fn validate(mut config: AppConfig) -> Result<AppConfig> {
     config.probe.sing_box_path = normalize_string_or_null(&config.probe.sing_box_path);
     config.probe.download_url = normalize_optional_string(config.probe.download_url.as_deref());
+    config.emergency_config = normalize_optional_string(config.emergency_config.as_deref());
     config.sharing.token = normalize_sharing_token(&config.sharing.token);
 
     if config.top_n == 0 {

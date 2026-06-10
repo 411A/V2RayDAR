@@ -7,6 +7,8 @@ scan_all_configs: false
 fetch_timeout_ms: 30000
 fetch_concurrency: 8
 max_subscription_bytes: 33554432
+# Optional direct share link used through sing-box to fetch subscriptions on restricted networks.
+emergency_config: null
 
 sharing:
   enabled: false

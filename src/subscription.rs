@@ -17,7 +17,10 @@ use tracing::{debug, info, warn};
 
 use crate::{
     config::{AppConfig, SubscriptionSource},
-    constants::{CACHE_METADATA_FILE_NAME, HTTP_EXCHANGE_OVERHEAD_BYTES, LOCALHOST_IP},
+    constants::{
+        CACHE_METADATA_FILE_NAME, FNV_OFFSET_BASIS, FNV_PRIME, HTTP_EXCHANGE_OVERHEAD_BYTES,
+        LOCALHOST_IP,
+    },
     model::{Candidate, ProgressEvent},
     parser::parse_subscription_document,
     probe::run_with_sing_box_proxy,
@@ -467,7 +470,13 @@ struct FetchedBody {
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct CacheMetadata {
-    subscriptions: BTreeMap<String, Vec<String>>,
+    subscriptions: BTreeMap<String, Vec<CacheSnapshot>>,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+struct CacheSnapshot {
+    file: String,
+    hash: String,
 }
 
 async fn fetch_body(
@@ -568,25 +577,25 @@ async fn fetch_cached_http_body(
     let metadata = read_cache_metadata(&cache_dir.join(CACHE_METADATA_FILE_NAME))
         .await
         .map_err(|err| FetchError::new(err, 0))?;
-    let Some(files) = metadata.subscriptions.get(url) else {
+    let Some(snapshots) = metadata.subscriptions.get(url) else {
         return Err(FetchError::new(
             anyhow!("no cached subscription snapshots for {url}"),
             0,
         ));
     };
 
-    for file_name in files.iter().rev() {
-        if !is_cache_snapshot_file_name(file_name) {
+    for snapshot in snapshots.iter().rev() {
+        if !is_cache_snapshot_file_name(&snapshot.file) {
             continue;
         }
-        let path = cache_dir.join(file_name);
+        let path = cache_dir.join(&snapshot.file);
         match fs::read(&path).await {
             Ok(body) => {
                 ensure_body_size(body.len(), max_bytes)
                     .map_err(|err| FetchError::new(err, body.len() as u64))?;
                 info!(
                     url,
-                    file = %file_name,
+                    file = %snapshot.file,
                     body_bytes = body.len(),
                     "HTTP subscription loaded from cache snapshot"
                 );
@@ -596,7 +605,7 @@ async fn fetch_cached_http_body(
                 });
             }
             Err(err) => {
-                warn!(url, file = %file_name, error = %err, "cached subscription snapshot unreadable");
+                warn!(url, file = %snapshot.file, error = %err, "cached subscription snapshot unreadable");
             }
         }
     }
@@ -664,22 +673,41 @@ fn ensure_body_size(size: usize, max_bytes: usize) -> Result<()> {
 
 async fn write_cache_snapshot(cache_dir: &Path, url: &str, body: &[u8]) {
     let _ = fs::create_dir_all(cache_dir).await;
-    let file_name = cache_snapshot_file_name();
-    if fs::write(cache_dir.join(&file_name), body).await.is_err() {
-        return;
-    }
+    let hash = cache_body_hash(body);
     let metadata_path = cache_dir.join(CACHE_METADATA_FILE_NAME);
     let mut metadata = read_cache_metadata(&metadata_path)
         .await
         .unwrap_or_default();
-    metadata
-        .subscriptions
-        .entry(url.to_string())
-        .or_default()
-        .push(file_name);
+    let snapshots = metadata.subscriptions.entry(url.to_string()).or_default();
+    if let Some(index) = snapshots.iter().position(|snapshot| snapshot.hash == hash) {
+        let snapshot = snapshots.remove(index);
+        snapshots.push(snapshot);
+        if let Ok(bytes) = serde_json::to_vec_pretty(&metadata) {
+            let _ = fs::write(metadata_path, bytes).await;
+        }
+        return;
+    }
+
+    let file_name = cache_snapshot_file_name();
+    if fs::write(cache_dir.join(&file_name), body).await.is_err() {
+        return;
+    }
+    snapshots.push(CacheSnapshot {
+        file: file_name,
+        hash,
+    });
     if let Ok(bytes) = serde_json::to_vec_pretty(&metadata) {
         let _ = fs::write(metadata_path, bytes).await;
     }
+}
+
+fn cache_body_hash(body: &[u8]) -> String {
+    let mut hash = FNV_OFFSET_BASIS;
+    for byte in body {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    format!("{hash:016x}")
 }
 
 fn cache_snapshot_file_name() -> String {
@@ -720,11 +748,88 @@ fn parse_data_url(url: &str) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
 
+    fn temp_cache_dir(name: &str) -> std::path::PathBuf {
+        let unique = format!(
+            "v2raydar-cache-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .expect("system time is after unix epoch")
+                .as_nanos()
+        );
+        std::env::temp_dir().join(unique)
+    }
+
     #[test]
     fn cache_snapshot_file_names_are_safe() {
         let file_name = cache_snapshot_file_name();
         assert!(is_cache_snapshot_file_name(&file_name));
         assert!(!is_cache_snapshot_file_name("../bad.txt"));
         assert!(!is_cache_snapshot_file_name("metadata.json"));
+    }
+
+    #[tokio::test]
+    async fn duplicate_cache_body_reuses_existing_snapshot() {
+        let cache_dir = temp_cache_dir("dedup");
+        let url = "https://example.com/sub";
+
+        write_cache_snapshot(&cache_dir, url, b"same body").await;
+        write_cache_snapshot(&cache_dir, url, b"same body").await;
+
+        let metadata = read_cache_metadata(&cache_dir.join(CACHE_METADATA_FILE_NAME))
+            .await
+            .expect("metadata can be read");
+        let snapshots = metadata
+            .subscriptions
+            .get(url)
+            .expect("subscription metadata exists");
+        assert_eq!(snapshots.len(), 1);
+
+        let txt_count = std::fs::read_dir(&cache_dir)
+            .expect("cache dir can be read")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(is_cache_snapshot_file_name)
+            })
+            .count();
+        assert_eq!(txt_count, 1);
+
+        let _ = std::fs::remove_dir_all(cache_dir);
+    }
+
+    #[tokio::test]
+    async fn duplicate_cache_body_moves_snapshot_to_newest_position() {
+        let cache_dir = temp_cache_dir("dedup-newest");
+        let url = "https://example.com/sub";
+
+        write_cache_snapshot(&cache_dir, url, b"first").await;
+        write_cache_snapshot(&cache_dir, url, b"second").await;
+        let metadata = read_cache_metadata(&cache_dir.join(CACHE_METADATA_FILE_NAME))
+            .await
+            .expect("metadata can be read");
+        let first_snapshot = metadata
+            .subscriptions
+            .get(url)
+            .expect("subscription metadata exists")
+            .first()
+            .expect("first snapshot exists")
+            .clone();
+
+        write_cache_snapshot(&cache_dir, url, b"first").await;
+
+        let metadata = read_cache_metadata(&cache_dir.join(CACHE_METADATA_FILE_NAME))
+            .await
+            .expect("metadata can be read");
+        let snapshots = metadata
+            .subscriptions
+            .get(url)
+            .expect("subscription metadata exists");
+        assert_eq!(snapshots.len(), 2);
+        assert_eq!(snapshots.last(), Some(&first_snapshot));
+
+        let _ = std::fs::remove_dir_all(cache_dir);
     }
 }

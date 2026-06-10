@@ -26,14 +26,16 @@ pub const DEFAULT_SHARING_TOKEN: &str = "";
 pub const DEFAULT_FETCH_TIMEOUT_MS: u64 = 30_000;
 pub const DEFAULT_FETCH_CONCURRENCY: usize = 8;
 pub const DEFAULT_MAX_SUBSCRIPTION_BYTES: usize = 32 * 1024 * 1024;
+pub const DEFAULT_USE_CACHE_ONLY: bool = false;
 pub const DEFAULT_SUBSCRIPTION_PRIORITY: u32 = 100;
 pub const DEFAULT_SUBSCRIPTION_ENABLED: bool = true;
 pub const DEFAULT_SING_BOX_PATH: &str = "";
 pub const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 5_000;
 pub const DEFAULT_ACTIVE_TIMEOUT_MS: u64 = 30_000;
 pub const DEFAULT_STARTUP_TIMEOUT_MS: u64 = 5_000;
-pub const DEFAULT_PROBE_CONCURRENCY: usize = 8;
+pub const DEFAULT_PROBE_CONCURRENCY: usize = 16;
 pub const DEFAULT_PROBE_BATCH_SIZE: Option<usize> = Some(20);
+pub const DEFAULT_PROBE_PROCESS_CONCURRENCY: Option<usize> = None;
 pub const DEFAULT_TEST_URL: &str = "https://www.gstatic.com/generate_204";
 pub const DEFAULT_ACCEPTED_STATUSES: &[u16] = &[204, 200];
 pub const DEFAULT_DOWNLOAD_BYTES_LIMIT: usize = 1_048_576;
@@ -53,6 +55,7 @@ pub const ACTIVE_PROBE_BATCH_MIN_SIZE: usize = 32;
 pub const ACTIVE_PROBE_BATCH_MAX_SIZE: usize = 128;
 pub const ACTIVE_PROBE_BATCH_CONCURRENCY_MULTIPLIER: usize = 16;
 pub const ACTIVE_PROBE_HTTP_MAX_CONCURRENCY: usize = 128;
+pub const ACTIVE_PROBE_PROCESS_MAX_CONCURRENCY: usize = 4;
 pub const LOCAL_PROXY_WAIT_INTERVAL: Duration = Duration::from_millis(25);
 pub const LOCAL_PROXY_CONNECT_TIMEOUT: Duration = Duration::from_millis(5);
 pub const SING_BOX_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
@@ -114,7 +117,7 @@ pub const SUBSCRIPTION_ACTIONS: [SubscriptionAction; 6] = [
     SubscriptionAction::Delete,
     SubscriptionAction::Back,
 ];
-pub const CONFIG_KEYS: [ConfigKey; 24] = [
+pub const CONFIG_KEYS: [ConfigKey; 26] = [
     ConfigKey::Bind,
     ConfigKey::TopN,
     ConfigKey::RefreshSeconds,
@@ -124,6 +127,7 @@ pub const CONFIG_KEYS: [ConfigKey; 24] = [
     ConfigKey::FetchTimeout,
     ConfigKey::FetchConcurrency,
     ConfigKey::MaxSubscriptionBytes,
+    ConfigKey::UseCacheOnly,
     ConfigKey::EmergencyConfig,
     ConfigKey::ProbeMode,
     ConfigKey::SingBoxPath,
@@ -132,6 +136,7 @@ pub const CONFIG_KEYS: [ConfigKey; 24] = [
     ConfigKey::StartupTimeout,
     ConfigKey::ProbeConcurrency,
     ConfigKey::ProbeBatchSize,
+    ConfigKey::ProbeProcessConcurrency,
     ConfigKey::TestUrl,
     ConfigKey::AcceptedStatuses,
     ConfigKey::DownloadUrl,

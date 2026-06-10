@@ -87,6 +87,9 @@ fn update_top_level_scalars(document: &mut YamlDocument, previous: &AppConfig, c
             config.max_subscription_bytes.to_string(),
         );
     }
+    if previous.use_cache_only != config.use_cache_only {
+        document.set_top_level_scalar("use_cache_only", config.use_cache_only.to_string());
+    }
     if previous.emergency_config != config.emergency_config {
         document.set_top_level_scalar(
             "emergency_config",
@@ -158,6 +161,17 @@ fn update_probe_section(document: &mut YamlDocument, previous: &AppConfig, confi
             config
                 .probe
                 .batch_size
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string()),
+        );
+    }
+    if previous.probe.process_concurrency != config.probe.process_concurrency {
+        document.set_nested_scalar(
+            "probe",
+            "process_concurrency",
+            config
+                .probe
+                .process_concurrency
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "null".to_string()),
         );

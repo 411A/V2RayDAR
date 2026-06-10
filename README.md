@@ -84,9 +84,11 @@ encoded_subscription: true
 prioritize_stability: false
 scan_all_configs: true
 fetch_timeout_ms: 30000
-fetch_concurrency: 4
+fetch_concurrency: 8
 max_subscription_bytes: 33554432
 # Cache fallback is used only when every enabled subscription URL fails; fresh reachable URLs always win.
+# When true, skip subscription URLs and test only cached subscription snapshots.
+use_cache_only: false
 # Optional direct share link used through sing-box to fetch subscriptions on restricted networks.
 emergency_config: null
 
@@ -101,8 +103,9 @@ probe:
   connect_timeout_ms: 5000
   active_timeout_ms: 30000
   startup_timeout_ms: 5000
-  concurrency: 4
-  batch_size:
+  concurrency: 16
+  batch_size: 20
+  process_concurrency: null
   test_url: https://www.gstatic.com/generate_204
   accepted_statuses: [204, 200]
   download_url:
@@ -207,8 +210,9 @@ Top-level keys:
 | `prioritize_stability` | Boolean | `false` | `true`, `false` | Yes | When `false`, ranking favors configs that work now, even briefly, which is recommended for highly limited networks. When `true`, configs seen working in at least two refreshes are promoted before lower-history configs even if their current ping is higher. |
 | `scan_all_configs` | Boolean | `true` | `true`, `false` | Yes | When `true`, every loaded config is validated. When `false`, active sing-box probing samples across enabled sources and stops after enough working configs are found; with stability priority enabled, at least half of the returned configs must have also worked in the previous refresh when those configs are still present. |
 | `fetch_timeout_ms` | Integer milliseconds | `30000` | `1` or higher | Yes | Timeout for fetching each subscription source. |
-| `fetch_concurrency` | Positive integer | `4` | `1` or higher | Yes | Number of enabled subscription sources fetched concurrently. |
+| `fetch_concurrency` | Positive integer | `8` | `1` or higher | Yes | Number of enabled subscription sources fetched concurrently. |
 | `max_subscription_bytes` | Positive integer bytes | `33554432` | `1` or higher | Yes | Maximum bytes accepted per subscription source to cap memory use. |
+| `use_cache_only` | Boolean | `false` | `true`, `false` | Yes | When `true`, skips subscription URL fetches and tests only cached subscription snapshots. |
 | `emergency_config` | String or null | `null` | `null` or one direct sing-box-compatible share link | Yes | Optional emergency config used through sing-box to retry failed subscription fetches on restricted networks. Requires active mode and a configured `probe.sing_box_path`. |
 | `sharing` | Object | See sharing table | Sharing object | Yes | Controls LAN exposure and optional URL token protection. |
 | `probe` | Object | See probe table | Probe object | Yes | Controls validation strategy, sing-box path, timeouts, concurrency, and optional speed measurement. |
@@ -231,8 +235,9 @@ Probe keys:
 | `probe.connect_timeout_ms` | Integer milliseconds | `5000` | `1` or higher | Yes | TCP connection timeout used only by `probe.mode: tcp`. |
 | `probe.active_timeout_ms` | Integer milliseconds | `30000` | `1` or higher | Yes | Timeout for the HTTP request sent through the candidate config in active mode. |
 | `probe.startup_timeout_ms` | Integer milliseconds | `5000` | `1` or higher | Yes | Timeout while waiting for the temporary local sing-box mixed proxy to become ready. |
-| `probe.concurrency` | Positive integer | `4` | `1` or higher | Yes | Maximum number of active HTTP checks run at once. Higher values can be faster but use more CPU/RAM/network. |
-| `probe.batch_size` | Optional positive integer | Empty/null | Empty, `null`, or `1` or higher | Yes | Number of configs loaded into one sing-box process in active mode. Leave empty for adaptive batching. Larger batches reduce process startup overhead; `probe.concurrency` still controls simultaneous network checks. |
+| `probe.concurrency` | Positive integer | `16` | `1` or higher | Yes | Base active HTTP check concurrency. V2RayDAR may scale effective in-batch checks from this value while staying under internal safety caps. |
+| `probe.batch_size` | Optional positive integer | `20` | Empty, `null`, or `1` or higher | Yes | Starting number of configs loaded into one sing-box process in active mode. Clean batches can grow automatically; failed batches shrink/split to protect resources and isolate bad generated configs. |
+| `probe.process_concurrency` | Optional positive integer | `null` | Empty, `null`, or `1` or higher | Yes | Number of sing-box batch processes allowed at once. `null` auto-scales from CPU parallelism, capped internally to avoid runaway process/socket pressure. |
 | `probe.test_url` | URL string | `https://www.gstatic.com/generate_204` | Any `http://` or `https://` URL reachable from a working proxy | Yes | Connectivity URL loaded through every candidate config. Choose a small, stable URL that works from your network. |
 | `probe.accepted_statuses` | Array of HTTP status codes | `[204, 200]` | HTTP status integers, for example `[204]`, `[200]`, `[200, 204, 301, 302]` | Yes | HTTP statuses treated as active-probe success for `probe.test_url`. |
 | `probe.download_url` | Optional URL string | Empty/null | Empty, `null`, or any `http://`/`https://` URL | Yes | Optional download URL used after the active connectivity probe succeeds. Leave empty to rank by active HTTP latency only. |

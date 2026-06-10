@@ -10,10 +10,10 @@ use crate::constants::{
     DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_DOWNLOAD_BYTES_LIMIT, DEFAULT_ENCODED_SUBSCRIPTION,
     DEFAULT_FETCH_CONCURRENCY, DEFAULT_FETCH_TIMEOUT_MS, DEFAULT_MAX_SUBSCRIPTION_BYTES,
     DEFAULT_PRIORITIZE_STABILITY, DEFAULT_PROBE_BATCH_SIZE, DEFAULT_PROBE_CONCURRENCY,
-    DEFAULT_REFRESH_SECONDS, DEFAULT_REQUIRE_TOKEN, DEFAULT_SCAN_ALL_CONFIGS,
-    DEFAULT_SHARING_ENABLED, DEFAULT_SHARING_TOKEN, DEFAULT_SING_BOX_PATH,
-    DEFAULT_STARTUP_TIMEOUT_MS, DEFAULT_SUBSCRIPTION_ENABLED, DEFAULT_SUBSCRIPTION_PRIORITY,
-    DEFAULT_TEST_URL, DEFAULT_TOP_N,
+    DEFAULT_PROBE_PROCESS_CONCURRENCY, DEFAULT_REFRESH_SECONDS, DEFAULT_REQUIRE_TOKEN,
+    DEFAULT_SCAN_ALL_CONFIGS, DEFAULT_SHARING_ENABLED, DEFAULT_SHARING_TOKEN,
+    DEFAULT_SING_BOX_PATH, DEFAULT_STARTUP_TIMEOUT_MS, DEFAULT_SUBSCRIPTION_ENABLED,
+    DEFAULT_SUBSCRIPTION_PRIORITY, DEFAULT_TEST_URL, DEFAULT_TOP_N, DEFAULT_USE_CACHE_ONLY,
 };
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -36,6 +36,8 @@ pub struct AppConfig {
     pub fetch_concurrency: usize,
     #[serde(default = "default_max_subscription_bytes")]
     pub max_subscription_bytes: usize,
+    #[serde(default = "default_use_cache_only")]
+    pub use_cache_only: bool,
     #[serde(default, deserialize_with = "deserialize_optional_string")]
     pub emergency_config: Option<String>,
     #[serde(default)]
@@ -75,6 +77,8 @@ pub struct ProbeConfig {
     pub concurrency: usize,
     #[serde(default = "default_probe_batch_size")]
     pub batch_size: Option<usize>,
+    #[serde(default = "default_probe_process_concurrency")]
+    pub process_concurrency: Option<usize>,
     #[serde(default = "default_test_url")]
     pub test_url: String,
     #[serde(default = "default_accepted_statuses")]
@@ -115,6 +119,7 @@ impl Default for ProbeConfig {
             startup_timeout_ms: default_startup_timeout_ms(),
             concurrency: default_probe_concurrency(),
             batch_size: default_probe_batch_size(),
+            process_concurrency: default_probe_process_concurrency(),
             test_url: default_test_url(),
             accepted_statuses: default_accepted_statuses(),
             download_url: None,
@@ -221,6 +226,12 @@ fn validate(mut config: AppConfig) -> Result<AppConfig> {
 
     if config.probe.batch_size == Some(0) {
         return Err(anyhow!("probe.batch_size must be null or greater than 0"));
+    }
+
+    if config.probe.process_concurrency == Some(0) {
+        return Err(anyhow!(
+            "probe.process_concurrency must be null or greater than 0"
+        ));
     }
 
     if config.probe.connect_timeout_ms == 0 {
@@ -438,6 +449,10 @@ fn default_max_subscription_bytes() -> usize {
     DEFAULT_MAX_SUBSCRIPTION_BYTES
 }
 
+fn default_use_cache_only() -> bool {
+    DEFAULT_USE_CACHE_ONLY
+}
+
 fn default_priority() -> u32 {
     DEFAULT_SUBSCRIPTION_PRIORITY
 }
@@ -472,6 +487,10 @@ fn default_probe_concurrency() -> usize {
 
 fn default_probe_batch_size() -> Option<usize> {
     DEFAULT_PROBE_BATCH_SIZE
+}
+
+fn default_probe_process_concurrency() -> Option<usize> {
+    DEFAULT_PROBE_PROCESS_CONCURRENCY
 }
 
 fn default_test_url() -> String {

@@ -661,18 +661,34 @@ async fn refresh_once(
 
     let fetch_started = std::time::Instant::now();
     info!("subscription load started");
-    let mut fetched = load_candidates_with_cache(
-        config,
-        Some(cache_dir),
-        |bytes| {
-            let state = state.clone();
-            async move {
-                add_fetch_bytes(&state, bytes).await;
-            }
-        },
-        Some(progress_tx.clone()),
-    )
-    .await?;
+    let cache_only = config.use_cache_only;
+    let mut fetched = if cache_only {
+        load_cached_candidates(
+            config,
+            cache_dir,
+            |bytes| {
+                let state = state.clone();
+                async move {
+                    add_fetch_bytes(&state, bytes).await;
+                }
+            },
+            Some(progress_tx.clone()),
+        )
+        .await?
+    } else {
+        load_candidates_with_cache(
+            config,
+            Some(cache_dir),
+            |bytes| {
+                let state = state.clone();
+                async move {
+                    add_fetch_bytes(&state, bytes).await;
+                }
+            },
+            Some(progress_tx.clone()),
+        )
+        .await?
+    };
     let mut fresh_success_count = fetched.successes.len();
     let mut fetched_count = fetched.candidates.len();
     let mut seen_candidate_uris = fetched
@@ -722,7 +738,7 @@ async fn refresh_once(
     )
     .await;
 
-    if !fetched.failures.is_empty() {
+    if !cache_only && !fetched.failures.is_empty() {
         if let Some(proxy_uri) =
             subscription_retry_proxy_uri(config, &ranked, &previous_before_refresh)
         {
@@ -817,7 +833,7 @@ async fn refresh_once(
             .await;
         }
     }
-    if fresh_success_count == 0 {
+    if !cache_only && fresh_success_count == 0 {
         let cache_started = std::time::Instant::now();
         match load_cached_candidates(
             config,
@@ -1158,6 +1174,7 @@ struct RefreshFingerprint {
     fetch_timeout_ms: u64,
     fetch_concurrency: usize,
     max_subscription_bytes: usize,
+    use_cache_only: bool,
     probe: crate::config::ProbeConfig,
     subscriptions: Vec<crate::config::SubscriptionSource>,
 }
@@ -1172,6 +1189,7 @@ impl From<&AppConfig> for RefreshFingerprint {
             fetch_timeout_ms: config.fetch_timeout_ms,
             fetch_concurrency: config.fetch_concurrency,
             max_subscription_bytes: config.max_subscription_bytes,
+            use_cache_only: config.use_cache_only,
             probe: config.probe.clone(),
             subscriptions: config.subscriptions.clone(),
         }

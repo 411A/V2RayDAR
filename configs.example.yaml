@@ -7,6 +7,8 @@ scan_all_configs: false
 fetch_timeout_ms: 30000
 fetch_concurrency: 8
 max_subscription_bytes: 33554432
+# When true, skip subscription URLs and test only cached subscription snapshots.
+use_cache_only: false
 # Optional direct share link used through sing-box to fetch subscriptions on restricted networks.
 emergency_config: null
 
@@ -21,8 +23,10 @@ probe:
   connect_timeout_ms: 5000
   active_timeout_ms: 30000
   startup_timeout_ms: 5000
-  concurrency: 8
+  concurrency: 16
   batch_size: 20
+  # Auto or user values are internally capped (ACTIVE_PROBE_PROCESS_MAX_CONCURRENCY) to avoid process/socket congestion.
+  process_concurrency: null
   test_url: https://www.gstatic.com/generate_204
   accepted_statuses: [204, 200]
   download_url: null

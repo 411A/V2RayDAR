@@ -62,6 +62,8 @@ pub const SING_BOX_OUTBOUND_TAG_PREFIX: &str = "proxy";
 pub const SING_BOX_DOWNLOAD_URL: &str = "https://github.com/SagerNet/sing-box/releases";
 
 pub const HTTP_EXCHANGE_OVERHEAD_BYTES: u64 = 1024;
+pub const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+pub const FNV_PRIME: u64 = 0x100000001b3;
 pub const SUPPORTED_URI_SCHEMES: &[&str] = &[
     "vmess://",
     "vless://",

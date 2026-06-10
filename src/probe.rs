@@ -1052,7 +1052,7 @@ async fn probe_active_batch(
     let total_candidates = candidate_count(&entries);
     let http_concurrency = active_probe_http_concurrency(config.concurrency, total_entries);
     let progress_interval = http_concurrency.min(total_entries);
-    let mut probe_results = stream::iter(entries.into_iter().zip(ports.into_iter()).map(
+    let mut probe_results = stream::iter(entries.into_iter().zip(ports).map(
         |(entry, port)| async move {
             let result = probe_active_target_inner(port, config).await;
             ranked_configs_for_active_result(entry, result)

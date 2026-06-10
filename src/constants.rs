@@ -96,6 +96,7 @@ pub const BYTE_UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
 pub const FIREWALL_RULE_NAME: &str = "V2RayDAR Subscription Sharing";
 pub const SUBSCRIPTION_READY_WAIT: Duration = Duration::from_secs(20);
 pub const SUBSCRIPTION_READY_POLL: Duration = Duration::from_millis(100);
+#[cfg(target_os = "windows")]
 pub const WINDOWS_CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[cfg(test)]

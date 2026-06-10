@@ -19,6 +19,7 @@ static INTERFACE_IP_CACHE: OnceLock<Mutex<InterfaceIpCache>> = OnceLock::new();
 pub struct SharingStatus {
     pub sharing: &'static str,
     pub discoverable: String,
+    pub subscription_url: Option<String>,
     pub firewall: String,
 }
 
@@ -29,8 +30,17 @@ pub fn sharing_status(config: &RuntimeConfig) -> SharingStatus {
 
 fn sharing_status_from_hosts(config: &RuntimeConfig, hosts: &[String]) -> SharingStatus {
     let sharing = if config.sharing_enabled { "on" } else { "off" };
+    let subscription_url = config
+        .sharing_enabled
+        .then(|| format_discoverable_url(config, hosts))
+        .filter(|url| !url.is_empty());
     let discoverable = match (config.sharing_enabled, hosts.is_empty()) {
-        (true, false) => format!("yes {}", format_discoverable_url(config, hosts)),
+        (true, false) => format!(
+            "yes {}",
+            subscription_url
+                .as_deref()
+                .expect("discoverable host should format a URL")
+        ),
         (true, true) => "no reachable LAN IP found".to_string(),
         (false, _) => "no".to_string(),
     };
@@ -43,6 +53,7 @@ fn sharing_status_from_hosts(config: &RuntimeConfig, hosts: &[String]) -> Sharin
     SharingStatus {
         sharing,
         discoverable,
+        subscription_url,
         firewall,
     }
 }
@@ -92,6 +103,7 @@ fn discoverable_hosts_from_ips(ips: Vec<IpAddr>) -> Vec<String> {
 }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
 pub fn discoverable_subscription_url(config: &RuntimeConfig) -> Option<String> {
     discoverable_hosts(config)
@@ -100,6 +112,14 @@ pub fn discoverable_subscription_url(config: &RuntimeConfig) -> Option<String> {
 }
 
 >>>>>>> b1c2ff2 (fixup! 🧑‍💻 refactor: Store generated app data under v2raydar_data)
+=======
+pub fn discoverable_subscription_url(config: &RuntimeConfig) -> Option<String> {
+    discoverable_hosts(config)
+        .first()
+        .map(|host| config.subscription_url(host, true))
+}
+
+>>>>>>> dbe9734 (🚸 chore: Refine sharing token handling and endpoint display)
 fn format_discoverable_url(config: &RuntimeConfig, hosts: &[String]) -> String {
     hosts
         .first()
@@ -311,7 +331,7 @@ mod tests {
         let status = sharing_status_from_hosts(&config, &hosts);
         assert_eq!(
             status.discoverable,
-            "yes http://192.168.43.1:27141/subscription.txt"
+            "yes http://192.168.43.1:27141/subscription"
         );
         assert_eq!(status.firewall, "allowed TCP 27141");
     }
@@ -329,7 +349,7 @@ mod tests {
         assert_eq!(hosts, vec!["192.168.1.87".to_string()]);
         assert_eq!(
             status.discoverable,
-            "yes http://192.168.1.87:27141/subscription.txt"
+            "yes http://192.168.1.87:27141/subscription"
         );
     }
 

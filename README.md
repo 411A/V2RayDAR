@@ -90,7 +90,7 @@ max_subscription_bytes: 33554432
 sharing:
   enabled: false
   require_token: false
-  token: AUTO_GENERATED_ON_FIRST_RUN
+  token: null
 
 probe:
   mode: active
@@ -216,7 +216,7 @@ Sharing keys:
 | --- | --- | --- | --- | --- | --- |
 | `sharing.enabled` | Boolean | `false` | `true`, `false` | Yes | Enables LAN clients to read `/subscription`, `/subscription.txt`, and `/results`. Same-machine clients can still use `127.0.0.1`. |
 | `sharing.require_token` | Boolean | `false` | `true`, `false` | Yes | When enabled for LAN clients, subscription URLs must include `?token=...`. |
-| `sharing.token` | String | Generated on first run | URL-safe token string | Yes | Token used when `sharing.require_token` is true. Regenerate if the URL was shared too widely. |
+| `sharing.token` | String, boolean, or null | `null` | `null`, `true`, or a URL-safe token string | Yes | `null` keeps URLs untokened. `true` generates and saves a token. A string uses that token and displayed endpoint URLs include `?token=...`. |
 
 Probe keys:
 
@@ -292,13 +292,13 @@ bind: 192.168.1.23:27141
 sharing:
   enabled: true
   require_token: true
-  token: your-generated-token
+  token: true
 ```
 
 Tokenized LAN subscription URL:
 
 ```text
-http://192.168.1.23:27141/subscription?token=your-generated-token
+http://192.168.1.23:27141/subscription?token=GENERATED_TOKEN
 ```
 
 ## Using With v2rayN on Windows
@@ -445,7 +445,7 @@ Android cannot reach V2RayDAR:
 - Use the PC LAN IP, for example `bind: 192.168.1.23:27141`.
 - Set `sharing.enabled: true`.
 - Use `http://PC_LAN_IP:27141/subscription`.
-- If `sharing.require_token: true`, include `?token=...` in the URL.
+- If `sharing.token` is set, include the displayed `?token=...` in the URL.
 - Check firewall rules.
 
 All configs are unreachable:

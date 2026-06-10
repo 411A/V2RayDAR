@@ -5,6 +5,8 @@ use std::{
 
 use serde::Serialize;
 
+use crate::config::should_include_token_in_url;
+
 #[derive(Debug, Clone, Serialize, Eq, PartialEq, Hash)]
 pub struct Endpoint {
     pub host: String,
@@ -118,7 +120,7 @@ impl RuntimeConfig {
             endpoint
         );
 
-        if self.require_token {
+        if should_include_token_in_url(&self.token) {
             url.push_str("?token=");
             url.push_str(&self.token);
         }

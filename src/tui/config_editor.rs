@@ -2,7 +2,10 @@ use std::net::SocketAddr;
 
 use anyhow::{Result, anyhow};
 
-use crate::{config::ProbeMode, sing_box};
+use crate::{
+    config::{ProbeMode, normalize_sharing_token},
+    sing_box,
+};
 
 use super::state::ConfigKey;
 
@@ -138,7 +141,7 @@ pub fn apply(config: &mut crate::config::AppConfig, key: ConfigKey, raw: &str) -
             config.probe.download_bytes_limit = positive(value, label(key))?
         }
         ConfigKey::TokenRequired => config.sharing.require_token = bool_value(value)?,
-        ConfigKey::Token => config.sharing.token = optional_string(value),
+        ConfigKey::Token => config.sharing.token = normalize_sharing_token(value),
         ConfigKey::ResetDefaults => {}
     }
     Ok(())

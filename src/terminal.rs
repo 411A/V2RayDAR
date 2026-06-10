@@ -4,6 +4,7 @@ use crate::{
     config::AppConfig,
     constants::{LOCALHOST_IP, SETTING_GUIDES},
     model::{ProgressEvent, RuntimeState},
+    network::discoverable_subscription_url,
     paths::AppPaths,
 };
 
@@ -59,7 +60,7 @@ pub fn print_summary(state: &RuntimeState, top_n: usize) {
 }
 
 pub fn print_startup(config: &AppConfig, paths: &AppPaths, verbose: bool) {
-    let local_url = config.subscription_url(LOCALHOST_IP, false);
+    let local_url = config.subscription_url(LOCALHOST_IP, true);
 
     println!("V2RayDAR");
     println!(
@@ -83,10 +84,15 @@ pub fn print_startup(config: &AppConfig, paths: &AppPaths, verbose: bool) {
                 "open on LAN"
             }
         );
-        println!(
-            "LAN URL: use this machine's LAN IP with port {}",
-            config.bind.port()
-        );
+        if let Some(url) = discoverable_subscription_url(&crate::model::RuntimeConfig::from(config))
+        {
+            println!("LAN subscription: {url}");
+        } else {
+            println!(
+                "LAN URL: use this machine's LAN IP with port {}",
+                config.bind.port()
+            );
+        }
     } else {
         println!("LAN sharing: disabled");
     }

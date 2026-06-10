@@ -15,7 +15,10 @@ pub fn draw(
     paths: &AppPaths,
 ) {
     state.hits = Default::default();
-    let areas = layout::main(frame.area());
+    let areas = layout::main(
+        frame.area(),
+        layout::uses_tokenized_endpoint(&state.editable),
+    );
     top::draw(frame, areas.top, runtime, runtime_config, state.started_at);
     logs_panel::draw(frame, areas.logs, runtime);
     found_panel::draw(frame, areas.found, runtime, runtime_config.top_n);

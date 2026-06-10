@@ -1,12 +1,24 @@
+use std::num::NonZeroU16;
+
 use ratatui::{
     Frame,
+    buffer::{Buffer, CellDiffOption},
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 
-use crate::{model::RuntimeConfig, network::sharing_status, paths::AppPaths};
+use crate::{
+    config::should_include_token_in_url,
+    constants::{
+        TUI_ANSI_UNDERLINE_DISABLE, TUI_ANSI_UNDERLINE_ENABLE, TUI_CONFIG_GROUP_HEIGHT,
+        TUI_CONFIG_KEY_WIDTH, TUI_OSC8_LINK_PREFIX, TUI_OSC8_LINK_SEPARATOR, TUI_OSC8_LINK_SUFFIX,
+    },
+    model::RuntimeConfig,
+    network::sharing_status,
+    paths::AppPaths,
+};
 
 use super::{state::TuiState, util::bool_text};
 
@@ -19,21 +31,38 @@ pub fn draw(
 ) {
     let live_config = RuntimeConfig::from(&state.editable);
     let mut sharing = sharing_status(&live_config);
-    if live_config.sharing_enabled
+    let needs_restart = live_config.sharing_enabled
         && live_config.bind != state.active_bind
         && state.active_bind.ip().is_loopback()
-        && !live_config.bind.ip().is_loopback()
-    {
+        && !live_config.bind.ip().is_loopback();
+    if needs_restart {
         sharing.discoverable.push_str(" (restart V2RayDAR)");
     }
+    let show_endpoint_row =
+        sharing.subscription_url.is_some() && should_include_token_in_url(&live_config.token);
+    let discoverable = if show_endpoint_row {
+        if needs_restart {
+            "yes (restart V2RayDAR)".to_string()
+        } else {
+            "yes".to_string()
+        }
+    } else {
+        sharing.discoverable.clone()
+    };
+
     let block = Block::default()
         .borders(Borders::ALL)
         .title("Current Configuration");
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    let [groups, endpoint] = Layout::vertical([
+        Constraint::Length(TUI_CONFIG_GROUP_HEIGHT),
+        Constraint::Fill(1),
+    ])
+    .areas(inner);
     let [service, network] =
-        Layout::horizontal([Constraint::Percentage(44), Constraint::Percentage(56)]).areas(inner);
+        Layout::horizontal([Constraint::Percentage(44), Constraint::Percentage(56)]).areas(groups);
     draw_group(
         frame,
         service,
@@ -69,9 +98,16 @@ pub fn draw(
         vec![
             ("sharing", sharing.sharing.to_string()),
             ("token", bool_text(live_config.require_token).to_string()),
-            ("discoverable", sharing.discoverable),
+            ("discoverable", discoverable),
             ("firewall", sharing.firewall),
         ],
+    );
+    draw_subscription_endpoint(
+        frame,
+        endpoint,
+        show_endpoint_row
+            .then_some(sharing.subscription_url.as_deref())
+            .flatten(),
     );
 }
 
@@ -105,4 +141,200 @@ fn draw_group(
     }));
 
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
+}
+
+fn draw_subscription_endpoint(frame: &mut Frame<'_>, area: Rect, url: Option<&str>) {
+    if area.is_empty() {
+        return;
+    }
+
+    let Some(url) = url else {
+        clear_endpoint_area(frame.buffer_mut(), area);
+        return;
+    };
+
+    if !is_safe_terminal_link(url) {
+        draw_plain_subscription_endpoint(frame, area, url);
+        return;
+    }
+
+    let label_width = endpoint_label_width(area.width);
+    let url_width = area.width.saturating_sub(label_width);
+    if url_width == 0 {
+        return;
+    }
+
+    let label_style = Style::default().fg(Color::DarkGray);
+    let url_style = Style::default().fg(Color::Cyan);
+    let mut remaining = url;
+
+    for row in 0..area.height {
+        let y = area.y + row;
+        let prefix = if row == 0 {
+            padded_label("subscription", label_width as usize)
+        } else {
+            " ".repeat(label_width as usize)
+        };
+        if label_width > 0 {
+            frame
+                .buffer_mut()
+                .set_string(area.x, y, prefix, label_style);
+        }
+
+        let url_x = area.x + label_width;
+        if remaining.is_empty() {
+            clear_forced_width(frame.buffer_mut(), url_x, y, url_width);
+            continue;
+        }
+
+        let (chunk, rest) = split_ascii_at_width(remaining, url_width as usize);
+        draw_hyperlink_chunk(
+            frame.buffer_mut(),
+            url_x,
+            y,
+            url_width,
+            url,
+            chunk,
+            url_style,
+        );
+        remaining = rest;
+    }
+}
+
+fn draw_plain_subscription_endpoint(frame: &mut Frame<'_>, area: Rect, url: &str) {
+    let text = url
+        .chars()
+        .filter(|ch| !ch.is_control())
+        .collect::<String>();
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("{:<width$}", "subscription", width = TUI_CONFIG_KEY_WIDTH),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(
+                text,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::UNDERLINED),
+            ),
+        ]))
+        .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn draw_hyperlink_chunk(
+    buffer: &mut Buffer,
+    x: u16,
+    y: u16,
+    width: u16,
+    target: &str,
+    text: &str,
+    style: Style,
+) {
+    if text.is_empty() {
+        clear_forced_width(buffer, x, y, width);
+        return;
+    }
+
+    let mut symbol = String::with_capacity(
+        TUI_OSC8_LINK_PREFIX.len()
+            + target.len()
+            + TUI_OSC8_LINK_SEPARATOR.len()
+            + text.len()
+            + TUI_OSC8_LINK_SUFFIX.len()
+            + width as usize,
+    );
+    symbol.push_str(TUI_OSC8_LINK_PREFIX);
+    symbol.push_str(target);
+    symbol.push_str(TUI_OSC8_LINK_SEPARATOR);
+    symbol.push_str(TUI_ANSI_UNDERLINE_ENABLE);
+    symbol.push_str(text);
+    symbol.push_str(TUI_ANSI_UNDERLINE_DISABLE);
+    symbol.push_str(TUI_OSC8_LINK_SUFFIX);
+    symbol.extend(std::iter::repeat_n(
+        ' ',
+        (width as usize).saturating_sub(text.len()),
+    ));
+
+    set_forced_width_cell(buffer, x, y, width, &symbol, style);
+}
+
+fn clear_endpoint_area(buffer: &mut Buffer, area: Rect) {
+    for y in area.top()..area.bottom() {
+        clear_forced_width(buffer, area.x, y, area.width);
+    }
+}
+
+fn clear_forced_width(buffer: &mut Buffer, x: u16, y: u16, width: u16) {
+    if width == 0 {
+        return;
+    }
+    let symbol = " ".repeat(width as usize);
+    set_forced_width_cell(buffer, x, y, width, &symbol, Style::default());
+}
+
+fn set_forced_width_cell(
+    buffer: &mut Buffer,
+    x: u16,
+    y: u16,
+    width: u16,
+    symbol: &str,
+    style: Style,
+) {
+    let Some(width) = NonZeroU16::new(width) else {
+        return;
+    };
+    if let Some(cell) = buffer.cell_mut((x, y)) {
+        cell.set_symbol(symbol)
+            .set_style(style)
+            .set_diff_option(CellDiffOption::ForcedWidth(width));
+    }
+}
+
+fn endpoint_label_width(area_width: u16) -> u16 {
+    if area_width <= TUI_CONFIG_KEY_WIDTH as u16 {
+        0
+    } else {
+        TUI_CONFIG_KEY_WIDTH as u16
+    }
+}
+
+fn padded_label(label: &str, width: usize) -> String {
+    if width == 0 {
+        String::new()
+    } else {
+        format!("{label:<width$}")
+    }
+}
+
+fn split_ascii_at_width(value: &str, width: usize) -> (&str, &str) {
+    let split = value.len().min(width);
+    value.split_at(split)
+}
+
+fn is_safe_terminal_link(value: &str) -> bool {
+    value.is_ascii() && !value.chars().any(char::is_control)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_ascii_url_at_display_width() {
+        assert_eq!(split_ascii_at_width("abcdef", 4), ("abcd", "ef"));
+        assert_eq!(split_ascii_at_width("abc", 4), ("abc", ""));
+    }
+
+    #[test]
+    fn terminal_link_rejects_control_sequences() {
+        assert!(is_safe_terminal_link(
+            "http://127.0.0.1:27141/subscription?token=abc"
+        ));
+        assert!(!is_safe_terminal_link(
+            "http://127.0.0.1:27141/subscription?token=\x1b]8;;bad"
+        ));
+    }
 }

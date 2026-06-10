@@ -27,6 +27,18 @@
 - Survives restricted networks via a snapshot cache, an in-network bridge config, or an `emergency_config`.
 - Optional LAN sharing with optional token protection, so the phone in your pocket can use the same feed.
 
+> [!WARNING]
+> ### 🚧 Alpha Release
+>
+> This software is currently in **Alpha**.
+>
+> - Breaking changes may occur at any time.
+> - Documentation may be incomplete.
+> - Bugs and instability are expected.
+> - Not recommended for production environments.
+>
+> Please report issues and feedback.
+
 ## Quick start
 
 1. **Get sing-box**. Active probing needs the [sing-box](https://github.com/SagerNet/sing-box/releases) binary. If you already use v2rayN, look inside its folder for `sing-box.exe`.

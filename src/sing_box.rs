@@ -106,7 +106,8 @@ pub fn setup_guide() -> SetupGuide {
             "sing-box",
         ],
         notes: &[
-            "Use the sing-box file inside the Linux archive, not a Windows .exe.",
+            "Use the sing-box file inside the Linux archive, not the archive itself.",
+            "WSL2 Ubuntu is Linux: extract the Linux archive and point to the extracted 'sing-box' binary.",
             "After extracting manually, run chmod +x sing-box if the file is not executable.",
             "A command name is accepted only when it works from your terminal PATH.",
         ],
@@ -143,6 +144,18 @@ pub async fn verify_path(path: &str) -> Result<()> {
     let path = normalize_path(path);
     if path.is_empty() {
         return Err(anyhow!("sing-box path cannot be empty"));
+    }
+
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".tar.gz")
+        || lower.ends_with(".tgz")
+        || lower.ends_with(".tar.xz")
+        || lower.ends_with(".zip")
+        || lower.ends_with(".7z")
+    {
+        return Err(anyhow!(
+            "'{path}' is an archive, not a sing-box executable. Extract it and point to the file named 'sing-box' inside the archive."
+        ));
     }
 
     let guide = setup_guide();

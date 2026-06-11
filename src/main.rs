@@ -1617,8 +1617,7 @@ mod tests {
             ),
         ];
         let mut counts = HashMap::from([("vless://slow@example.com:443".to_string(), 2)]);
-        let previous_top_n =
-            HashSet::from(["vless://slow@example.com:443".to_string()]);
+        let previous_top_n = HashSet::from(["vless://slow@example.com:443".to_string()]);
 
         apply_stability_ranking(&mut ranked, &mut counts, &previous_top_n, true);
 
@@ -1640,8 +1639,7 @@ mod tests {
             ),
         ];
         let mut counts = HashMap::from([("vless://slow@example.com:443".to_string(), 2)]);
-        let previous_top_n =
-            HashSet::from(["vless://slow@example.com:443".to_string()]);
+        let previous_top_n = HashSet::from(["vless://slow@example.com:443".to_string()]);
 
         apply_stability_ranking(&mut ranked, &mut counts, &previous_top_n, false);
 
@@ -1667,8 +1665,7 @@ mod tests {
             ),
         ];
         let mut counts = HashMap::from([("vless://failed@example.com:443".to_string(), 5)]);
-        let previous_top_n =
-            HashSet::from(["vless://failed@example.com:443".to_string()]);
+        let previous_top_n = HashSet::from(["vless://failed@example.com:443".to_string()]);
 
         apply_stability_ranking(&mut ranked, &mut counts, &previous_top_n, true);
 

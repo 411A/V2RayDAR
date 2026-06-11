@@ -8,6 +8,7 @@ pub const APP_NAME: &str = "V2RayDAR";
 pub const APP_DATA_DIR_NAME: &str = "v2raydar_data";
 pub const CACHE_DIR_NAME: &str = "cache";
 pub const CACHE_METADATA_FILE_NAME: &str = "metadata.json";
+pub const STABLE_TOP_CACHE_FILE_NAME: &str = "stable_top.json";
 pub const CONFIG_FILE_NAME: &str = "configs.yaml";
 pub const FIREWALL_STATE_FILE_NAME: &str = ".v2raydar-firewall.json";
 pub const LEGACY_APP_MARKER_FILE_NAME: &str = ".v2raydar";
@@ -41,7 +42,6 @@ pub const DEFAULT_ACCEPTED_STATUSES: &[u16] = &[204, 200];
 pub const DEFAULT_DOWNLOAD_BYTES_LIMIT: usize = 1_048_576;
 
 pub const MAX_TUI_LOGS: usize = 512;
-pub const STABLE_WORKING_APPEARANCES: u32 = 2;
 
 pub const DEFAULT_LOG_FILTER_PLAIN: &str = "v2raydar=warn,tower_http=warn";
 pub const DEFAULT_LOG_FILTER_VERBOSE: &str = "v2raydar=info,tower_http=warn";
@@ -183,7 +183,7 @@ pub const SETTING_GUIDES: &[SettingGuide] = &[
     SettingGuide {
         key: "prioritize_stability",
         label: "Stable ranking",
-        help: "false favors any quick working config. true promotes configs seen working in 2+ refreshes.",
+        help: "true keeps the previous run's top-N at the front (re-pinged first; held even if a new low-ping config appears). false simply prefers any working low-ping config.",
     },
     SettingGuide {
         key: "scan_all_configs",

@@ -639,14 +639,14 @@ fn probe_stop_reason(
     let required_previous = second_half.min(policy.previous_working_uris.len());
     if found_previous >= required_previous {
         return Some(format!(
-            "Early stop: found {reachable}/{} working configs, including {found_previous}/{required_previous} seen working in the previous run",
+            "Early stop: found {reachable}/{} working configs, including {found_previous}/{required_previous} kept from the previous run's saved top-N",
             policy.top_n
         ));
     }
 
     if state.stability_search_exhausted {
         return Some(format!(
-            "Early stop: previous-run stability search finished; filling {} configs by active HTTP results",
+            "Early stop: previous-run top-N stability search finished; filling {} configs by active HTTP results",
             policy.top_n
         ));
     }

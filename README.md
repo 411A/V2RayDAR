@@ -96,7 +96,7 @@ Windows users replace `v2raydar` with `v2raydar.exe`. On macOS open the bundled 
 | `top_n` | `10` | Number of working configs published to clients. |
 | `refresh_seconds` | `300` | Auto-refresh interval in seconds; `0` disables the timer. |
 | `encoded_subscription` | `true` | Returns `/subscription` as base64 (v2rayN / v2rayNG friendly). |
-| `prioritize_stability` | `true` | Prefers configs seen working across multiple refreshes. |
+| `prioritize_stability` | `true` | Re-pings the previous run's saved top-N first and keeps them at the front, even if new low-ping configs appear. When `false`, prefers any working low-ping config. |
 | `scan_all_configs` | `false` | When `true`, validates every loaded config instead of stopping after enough have been confirmed. |
 | `fetch_timeout_ms` | `30000` | Per-source fetch timeout. |
 | `fetch_concurrency` | `8` | Subscription sources fetched in parallel. |

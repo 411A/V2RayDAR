@@ -36,14 +36,14 @@ use crate::{
         APP_DATA_DIR_NAME, APP_NAME, CACHE_DIR_NAME, CACHE_METADATA_FILE_NAME, CONFIG_FILE_NAME,
         CONFIG_WATCH_INTERVAL, DEFAULT_LOG_FILTER_PLAIN, DEFAULT_LOG_FILTER_TUI,
         DEFAULT_LOG_FILTER_VERBOSE, FIREWALL_STATE_FILE_NAME, LEGACY_APP_MARKER_FILE_NAME,
-        LEGACY_CACHE_MARKER_FILE_NAME, LOCALHOST_IP, MAX_TUI_LOGS, SING_BOX_DOWNLOAD_URL,
-        STABLE_TOP_CACHE_FILE_NAME,
+        LEGACY_CACHE_MARKER_FILE_NAME, LOCALHOST_IP, MAX_TUI_LOGS, STABLE_TOP_CACHE_FILE_NAME,
+        sing_box_download_url,
     },
     model::{Candidate, ProbeStopPolicy, ProgressEvent, RankedConfig, RuntimeConfig, RuntimeState},
     paths::AppPaths,
     probe::probe_candidates,
     server::serve,
-    sing_box::{active_probe_needs_setup, setup_guide},
+    sing_box::{active_probe_needs_setup, recommended_version, setup_guide},
     subscription::{
         FetchFailure, FetchOutcome, load_cached_candidates, load_candidates_with_cache,
         retry_failed_sources_with_proxy,
@@ -473,7 +473,8 @@ fn print_sing_box_setup_required(paths: &AppPaths) {
     println!("V2RayDAR active probing requires sing-box before it can refresh.");
     println!("Config: {}", paths.config_path.display());
     println!("Detected OS: {}", guide.platform);
-    println!("Download: {}", SING_BOX_DOWNLOAD_URL);
+    println!("Recommended sing-box version: v{}", recommended_version());
+    println!("Download: {}", sing_box_download_url());
     println!("Choose the release asset: {}", guide.release_asset);
     println!("Use the executable named: {}", guide.executable_name);
     println!("Set probe.sing_box_path to the executable path or a working PATH command.");

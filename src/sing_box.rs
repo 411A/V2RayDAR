@@ -5,17 +5,17 @@ use tokio::process::Command;
 
 use crate::{
     config::{AppConfig, ProbeMode},
-    constants::SING_BOX_DOWNLOAD_URL,
+    constants::{SING_BOX_VERSION, sing_box_download_url},
     paths::AppPaths,
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct SetupGuide {
     pub platform: &'static str,
-    pub release_asset: &'static str,
+    pub release_asset: String,
     pub executable_name: &'static str,
     pub example_paths: &'static [&'static str],
-    pub notes: &'static [&'static str],
+    pub notes: Vec<String>,
 }
 
 pub async fn active_probe_needs_setup(config: &AppConfig, _paths: &AppPaths) -> bool {
@@ -39,17 +39,18 @@ fn should_setup_path(value: &str) -> bool {
 pub fn setup_guide() -> SetupGuide {
     SetupGuide {
         platform: "Windows",
-        release_asset: "sing-box-{version}-windows-amd64.zip",
+        release_asset: format!("sing-box-{SING_BOX_VERSION}-windows-amd64.zip"),
         executable_name: "sing-box.exe",
         example_paths: &[
             r"C:\Tools\sing-box\sing-box.exe",
             r"C:\Program Files\v2rayN\sing-box.exe",
             "sing-box.exe",
         ],
-        notes: &[
-            "Use the .exe file inside the Windows zip.",
-            "If you already use v2rayN, its installation folder may already contain sing-box.exe.",
-            "A command name is accepted only when it works from your terminal PATH.",
+        notes: vec![
+            "Use the .exe file inside the Windows zip.".to_string(),
+            "If you already use v2rayN, its installation folder may already contain sing-box.exe."
+                .to_string(),
+            "A command name is accepted only when it works from your terminal PATH.".to_string(),
         ],
     }
 }
@@ -58,7 +59,9 @@ pub fn setup_guide() -> SetupGuide {
 pub fn setup_guide() -> SetupGuide {
     SetupGuide {
         platform: "macOS",
-        release_asset: "sing-box-{version}-darwin-arm64.tar.gz for Apple Silicon, or darwin-amd64 for Intel",
+        release_asset: format!(
+            "sing-box-{SING_BOX_VERSION}-darwin-arm64.tar.gz for Apple Silicon, or darwin-amd64 for Intel"
+        ),
         executable_name: "sing-box",
         example_paths: &[
             "/opt/homebrew/bin/sing-box",
@@ -66,10 +69,11 @@ pub fn setup_guide() -> SetupGuide {
             "/Users/you/Downloads/sing-box/sing-box",
             "sing-box",
         ],
-        notes: &[
-            "Use the sing-box file inside the Darwin archive, not a Windows .exe.",
-            "After extracting manually, run chmod +x sing-box if the file is not executable.",
-            "A command name is accepted only when it works from your terminal PATH.",
+        notes: vec![
+            "Use the sing-box file inside the Darwin archive, not a Windows .exe.".to_string(),
+            "After extracting manually, run chmod +x sing-box if the file is not executable."
+                .to_string(),
+            "A command name is accepted only when it works from your terminal PATH.".to_string(),
         ],
     }
 }
@@ -78,17 +82,18 @@ pub fn setup_guide() -> SetupGuide {
 pub fn setup_guide() -> SetupGuide {
     SetupGuide {
         platform: "Termux / Android",
-        release_asset: "sing-box-{version}-android-arm64.tar.gz for most phones, or the Android archive matching your CPU",
+        release_asset: format!("Termux package sing-box={SING_BOX_VERSION}"),
         executable_name: "sing-box",
         example_paths: &[
             "/data/data/com.termux/files/usr/bin/sing-box",
             "$HOME/bin/sing-box",
             "sing-box",
         ],
-        notes: &[
-            "Use an Android archive, not a Linux desktop archive and not a Windows .exe.",
-            "After extracting manually, run chmod +x sing-box if the file is not executable.",
-            "A command name is accepted only when it works from your Termux PATH.",
+        notes: vec![
+            format!("Install with: pkg install sing-box={SING_BOX_VERSION}"),
+            "Use the Termux package path first; GitHub Android archives are only a fallback."
+                .to_string(),
+            "A command name is accepted only when it works from your Termux PATH.".to_string(),
         ],
     }
 }
@@ -97,7 +102,9 @@ pub fn setup_guide() -> SetupGuide {
 pub fn setup_guide() -> SetupGuide {
     SetupGuide {
         platform: "Linux",
-        release_asset: "sing-box-{version}-linux-amd64.tar.gz for x86_64, or linux-arm64 for ARM64",
+        release_asset: format!(
+            "sing-box-{SING_BOX_VERSION}-linux-amd64.tar.gz for x86_64, or linux-arm64 for ARM64"
+        ),
         executable_name: "sing-box",
         example_paths: &[
             "/usr/local/bin/sing-box",
@@ -105,11 +112,12 @@ pub fn setup_guide() -> SetupGuide {
             "/home/you/bin/sing-box",
             "sing-box",
         ],
-        notes: &[
-            "Use the sing-box file inside the Linux archive, not the archive itself.",
-            "WSL2 Ubuntu is Linux: extract the Linux archive and point to the extracted 'sing-box' binary.",
-            "After extracting manually, run chmod +x sing-box if the file is not executable.",
-            "A command name is accepted only when it works from your terminal PATH.",
+        notes: vec![
+            "Use the sing-box file inside the Linux archive, not the archive itself.".to_string(),
+            "WSL2 Ubuntu is Linux: extract the Linux archive and point to the extracted 'sing-box' binary.".to_string(),
+            "After extracting manually, run chmod +x sing-box if the file is not executable."
+                .to_string(),
+            "A command name is accepted only when it works from your terminal PATH.".to_string(),
         ],
     }
 }
@@ -118,14 +126,18 @@ pub fn setup_guide() -> SetupGuide {
 pub fn setup_guide() -> SetupGuide {
     SetupGuide {
         platform: "this operating system",
-        release_asset: "the archive matching your operating system and CPU",
+        release_asset: "the archive matching your operating system and CPU".to_string(),
         executable_name: "sing-box",
         example_paths: &["/full/path/to/sing-box", "sing-box"],
-        notes: &[
-            "Use the executable file for your operating system, not a Windows .exe unless you are on Windows.",
-            "A command name is accepted only when it works from your terminal PATH.",
+        notes: vec![
+            "Use the executable file for your operating system, not a Windows .exe unless you are on Windows.".to_string(),
+            "A command name is accepted only when it works from your terminal PATH.".to_string(),
         ],
     }
+}
+
+pub fn recommended_version() -> &'static str {
+    SING_BOX_VERSION
 }
 
 pub fn normalize_path(value: &str) -> String {
@@ -159,27 +171,40 @@ pub async fn verify_path(path: &str) -> Result<()> {
     }
 
     let guide = setup_guide();
-    let status = Command::new(&path)
+    let output = Command::new(&path)
         .arg("version")
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+        .output()
         .await
         .with_context(|| {
             format!(
-                "unable to run '{path}'. On {}, use '{}' from {}; enter its full path or a PATH command. Download: {SING_BOX_DOWNLOAD_URL}",
-                guide.platform, guide.executable_name, guide.release_asset
+                "unable to run '{path}'. On {}, use '{}' from {}; enter its full path or a PATH command. Download: {}",
+                guide.platform,
+                guide.executable_name,
+                guide.release_asset,
+                sing_box_download_url()
             )
         })?;
 
-    if status.success() {
-        Ok(())
-    } else {
-        Err(anyhow!(
-            "'{path} version' exited with {status}; enter a valid sing-box executable path"
-        ))
+    if !output.status.success() {
+        return Err(anyhow!(
+            "'{path} version' exited with {}; enter a valid sing-box executable path",
+            output.status
+        ));
     }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let reported_version = format!("{stdout}\n{stderr}");
+    if !reported_version.contains(SING_BOX_VERSION) {
+        tracing::warn!(
+            sing_box_path = %path,
+            recommended_version = SING_BOX_VERSION,
+            "sing-box version differs from the recommended embedded version"
+        );
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -204,5 +229,7 @@ mod tests {
 
         #[cfg(not(target_os = "windows"))]
         assert_eq!(guide.executable_name, "sing-box");
+
+        assert!(guide.release_asset.contains(SING_BOX_VERSION));
     }
 }

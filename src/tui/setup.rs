@@ -11,7 +11,7 @@ use std::path::Path;
 
 use crate::{
     config::AppConfig,
-    constants::{SING_BOX_DOWNLOAD_URL, TUI_SETUP_POLL_INTERVAL},
+    constants::{TUI_SETUP_POLL_INTERVAL, sing_box_download_url},
     paths::AppPaths,
     sing_box,
 };
@@ -114,11 +114,15 @@ fn draw(frame: &mut Frame<'_>, state: &SetupState, paths: &AppPaths) {
     let guide = sing_box::setup_guide();
     let mut lines = vec![
         Line::from(format!("Detected OS: {}", guide.platform)),
+        Line::from(format!(
+            "Recommended sing-box version: v{}",
+            sing_box::recommended_version()
+        )),
         Line::from(format!("Use executable: {}", guide.executable_name)),
         Line::from(format!("Download asset: {}", guide.release_asset)),
-        Line::from("Download latest release:"),
+        Line::from("Download recommended release:"),
         Line::from(Span::styled(
-            SING_BOX_DOWNLOAD_URL,
+            sing_box_download_url(),
             Style::default().fg(Color::Yellow),
         )),
         Line::from(""),

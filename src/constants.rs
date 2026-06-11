@@ -62,7 +62,12 @@ pub const SING_BOX_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 pub const SING_BOX_CONFIG_FILE_PREFIX: &str = "v2raydar-sing-box";
 pub const SING_BOX_INBOUND_TAG_PREFIX: &str = "mixed-in";
 pub const SING_BOX_OUTBOUND_TAG_PREFIX: &str = "proxy";
-pub const SING_BOX_DOWNLOAD_URL: &str = "https://github.com/SagerNet/sing-box/releases/latest";
+pub const SING_BOX_VERSION: &str = "1.13.13";
+pub const SING_BOX_RELEASE_URL_PREFIX: &str = "https://github.com/SagerNet/sing-box/releases/tag/v";
+
+pub fn sing_box_download_url() -> String {
+    format!("{SING_BOX_RELEASE_URL_PREFIX}{SING_BOX_VERSION}")
+}
 
 pub const HTTP_EXCHANGE_OVERHEAD_BYTES: u64 = 1024;
 pub const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;

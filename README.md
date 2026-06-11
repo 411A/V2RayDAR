@@ -17,15 +17,138 @@
 </p>
 
 
-## One-line setup (idempotent, OS-aware, latest V2RayDAR + sing-box v1.13.13)
+## Copy-paste setup (latest V2RayDAR + recommended sing-box)
 
-Copy and paste the script for your OS into the terminal to download everything needed and run it.
+Copy and paste the script for your OS into the terminal. These scripts fetch the latest V2RayDAR release, read its embedded `SING_BOX_VERSION` from `src/constants.rs`, install or download that recommended `sing-box` release by default, and write `probe.sing_box_path` into `configs.yaml` so the printed `--no-tui` command can start without the interactive setup prompt. Set `V2RAYDAR_SING_BOX_VERSION` before running a script only if you intentionally want a different default `sing-box` version, or set `V2RAYDAR_SING_BOX_PATH` to reuse a specific working `sing-box` binary.
 
 <details>
 <summary>Windows PowerShell</summary>
 
 ```powershell
-$ErrorActionPreference='Stop'; $hdr=@{'User-Agent'='Mozilla/5.0'}; $root=Join-Path $env:LOCALAPPDATA 'V2RayDAR'; New-Item -ItemType Directory -Force $root|Out-Null; $arch=([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLower()); $arch=if($arch -match 'arm64'){'arm64'}elseif($arch -match 'x64|amd64'){'amd64'}else{'386'}; $sbRel=Invoke-RestMethod -Headers $hdr 'https://api.github.com/repos/SagerNet/sing-box/releases/tags/v1.13.13'; $sbAsset=$sbRel.assets|Where-Object{$_.name -match '(?i)windows' -and $_.name -match $arch -and $_.name -match '(\.zip|\.exe)$'}|Select-Object -First 1; $sbRoot=Join-Path $root ('sing-box\' + $sbRel.tag_name.TrimStart('v')); $sbFile=Join-Path $sbRoot $sbAsset.name; if(!(Test-Path $sbFile)){New-Item -ItemType Directory -Force $sbRoot|Out-Null; Invoke-WebRequest $sbAsset.browser_download_url -OutFile $sbFile}; if($sbFile -match '\.zip$' -and !(Get-ChildItem $sbRoot -Recurse -Filter 'sing-box.exe' -ErrorAction SilentlyContinue)){Expand-Archive $sbFile -DestinationPath $sbRoot -Force}; $sbExe=(Get-ChildItem $sbRoot -Recurse -Filter 'sing-box.exe' | Select-Object -First 1).FullName; $vrRel=Invoke-RestMethod -Headers $hdr 'https://api.github.com/repos/411A/V2RayDAR/releases/latest'; $vrAsset=$vrRel.assets|Where-Object{$_.name -match '(?i)windows' -and $_.name -match $arch -and $_.name -match '(\.zip|\.exe)$'}|Select-Object -First 1; $vrRoot=Join-Path $root ('v2raydar\' + $vrRel.tag_name.TrimStart('v')); $vrFile=Join-Path $vrRoot $vrAsset.name; if(!(Test-Path $vrFile)){New-Item -ItemType Directory -Force $vrRoot|Out-Null; Invoke-WebRequest $vrAsset.browser_download_url -OutFile $vrFile}; if($vrFile -match '\.zip$' -and !(Get-ChildItem $vrRoot -Recurse -Filter '*.exe' -ErrorAction SilentlyContinue)){Expand-Archive $vrFile -DestinationPath $vrRoot -Force}; $vrRun=(Get-ChildItem $vrRoot -Recurse -Filter '*.exe' | Select-Object -First 1).FullName; Write-Host "sing-box=$sbExe"; Write-Host "v2raydar=$vrRun"; Write-Host "run: & `"$vrRun`" --no-tui"
+$ErrorActionPreference = 'Stop'
+$Headers = @{ 'User-Agent' = 'Mozilla/5.0' }
+$Base = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { Join-Path $HOME 'AppData\Local' }
+$Root = Join-Path $Base 'V2RayDAR'
+New-Item -ItemType Directory -Force $Root | Out-Null
+
+function Get-EmbeddedSingBoxVersion([string]$V2RayDARTag) {
+    if ($env:V2RAYDAR_SING_BOX_VERSION) {
+        return $env:V2RAYDAR_SING_BOX_VERSION.Trim()
+    }
+    $constantsUrl = "https://raw.githubusercontent.com/411A/V2RayDAR/$V2RayDARTag/src/constants.rs"
+    $constants = (Invoke-WebRequest -Headers $Headers -Uri $constantsUrl).Content
+    $match = [regex]::Match($constants, 'pub\s+const\s+SING_BOX_VERSION\s*:\s*&str\s*=\s*"([^"]+)"')
+    if (!$match.Success) {
+        throw "Unable to read SING_BOX_VERSION from $constantsUrl"
+    }
+    return $match.Groups[1].Value
+}
+
+function Test-NameToken([string]$Name, [string]$Token) {
+    return $Name -match ('(^|[-_.])' + [regex]::Escape($Token) + '($|[-_.])')
+}
+
+function Select-ReleaseAsset($Release, [string]$Platform, [string[]]$ArchTokens, [string[]]$Suffixes) {
+    foreach ($arch in $ArchTokens) {
+        foreach ($suffix in $Suffixes) {
+            foreach ($asset in $Release.assets) {
+                $name = $asset.name.ToLowerInvariant()
+                if ($name -match '\.(sha256|sig|asc|txt)$') { continue }
+                if ($name -notmatch $Platform) { continue }
+                if (-not (Test-NameToken $name $arch)) { continue }
+                if ($suffix -and -not $name.EndsWith($suffix)) { continue }
+                return $asset
+            }
+        }
+    }
+    throw "No $Platform asset found for architecture token(s): $($ArchTokens -join ', ')"
+}
+
+function Save-ReleaseAsset($Asset, [string]$Directory) {
+    New-Item -ItemType Directory -Force $Directory | Out-Null
+    $file = Join-Path $Directory $Asset.name
+    if (!(Test-Path $file) -or (Get-Item $file).Length -lt 1024) {
+        Invoke-WebRequest -Headers $Headers -Uri $Asset.browser_download_url -OutFile $file
+    }
+    return $file
+}
+
+function Test-SingBoxExecutable([string]$SingBoxPath) {
+    if ([string]::IsNullOrWhiteSpace($SingBoxPath)) {
+        return $false
+    }
+    try {
+        & $SingBoxPath version *> $null
+        return $LASTEXITCODE -eq 0
+    } catch {
+        return $false
+    }
+}
+
+function Get-ConfiguredSingBoxPath {
+    if (!$env:V2RAYDAR_SING_BOX_PATH) {
+        return $null
+    }
+    $configured = $env:V2RAYDAR_SING_BOX_PATH.Trim()
+    if (!(Test-SingBoxExecutable $configured)) {
+        throw "V2RAYDAR_SING_BOX_PATH does not run as a sing-box executable: $configured"
+    }
+    return $configured
+}
+
+function Set-SingBoxPathInConfig([string]$ConfigPath, [string]$SingBoxPath, [string]$V2RayDARTag) {
+    New-Item -ItemType Directory -Force (Split-Path -Parent $ConfigPath) | Out-Null
+    if (!(Test-Path $ConfigPath)) {
+        $template = "https://raw.githubusercontent.com/411A/V2RayDAR/$V2RayDARTag/configs.example.yaml"
+        Invoke-WebRequest -Headers $Headers -Uri $template -OutFile $ConfigPath
+    }
+    $yamlValue = "'" + ($SingBoxPath -replace "'", "''") + "'"
+    $text = Get-Content -Raw $ConfigPath
+    if ($text -match '(?m)^\s*sing_box_path\s*:') {
+        $text = [regex]::Replace($text, '(?m)^(\s*sing_box_path\s*:\s*).*$', ('$1' + $yamlValue), 1)
+    } elseif ($text -match '(?m)^probe\s*:\s*$') {
+        $text = [regex]::Replace($text, '(?m)^(probe\s*:\s*)$', ('$1' + "`r`n  sing_box_path: $yamlValue"), 1)
+    } else {
+        $text += "`r`nprobe:`r`n  mode: active`r`n  sing_box_path: $yamlValue`r`n"
+    }
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($ConfigPath, $text, $utf8NoBom)
+}
+
+$osArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
+$singBoxArch = if ($osArch -match 'arm64') { 'arm64' } elseif ($osArch -match 'x64|amd64') { 'amd64' } else { '386' }
+$v2raydarArch = if ($osArch -match 'arm64') { @('arm64', 'x86_64') } elseif ($osArch -match 'x64|amd64') { @('x86_64', 'amd64') } else { @('386', 'x86') }
+
+$vrRel = Invoke-RestMethod -Headers $Headers 'https://api.github.com/repos/411A/V2RayDAR/releases/latest'
+$SingBoxVersion = Get-EmbeddedSingBoxVersion $vrRel.tag_name
+$sbExe = Get-ConfiguredSingBoxPath
+if (!$sbExe) {
+    $sbRel = Invoke-RestMethod -Headers $Headers "https://api.github.com/repos/SagerNet/sing-box/releases/tags/v$SingBoxVersion"
+    $sbAsset = Select-ReleaseAsset $sbRel 'windows' @($singBoxArch) @('.zip', '.exe')
+    $sbRoot = Join-Path $Root "sing-box\$SingBoxVersion"
+    $sbFile = Save-ReleaseAsset $sbAsset $sbRoot
+    if ($sbFile.ToLowerInvariant().EndsWith('.zip') -and !(Get-ChildItem $sbRoot -Recurse -Filter 'sing-box.exe' -ErrorAction SilentlyContinue)) {
+        Expand-Archive $sbFile -DestinationPath $sbRoot -Force
+    }
+    $sbExe = if ($sbFile.ToLowerInvariant().EndsWith('.exe')) { $sbFile } else { (Get-ChildItem $sbRoot -Recurse -Filter 'sing-box.exe' | Select-Object -First 1).FullName }
+    if (!$sbExe) { throw 'sing-box.exe was not found after download/extract.' }
+}
+
+$vrAsset = Select-ReleaseAsset $vrRel 'windows' $v2raydarArch @('.exe', '.zip')
+$vrRoot = Join-Path $Root "v2raydar\$($vrRel.tag_name.TrimStart('v'))"
+$vrFile = Save-ReleaseAsset $vrAsset $vrRoot
+if ($vrFile.ToLowerInvariant().EndsWith('.zip') -and !(Get-ChildItem $vrRoot -Recurse -Filter 'v2raydar*.exe' -ErrorAction SilentlyContinue)) {
+    Expand-Archive $vrFile -DestinationPath $vrRoot -Force
+}
+$vrRun = if ($vrFile.ToLowerInvariant().EndsWith('.exe')) { $vrFile } else { (Get-ChildItem $vrRoot -Recurse -Filter 'v2raydar*.exe' | Select-Object -First 1).FullName }
+if (!$vrRun) { throw 'V2RayDAR executable was not found after download/extract.' }
+
+$config = Join-Path $Root 'v2raydar_data\configs.yaml'
+Set-SingBoxPathInConfig $config $sbExe $vrRel.tag_name
+Write-Host "sing-box=$sbExe"
+Write-Host "v2raydar=$vrRun"
+Write-Host "config=$config"
+Write-Host "run: & `"$vrRun`" --no-tui"
 ```
 
 </details>
@@ -34,7 +157,179 @@ $ErrorActionPreference='Stop'; $hdr=@{'User-Agent'='Mozilla/5.0'}; $root=Join-Pa
 <summary>Linux</summary>
 
 ```bash
-python3 -c "import json,os,platform,stat,tarfile,urllib.request,zipfile; home=os.path.expanduser('~'); root=os.path.join(os.environ.get('XDG_DATA_HOME',os.path.join(home,'.local','share')),'V2RayDAR'); os.makedirs(root,exist_ok=True); m=platform.machine().lower(); arch='amd64' if m in ('x86_64','amd64') else 'arm64' if m in ('aarch64','arm64') else 'armv7' if m.startswith(('armv7','armv8l','armv8')) else '386' if m in ('i386','i686') else m; j=lambda u: json.load(urllib.request.urlopen(urllib.request.Request(u,headers={'User-Agent':'Mozilla/5.0'}))); dl=lambda u,p: (os.path.exists(p) or urllib.request.urlretrieve(u,p)); sb=j('https://api.github.com/repos/SagerNet/sing-box/releases/tags/v1.13.13'); sb_a=next(x for x in sb['assets'] if 'linux' in x['name'].lower() and arch in x['name'].lower()); sb_dir=os.path.join(root,'sing-box',sb['tag_name'].lstrip('v')); os.makedirs(sb_dir,exist_ok=True); sb_file=os.path.join(sb_dir,sb_a['name']); dl(sb_a['browser_download_url'],sb_file); (os.path.exists(os.path.join(sb_dir,'sing-box')) or (tarfile.open(sb_file,'r:gz').extractall(sb_dir) if sb_file.endswith(('.tar.gz','.tgz')) else zipfile.ZipFile(sb_file).extractall(sb_dir))); sb_bin=next(os.path.join(dp,f) for dp,_,fs in os.walk(sb_dir) for f in fs if f=='sing-box'); vr=j('https://api.github.com/repos/411A/V2RayDAR/releases/latest'); vr_a=next(x for x in vr['assets'] if 'linux' in x['name'].lower() and arch in x['name'].lower()); vr_dir=os.path.join(root,'v2raydar',vr['tag_name'].lstrip('v')); os.makedirs(vr_dir,exist_ok=True); vr_file=os.path.join(vr_dir,vr_a['name']); dl(vr_a['browser_download_url'],vr_file); vr_bin=vr_file; (vr_file.endswith(('.zip','.tar.gz','.tgz')) and (tarfile.open(vr_file,'r:gz').extractall(vr_dir) if vr_file.endswith(('.tar.gz','.tgz')) else zipfile.ZipFile(vr_file).extractall(vr_dir))); vr_bin=next((os.path.join(dp,f) for dp,_,fs in os.walk(vr_dir) for f in fs if 'v2raydar' in f.lower() and os.access(os.path.join(dp,f),os.X_OK)),vr_file); os.chmod(vr_bin,os.stat(vr_bin).st_mode|stat.S_IEXEC); print('sing-box='+sb_bin); print('v2raydar='+vr_bin); print('run='+vr_bin+' --no-tui')"
+python3 << 'EOF'
+import json, os, platform, re, shlex, stat, subprocess, tarfile, urllib.request, zipfile
+
+home = os.path.expanduser('~')
+root = os.path.join(os.environ.get('XDG_DATA_HOME', os.path.join(home, '.local', 'share')), 'V2RayDAR')
+os.makedirs(root, exist_ok=True)
+
+def j(url):
+    return json.load(urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})))
+
+def dl(url, path):
+    if os.path.exists(path) and os.path.getsize(path) > 1024:
+        return path
+    urllib.request.urlretrieve(url, path)
+    return path
+
+def token(name, value):
+    return re.search(r'(^|[-_.])' + re.escape(value) + r'($|[-_.])', name) is not None
+
+def embedded_sing_box_version(tag):
+    override = os.environ.get('V2RAYDAR_SING_BOX_VERSION', '').strip()
+    if override:
+        return override
+    constants_url = 'https://raw.githubusercontent.com/411A/V2RayDAR/' + tag + '/src/constants.rs'
+    data = urllib.request.urlopen(urllib.request.Request(constants_url, headers={'User-Agent': 'Mozilla/5.0'})).read().decode('utf-8')
+    match = re.search(r'pub\s+const\s+SING_BOX_VERSION\s*:\s*&str\s*=\s*"([^"]+)"', data)
+    if not match:
+        raise SystemExit('Unable to read SING_BOX_VERSION from ' + constants_url)
+    return match.group(1)
+
+def asset_for(release, platforms, arch_tokens, suffixes):
+    for arch in arch_tokens:
+        for suffix in suffixes:
+            for asset in release.get('assets', []):
+                name = asset['name'].lower()
+                if name.endswith(('.sha256', '.sig', '.asc', '.txt')):
+                    continue
+                if not any(platform in name for platform in platforms):
+                    continue
+                if arch and not token(name, arch):
+                    continue
+                if suffix and not name.endswith(suffix):
+                    continue
+                return asset
+    return None
+
+def extract(path, dest):
+    with open(path, 'rb') as fp:
+        magic = fp.read(2)
+    if magic == b'PK':
+        with zipfile.ZipFile(path) as z:
+            z.extractall(dest)
+            for info in z.infolist():
+                mode = (info.external_attr >> 16) & 0o777
+                target = os.path.join(dest, info.filename)
+                if mode and os.path.exists(target):
+                    os.chmod(target, mode)
+    else:
+        with tarfile.open(path, 'r:*') as t:
+            try:
+                t.extractall(dest, filter='data')
+            except TypeError:
+                t.extractall(dest)
+
+def chmod_x(path):
+    os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+def find_file(base, needle):
+    for dp, _, files in os.walk(base):
+        for filename in files:
+            lower = filename.lower()
+            if lower.endswith(('.sha256', '.zip', '.tar.gz', '.tgz')):
+                continue
+            if needle in lower:
+                return os.path.join(dp, filename)
+    return None
+
+def sing_box_version(path):
+    try:
+        return subprocess.check_output([path, 'version'], text=True, stderr=subprocess.STDOUT, timeout=10)
+    except Exception:
+        return ''
+
+def configured_sing_box_path():
+    path = os.environ.get('V2RAYDAR_SING_BOX_PATH', '').strip()
+    if not path:
+        return None
+    if not sing_box_version(path):
+        raise SystemExit('V2RAYDAR_SING_BOX_PATH does not run as a sing-box executable: ' + path)
+    return path
+
+def warn_if_not_recommended(path, recommended):
+    version = sing_box_version(path)
+    if version and recommended not in version:
+        print('Using sing-box from ' + path + '; recommended version is ' + recommended)
+
+def yaml_sq(value):
+    return "'" + value.replace("'", "''") + "'"
+
+def configure_config(tag, sing_box_path):
+    config_dir = os.path.join(root, 'v2raydar_data')
+    os.makedirs(config_dir, exist_ok=True)
+    config = os.path.join(config_dir, 'configs.yaml')
+    if not os.path.exists(config):
+        template = 'https://raw.githubusercontent.com/411A/V2RayDAR/' + tag + '/configs.example.yaml'
+        dl(template, config)
+    with open(config, 'r', encoding='utf-8') as fp:
+        text = fp.read()
+    value = yaml_sq(sing_box_path)
+    if re.search(r'(?m)^\s*sing_box_path\s*:', text):
+        text = re.sub(r'(?m)^(\s*sing_box_path\s*:\s*).*$', lambda m: m.group(1) + value, text, count=1)
+    elif re.search(r'(?m)^probe\s*:\s*$', text):
+        text = re.sub(r'(?m)^(probe\s*:\s*)$', lambda m: m.group(1) + '\n  sing_box_path: ' + value, text, count=1)
+    else:
+        text += '\nprobe:\n  mode: active\n  sing_box_path: ' + value + '\n'
+    with open(config, 'w', encoding='utf-8') as fp:
+        fp.write(text)
+    return config
+
+def source_dir(base):
+    return next((os.path.join(base, name) for name in os.listdir(base) if os.path.isdir(os.path.join(base, name)) and 'v2raydar' in name.lower()), base)
+
+m = platform.machine().lower()
+sb_arch = 'amd64' if m in ('x86_64', 'amd64') else 'arm64' if m in ('aarch64', 'arm64') else 'armv7' if m.startswith(('armv7', 'armv8l', 'armv8')) else '386' if m in ('i386', 'i686') else m
+vr_arch = ['x86_64', 'amd64'] if sb_arch == 'amd64' else [sb_arch]
+
+vr = j('https://api.github.com/repos/411A/V2RayDAR/releases/latest')
+SB_VERSION = embedded_sing_box_version(vr['tag_name'])
+sb_bin = configured_sing_box_path()
+if not sb_bin:
+    sb = j('https://api.github.com/repos/SagerNet/sing-box/releases/tags/v' + SB_VERSION)
+    sb_a = asset_for(sb, ['linux'], [sb_arch], ['.tar.gz', '.tgz', '.zip'])
+    if not sb_a:
+        raise SystemExit('No sing-box v' + SB_VERSION + ' Linux asset found for ' + sb_arch)
+    sb_dir = os.path.join(root, 'sing-box', SB_VERSION)
+    os.makedirs(sb_dir, exist_ok=True)
+    sb_file = dl(sb_a['browser_download_url'], os.path.join(sb_dir, sb_a['name']))
+    if not find_file(sb_dir, 'sing-box'):
+        extract(sb_file, sb_dir)
+    sb_bin = find_file(sb_dir, 'sing-box')
+    if not sb_bin:
+        raise SystemExit('sing-box was not found after extraction')
+    chmod_x(sb_bin)
+warn_if_not_recommended(sb_bin, SB_VERSION)
+
+vr_dir = os.path.join(root, 'v2raydar', vr['tag_name'].lstrip('v'))
+os.makedirs(vr_dir, exist_ok=True)
+vr_a = asset_for(vr, ['linux'], vr_arch, ['', '.tar.gz', '.tgz', '.zip'])
+config = configure_config(vr['tag_name'], sb_bin)
+
+if vr_a:
+    vr_file = dl(vr_a['browser_download_url'], os.path.join(vr_dir, vr_a['name']))
+    if vr_file.endswith(('.zip', '.tar.gz', '.tgz')):
+        extract(vr_file, vr_dir)
+        vr_bin = find_file(vr_dir, 'v2raydar')
+    else:
+        vr_bin = vr_file
+    if not vr_bin:
+        raise SystemExit('V2RayDAR binary was not found after download/extract')
+    chmod_x(vr_bin)
+    print('sing-box=' + sb_bin)
+    print('v2raydar=' + vr_bin)
+    print('config=' + config)
+    print('run: ' + shlex.quote(vr_bin) + ' --no-tui')
+else:
+    src_tgz = dl(vr['tarball_url'], os.path.join(vr_dir, 'src.tar.gz'))
+    extract(src_tgz, vr_dir)
+    src = source_dir(vr_dir)
+    print('sing-box=' + sb_bin)
+    print('v2raydar_source=' + src)
+    print('config=' + config)
+    print('run: cd ' + shlex.quote(src) + ' && cargo run --release -- --no-tui')
+EOF
 ```
 
 </details>
@@ -43,7 +338,195 @@ python3 -c "import json,os,platform,stat,tarfile,urllib.request,zipfile; home=os
 <summary>macOS</summary>
 
 ```bash
-python3 -c "import json,os,platform,stat,tarfile,urllib.request,zipfile; home=os.path.expanduser('~'); root=os.path.join(home,'Library','Application Support','V2RayDAR'); os.makedirs(root,exist_ok=True); m=platform.machine().lower(); arch='arm64' if m in ('aarch64','arm64') else 'amd64' if m in ('x86_64','amd64') else '386' if m in ('i386','i686') else m; j=lambda u: json.load(urllib.request.urlopen(urllib.request.Request(u,headers={'User-Agent':'Mozilla/5.0'}))); dl=lambda u,p: (os.path.exists(p) or urllib.request.urlretrieve(u,p)); sb=j('https://api.github.com/repos/SagerNet/sing-box/releases/tags/v1.13.13'); sb_a=next(x for x in sb['assets'] if ('darwin' in x['name'].lower() or 'macos' in x['name'].lower()) and (arch in x['name'].lower() or 'universal' in x['name'].lower())); sb_dir=os.path.join(root,'sing-box',sb['tag_name'].lstrip('v')); os.makedirs(sb_dir,exist_ok=True); sb_file=os.path.join(sb_dir,sb_a['name']); dl(sb_a['browser_download_url'],sb_file); (os.path.exists(os.path.join(sb_dir,'sing-box')) or (tarfile.open(sb_file,'r:gz').extractall(sb_dir) if sb_file.endswith(('.tar.gz','.tgz')) else zipfile.ZipFile(sb_file).extractall(sb_dir))); sb_bin=next(os.path.join(dp,f) for dp,_,fs in os.walk(sb_dir) for f in fs if f=='sing-box'); vr=j('https://api.github.com/repos/411A/V2RayDAR/releases/latest'); vr_a=next(x for x in vr['assets'] if ('macos' in x['name'].lower() or 'darwin' in x['name'].lower()) and (arch in x['name'].lower() or 'universal' in x['name'].lower())); vr_dir=os.path.join(root,'v2raydar',vr['tag_name'].lstrip('v')); os.makedirs(vr_dir,exist_ok=True); vr_file=os.path.join(vr_dir,vr_a['name']); dl(vr_a['browser_download_url'],vr_file); vr_bin=vr_file; (vr_file.endswith(('.zip','.tar.gz','.tgz')) and (tarfile.open(vr_file,'r:gz').extractall(vr_dir) if vr_file.endswith(('.tar.gz','.tgz')) else zipfile.ZipFile(vr_file).extractall(vr_dir))); app=next((os.path.join(dp,d) for dp,ds,_ in os.walk(vr_dir) for d in ds if d.endswith('.app')), None); vr_bin=app or next((os.path.join(dp,f) for dp,_,fs in os.walk(vr_dir) for f in fs if 'v2raydar' in f.lower() and os.access(os.path.join(dp,f),os.X_OK)),vr_file); os.chmod(vr_bin,os.stat(vr_bin).st_mode|stat.S_IEXEC) if os.path.isfile(vr_bin) else None; print('sing-box='+sb_bin); print('v2raydar='+vr_bin); print('run='+('open "'+vr_bin+'"' if vr_bin.endswith('.app') else vr_bin+' --no-tui'))"
+python3 << 'EOF'
+import json, os, platform, re, shlex, stat, subprocess, tarfile, urllib.request, zipfile
+
+home = os.path.expanduser('~')
+root = os.path.join(home, 'Library', 'Application Support', 'V2RayDAR')
+os.makedirs(root, exist_ok=True)
+
+def j(url):
+    return json.load(urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})))
+
+def dl(url, path):
+    if os.path.exists(path) and os.path.getsize(path) > 1024:
+        return path
+    urllib.request.urlretrieve(url, path)
+    return path
+
+def token(name, value):
+    return re.search(r'(^|[-_.])' + re.escape(value) + r'($|[-_.])', name) is not None
+
+def embedded_sing_box_version(tag):
+    override = os.environ.get('V2RAYDAR_SING_BOX_VERSION', '').strip()
+    if override:
+        return override
+    constants_url = 'https://raw.githubusercontent.com/411A/V2RayDAR/' + tag + '/src/constants.rs'
+    data = urllib.request.urlopen(urllib.request.Request(constants_url, headers={'User-Agent': 'Mozilla/5.0'})).read().decode('utf-8')
+    match = re.search(r'pub\s+const\s+SING_BOX_VERSION\s*:\s*&str\s*=\s*"([^"]+)"', data)
+    if not match:
+        raise SystemExit('Unable to read SING_BOX_VERSION from ' + constants_url)
+    return match.group(1)
+
+def asset_for(release, platforms, arch_tokens, suffixes):
+    for arch in arch_tokens:
+        for suffix in suffixes:
+            for asset in release.get('assets', []):
+                name = asset['name'].lower()
+                if name.endswith(('.sha256', '.sig', '.asc', '.txt')):
+                    continue
+                if not any(platform in name for platform in platforms):
+                    continue
+                if arch and not token(name, arch):
+                    continue
+                if suffix and not name.endswith(suffix):
+                    continue
+                return asset
+    return None
+
+def extract(path, dest):
+    with open(path, 'rb') as fp:
+        magic = fp.read(2)
+    if magic == b'PK':
+        with zipfile.ZipFile(path) as z:
+            z.extractall(dest)
+            for info in z.infolist():
+                mode = (info.external_attr >> 16) & 0o777
+                target = os.path.join(dest, info.filename)
+                if mode and os.path.exists(target):
+                    os.chmod(target, mode)
+    else:
+        with tarfile.open(path, 'r:*') as t:
+            try:
+                t.extractall(dest, filter='data')
+            except TypeError:
+                t.extractall(dest)
+
+def chmod_x(path):
+    os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+def find_file(base, needle):
+    for dp, _, files in os.walk(base):
+        for filename in files:
+            lower = filename.lower()
+            if lower.endswith(('.sha256', '.zip', '.tar.gz', '.tgz')):
+                continue
+            if needle in lower:
+                return os.path.join(dp, filename)
+    return None
+
+def sing_box_version(path):
+    try:
+        return subprocess.check_output([path, 'version'], text=True, stderr=subprocess.STDOUT, timeout=10)
+    except Exception:
+        return ''
+
+def configured_sing_box_path():
+    path = os.environ.get('V2RAYDAR_SING_BOX_PATH', '').strip()
+    if not path:
+        return None
+    if not sing_box_version(path):
+        raise SystemExit('V2RAYDAR_SING_BOX_PATH does not run as a sing-box executable: ' + path)
+    return path
+
+def warn_if_not_recommended(path, recommended):
+    version = sing_box_version(path)
+    if version and recommended not in version:
+        print('Using sing-box from ' + path + '; recommended version is ' + recommended)
+
+def find_app(base):
+    for dp, dirs, _ in os.walk(base):
+        for dirname in dirs:
+            if dirname.endswith('.app'):
+                return os.path.join(dp, dirname)
+    return None
+
+def yaml_sq(value):
+    return "'" + value.replace("'", "''") + "'"
+
+def configure_config(tag, sing_box_path):
+    config_dir = os.path.join(root, 'v2raydar_data')
+    os.makedirs(config_dir, exist_ok=True)
+    config = os.path.join(config_dir, 'configs.yaml')
+    if not os.path.exists(config):
+        template = 'https://raw.githubusercontent.com/411A/V2RayDAR/' + tag + '/configs.example.yaml'
+        dl(template, config)
+    with open(config, 'r', encoding='utf-8') as fp:
+        text = fp.read()
+    value = yaml_sq(sing_box_path)
+    if re.search(r'(?m)^\s*sing_box_path\s*:', text):
+        text = re.sub(r'(?m)^(\s*sing_box_path\s*:\s*).*$', lambda m: m.group(1) + value, text, count=1)
+    elif re.search(r'(?m)^probe\s*:\s*$', text):
+        text = re.sub(r'(?m)^(probe\s*:\s*)$', lambda m: m.group(1) + '\n  sing_box_path: ' + value, text, count=1)
+    else:
+        text += '\nprobe:\n  mode: active\n  sing_box_path: ' + value + '\n'
+    with open(config, 'w', encoding='utf-8') as fp:
+        fp.write(text)
+    return config
+
+def source_dir(base):
+    return next((os.path.join(base, name) for name in os.listdir(base) if os.path.isdir(os.path.join(base, name)) and 'v2raydar' in name.lower()), base)
+
+m = platform.machine().lower()
+arch = 'arm64' if m in ('aarch64', 'arm64') else 'amd64' if m in ('x86_64', 'amd64') else '386'
+vr_arch = ['universal', arch, 'x86_64' if arch == 'amd64' else arch]
+
+vr = j('https://api.github.com/repos/411A/V2RayDAR/releases/latest')
+SB_VERSION = embedded_sing_box_version(vr['tag_name'])
+sb_bin = configured_sing_box_path()
+if not sb_bin:
+    sb = j('https://api.github.com/repos/SagerNet/sing-box/releases/tags/v' + SB_VERSION)
+    sb_a = asset_for(sb, ['darwin', 'macos'], [arch], ['.tar.gz', '.tgz', '.zip'])
+    if not sb_a:
+        raise SystemExit('No sing-box v' + SB_VERSION + ' macOS asset found for ' + arch)
+    sb_dir = os.path.join(root, 'sing-box', SB_VERSION)
+    os.makedirs(sb_dir, exist_ok=True)
+    sb_file = dl(sb_a['browser_download_url'], os.path.join(sb_dir, sb_a['name']))
+    if not find_file(sb_dir, 'sing-box'):
+        extract(sb_file, sb_dir)
+    sb_bin = find_file(sb_dir, 'sing-box')
+    if not sb_bin:
+        raise SystemExit('sing-box was not found after extraction')
+    chmod_x(sb_bin)
+warn_if_not_recommended(sb_bin, SB_VERSION)
+
+vr_dir = os.path.join(root, 'v2raydar', vr['tag_name'].lstrip('v'))
+os.makedirs(vr_dir, exist_ok=True)
+vr_a = asset_for(vr, ['macos', 'darwin'], vr_arch, ['.zip', '.tar.gz', '.tgz', ''])
+config = configure_config(vr['tag_name'], sb_bin)
+
+if vr_a:
+    vr_file = dl(vr_a['browser_download_url'], os.path.join(vr_dir, vr_a['name']))
+    if vr_file.endswith(('.zip', '.tar.gz', '.tgz')):
+        extract(vr_file, vr_dir)
+    app = find_app(vr_dir)
+    if app:
+        run = os.path.join(app, 'Contents', 'MacOS', 'V2RayDAR')
+        if not os.path.exists(run):
+            run = find_file(app, 'v2raydar')
+        if not run:
+            raise SystemExit('V2RayDAR app launcher was not found after extraction')
+        chmod_x(run)
+        print('sing-box=' + sb_bin)
+        print('v2raydar=' + app)
+        print('config=' + config)
+        print('run: ' + shlex.quote(run) + ' --no-tui')
+    else:
+        run = find_file(vr_dir, 'v2raydar') or vr_file
+        chmod_x(run)
+        print('sing-box=' + sb_bin)
+        print('v2raydar=' + run)
+        print('config=' + config)
+        print('run: ' + shlex.quote(run) + ' --no-tui')
+else:
+    src_tgz = dl(vr['tarball_url'], os.path.join(vr_dir, 'src.tar.gz'))
+    extract(src_tgz, vr_dir)
+    src = source_dir(vr_dir)
+    print('sing-box=' + sb_bin)
+    print('v2raydar_source=' + src)
+    print('config=' + config)
+    print('run: cd ' + shlex.quote(src) + ' && cargo run --release -- --no-tui')
+EOF
 ```
 
 </details>
@@ -51,13 +534,185 @@ python3 -c "import json,os,platform,stat,tarfile,urllib.request,zipfile; home=os
 <details>
 <summary>Android / Termux</summary>
 
+Termux currently has no Android V2RayDAR release asset, so install the build toolchain and build the latest source locally. In Termux, the `rust` package provides Cargo; confirm `cargo --version` works before building.
+
 ```bash
-python3 -c "import json,os,platform,stat,tarfile,urllib.request,zipfile; home=os.path.expanduser('~'); root=os.path.join(home,'.local','share','V2RayDAR'); os.makedirs(root,exist_ok=True); m=platform.machine().lower(); arch='arm64-v8a' if m in ('aarch64','arm64') else 'armeabi-v7a' if m.startswith('armv7') else 'x86_64' if m in ('x86_64','amd64') else 'x86' if m in ('i386','i686') else m; j=lambda u: json.load(urllib.request.urlopen(urllib.request.Request(u,headers={'User-Agent':'Mozilla/5.0'}))); dl=lambda u,p: (os.path.exists(p) or urllib.request.urlretrieve(u,p)); sb=j('https://api.github.com/repos/SagerNet/sing-box/releases/tags/v1.13.13'); sb_a=next((x for x in sb['assets'] if ('android' in x['name'].lower() or 'termux' in x['name'].lower()) and arch in x['name'].lower() and not x['name'].lower().endswith('.apk')), None); sb_dir=os.path.join(root,'sing-box',sb['tag_name'].lstrip('v')); os.makedirs(sb_dir,exist_ok=True); sb_bin=''; (sb_a and (sb_file:=os.path.join(sb_dir,sb_a['name'])) and dl(sb_a['browser_download_url'],sb_file) and (not sb_file.endswith(('.apk','.zip','.tar.gz','.tgz')) or (tarfile.open(sb_file,'r:gz').extractall(sb_dir) if sb_file.endswith(('.tar.gz','.tgz')) else zipfile.ZipFile(sb_file).extractall(sb_dir))) and (sb_bin:=next((os.path.join(dp,f) for dp,_,fs in os.walk(sb_dir) for f in fs if f=='sing-box'), sb_file))); vr=j('https://api.github.com/repos/411A/V2RayDAR/releases/latest'); vr_a=next((x for x in vr['assets'] if ('android' in x['name'].lower() or 'termux' in x['name'].lower()) and arch in x['name'].lower()), None); vr_dir=os.path.join(root,'v2raydar',vr['tag_name'].lstrip('v')); os.makedirs(vr_dir,exist_ok=True); vr_src=''; (vr_a and (vr_file:=os.path.join(vr_dir,vr_a['name'])) and dl(vr_a['browser_download_url'],vr_file) and (not vr_file.endswith(('.apk','.zip','.tar.gz','.tgz')) or (tarfile.open(vr_file,'r:gz').extractall(vr_dir) if vr_file.endswith(('.tar.gz','.tgz')) else zipfile.ZipFile(vr_file).extractall(vr_dir))) and (vr_src:=next((os.path.join(dp,f) for dp,_,fs in os.walk(vr_dir) for f in fs if 'v2raydar' in f.lower() and os.access(os.path.join(dp,f),os.X_OK)), vr_file))); src_tar=os.path.join(vr_dir,vr['tag_name'].lstrip('v')+'.tar.gz'); (not vr_a) and dl('https://github.com/411A/V2RayDAR/archive/refs/tags/'+vr['tag_name'].lstrip('v')+'.tar.gz',src_tar) and tarfile.open(src_tar,'r:gz').extractall(vr_dir) or None; src=next((os.path.join(vr_dir,n) for n in os.listdir(vr_dir) if n.startswith('V2RayDAR-')),vr_dir); print('sing-box='+sb_bin if sb_bin else 'sing-box=not-found'); print('v2raydar='+ (vr_src or src)); print('run: cd "'+(vr_src or src)+'" && cargo run --release -- --no-tui' if not vr_a else 'run: '+(vr_src or src)+' --no-tui')"
+pkg update
+pkg upgrade -y
+pkg install -y python rust git clang make cmake pkg-config
+cargo --version
+
+python3 << 'EOF'
+import json, os, platform, re, shlex, stat, subprocess, tarfile, urllib.request, zipfile
+
+home = os.path.expanduser('~')
+root = os.path.join(home, '.local', 'share', 'V2RayDAR')
+os.makedirs(root, exist_ok=True)
+
+def j(url):
+    return json.load(urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})))
+
+def dl(url, path):
+    if os.path.exists(path) and os.path.getsize(path) > 1024:
+        return path
+    urllib.request.urlretrieve(url, path)
+    return path
+
+def token(name, value):
+    return re.search(r'(^|[-_.])' + re.escape(value) + r'($|[-_.])', name) is not None
+
+def embedded_sing_box_version(tag):
+    override = os.environ.get('V2RAYDAR_SING_BOX_VERSION', '').strip()
+    if override:
+        return override
+    constants_url = 'https://raw.githubusercontent.com/411A/V2RayDAR/' + tag + '/src/constants.rs'
+    data = urllib.request.urlopen(urllib.request.Request(constants_url, headers={'User-Agent': 'Mozilla/5.0'})).read().decode('utf-8')
+    match = re.search(r'pub\s+const\s+SING_BOX_VERSION\s*:\s*&str\s*=\s*"([^"]+)"', data)
+    if not match:
+        raise SystemExit('Unable to read SING_BOX_VERSION from ' + constants_url)
+    return match.group(1)
+
+def asset_for(release, platforms, arch_tokens, suffixes):
+    for arch in arch_tokens:
+        for suffix in suffixes:
+            for asset in release.get('assets', []):
+                name = asset['name'].lower()
+                if name.endswith(('.apk', '.sha256', '.sig', '.asc', '.txt')):
+                    continue
+                if not any(platform in name for platform in platforms):
+                    continue
+                if arch and not token(name, arch):
+                    continue
+                if suffix and not name.endswith(suffix):
+                    continue
+                return asset
+    return None
+
+def extract(path, dest):
+    with open(path, 'rb') as fp:
+        magic = fp.read(2)
+    if magic == b'PK':
+        with zipfile.ZipFile(path) as z:
+            z.extractall(dest)
+            for info in z.infolist():
+                mode = (info.external_attr >> 16) & 0o777
+                target = os.path.join(dest, info.filename)
+                if mode and os.path.exists(target):
+                    os.chmod(target, mode)
+    else:
+        with tarfile.open(path, 'r:*') as t:
+            try:
+                t.extractall(dest, filter='data')
+            except TypeError:
+                t.extractall(dest)
+
+def chmod_x(path):
+    os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+def find_file(base, needle):
+    for dp, _, files in os.walk(base):
+        for filename in files:
+            lower = filename.lower()
+            if lower.endswith(('.sha256', '.zip', '.tar.gz', '.tgz')):
+                continue
+            if needle in lower:
+                return os.path.join(dp, filename)
+    return None
+
+def sing_box_version(path):
+    try:
+        out = subprocess.check_output([path, 'version'], text=True, stderr=subprocess.STDOUT, timeout=10)
+    except Exception:
+        return ''
+    return out
+
+def configured_sing_box_path():
+    path = os.environ.get('V2RAYDAR_SING_BOX_PATH', '').strip()
+    if not path:
+        return None
+    if not sing_box_version(path):
+        raise SystemExit('V2RAYDAR_SING_BOX_PATH does not run as a sing-box executable: ' + path)
+    return path
+
+def warn_if_not_recommended(path, recommended):
+    version = sing_box_version(path)
+    if version and recommended not in version:
+        print('Using sing-box from ' + path + '; recommended version is ' + recommended)
+
+def yaml_sq(value):
+    return "'" + value.replace("'", "''") + "'"
+
+def configure_config(tag, sing_box_path):
+    config_dir = os.path.join(root, 'v2raydar_data')
+    os.makedirs(config_dir, exist_ok=True)
+    config = os.path.join(config_dir, 'configs.yaml')
+    if not os.path.exists(config):
+        template = 'https://raw.githubusercontent.com/411A/V2RayDAR/' + tag + '/configs.example.yaml'
+        dl(template, config)
+    with open(config, 'r', encoding='utf-8') as fp:
+        text = fp.read()
+    value = yaml_sq(sing_box_path)
+    if re.search(r'(?m)^\s*sing_box_path\s*:', text):
+        text = re.sub(r'(?m)^(\s*sing_box_path\s*:\s*).*$', lambda m: m.group(1) + value, text, count=1)
+    elif re.search(r'(?m)^probe\s*:\s*$', text):
+        text = re.sub(r'(?m)^(probe\s*:\s*)$', lambda m: m.group(1) + '\n  sing_box_path: ' + value, text, count=1)
+    else:
+        text += '\nprobe:\n  mode: active\n  sing_box_path: ' + value + '\n'
+    with open(config, 'w', encoding='utf-8') as fp:
+        fp.write(text)
+    return config
+
+def source_dir(base):
+    return next((os.path.join(base, name) for name in os.listdir(base) if os.path.isdir(os.path.join(base, name)) and 'v2raydar' in name.lower()), base)
+
+vr = j('https://api.github.com/repos/411A/V2RayDAR/releases/latest')
+SB_VERSION = embedded_sing_box_version(vr['tag_name'])
+pkg_path = '/data/data/com.termux/files/usr/bin/sing-box'
+sb_bin = configured_sing_box_path()
+if not sb_bin and os.path.isfile(pkg_path) and sing_box_version(pkg_path):
+    sb_bin = pkg_path
+if not sb_bin:
+    print('Installing recommended sing-box ' + SB_VERSION + ' via pkg...')
+    subprocess.run(['pkg', 'install', '-y', 'sing-box=' + SB_VERSION], check=False)
+    if os.path.isfile(pkg_path) and sing_box_version(pkg_path):
+        sb_bin = pkg_path
+
+if not sb_bin:
+    print('pkg install did not provide sing-box ' + SB_VERSION + '; trying the recommended GitHub release...')
+    m = platform.machine().lower()
+    arch = 'arm64' if m in ('aarch64', 'arm64') else 'armv7' if m.startswith('armv7') else 'amd64' if m in ('x86_64', 'amd64') else '386' if m in ('i386', 'i686') else m
+    sb = j('https://api.github.com/repos/SagerNet/sing-box/releases/tags/v' + SB_VERSION)
+    sb_a = asset_for(sb, ['android', 'termux'], [arch], ['.tar.gz', '.tgz', '.zip'])
+    if sb_a:
+        sb_dir = os.path.join(root, 'sing-box', SB_VERSION)
+        os.makedirs(sb_dir, exist_ok=True)
+        sb_file = dl(sb_a['browser_download_url'], os.path.join(sb_dir, sb_a['name']))
+        extract(sb_file, sb_dir)
+        sb_bin = find_file(sb_dir, 'sing-box')
+        if sb_bin:
+            chmod_x(sb_bin)
+
+if not sb_bin or not sing_box_version(sb_bin):
+    raise SystemExit('sing-box executable was not found. Install the recommended version with: pkg install sing-box=' + SB_VERSION + ' or set V2RAYDAR_SING_BOX_PATH')
+warn_if_not_recommended(sb_bin, SB_VERSION)
+
+vr_dir = os.path.join(root, 'v2raydar', vr['tag_name'].lstrip('v'))
+os.makedirs(vr_dir, exist_ok=True)
+src_tgz = dl(vr['tarball_url'], os.path.join(vr_dir, 'src.tar.gz'))
+extract(src_tgz, vr_dir)
+src = source_dir(vr_dir)
+config = configure_config(vr['tag_name'], sb_bin)
+
+print('sing-box=' + sb_bin)
+print('v2raydar_source=' + src)
+print('config=' + config)
+print('run: cd ' + shlex.quote(src) + ' && cargo run --release -- --no-tui')
+EOF
 ```
 
 </details>
 
-Each block reuses the already-downloaded file or extracted folder when it is already present, then prints the resolved sing-box and V2RayDAR paths and a run command.
+Each block reuses already-downloaded files when possible, prints the resolved `sing-box`, V2RayDAR, and config paths, then prints the command to start V2RayDAR.
 
 ---
 
@@ -90,7 +745,7 @@ Each block reuses the already-downloaded file or extracted folder when it is alr
 
 ## Quick start
 
-1. **Get sing-box**. Active probing needs the [sing-box](https://github.com/SagerNet/sing-box/releases/latest) binary for your OS. Use `sing-box.exe` on Windows and `sing-box` on Linux, Termux, and macOS.
+1. **Get sing-box**. Active probing needs a working `sing-box` executable. V2RayDAR recommends the version declared by `SING_BOX_VERSION` in `src/constants.rs`, but a user-provided working version is accepted. Use `sing-box.exe` on Windows, `sing-box` on Linux and macOS, and `/data/data/com.termux/files/usr/bin/sing-box` from Termux `pkg install`.
 2. **Run V2RayDAR**. Use the release binary for your OS, or build from source with `cargo run --release`.
 3. **First launch** creates `configs.yaml` in the platform's app-data folder and (if `probe.mode: active`) asks for the full path to `sing-box`.
 4. **Point your client** at one of the local URLs below.

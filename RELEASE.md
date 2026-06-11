@@ -38,10 +38,10 @@ V2RayDAR is shipped as an icon-bearing executable on Windows, a compatibility-fi
 
 Active probing requires `sing-box`, which is downloaded separately. On first run, V2RayDAR asks for the local `sing-box` executable path, verifies it with `sing-box version`, saves it in the generated `configs.yaml`, and then starts scanning.
 
-Windows users who already have v2rayN should check the v2rayN installation folder for `sing-box.exe`. Otherwise, download sing-box from:
+Download the sing-box archive for your OS: `sing-box.exe` from the Windows archive, `sing-box` from the Linux archive, `sing-box` from the Android archive for Termux, or `sing-box` from the Darwin archive for macOS. Windows users who already have v2rayN can also check the v2rayN installation folder for `sing-box.exe`.
 
 ```text
-https://github.com/SagerNet/sing-box/releases
+https://github.com/SagerNet/sing-box/releases/latest
 ```
 
 ## Trust Warnings

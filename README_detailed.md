@@ -44,7 +44,7 @@ Required:
 Required for active validation:
 
 - `sing-box` installed locally.
-- `probe.sing_box_path` set to the full executable path. Leaving it empty, or setting only `sing-box` / `sing-box.exe`, triggers setup in the current startup flow.
+- `probe.sing_box_path` set to the executable path or to a command that works from your terminal PATH. Use `sing-box.exe` on Windows and `sing-box` on Linux, Termux, and macOS.
 
 Optional for building from source:
 
@@ -115,9 +115,9 @@ Portable mode path:
 v2raydar_data/configs.yaml
 ```
 
-If `probe.mode` is `active` and no valid `probe.sing_box_path` is configured, the interactive TUI asks for the full `sing-box` executable path and verifies it with `sing-box version`.
+If `probe.mode` is `active` and no valid `probe.sing_box_path` is configured, the interactive TUI asks for the OS-specific `sing-box` executable path and verifies it with `sing-box version`.
 
-In `--no-tui` or `--once` mode, V2RayDAR cannot run the interactive setup prompt. It prints setup instructions and exits until `probe.sing_box_path` is configured manually.
+In `--no-tui` or `--once` mode, V2RayDAR cannot run the interactive setup prompt. It prints OS-specific setup instructions and exits until `probe.sing_box_path` is configured manually.
 
 ## Run Modes
 
@@ -997,12 +997,33 @@ The release job also creates `checksums.txt` from files in `dist/`.
 
 Active probing needs `sing-box`.
 
-Set:
+Set the executable for your OS:
 
 ```yaml
 probe:
   mode: active
   sing_box_path: /full/path/to/sing-box
+```
+
+Linux example:
+
+```yaml
+probe:
+  sing_box_path: /usr/local/bin/sing-box
+```
+
+Termux example:
+
+```yaml
+probe:
+  sing_box_path: /data/data/com.termux/files/usr/bin/sing-box
+```
+
+macOS example:
+
+```yaml
+probe:
+  sing_box_path: /opt/homebrew/bin/sing-box
 ```
 
 Windows example:
@@ -1012,7 +1033,7 @@ probe:
   sing_box_path: C:\Tools\sing-box\sing-box.exe
 ```
 
-If you already use v2rayN, check the v2rayN installation folder for `sing-box.exe`.
+Download from <https://github.com/SagerNet/sing-box/releases/latest>. Use the Windows archive for `sing-box.exe`, the Linux archive for Linux, the Android archive for Termux, and the Darwin archive for macOS. If you already use v2rayN on Windows, check the v2rayN installation folder for `sing-box.exe`.
 
 ### Port cannot bind
 
@@ -1169,7 +1190,7 @@ emergency_config: vless://uuid@example.com:443?security=tls&sni=example.com#know
 
 probe:
   mode: active
-  sing_box_path: C:\Tools\sing-box\sing-box.exe
+  sing_box_path: /usr/local/bin/sing-box
 
 subscriptions:
   - name: source-a
@@ -1213,7 +1234,7 @@ Avoid adding unrelated refactors to feature or bug-fix PRs.
 - Example config: [configs.example.yaml](configs.example.yaml)
 - Release guide: [RELEASE.md](RELEASE.md)
 - License: [LICENSE](LICENSE)
-- sing-box releases: <https://github.com/SagerNet/sing-box/releases>
+- sing-box releases: <https://github.com/SagerNet/sing-box/releases/latest>
 - sing-box configuration docs: <https://sing-box.sagernet.org/configuration/>
 - v2rayN: <https://github.com/2dust/v2rayN>
 - v2rayNG: <https://github.com/2dust/v2rayNG>

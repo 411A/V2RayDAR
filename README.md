@@ -47,7 +47,7 @@
 
 ## Quick start
 
-1. **Get sing-box**. Active probing needs the [sing-box](https://github.com/SagerNet/sing-box/releases) binary. If you already use v2rayN, look inside its folder for `sing-box.exe`.
+1. **Get sing-box**. Active probing needs the [sing-box](https://github.com/SagerNet/sing-box/releases/latest) binary for your OS. Use `sing-box.exe` on Windows and `sing-box` on Linux, Termux, and macOS.
 2. **Run V2RayDAR**. Use the release binary for your OS, or build from source with `cargo run --release`.
 3. **First launch** creates `configs.yaml` in the platform's app-data folder and (if `probe.mode: active`) asks for the full path to `sing-box`.
 4. **Point your client** at one of the local URLs below.

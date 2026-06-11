@@ -62,7 +62,7 @@ pub const SING_BOX_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 pub const SING_BOX_CONFIG_FILE_PREFIX: &str = "v2raydar-sing-box";
 pub const SING_BOX_INBOUND_TAG_PREFIX: &str = "mixed-in";
 pub const SING_BOX_OUTBOUND_TAG_PREFIX: &str = "proxy";
-pub const SING_BOX_DOWNLOAD_URL: &str = "https://github.com/SagerNet/sing-box/releases";
+pub const SING_BOX_DOWNLOAD_URL: &str = "https://github.com/SagerNet/sing-box/releases/latest";
 
 pub const HTTP_EXCHANGE_OVERHEAD_BYTES: u64 = 1024;
 pub const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
@@ -198,6 +198,6 @@ pub const SETTING_GUIDES: &[SettingGuide] = &[
     SettingGuide {
         key: "probe.sing_box_path",
         label: "sing-box path",
-        help: "Use a full path if sing-box is not available in your terminal PATH.",
+        help: "Use sing-box on Linux, Termux, or macOS; use sing-box.exe on Windows.",
     },
 ];

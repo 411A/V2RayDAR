@@ -43,7 +43,7 @@ use crate::{
     paths::AppPaths,
     probe::probe_candidates,
     server::serve,
-    sing_box::active_probe_needs_setup,
+    sing_box::{active_probe_needs_setup, setup_guide},
     subscription::{
         FetchFailure, FetchOutcome, load_cached_candidates, load_candidates_with_cache,
         retry_failed_sources_with_proxy,
@@ -459,11 +459,23 @@ async fn remove_uninstall_target(path: &Path) -> Result<()> {
 }
 
 fn print_sing_box_setup_required(paths: &AppPaths) {
+    let guide = setup_guide();
+
     println!("V2RayDAR active probing requires sing-box before it can refresh.");
     println!("Config: {}", paths.config_path.display());
-    println!("Set probe.sing_box_path to the full sing-box executable path.");
-    println!("If you use v2rayN, check its installation folder for sing-box.exe.");
-    println!("Download sing-box from: {}", SING_BOX_DOWNLOAD_URL);
+    println!("Detected OS: {}", guide.platform);
+    println!("Download: {}", SING_BOX_DOWNLOAD_URL);
+    println!("Choose the release asset: {}", guide.release_asset);
+    println!("Use the executable named: {}", guide.executable_name);
+    println!("Set probe.sing_box_path to the executable path or a working PATH command.");
+    println!("Examples:");
+    for path in guide.example_paths {
+        println!("  {path}");
+    }
+    println!("Notes:");
+    for note in guide.notes {
+        println!("  {note}");
+    }
     println!("Then run V2RayDAR again.");
 }
 

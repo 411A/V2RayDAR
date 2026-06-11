@@ -25,7 +25,7 @@ pub async fn run(config: &mut AppConfig, paths: &AppPaths) -> Result<()> {
 
     let mut state = SetupState {
         input: config.probe.sing_box_path.clone(),
-        status: "Enter the full sing-box executable path, then press Enter".to_string(),
+        status: "Enter the sing-box path or PATH command, then press Enter".to_string(),
         verifying: false,
     };
 
@@ -111,13 +111,33 @@ fn draw(frame: &mut Frame<'_>, state: &SetupState, paths: &AppPaths) {
     } else {
         format!("{}_", state.input)
     };
-    let lines = vec![
-        Line::from("If you already use v2rayN, check its installation folder for sing-box.exe."),
-        Line::from("If it is not installed, download sing-box for your operating system:"),
+    let guide = sing_box::setup_guide();
+    let mut lines = vec![
+        Line::from(format!("Detected OS: {}", guide.platform)),
+        Line::from(format!("Use executable: {}", guide.executable_name)),
+        Line::from(format!("Download asset: {}", guide.release_asset)),
+        Line::from("Download latest release:"),
         Line::from(Span::styled(
             SING_BOX_DOWNLOAD_URL,
             Style::default().fg(Color::Yellow),
         )),
+        Line::from(""),
+        Line::from("Examples:"),
+    ];
+    lines.extend(guide.example_paths.iter().map(|path| {
+        Line::from(Span::styled(
+            format!("  {path}"),
+            Style::default().fg(Color::Green),
+        ))
+    }));
+    lines.extend([Line::from(""), Line::from("Notes:")]);
+    lines.extend(
+        guide
+            .notes
+            .iter()
+            .map(|note| Line::from(format!("  {note}"))),
+    );
+    lines.extend([
         Line::from(""),
         Line::from("Config will be saved to:"),
         Line::from(Span::styled(
@@ -139,7 +159,7 @@ fn draw(frame: &mut Frame<'_>, state: &SetupState, paths: &AppPaths) {
                 Color::White
             }),
         )),
-    ];
+    ]);
     frame.render_widget(
         Paragraph::new(lines)
             .block(Block::default().borders(Borders::ALL).title("Setup"))

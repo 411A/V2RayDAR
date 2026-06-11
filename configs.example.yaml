@@ -2,6 +2,9 @@ bind: 127.0.0.1:27141
 top_n: 10
 refresh_seconds: 300
 encoded_subscription: true
+# true re-pings the previous run's saved top-N first and keeps them ahead of newly
+# found low-ping configs. false simply prefers any working low-ping config.
+# The saved top-N lives in the cache folder and is wiped on every fresh run and quit.
 prioritize_stability: true
 scan_all_configs: false
 fetch_timeout_ms: 30000

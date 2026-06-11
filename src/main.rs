@@ -37,7 +37,7 @@ use crate::{
         CONFIG_WATCH_INTERVAL, DEFAULT_LOG_FILTER_PLAIN, DEFAULT_LOG_FILTER_TUI,
         DEFAULT_LOG_FILTER_VERBOSE, FIREWALL_STATE_FILE_NAME, LEGACY_APP_MARKER_FILE_NAME,
         LEGACY_CACHE_MARKER_FILE_NAME, LOCALHOST_IP, MAX_TUI_LOGS, SING_BOX_DOWNLOAD_URL,
-        STABLE_WORKING_APPEARANCES,
+        STABLE_TOP_CACHE_FILE_NAME,
     },
     model::{Candidate, ProbeStopPolicy, ProgressEvent, RankedConfig, RuntimeConfig, RuntimeState},
     paths::AppPaths,
@@ -145,6 +145,8 @@ async fn main() -> Result<()> {
     let state = Arc::new(RwLock::new(RuntimeState::default()));
     let runtime_config = Arc::new(RwLock::new(RuntimeConfig::from(&config)));
 
+    delete_stable_top_cache(&paths.cache_dir).await;
+
     if cli.once {
         print_startup(&config, &paths, cli.verbose);
         refresh_once(
@@ -156,6 +158,7 @@ async fn main() -> Result<()> {
             !cli.verbose,
         )
         .await?;
+        delete_stable_top_cache(&paths.cache_dir).await;
         return Ok(());
     }
 
@@ -183,14 +186,17 @@ async fn main() -> Result<()> {
     );
     spawn_config_watcher(paths.config_path.clone(), config.bind, config_tx);
 
-    if cli.no_tui {
+    let cache_dir_for_shutdown = paths.cache_dir.clone();
+    let result = if cli.no_tui {
         serve(config.bind, state, runtime_config).await
     } else {
         tokio::select! {
             result = serve(config.bind, state.clone(), runtime_config.clone()) => result,
             result = tui::run(config, paths, state, runtime_config) => result,
         }
-    }
+    };
+    delete_stable_top_cache(&cache_dir_for_shutdown).await;
+    result
 }
 
 async fn uninstall(paths: &AppPaths, assume_yes: bool) -> Result<()> {
@@ -424,7 +430,10 @@ async fn is_known_cache_entry(entry: &fs::DirEntry) -> Result<bool> {
 }
 
 fn is_subscription_cache_file_name(name: &str) -> bool {
-    if name == CACHE_METADATA_FILE_NAME || subscription::is_cache_snapshot_file_name(name) {
+    if name == CACHE_METADATA_FILE_NAME
+        || name == STABLE_TOP_CACHE_FILE_NAME
+        || subscription::is_cache_snapshot_file_name(name)
+    {
         return true;
     }
     if let Some(key) = name.strip_suffix(".body") {
@@ -482,7 +491,7 @@ fn print_sing_box_setup_required(paths: &AppPaths) {
 async fn probe_refresh_candidates(
     candidates: Vec<Candidate>,
     config: &AppConfig,
-    previous_before_refresh: &RuntimeState,
+    previous_top_n: &HashSet<String>,
     state: &Arc<RwLock<RuntimeState>>,
     progress_tx: &mpsc::UnboundedSender<ProgressEvent>,
     print_compact_progress: bool,
@@ -528,7 +537,7 @@ async fn probe_refresh_candidates(
     )
     .await;
 
-    let stop_policy = probe_stop_policy(config, previous_before_refresh, &candidates);
+    let stop_policy = probe_stop_policy(config, previous_top_n, &candidates);
     probe_candidates(
         candidates,
         &config.probe,
@@ -641,6 +650,11 @@ async fn refresh_once(
     let started_at = Utc::now();
     let started_instant = std::time::Instant::now();
     let previous_before_refresh = state.read().await.clone();
+    let previous_top_n = if config.prioritize_stability {
+        load_stable_top_uris(cache_dir).await
+    } else {
+        HashSet::new()
+    };
     let (progress_tx, progress_task) =
         spawn_tui_progress_forwarder(state.clone(), print_compact_progress);
     if print_compact_progress {
@@ -742,7 +756,7 @@ async fn refresh_once(
     let mut ranked = probe_refresh_candidates(
         std::mem::take(&mut fetched.candidates),
         config,
-        &previous_before_refresh,
+        &previous_top_n,
         &state,
         &progress_tx,
         print_compact_progress,
@@ -812,7 +826,7 @@ async fn refresh_once(
                         let mut retry_ranked = probe_refresh_candidates(
                             std::mem::take(&mut retry.candidates),
                             config,
-                            &previous_before_refresh,
+                            &previous_top_n,
                             &state,
                             &progress_tx,
                             print_compact_progress,
@@ -901,7 +915,7 @@ async fn refresh_once(
                     let mut cached_ranked = probe_refresh_candidates(
                         std::mem::take(&mut cached.candidates),
                         config,
-                        &previous_before_refresh,
+                        &previous_top_n,
                         &state,
                         &progress_tx,
                         print_compact_progress,
@@ -948,8 +962,14 @@ async fn refresh_once(
     apply_stability_ranking(
         &mut ranked,
         &mut stable_working_counts,
+        &previous_top_n,
         config.prioritize_stability,
     );
+    if config.prioritize_stability {
+        save_stable_top_uris(cache_dir, &ranked, config.top_n).await;
+    } else {
+        delete_stable_top_cache(cache_dir).await;
+    }
     let reachable_count = ranked.iter().filter(|item| item.reachable).count();
     let fetch_bytes = progress_state.fetch_bytes;
     let speedtest_bytes = progress_state
@@ -1001,7 +1021,7 @@ async fn refresh_once(
 
 fn probe_stop_policy(
     config: &AppConfig,
-    previous: &RuntimeState,
+    previous_top_n: &HashSet<String>,
     candidates: &[crate::model::Candidate],
 ) -> ProbeStopPolicy {
     let current_uris = candidates
@@ -1013,11 +1033,10 @@ fn probe_stop_policy(
         scan_all_configs: config.scan_all_configs,
         top_n: config.top_n,
         prioritize_stability: config.prioritize_stability,
-        previous_working_uris: previous
-            .ranked
+        previous_working_uris: previous_top_n
             .iter()
-            .filter(|item| item.reachable && current_uris.contains(item.uri.as_str()))
-            .map(|item| item.uri.clone())
+            .filter(|uri| current_uris.contains(uri.as_str()))
+            .cloned()
             .collect(),
     }
 }
@@ -1025,31 +1044,39 @@ fn probe_stop_policy(
 fn apply_stability_ranking(
     ranked: &mut [RankedConfig],
     stable_working_counts: &mut HashMap<String, u32>,
+    previous_top_n: &HashSet<String>,
     prioritize_stability: bool,
 ) {
     for item in ranked.iter_mut() {
-        if item.reachable {
+        if item.reachable && previous_top_n.contains(&item.uri) {
             let count = stable_working_counts.entry(item.uri.clone()).or_default();
             *count = count.saturating_add(1);
             item.stability_count = *count;
+        } else if item.reachable {
+            stable_working_counts.remove(&item.uri);
+            item.stability_count = 1;
         } else {
             item.stability_count = stable_working_counts.get(&item.uri).copied().unwrap_or(0);
         }
     }
 
     if prioritize_stability {
-        ranked.sort_by(compare_stability_ranked);
+        ranked.sort_by(|left, right| compare_stability_ranked(left, right, previous_top_n));
         for (index, item) in ranked.iter_mut().enumerate() {
             item.rank = index + 1;
         }
     }
 }
 
-fn compare_stability_ranked(left: &RankedConfig, right: &RankedConfig) -> Ordering {
+fn compare_stability_ranked(
+    left: &RankedConfig,
+    right: &RankedConfig,
+    previous_top_n: &HashSet<String>,
+) -> Ordering {
     right
         .reachable
         .cmp(&left.reachable)
-        .then_with(|| is_stable(right).cmp(&is_stable(left)))
+        .then_with(|| is_stable(right, previous_top_n).cmp(&is_stable(left, previous_top_n)))
         .then_with(|| left.priority.cmp(&right.priority))
         .then_with(|| {
             left.latency_ms
@@ -1067,8 +1094,87 @@ fn compare_stability_ranked(left: &RankedConfig, right: &RankedConfig) -> Orderi
         .then_with(|| left.uri.cmp(&right.uri))
 }
 
-fn is_stable(config: &RankedConfig) -> bool {
-    config.reachable && config.stability_count >= STABLE_WORKING_APPEARANCES
+fn is_stable(config: &RankedConfig, previous_top_n: &HashSet<String>) -> bool {
+    config.reachable && previous_top_n.contains(&config.uri)
+}
+
+fn stable_top_cache_path(cache_dir: &Path) -> PathBuf {
+    cache_dir.join(STABLE_TOP_CACHE_FILE_NAME)
+}
+
+async fn load_stable_top_uris(cache_dir: &Path) -> HashSet<String> {
+    let path = stable_top_cache_path(cache_dir);
+    let Ok(bytes) = fs::read(&path).await else {
+        return HashSet::new();
+    };
+    match serde_json::from_slice::<StableTopCache>(&bytes) {
+        Ok(cache) => cache.uris.into_iter().collect(),
+        Err(err) => {
+            warn!(
+                path = %path.display(),
+                error = %err,
+                "stable-top cache file unreadable; treating as empty"
+            );
+            HashSet::new()
+        }
+    }
+}
+
+async fn save_stable_top_uris(cache_dir: &Path, ranked: &[RankedConfig], top_n: usize) {
+    let uris: Vec<String> = ranked
+        .iter()
+        .filter(|item| item.reachable)
+        .take(top_n)
+        .map(|item| item.uri.clone())
+        .collect();
+    if uris.is_empty() {
+        delete_stable_top_cache(cache_dir).await;
+        return;
+    }
+    if let Err(err) = fs::create_dir_all(cache_dir).await {
+        warn!(
+            path = %cache_dir.display(),
+            error = %err,
+            "unable to create cache directory for stable-top cache"
+        );
+        return;
+    }
+    let path = stable_top_cache_path(cache_dir);
+    let cache = StableTopCache { uris };
+    match serde_json::to_vec_pretty(&cache) {
+        Ok(bytes) => {
+            if let Err(err) = fs::write(&path, bytes).await {
+                warn!(
+                    path = %path.display(),
+                    error = %err,
+                    "unable to write stable-top cache"
+                );
+            }
+        }
+        Err(err) => {
+            warn!(error = %err, "unable to serialize stable-top cache");
+        }
+    }
+}
+
+async fn delete_stable_top_cache(cache_dir: &Path) {
+    let path = stable_top_cache_path(cache_dir);
+    match fs::remove_file(&path).await {
+        Ok(()) => info!(path = %path.display(), "stable-top cache cleared"),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+        Err(err) => {
+            warn!(
+                path = %path.display(),
+                error = %err,
+                "unable to delete stable-top cache"
+            );
+        }
+    }
+}
+
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+struct StableTopCache {
+    uris: Vec<String>,
 }
 
 fn spawn_refresh_loop(
@@ -1511,8 +1617,10 @@ mod tests {
             ),
         ];
         let mut counts = HashMap::from([("vless://slow@example.com:443".to_string(), 2)]);
+        let previous_top_n =
+            HashSet::from(["vless://slow@example.com:443".to_string()]);
 
-        apply_stability_ranking(&mut ranked, &mut counts, true);
+        apply_stability_ranking(&mut ranked, &mut counts, &previous_top_n, true);
 
         assert_eq!(ranked[0].name, "slow-stable");
         assert_eq!(ranked[0].rank, 1);
@@ -1532,8 +1640,10 @@ mod tests {
             ),
         ];
         let mut counts = HashMap::from([("vless://slow@example.com:443".to_string(), 2)]);
+        let previous_top_n =
+            HashSet::from(["vless://slow@example.com:443".to_string()]);
 
-        apply_stability_ranking(&mut ranked, &mut counts, false);
+        apply_stability_ranking(&mut ranked, &mut counts, &previous_top_n, false);
 
         assert_eq!(ranked[0].name, "fast-new");
         assert_eq!(ranked[1].name, "slow-stable");
@@ -1557,8 +1667,10 @@ mod tests {
             ),
         ];
         let mut counts = HashMap::from([("vless://failed@example.com:443".to_string(), 5)]);
+        let previous_top_n =
+            HashSet::from(["vless://failed@example.com:443".to_string()]);
 
-        apply_stability_ranking(&mut ranked, &mut counts, true);
+        apply_stability_ranking(&mut ranked, &mut counts, &previous_top_n, true);
 
         assert_eq!(ranked[0].name, "working-new");
         assert!(ranked[0].reachable);

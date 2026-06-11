@@ -321,7 +321,7 @@ String-like null values such as `null`, `"null"`, empty strings, `"none"`, and `
 | `top_n` | Integer | `10` | Number of reachable configs published to clients. |
 | `refresh_seconds` | Integer seconds | `300` | Automatic refresh interval. `0` disables timer refreshes but config changes can still trigger refreshes. |
 | `encoded_subscription` | Boolean | `true` | Makes `/subscription` return base64 text. `/subscription.txt` is always raw text. |
-| `prioritize_stability` | Boolean | `true` | Promotes configs that worked across repeated refreshes. |
+| `prioritize_stability` | Boolean | `true` | Re-pings the previous run's saved top-N first and keeps them ahead of newly discovered low-ping configs. When `false`, the ranking simply prefers any working low-ping config. The saved top-N is held in the cache folder and wiped on every fresh run and on quit. |
 | `scan_all_configs` | Boolean | `false` | When `false`, active probing can stop early after enough working configs are found. |
 | `fetch_timeout_ms` | Integer milliseconds | `30000` | Per-source HTTP fetch timeout. |
 | `fetch_concurrency` | Integer | `8` | Number of subscription sources fetched in parallel. |
@@ -491,7 +491,8 @@ v2raydar_data/cache/
 The cache contains:
 
 - timestamped `.txt` snapshot files,
-- `metadata.json`, which maps subscription URLs to snapshot files and content hashes.
+- `metadata.json`, which maps subscription URLs to snapshot files and content hashes,
+- `stable_top.json`, the previous run's saved top-N URIs used by `prioritize_stability` (created at the end of each refresh and deleted on every app startup and shutdown so it never survives across runs).
 
 When a fresh HTTP subscription fetch succeeds, V2RayDAR writes a cache snapshot. If a fetched body is identical to an existing snapshot, it reuses the existing file and moves that snapshot to the newest position in metadata.
 
@@ -531,7 +532,9 @@ use_cache_only: true
 
 ## Ranking
 
-The final ranked list always puts reachable configs before failed configs. When `prioritize_stability: true`, reachable configs seen working at least twice are promoted before the remaining tie-breakers.
+The final ranked list always puts reachable configs before failed configs. When `prioritize_stability: true`, reachable configs that were in the previous run's saved top-N are promoted before the remaining tie-breakers, so a higher-ping config that already proved working last refresh stays ahead of a newly discovered low-ping config. When `prioritize_stability: false`, the ranking simply prefers any working low-ping config without any carry-over.
+
+The saved top-N is written to `stable_top.json` in the cache folder at the end of each refresh, re-pinged at the start of the next refresh, and deleted on app startup and shutdown so each fresh run begins with no stability carry-over.
 
 The remaining tie-breakers are:
 
@@ -542,7 +545,7 @@ The remaining tie-breakers are:
 5. Name.
 6. URI.
 
-When `scan_all_configs: false`, active mode can stop early after it finds enough working configs for `top_n`. With stability prioritization enabled, the scheduler also tries not to skip previously working configs too early.
+When `scan_all_configs: false`, active mode can stop early after it finds enough working configs for `top_n`. With stability prioritization enabled, the scheduler also re-pings the previous run's saved top-N first, so they are not skipped before they get a chance to be confirmed.
 
 When `scan_all_configs: true`, V2RayDAR attempts to validate every loaded candidate.
 
@@ -704,9 +707,10 @@ Typical files and folders:
 | Artifact | Meaning |
 | --- | --- |
 | `configs.yaml` | Main config file generated on first run. |
-| `cache/` | Cached HTTP subscription snapshots. |
+| `cache/` | Cached HTTP subscription snapshots and the in-session top-N file. |
 | `cache/metadata.json` | Cache index mapping subscription URLs to snapshots. |
 | `cache/YYYY-MM-DD_HH-MM-SS.sss.txt` | Cached HTTP subscription body snapshot. |
+| `cache/stable_top.json` | Previous run's saved top-N URIs used by `prioritize_stability`; deleted on every app startup and shutdown. |
 | `.v2raydar-firewall.json` | Records firewall rules created by V2RayDAR. |
 
 Legacy marker names are still recognized during cleanup:
@@ -845,12 +849,13 @@ The refresh pipeline in `src/main.rs` is roughly:
 1. Load runtime config into shared state.
 2. Fetch enabled subscriptions directly unless `use_cache_only` is true.
 3. Parse fetched subscription bodies into candidates.
-4. Probe candidates with `probe_candidates`.
+4. Probe candidates with `probe_candidates`. When `prioritize_stability: true`, the scheduler re-pings the previous run's saved top-N first.
 5. If direct fetches failed, retry failed HTTP sources through `emergency_config` or a working config when active mode is available, then probe newly loaded retry candidates.
 6. If no fresh subscription source was fetched successfully, try cached HTTP snapshots and probe cached candidates.
-7. Apply stability counts and ranking.
+7. Apply stability ranking (carry the previous run's saved top-N to the front when enabled, otherwise rank purely by low ping).
 8. Publish ranked state to `/subscription`, `/subscription.txt`, and `/results`.
-9. Record refresh duration, errors, byte counters, logs, and stable-working counts.
+9. Persist the new top-N to `stable_top.json` in the cache folder (when stability ranking is on) so the next refresh re-pings it first.
+10. Record refresh duration, errors, byte counters, logs, and consecutive-top-N counters.
 
 The refresh loop starts immediately on app launch. Later refreshes are driven by the timer or relevant config-file changes.
 
@@ -904,7 +909,7 @@ The active batcher:
 
 - deduplicates equivalent outbound definitions,
 - schedules sources fairly by source priority,
-- prioritizes previously working configs when stability ranking is enabled,
+- re-pings the previous run's saved top-N first when stability ranking is enabled,
 - grows or shrinks batch size based on batch success,
 - splits failed batches to isolate invalid candidates,
 - caps HTTP and process concurrency internally.

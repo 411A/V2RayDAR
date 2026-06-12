@@ -1704,7 +1704,6 @@ fn compare_ranked(left: &RankedConfig, right: &RankedConfig) -> Ordering {
     right
         .reachable
         .cmp(&left.reachable)
-        .then_with(|| left.priority.cmp(&right.priority))
         .then_with(|| {
             left.latency_ms
                 .unwrap_or(u128::MAX)
@@ -1716,6 +1715,7 @@ fn compare_ranked(left: &RankedConfig, right: &RankedConfig) -> Ordering {
                 .partial_cmp(&left.download_mbps)
                 .unwrap_or(Ordering::Equal)
         })
+        .then_with(|| left.priority.cmp(&right.priority))
         .then_with(|| left.protocol.cmp(&right.protocol))
         .then_with(|| left.name.cmp(&right.name))
         .then_with(|| left.uri.cmp(&right.uri))

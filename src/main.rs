@@ -1102,13 +1102,12 @@ fn apply_stability_ranking(
 fn compare_stability_ranked(
     left: &RankedConfig,
     right: &RankedConfig,
-    previous_top_n: &HashSet<String>,
+    _previous_top_n: &HashSet<String>,
 ) -> Ordering {
     right
         .reachable
         .cmp(&left.reachable)
-        .then_with(|| is_stable(right, previous_top_n).cmp(&is_stable(left, previous_top_n)))
-        .then_with(|| left.priority.cmp(&right.priority))
+        .then_with(|| right.stability_count.cmp(&left.stability_count))
         .then_with(|| {
             left.latency_ms
                 .unwrap_or(u128::MAX)
@@ -1120,13 +1119,10 @@ fn compare_stability_ranked(
                 .partial_cmp(&left.download_mbps)
                 .unwrap_or(Ordering::Equal)
         })
+        .then_with(|| left.priority.cmp(&right.priority))
         .then_with(|| left.protocol.cmp(&right.protocol))
         .then_with(|| left.name.cmp(&right.name))
         .then_with(|| left.uri.cmp(&right.uri))
-}
-
-fn is_stable(config: &RankedConfig, previous_top_n: &HashSet<String>) -> bool {
-    config.reachable && previous_top_n.contains(&config.dedup_key)
 }
 
 fn stable_top_cache_path(cache_dir: &Path) -> PathBuf {
@@ -1581,7 +1577,7 @@ fn compare_ranked_snapshot(left: &RankedConfig, right: &RankedConfig) -> Orderin
     right
         .reachable
         .cmp(&left.reachable)
-        .then_with(|| left.priority.cmp(&right.priority))
+        .then_with(|| right.stability_count.cmp(&left.stability_count))
         .then_with(|| {
             left.latency_ms
                 .unwrap_or(u128::MAX)
@@ -1593,6 +1589,7 @@ fn compare_ranked_snapshot(left: &RankedConfig, right: &RankedConfig) -> Orderin
                 .partial_cmp(&left.download_mbps)
                 .unwrap_or(Ordering::Equal)
         })
+        .then_with(|| left.priority.cmp(&right.priority))
         .then_with(|| left.protocol.cmp(&right.protocol))
         .then_with(|| left.name.cmp(&right.name))
         .then_with(|| left.uri.cmp(&right.uri))
@@ -1768,6 +1765,58 @@ mod tests {
         assert_eq!(ranked[0].rank, 1);
         assert_eq!(ranked[0].stability_count, 3);
         assert_eq!(ranked[1].name, "fast-new");
+    }
+
+    #[test]
+    fn stable_ranking_sorts_first_seen_configs_by_latency() {
+        let mut slow = ranked(
+            "slow-first",
+            "vless://slow@example.com:443",
+            true,
+            Some(5_000),
+        );
+        slow.priority = 1;
+        let mut fast = ranked(
+            "fast-first",
+            "vless://fast@example.com:443",
+            true,
+            Some(100),
+        );
+        fast.priority = 99;
+        let mut ranked = vec![slow, fast];
+        let mut counts = HashMap::new();
+        let previous_top_n = HashSet::new();
+
+        apply_stability_ranking(&mut ranked, &mut counts, &previous_top_n, true);
+
+        assert_eq!(ranked[0].name, "fast-first");
+        assert_eq!(ranked[0].stability_count, 1);
+        assert_eq!(ranked[1].name, "slow-first");
+        assert_eq!(ranked[1].stability_count, 1);
+    }
+
+    #[test]
+    fn stable_ranking_prefers_higher_seen_count_before_latency() {
+        let mut slow_stable = ranked(
+            "slow-stable",
+            "vless://slow@example.com:443",
+            true,
+            Some(5_000),
+        );
+        slow_stable.stability_count = 2;
+        let mut fast_first = ranked(
+            "fast-first",
+            "vless://fast@example.com:443",
+            true,
+            Some(100),
+        );
+        fast_first.stability_count = 1;
+        let mut ranked = vec![fast_first, slow_stable];
+
+        ranked.sort_by(|left, right| compare_stability_ranked(left, right, &HashSet::new()));
+
+        assert_eq!(ranked[0].name, "slow-stable");
+        assert_eq!(ranked[1].name, "fast-first");
     }
 
     #[test]

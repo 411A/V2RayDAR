@@ -83,6 +83,12 @@ fn update_top_level_scalars(document: &mut YamlDocument, previous: &AppConfig, c
             config.prioritize_stability.to_string(),
         );
     }
+    if previous.return_configs_asap != config.return_configs_asap {
+        document.set_top_level_scalar(
+            "return_configs_asap",
+            config.return_configs_asap.to_string(),
+        );
+    }
     if previous.scan_all_configs != config.scan_all_configs {
         document.set_top_level_scalar("scan_all_configs", config.scan_all_configs.to_string());
     }

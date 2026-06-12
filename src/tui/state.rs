@@ -39,6 +39,7 @@ pub enum ConfigKey {
     RefreshSeconds,
     EncodedSubscription,
     PrioritizeStability,
+    ReturnConfigsAsap,
     ScanAllConfigs,
     FetchTimeout,
     FetchConcurrency,

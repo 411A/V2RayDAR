@@ -76,6 +76,10 @@ pub fn draw(
                 bool_text(live_config.prioritize_stability).to_string(),
             ),
             (
+                "asap",
+                bool_text(live_config.return_configs_asap).to_string(),
+            ),
+            (
                 "scan_all",
                 bool_text(live_config.scan_all_configs).to_string(),
             ),

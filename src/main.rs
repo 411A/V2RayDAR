@@ -686,6 +686,9 @@ async fn refresh_once(
         runtime.reachable_candidates = 0;
         runtime.fetch_errors.clear();
         runtime.live_logs.clear();
+        if config.return_configs_asap {
+            runtime.ranked.clear();
+        }
         push_live_log(
             &mut runtime,
             timestamped_log(format!(
@@ -1047,6 +1050,7 @@ fn probe_stop_policy(
         scan_all_configs: config.scan_all_configs,
         top_n: config.top_n,
         prioritize_stability: config.prioritize_stability,
+        return_configs_asap: config.return_configs_asap,
         previous_working_keys: previous_top_n
             .iter()
             .filter(|key| current_keys.contains(key.as_str()))
@@ -1349,6 +1353,7 @@ struct RefreshFingerprint {
     top_n: usize,
     encoded_subscription: bool,
     prioritize_stability: bool,
+    return_configs_asap: bool,
     scan_all_configs: bool,
     fetch_timeout_ms: u64,
     fetch_concurrency: usize,
@@ -1364,6 +1369,7 @@ impl From<&AppConfig> for RefreshFingerprint {
             top_n: config.top_n,
             encoded_subscription: config.encoded_subscription,
             prioritize_stability: config.prioritize_stability,
+            return_configs_asap: config.return_configs_asap,
             scan_all_configs: config.scan_all_configs,
             fetch_timeout_ms: config.fetch_timeout_ms,
             fetch_concurrency: config.fetch_concurrency,
@@ -1501,6 +1507,48 @@ async fn push_tui_progress(
             apply_snapshot_ranks(&mut ranked);
             state.ranked = ranked;
         }
+        ProgressEvent::WorkingConfigsFound { configs, top_n } => {
+            append_asap_working_configs(&mut state, configs, top_n, previous_top_n);
+        }
+    }
+}
+
+fn append_asap_working_configs(
+    state: &mut RuntimeState,
+    configs: Vec<RankedConfig>,
+    top_n: usize,
+    previous_top_n: &HashSet<String>,
+) {
+    if top_n == 0 {
+        return;
+    }
+
+    let mut seen_keys = HashSet::new();
+    state
+        .ranked
+        .retain(|item| item.reachable && seen_keys.insert(item.dedup_key.clone()));
+
+    for item in configs.into_iter().filter(|item| item.reachable) {
+        if state.ranked.len() >= top_n {
+            break;
+        }
+        if seen_keys.insert(item.dedup_key.clone()) {
+            state.ranked.push(item);
+        }
+    }
+
+    state.ranked.truncate(top_n);
+    apply_snapshot_stability_counts(
+        &mut state.ranked,
+        &state.stable_working_counts,
+        previous_top_n,
+    );
+    apply_found_order_ranks(&mut state.ranked);
+}
+
+fn apply_found_order_ranks(ranked: &mut [RankedConfig]) {
+    for (index, item) in ranked.iter_mut().enumerate() {
+        item.rank = index + 1;
     }
 }
 
@@ -1601,6 +1649,7 @@ impl From<&AppConfig> for RuntimeConfig {
             refresh_seconds: config.refresh_seconds,
             encoded_subscription: config.encoded_subscription,
             prioritize_stability: config.prioritize_stability,
+            return_configs_asap: config.return_configs_asap,
             scan_all_configs: config.scan_all_configs,
             fetch_timeout_ms: config.fetch_timeout_ms,
             fetch_concurrency: config.fetch_concurrency,
@@ -1889,6 +1938,88 @@ mod tests {
 
         let state = state.read().await;
         assert_eq!(state.ranked[0].stability_count, 3);
+    }
+
+    #[tokio::test]
+    async fn asap_working_configs_accumulate_without_touching_recent_logs() {
+        let state = Arc::new(RwLock::new(RuntimeState {
+            logs: vec!["previous summary".to_string()],
+            ..RuntimeState::default()
+        }));
+
+        push_tui_progress(
+            &state,
+            ProgressEvent::WorkingConfigsFound {
+                configs: vec![ranked(
+                    "first",
+                    "vless://first@example.com:443",
+                    true,
+                    Some(50),
+                )],
+                top_n: 2,
+            },
+            &HashSet::new(),
+        )
+        .await;
+        push_tui_progress(
+            &state,
+            ProgressEvent::WorkingConfigsFound {
+                configs: vec![
+                    ranked("second", "vless://second@example.com:443", true, Some(10)),
+                    ranked("third", "vless://third@example.com:443", true, Some(5)),
+                ],
+                top_n: 2,
+            },
+            &HashSet::new(),
+        )
+        .await;
+
+        let state = state.read().await;
+        assert_eq!(state.logs, vec!["previous summary"]);
+        assert_eq!(
+            state
+                .ranked
+                .iter()
+                .map(|item| (item.rank, item.name.as_str()))
+                .collect::<Vec<_>>(),
+            [(1, "first"), (2, "second")]
+        );
+    }
+
+    #[tokio::test]
+    async fn asap_working_configs_ignore_duplicates_and_failed_items() {
+        let first = ranked("first", "vless://first@example.com:443", true, Some(50));
+        let mut duplicate = ranked("renamed", "vless://renamed@example.com:443", true, Some(5));
+        duplicate.dedup_key = first.dedup_key.clone();
+        let failed = ranked("failed", "vless://failed@example.com:443", false, None);
+        let state = Arc::new(RwLock::new(RuntimeState {
+            ranked: vec![first],
+            ..RuntimeState::default()
+        }));
+
+        push_tui_progress(
+            &state,
+            ProgressEvent::WorkingConfigsFound {
+                configs: vec![
+                    duplicate,
+                    failed,
+                    ranked("second", "vless://second@example.com:443", true, Some(10)),
+                ],
+                top_n: 3,
+            },
+            &HashSet::new(),
+        )
+        .await;
+
+        let state = state.read().await;
+        assert_eq!(
+            state
+                .ranked
+                .iter()
+                .map(|item| item.name.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "second"]
+        );
     }
 
     #[tokio::test]

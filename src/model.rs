@@ -69,8 +69,15 @@ pub struct RuntimeState {
 #[derive(Debug, Clone)]
 pub enum ProgressEvent {
     LiveLog(String),
-    ProbeDelta { tested: usize, working: usize },
+    ProbeDelta {
+        tested: usize,
+        working: usize,
+    },
     RankedSnapshot(Vec<RankedConfig>),
+    WorkingConfigsFound {
+        configs: Vec<RankedConfig>,
+        top_n: usize,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -78,6 +85,7 @@ pub struct ProbeStopPolicy {
     pub scan_all_configs: bool,
     pub top_n: usize,
     pub prioritize_stability: bool,
+    pub return_configs_asap: bool,
     pub previous_working_keys: HashSet<String>,
 }
 
@@ -88,6 +96,7 @@ pub struct RuntimeConfig {
     pub refresh_seconds: u64,
     pub encoded_subscription: bool,
     pub prioritize_stability: bool,
+    pub return_configs_asap: bool,
     pub scan_all_configs: bool,
     pub fetch_timeout_ms: u64,
     pub fetch_concurrency: usize,

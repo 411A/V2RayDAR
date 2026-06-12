@@ -11,9 +11,10 @@ use crate::constants::{
     DEFAULT_FETCH_CONCURRENCY, DEFAULT_FETCH_TIMEOUT_MS, DEFAULT_MAX_SUBSCRIPTION_BYTES,
     DEFAULT_PRIORITIZE_STABILITY, DEFAULT_PROBE_BATCH_SIZE, DEFAULT_PROBE_CONCURRENCY,
     DEFAULT_PROBE_PROCESS_CONCURRENCY, DEFAULT_REFRESH_SECONDS, DEFAULT_REQUIRE_TOKEN,
-    DEFAULT_SCAN_ALL_CONFIGS, DEFAULT_SHARING_ENABLED, DEFAULT_SHARING_TOKEN,
-    DEFAULT_SING_BOX_PATH, DEFAULT_STARTUP_TIMEOUT_MS, DEFAULT_SUBSCRIPTION_ENABLED,
-    DEFAULT_SUBSCRIPTION_PRIORITY, DEFAULT_TEST_URL, DEFAULT_TOP_N, DEFAULT_USE_CACHE_ONLY,
+    DEFAULT_RETURN_CONFIGS_ASAP, DEFAULT_SCAN_ALL_CONFIGS, DEFAULT_SHARING_ENABLED,
+    DEFAULT_SHARING_TOKEN, DEFAULT_SING_BOX_PATH, DEFAULT_STARTUP_TIMEOUT_MS,
+    DEFAULT_SUBSCRIPTION_ENABLED, DEFAULT_SUBSCRIPTION_PRIORITY, DEFAULT_TEST_URL, DEFAULT_TOP_N,
+    DEFAULT_USE_CACHE_ONLY,
 };
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -28,6 +29,8 @@ pub struct AppConfig {
     pub encoded_subscription: bool,
     #[serde(default = "default_prioritize_stability")]
     pub prioritize_stability: bool,
+    #[serde(default = "default_return_configs_asap")]
+    pub return_configs_asap: bool,
     #[serde(default = "default_scan_all_configs")]
     pub scan_all_configs: bool,
     #[serde(default = "default_fetch_timeout_ms")]
@@ -422,6 +425,10 @@ fn default_encoded_subscription() -> bool {
 
 fn default_prioritize_stability() -> bool {
     DEFAULT_PRIORITIZE_STABILITY
+}
+
+fn default_return_configs_asap() -> bool {
+    DEFAULT_RETURN_CONFIGS_ASAP
 }
 
 fn default_scan_all_configs() -> bool {

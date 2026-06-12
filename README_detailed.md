@@ -870,6 +870,7 @@ String-like null values such as `null`, `"null"`, empty strings, `"none"`, and `
 | `refresh_seconds` | Integer seconds | `300` | Automatic refresh interval. `0` disables timer refreshes but config changes can still trigger refreshes. |
 | `encoded_subscription` | Boolean | `true` | Makes `/subscription` return base64 text. `/subscription.txt` is always raw text. |
 | `prioritize_stability` | Boolean | `true` | Re-pings the previous run's saved top-N first and keeps them ahead of newly discovered low-ping configs. When `false`, the ranking simply prefers any working low-ping config. The saved top-N is held in the cache folder and wiped on every fresh run and on quit. |
+| `return_configs_asap` | Boolean | `false` | When `true`, publishes each working config to `/subscription`, `/subscription.txt`, `/results`, and the TUI `Current Found Configs` box as soon as it is found, until `top_n` working configs are available. Early configs may not have the lowest ping or best stability. |
 | `scan_all_configs` | Boolean | `false` | When `false`, active probing can stop early after enough working configs are found. |
 | `fetch_timeout_ms` | Integer milliseconds | `30000` | Per-source HTTP fetch timeout. |
 | `fetch_concurrency` | Integer | `8` | Number of subscription sources fetched in parallel. |
@@ -1093,6 +1094,8 @@ The remaining tie-breakers are:
 5. Name.
 6. URI.
 
+When `return_configs_asap: true`, the subscription endpoints and the TUI `Current Found Configs` box are populated one working config at a time during probing until `top_n` working configs have been returned. These live discoveries do not add entries to the TUI `Recent Logs` panel; the normal refresh summary is logged after the refresh completes.
+
 When `scan_all_configs: false`, active mode can stop early after it finds enough working configs for `top_n`. With stability prioritization enabled, the scheduler also re-pings the previous run's saved top-N first, so they are not skipped before they get a chance to be confirmed.
 
 When `scan_all_configs: true`, V2RayDAR attempts to validate every loaded candidate.
@@ -1190,6 +1193,7 @@ The `Configurations` panel exposes the same settings as `configs.yaml`, includin
 - refresh interval,
 - encoded feed toggle,
 - stability ranking,
+- ASAP result publishing,
 - full-scan toggle,
 - fetch limits,
 - cache-only mode,
@@ -1342,6 +1346,7 @@ The most important performance settings are:
 - `probe.concurrency`
 - `probe.batch_size`
 - `probe.process_concurrency`
+- `return_configs_asap`
 - `scan_all_configs`
 - `top_n`
 
@@ -1424,6 +1429,7 @@ Subscription response format:
 - `/subscription` uses `encoded_subscription`.
 - `/subscription.txt` is always raw.
 - Both include only reachable configs and only the top `top_n` entries.
+- With `return_configs_asap: true`, they can fill with working configs during an in-progress refresh before final ranking and speed-test enrichment complete.
 - The body ends with a trailing newline when at least one config is present.
 
 ## Cache Implementation
@@ -1686,6 +1692,7 @@ top_n: 10
 refresh_seconds: 300
 encoded_subscription: true
 prioritize_stability: true
+return_configs_asap: false
 scan_all_configs: false
 fetch_timeout_ms: 30000
 fetch_concurrency: 8

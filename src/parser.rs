@@ -134,8 +134,10 @@ fn parse_share_link(source: &str, priority: u32, uri: &str) -> Result<Candidate>
     }?;
 
     let id = hash_uri(uri);
+    let dedup_key = config_dedup_key(&parsed.protocol, &parsed.endpoint, uri);
     Ok(Candidate {
         id,
+        dedup_key,
         source: source.to_string(),
         priority,
         protocol: parsed.protocol,
@@ -372,6 +374,132 @@ fn hash_uri(uri: &str) -> String {
     format!("{:016x}", hasher.finish())
 }
 
+fn config_dedup_key(protocol: &str, endpoint: &Endpoint, uri: &str) -> String {
+    let lower = uri.to_ascii_lowercase();
+    let (transport, tls) = if lower.starts_with("vmess://") {
+        vmess_dedup_parts(uri)
+    } else if lower.starts_with("ssr://") {
+        ("tcp".to_string(), "none".to_string())
+    } else if lower.starts_with("ss://") {
+        shadowsocks_dedup_parts(uri)
+    } else {
+        standard_uri_dedup_parts(uri, protocol_defaults_to_tls(protocol))
+    };
+
+    format!(
+        "{}|{}|{}|{}|{}",
+        protocol.to_ascii_lowercase(),
+        normalize_host(&endpoint.host),
+        endpoint.port,
+        transport,
+        tls
+    )
+}
+
+fn vmess_dedup_parts(uri: &str) -> (String, String) {
+    let Some(payload) = uri.strip_prefix("vmess://") else {
+        return ("tcp".to_string(), "none".to_string());
+    };
+    let Some(decoded) = decode_base64_to_string(payload) else {
+        return standard_uri_dedup_parts(uri, false);
+    };
+    let Ok(json) = serde_json::from_str::<JsonValue>(&decoded) else {
+        return standard_uri_dedup_parts(uri, false);
+    };
+
+    let transport = json
+        .get("net")
+        .or_else(|| json.get("type"))
+        .and_then(JsonValue::as_str)
+        .map(normalize_transport)
+        .unwrap_or_else(|| "tcp".to_string());
+    let tls = json
+        .get("tls")
+        .and_then(JsonValue::as_str)
+        .map(normalize_tls)
+        .unwrap_or_else(|| "none".to_string());
+
+    (transport, tls)
+}
+
+fn shadowsocks_dedup_parts(uri: &str) -> (String, String) {
+    let Some(body) = uri.strip_prefix("ss://") else {
+        return ("tcp".to_string(), "none".to_string());
+    };
+    let (without_fragment, _) = split_once(body, '#');
+    let (_, query) = split_once(without_fragment, '?');
+    query
+        .map(|query| query_dedup_parts(query, false))
+        .unwrap_or_else(|| ("tcp".to_string(), "none".to_string()))
+}
+
+fn standard_uri_dedup_parts(uri: &str, default_tls: bool) -> (String, String) {
+    Url::parse(uri)
+        .ok()
+        .map(|url| query_dedup_parts(url.query().unwrap_or_default(), default_tls))
+        .unwrap_or_else(|| ("tcp".to_string(), "none".to_string()))
+}
+
+fn query_dedup_parts(query: &str, default_tls: bool) -> (String, String) {
+    let params = query_pairs(query);
+    let transport = params
+        .get("type")
+        .or_else(|| params.get("net"))
+        .or_else(|| params.get("network"))
+        .map(|value| normalize_transport(value))
+        .unwrap_or_else(|| "tcp".to_string());
+    let reality_key = params
+        .get("pbk")
+        .or_else(|| params.get("public_key"))
+        .or_else(|| params.get("reality_pbk"))
+        .filter(|value| !value.trim().is_empty());
+    let tls = match params.get("security").or_else(|| params.get("tls")) {
+        Some(value) if normalize_tls(value) == "none" => "none".to_string(),
+        Some(value) if normalize_tls(value) == "reality" || reality_key.is_some() => {
+            "reality".to_string()
+        }
+        Some(value) => normalize_tls(value),
+        None if reality_key.is_some() => "reality".to_string(),
+        None if default_tls => "tls".to_string(),
+        None => "none".to_string(),
+    };
+
+    (transport, tls)
+}
+
+fn query_pairs(query: &str) -> std::collections::BTreeMap<String, String> {
+    url::form_urlencoded::parse(query.as_bytes())
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect()
+}
+
+fn normalize_transport(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "" | "tcp" => "tcp".to_string(),
+        "websocket" => "ws".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn normalize_tls(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "" | "none" | "false" | "0" => "none".to_string(),
+        "reality" => "reality".to_string(),
+        _ => "tls".to_string(),
+    }
+}
+
+fn normalize_host(host: &str) -> String {
+    host.trim_matches(['[', ']']).to_ascii_lowercase()
+}
+
+fn protocol_defaults_to_tls(protocol: &str) -> bool {
+    matches!(
+        protocol.to_ascii_lowercase().as_str(),
+        "trojan" | "hysteria2" | "tuic"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,6 +531,42 @@ mod tests {
         assert_eq!(parsed[0].name, "Fast Node");
         assert_eq!(parsed[0].endpoint.host, "example.org");
         assert_eq!(parsed[0].endpoint.port, 8443);
+    }
+
+    #[test]
+    fn dedup_key_ignores_remarks_for_same_endpoint_type_transport_and_tls() {
+        let parsed = parse_subscription_document(
+            "test",
+            1,
+            b"vless://uuid@example.org:8443?security=tls&type=ws#First\nvless://uuid@example.org:8443?type=ws&security=tls#Second",
+        );
+
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].dedup_key, parsed[1].dedup_key);
+    }
+
+    #[test]
+    fn dedup_key_keeps_different_transport_distinct() {
+        let parsed = parse_subscription_document(
+            "test",
+            1,
+            b"vless://uuid@example.org:8443?security=tls&type=tcp#Tcp\nvless://uuid@example.org:8443?security=tls&type=ws#Ws",
+        );
+
+        assert_eq!(parsed.len(), 2);
+        assert_ne!(parsed[0].dedup_key, parsed[1].dedup_key);
+    }
+
+    #[test]
+    fn dedup_key_uses_tls_default_for_trojan() {
+        let parsed = parse_subscription_document(
+            "test",
+            1,
+            b"trojan://password@example.org:443#DefaultTls\ntrojan://password@example.org:443?security=tls#ExplicitTls",
+        );
+
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].dedup_key, parsed[1].dedup_key);
     }
 
     #[test]

@@ -16,6 +16,7 @@ pub struct Endpoint {
 #[derive(Debug, Clone, Serialize)]
 pub struct Candidate {
     pub id: String,
+    pub dedup_key: String,
     pub source: String,
     pub priority: u32,
     pub protocol: String,
@@ -29,6 +30,7 @@ pub struct RankedConfig {
     pub rank: usize,
     pub stability_count: u32,
     pub id: String,
+    pub dedup_key: String,
     pub source: String,
     pub priority: u32,
     pub protocol: String,
@@ -76,7 +78,7 @@ pub struct ProbeStopPolicy {
     pub scan_all_configs: bool,
     pub top_n: usize,
     pub prioritize_stability: bool,
-    pub previous_working_uris: HashSet<String>,
+    pub previous_working_keys: HashSet<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

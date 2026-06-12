@@ -151,6 +151,7 @@ async fn probe_tcp(candidate: Candidate, timeout: Duration) -> RankedConfig {
         rank: 0,
         stability_count: 0,
         id: candidate.id,
+        dedup_key: candidate.dedup_key,
         source: candidate.source,
         priority: candidate.priority,
         protocol: candidate.protocol,
@@ -178,11 +179,8 @@ impl PreparedActiveCandidate {
         1 + self.aliases.len()
     }
 
-    fn into_candidates(self) -> Vec<Candidate> {
-        let mut candidates = Vec::with_capacity(self.candidate_count());
-        candidates.push(self.candidate);
-        candidates.extend(self.aliases);
-        candidates
+    fn into_candidate(self) -> Candidate {
+        self.candidate
     }
 }
 
@@ -304,7 +302,7 @@ impl ProbeStopState {
         };
         Self {
             half_snapshot_sent: false,
-            stability_search_exhausted: !policy.previous_working_uris.is_empty()
+            stability_search_exhausted: !policy.previous_working_keys.is_empty()
                 && remaining_previous_working == 0,
             remaining_previous_working,
         }
@@ -515,9 +513,12 @@ fn schedule_active_candidates(
     }
 
     let has_previous =
-        stop_policy.prioritize_stability && !stop_policy.previous_working_uris.is_empty();
+        stop_policy.prioritize_stability && !stop_policy.previous_working_keys.is_empty();
     source_fair_candidates(candidates, |candidate| {
-        has_previous && stop_policy.previous_working_uris.contains(&candidate.uri)
+        has_previous
+            && stop_policy
+                .previous_working_keys
+                .contains(&candidate.dedup_key)
     })
 }
 
@@ -636,7 +637,7 @@ fn probe_stop_reason(
     }
 
     let found_previous = stable_reachable_count(ranked, policy);
-    let required_previous = second_half.min(policy.previous_working_uris.len());
+    let required_previous = second_half.min(policy.previous_working_keys.len());
     if found_previous >= required_previous {
         return Some(format!(
             "Early stop: found {reachable}/{} working configs, including {found_previous}/{required_previous} kept from the previous run's saved top-N",
@@ -678,7 +679,7 @@ fn probe_stop_reason_with_batch(
 fn stable_reachable_count(ranked: &[RankedConfig], policy: &ProbeStopPolicy) -> usize {
     ranked
         .iter()
-        .filter(|item| item.reachable && policy.previous_working_uris.contains(&item.uri))
+        .filter(|item| item.reachable && policy.previous_working_keys.contains(&item.dedup_key))
         .count()
 }
 
@@ -703,19 +704,19 @@ fn stability_snapshot(
     let mut used_uris = std::collections::HashSet::new();
     for item in working
         .iter()
-        .filter(|item| policy.previous_working_uris.contains(&item.uri))
+        .filter(|item| policy.previous_working_keys.contains(&item.dedup_key))
     {
         if selected.len() >= limit {
             break;
         }
-        used_uris.insert(item.uri.clone());
+        used_uris.insert(item.dedup_key.clone());
         selected.push(item.clone());
     }
     for item in working {
         if selected.len() >= limit {
             break;
         }
-        if used_uris.insert(item.uri.clone()) {
+        if used_uris.insert(item.dedup_key.clone()) {
             selected.push(item);
         }
     }
@@ -734,7 +735,7 @@ fn update_stability_search_after_batch(
     state.remaining_previous_working = state
         .remaining_previous_working
         .saturating_sub(tested_previous_working);
-    if !policy.previous_working_uris.is_empty() && state.remaining_previous_working == 0 {
+    if !policy.previous_working_keys.is_empty() && state.remaining_previous_working == 0 {
         state.stability_search_exhausted = true;
     }
 }
@@ -753,11 +754,13 @@ fn entry_has_previous_working_uri(
     entry: &PreparedActiveCandidate,
     policy: &ProbeStopPolicy,
 ) -> bool {
-    policy.previous_working_uris.contains(&entry.candidate.uri)
+    policy
+        .previous_working_keys
+        .contains(&entry.candidate.dedup_key)
         || entry
             .aliases
             .iter()
-            .any(|alias| policy.previous_working_uris.contains(&alias.uri))
+            .any(|alias| policy.previous_working_keys.contains(&alias.dedup_key))
 }
 
 fn send_ranked_snapshot(
@@ -1199,11 +1202,7 @@ fn ranked_configs_for_active_result(
     result: Result<ActiveProbeSuccess>,
 ) -> Vec<RankedConfig> {
     match result {
-        Ok(active) => entry
-            .into_candidates()
-            .into_iter()
-            .map(|candidate| successful_config(candidate, &active))
-            .collect(),
+        Ok(active) => vec![successful_config(entry.into_candidate(), &active)],
         Err(err) => {
             let error = err.to_string();
             failed_configs(entry, "active_http", error)
@@ -1216,6 +1215,7 @@ fn successful_config(candidate: Candidate, active: &ActiveProbeSuccess) -> Ranke
         rank: 0,
         stability_count: 0,
         id: candidate.id,
+        dedup_key: candidate.dedup_key,
         source: candidate.source,
         priority: candidate.priority,
         protocol: candidate.protocol,
@@ -1634,6 +1634,7 @@ fn failed_config(candidate: Candidate, validation: &str, error: String) -> Ranke
         rank: 0,
         stability_count: 0,
         id: candidate.id,
+        dedup_key: candidate.dedup_key,
         source: candidate.source,
         priority: candidate.priority,
         protocol: candidate.protocol,
@@ -1655,11 +1656,7 @@ fn failed_configs(
     validation: &str,
     error: String,
 ) -> Vec<RankedConfig> {
-    entry
-        .into_candidates()
-        .into_iter()
-        .map(|candidate| failed_config(candidate, validation, error.clone()))
-        .collect()
+    vec![failed_config(entry.into_candidate(), validation, error)]
 }
 
 fn compare_ranked(left: &RankedConfig, right: &RankedConfig) -> Ordering {
@@ -2259,6 +2256,7 @@ mod tests {
             rank: 0,
             stability_count: 0,
             id: uri.to_string(),
+            dedup_key: uri.to_string(),
             source: "test".to_string(),
             priority: 1,
             protocol: "vless".to_string(),
@@ -2281,19 +2279,20 @@ mod tests {
     fn stop_policy(
         top_n: usize,
         prioritize_stability: bool,
-        previous_working_uris: std::collections::HashSet<String>,
+        previous_working_keys: std::collections::HashSet<String>,
     ) -> ProbeStopPolicy {
         ProbeStopPolicy {
             scan_all_configs: false,
             top_n,
             prioritize_stability,
-            previous_working_uris,
+            previous_working_keys,
         }
     }
 
     fn candidate(source: &str, priority: u32, name: &str) -> Candidate {
         Candidate {
             id: name.to_string(),
+            dedup_key: format!("vless|example.com|443|ws|tls|{name}"),
             source: source.to_string(),
             priority,
             protocol: "vless".to_string(),
@@ -2551,9 +2550,11 @@ mod tests {
             candidate("backup", 2, "backup-old"),
             candidate("backup", 2, "backup-new"),
         ];
-        let previous_working_uris =
-            std::collections::HashSet::from([candidates[1].uri.clone(), candidates[2].uri.clone()]);
-        let policy = stop_policy(2, true, previous_working_uris);
+        let previous_working_keys = std::collections::HashSet::from([
+            candidates[1].dedup_key.clone(),
+            candidates[2].dedup_key.clone(),
+        ]);
+        let policy = stop_policy(2, true, previous_working_keys);
 
         let scheduled = schedule_active_candidates(candidates, &policy);
         let names = scheduled
@@ -2580,6 +2581,7 @@ mod tests {
         let candidates = vec![
             Candidate {
                 id: "one".to_string(),
+                dedup_key: "vless|example.com|443|ws|tls".to_string(),
                 source: "test".to_string(),
                 priority: 1,
                 protocol: "vless".to_string(),
@@ -2594,6 +2596,7 @@ mod tests {
             },
             Candidate {
                 id: "two".to_string(),
+                dedup_key: "vless|example.com|443|ws|tls".to_string(),
                 source: "test".to_string(),
                 priority: 1,
                 protocol: "vless".to_string(),
@@ -2684,6 +2687,7 @@ mod tests {
             PreparedActiveCandidate {
                 candidate: Candidate {
                     id: "one".to_string(),
+                    dedup_key: "ss|one.example|8388|tcp|none".to_string(),
                     source: "test".to_string(),
                     priority: 1,
                     protocol: "ss".to_string(),
@@ -2703,6 +2707,7 @@ mod tests {
             PreparedActiveCandidate {
                 candidate: Candidate {
                     id: "two".to_string(),
+                    dedup_key: "ss|two.example|8388|tcp|none".to_string(),
                     source: "test".to_string(),
                     priority: 1,
                     protocol: "ss".to_string(),

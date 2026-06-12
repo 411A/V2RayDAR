@@ -19,7 +19,7 @@
 
 ## Copy-paste setup (latest V2RayDAR + recommended sing-box)
 
-Copy and paste the script for your OS into the terminal. These scripts fetch the latest V2RayDAR release, read its embedded `SING_BOX_VERSION` from `src/constants.rs`, install or download that recommended `sing-box` release by default, and write `probe.sing_box_path` into `configs.yaml` so the printed `--no-tui` command can start without the interactive setup prompt. Set `V2RAYDAR_SING_BOX_VERSION` before running a script only if you intentionally want a different default `sing-box` version, or set `V2RAYDAR_SING_BOX_PATH` to reuse a specific working `sing-box` binary.
+Copy and paste the script for your OS into the terminal. Desktop releases also include `_with_singbox` archives with pinned `sing-box` 1.13.13 beside V2RayDAR; those builds auto-detect the bundled executable and do not require `probe.sing_box_path`. The scripts below still support separate `sing-box` installs and write `probe.sing_box_path` when they download or reuse one.
 
 <details>
 <summary>Windows PowerShell</summary>
@@ -534,185 +534,30 @@ EOF
 <details>
 <summary>Android / Termux</summary>
 
-Termux currently has no Android V2RayDAR release asset, so install the build toolchain and build the latest source locally. In Termux, the `rust` package provides Cargo; confirm `cargo --version` works before building.
+Use the prebuilt Termux release archive for your device architecture. The package does not embed `sing-box`; install the pinned Termux package.
 
 ```bash
 pkg update
-pkg upgrade -y
-pkg install -y python rust git clang make cmake pkg-config
-cargo --version
+pkg install -y curl tar sing-box=1.13.13
 
-python3 << 'EOF'
-import json, os, platform, re, shlex, stat, subprocess, tarfile, urllib.request, zipfile
+arch="$(uname -m)"
+case "$arch" in
+  aarch64|arm64) asset="v2raydar-termux-aarch64.tar.gz" ;;
+  x86_64|amd64) asset="v2raydar-termux-x86_64.tar.gz" ;;
+  *) echo "Unsupported Termux architecture: $arch" >&2; exit 1 ;;
+esac
 
-home = os.path.expanduser('~')
-root = os.path.join(home, '.local', 'share', 'V2RayDAR')
-os.makedirs(root, exist_ok=True)
-
-def j(url):
-    return json.load(urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})))
-
-def dl(url, path):
-    if os.path.exists(path) and os.path.getsize(path) > 1024:
-        return path
-    urllib.request.urlretrieve(url, path)
-    return path
-
-def token(name, value):
-    return re.search(r'(^|[-_.])' + re.escape(value) + r'($|[-_.])', name) is not None
-
-def embedded_sing_box_version(tag):
-    override = os.environ.get('V2RAYDAR_SING_BOX_VERSION', '').strip()
-    if override:
-        return override
-    constants_url = 'https://raw.githubusercontent.com/411A/V2RayDAR/' + tag + '/src/constants.rs'
-    data = urllib.request.urlopen(urllib.request.Request(constants_url, headers={'User-Agent': 'Mozilla/5.0'})).read().decode('utf-8')
-    match = re.search(r'pub\s+const\s+SING_BOX_VERSION\s*:\s*&str\s*=\s*"([^"]+)"', data)
-    if not match:
-        raise SystemExit('Unable to read SING_BOX_VERSION from ' + constants_url)
-    return match.group(1)
-
-def asset_for(release, platforms, arch_tokens, suffixes):
-    for arch in arch_tokens:
-        for suffix in suffixes:
-            for asset in release.get('assets', []):
-                name = asset['name'].lower()
-                if name.endswith(('.apk', '.sha256', '.sig', '.asc', '.txt')):
-                    continue
-                if not any(platform in name for platform in platforms):
-                    continue
-                if arch and not token(name, arch):
-                    continue
-                if suffix and not name.endswith(suffix):
-                    continue
-                return asset
-    return None
-
-def extract(path, dest):
-    with open(path, 'rb') as fp:
-        magic = fp.read(2)
-    if magic == b'PK':
-        with zipfile.ZipFile(path) as z:
-            z.extractall(dest)
-            for info in z.infolist():
-                mode = (info.external_attr >> 16) & 0o777
-                target = os.path.join(dest, info.filename)
-                if mode and os.path.exists(target):
-                    os.chmod(target, mode)
-    else:
-        with tarfile.open(path, 'r:*') as t:
-            try:
-                t.extractall(dest, filter='data')
-            except TypeError:
-                t.extractall(dest)
-
-def chmod_x(path):
-    os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-
-def find_file(base, needle):
-    for dp, _, files in os.walk(base):
-        for filename in files:
-            lower = filename.lower()
-            if lower.endswith(('.sha256', '.zip', '.tar.gz', '.tgz')):
-                continue
-            if needle in lower:
-                return os.path.join(dp, filename)
-    return None
-
-def sing_box_version(path):
-    try:
-        out = subprocess.check_output([path, 'version'], text=True, stderr=subprocess.STDOUT, timeout=10)
-    except Exception:
-        return ''
-    return out
-
-def configured_sing_box_path():
-    path = os.environ.get('V2RAYDAR_SING_BOX_PATH', '').strip()
-    if not path:
-        return None
-    if not sing_box_version(path):
-        raise SystemExit('V2RAYDAR_SING_BOX_PATH does not run as a sing-box executable: ' + path)
-    return path
-
-def warn_if_not_recommended(path, recommended):
-    version = sing_box_version(path)
-    if version and recommended not in version:
-        print('Using sing-box from ' + path + '; recommended version is ' + recommended)
-
-def yaml_sq(value):
-    return "'" + value.replace("'", "''") + "'"
-
-def configure_config(tag, sing_box_path):
-    config_dir = os.path.join(root, 'v2raydar_data')
-    os.makedirs(config_dir, exist_ok=True)
-    config = os.path.join(config_dir, 'configs.yaml')
-    if not os.path.exists(config):
-        template = 'https://raw.githubusercontent.com/411A/V2RayDAR/' + tag + '/configs.example.yaml'
-        dl(template, config)
-    with open(config, 'r', encoding='utf-8') as fp:
-        text = fp.read()
-    value = yaml_sq(sing_box_path)
-    if re.search(r'(?m)^\s*sing_box_path\s*:', text):
-        text = re.sub(r'(?m)^(\s*sing_box_path\s*:\s*).*$', lambda m: m.group(1) + value, text, count=1)
-    elif re.search(r'(?m)^probe\s*:\s*$', text):
-        text = re.sub(r'(?m)^(probe\s*:\s*)$', lambda m: m.group(1) + '\n  sing_box_path: ' + value, text, count=1)
-    else:
-        text += '\nprobe:\n  mode: active\n  sing_box_path: ' + value + '\n'
-    with open(config, 'w', encoding='utf-8') as fp:
-        fp.write(text)
-    return config
-
-def source_dir(base):
-    return next((os.path.join(base, name) for name in os.listdir(base) if os.path.isdir(os.path.join(base, name)) and 'v2raydar' in name.lower()), base)
-
-vr = j('https://api.github.com/repos/411A/V2RayDAR/releases/latest')
-SB_VERSION = embedded_sing_box_version(vr['tag_name'])
-pkg_path = '/data/data/com.termux/files/usr/bin/sing-box'
-sb_bin = configured_sing_box_path()
-if not sb_bin and os.path.isfile(pkg_path) and sing_box_version(pkg_path):
-    sb_bin = pkg_path
-if not sb_bin:
-    print('Installing recommended sing-box ' + SB_VERSION + ' via pkg...')
-    subprocess.run(['pkg', 'install', '-y', 'sing-box=' + SB_VERSION], check=False)
-    if os.path.isfile(pkg_path) and sing_box_version(pkg_path):
-        sb_bin = pkg_path
-
-if not sb_bin:
-    print('pkg install did not provide sing-box ' + SB_VERSION + '; trying the recommended GitHub release...')
-    m = platform.machine().lower()
-    arch = 'arm64' if m in ('aarch64', 'arm64') else 'armv7' if m.startswith('armv7') else 'amd64' if m in ('x86_64', 'amd64') else '386' if m in ('i386', 'i686') else m
-    sb = j('https://api.github.com/repos/SagerNet/sing-box/releases/tags/v' + SB_VERSION)
-    sb_a = asset_for(sb, ['android', 'termux'], [arch], ['.tar.gz', '.tgz', '.zip'])
-    if sb_a:
-        sb_dir = os.path.join(root, 'sing-box', SB_VERSION)
-        os.makedirs(sb_dir, exist_ok=True)
-        sb_file = dl(sb_a['browser_download_url'], os.path.join(sb_dir, sb_a['name']))
-        extract(sb_file, sb_dir)
-        sb_bin = find_file(sb_dir, 'sing-box')
-        if sb_bin:
-            chmod_x(sb_bin)
-
-if not sb_bin or not sing_box_version(sb_bin):
-    raise SystemExit('sing-box executable was not found. Install the recommended version with: pkg install sing-box=' + SB_VERSION + ' or set V2RAYDAR_SING_BOX_PATH')
-warn_if_not_recommended(sb_bin, SB_VERSION)
-
-vr_dir = os.path.join(root, 'v2raydar', vr['tag_name'].lstrip('v'))
-os.makedirs(vr_dir, exist_ok=True)
-src_tgz = dl(vr['tarball_url'], os.path.join(vr_dir, 'src.tar.gz'))
-extract(src_tgz, vr_dir)
-src = source_dir(vr_dir)
-config = configure_config(vr['tag_name'], sb_bin)
-
-print('sing-box=' + sb_bin)
-print('v2raydar_source=' + src)
-print('config=' + config)
-print('run: cd ' + shlex.quote(src) + ' && cargo run --release -- --no-tui')
-EOF
+url="https://github.com/411A/V2RayDAR/releases/latest/download/$asset"
+curl -L "$url" -o "$asset"
+tar -xzf "$asset"
+cd "${asset%.tar.gz}"
+./install-termux.sh
+v2raydar --no-tui
 ```
 
 </details>
 
-Each block reuses already-downloaded files when possible, prints the resolved `sing-box`, V2RayDAR, and config paths, then prints the command to start V2RayDAR.
+The desktop blocks reuse already-downloaded files when possible, print the resolved `sing-box`, V2RayDAR, and config paths, then print the command to start V2RayDAR. The Termux block installs the prebuilt V2RayDAR binary and pinned `sing-box` package directly.
 
 ---
 
@@ -745,9 +590,9 @@ Each block reuses already-downloaded files when possible, prints the resolved `s
 
 ## Quick start
 
-1. **Get sing-box**. Active probing needs a working `sing-box` executable. V2RayDAR recommends the version declared by `SING_BOX_VERSION` in `src/constants.rs`, but a user-provided working version is accepted. Use `sing-box.exe` on Windows, `sing-box` on Linux and macOS, and `/data/data/com.termux/files/usr/bin/sing-box` from Termux `pkg install`.
+1. **Get sing-box**. Active probing needs a working `sing-box` executable. Use a desktop `_with_singbox` release archive to get pinned `sing-box` 1.13.13 bundled beside V2RayDAR, or install it yourself. Termux users should install `sing-box=1.13.13` with `pkg`.
 2. **Run V2RayDAR**. Use the release binary for your OS, or build from source with `cargo run --release`.
-3. **First launch** creates `configs.yaml` in the platform's app-data folder and (if `probe.mode: active`) asks for the full path to `sing-box`.
+3. **First launch** creates `configs.yaml` in the platform's app-data folder. If no bundled, Termux-package, or configured `sing-box` executable is found while `probe.mode: active`, the TUI asks for the full path.
 4. **Point your client** at one of the local URLs below.
 
 ### Local URLs (default `127.0.0.1:27141`)
@@ -805,7 +650,7 @@ Windows users replace `v2raydar` with `v2raydar.exe`. On macOS open the bundled 
 | `sharing.require_token` | `false` | Requires `?token=...` for LAN requests. |
 | `sharing.token` | `null` | Leave empty, set `true` to auto-generate, or supply a string. |
 | `probe.mode` | `active` | `active` uses `sing-box`; `tcp` is diagnostic only. |
-| `probe.sing_box_path` | `null` | Full path to the `sing-box` executable. |
+| `probe.sing_box_path` | `null` | Optional path to `sing-box`. Leave `null` for desktop `_with_singbox` builds or Termux's package path. |
 | `probe.connect_timeout_ms` | `5000` | TCP connect timeout for diagnostic probing. |
 | `probe.active_timeout_ms` | `30000` | HTTP test timeout in active mode. |
 | `probe.startup_timeout_ms` | `5000` | Wait time for the temporary proxy to come up. |

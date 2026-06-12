@@ -1,4 +1,4 @@
-use std::process::Stdio;
+use std::{path::PathBuf, process::Stdio};
 
 use anyhow::{Context, Result, anyhow};
 use tokio::process::Command;
@@ -8,6 +8,9 @@ use crate::{
     constants::{SING_BOX_VERSION, sing_box_download_url},
     paths::AppPaths,
 };
+
+#[cfg(target_os = "android")]
+const TERMUX_SING_BOX_PATH: &str = "/data/data/com.termux/files/usr/bin/sing-box";
 
 #[derive(Debug, Clone)]
 pub struct SetupGuide {
@@ -30,9 +33,55 @@ pub async fn active_probe_needs_setup(config: &AppConfig, _paths: &AppPaths) -> 
     verify_path(&config.probe.sing_box_path).await.is_err()
 }
 
+pub fn apply_runtime_sing_box_path(config: &mut AppConfig) {
+    if !should_setup_path(&config.probe.sing_box_path) {
+        config.probe.sing_box_path = normalize_path(&config.probe.sing_box_path);
+        config.probe.sing_box_path_auto = false;
+        return;
+    }
+
+    if let Some(path) = bundled_sing_box_path().or_else(platform_default_sing_box_path) {
+        config.probe.sing_box_path = path.to_string_lossy().to_string();
+        config.probe.sing_box_path_auto = true;
+    }
+}
+
 fn should_setup_path(value: &str) -> bool {
     let trimmed = normalize_path(value);
     trimmed.is_empty()
+}
+
+fn bundled_sing_box_path() -> Option<PathBuf> {
+    let executable = std::env::current_exe().ok()?;
+    let executable_dir = executable.parent()?;
+    let candidate = executable_dir.join(bundled_sing_box_file_name());
+    candidate.is_file().then_some(candidate)
+}
+
+#[cfg(target_os = "windows")]
+fn bundled_sing_box_file_name() -> &'static str {
+    "sing-box.exe"
+}
+
+#[cfg(not(target_os = "windows"))]
+fn bundled_sing_box_file_name() -> &'static str {
+    "sing-box"
+}
+
+#[cfg(target_os = "android")]
+fn platform_default_sing_box_path() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(prefix) = std::env::var_os("PREFIX") {
+        candidates.push(PathBuf::from(prefix).join("bin").join("sing-box"));
+    }
+    candidates.push(PathBuf::from(TERMUX_SING_BOX_PATH));
+
+    candidates.into_iter().find(|path| path.is_file())
+}
+
+#[cfg(not(target_os = "android"))]
+fn platform_default_sing_box_path() -> Option<PathBuf> {
+    None
 }
 
 #[cfg(target_os = "windows")]
@@ -231,5 +280,16 @@ mod tests {
         assert_eq!(guide.executable_name, "sing-box");
 
         assert!(guide.release_asset.contains(SING_BOX_VERSION));
+    }
+
+    #[test]
+    fn runtime_path_keeps_user_configured_path() {
+        let mut config = AppConfig::default_for_first_run();
+        config.probe.sing_box_path = " sing-box ".to_string();
+
+        apply_runtime_sing_box_path(&mut config);
+
+        assert_eq!(config.probe.sing_box_path, "sing-box");
+        assert!(!config.probe.sing_box_path_auto);
     }
 }

@@ -9,6 +9,9 @@ on:
 permissions:
   contents: write
 
+env:
+  SING_BOX_VERSION: "1.13.13"
+
 jobs:
   build:
     name: Build ${{ matrix.asset }}
@@ -21,10 +24,22 @@ jobs:
             target: x86_64-pc-windows-msvc
             binary: v2raydar.exe
             asset: v2raydar-windows-x86_64.exe
+            embedded_asset: v2raydar-windows-x86_64_with_singbox.zip
+            embedded_format: zip
+            embedded_binary: v2raydar.exe
+            sing_box_platform: windows
+            sing_box_arch: amd64
+            sing_box_binary: sing-box.exe
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             binary: v2raydar
             asset: v2raydar-linux-x86_64
+            embedded_asset: v2raydar-linux-x86_64_with_singbox.tar.gz
+            embedded_format: tar.gz
+            embedded_binary: v2raydar
+            sing_box_platform: linux
+            sing_box_arch: amd64
+            sing_box_binary: sing-box
 
     steps:
       - name: Checkout
@@ -63,6 +78,69 @@ jobs:
         with:
           name: ${{ matrix.asset }}
           path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+
+      - name: Stage embedded sing-box package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $headers = @{ "User-Agent" = "github-actions" }
+          $version = "${{ env.SING_BOX_VERSION }}"
+          $release = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/SagerNet/sing-box/releases/tags/v$version"
+          function Test-NameToken([string]$Name, [string]$Token) {
+            return $Name -match ('(^|[-_.])' + [regex]::Escape($Token) + '($|[-_.])')
+          }
+          $asset = $release.assets |
+            Where-Object {
+              $name = $_.name.ToLowerInvariant()
+              $name -like "*${{ matrix.sing_box_platform }}*" -and
+                (Test-NameToken $name "${{ matrix.sing_box_arch }}") -and
+                ($name.EndsWith(".zip") -or $name.EndsWith(".tar.gz") -or $name.EndsWith(".tgz"))
+            } |
+            Select-Object -First 1
+
+          if (-not $asset) {
+            throw "No sing-box v$version asset found for ${{ matrix.sing_box_platform }}-${{ matrix.sing_box_arch }}"
+          }
+
+          $download = Join-Path "dist" $asset.name
+          Invoke-WebRequest -Headers $headers -Uri $asset.browser_download_url -OutFile $download
+
+          $extractRoot = Join-Path "dist" "sing-box-$version-${{ matrix.sing_box_platform }}-${{ matrix.sing_box_arch }}"
+          New-Item -ItemType Directory -Force $extractRoot | Out-Null
+          if ($asset.name.ToLowerInvariant().EndsWith(".zip")) {
+            Expand-Archive -LiteralPath $download -DestinationPath $extractRoot -Force
+          } else {
+            tar -xf $download -C $extractRoot
+          }
+
+          $singBox = Get-ChildItem -LiteralPath $extractRoot -Recurse -File -Filter "${{ matrix.sing_box_binary }}" |
+            Select-Object -First 1
+          if (-not $singBox) {
+            throw "sing-box executable was not found after extracting $($asset.name)"
+          }
+          & $singBox.FullName version
+
+          $packageRoot = Join-Path "dist" "package-${{ matrix.embedded_asset }}"
+          New-Item -ItemType Directory -Force $packageRoot | Out-Null
+          Copy-Item -LiteralPath (Join-Path "dist" "${{ matrix.asset }}") -Destination (Join-Path $packageRoot "${{ matrix.embedded_binary }}")
+          Copy-Item -LiteralPath $singBox.FullName -Destination (Join-Path $packageRoot "${{ matrix.sing_box_binary }}")
+          if ("${{ runner.os }}" -ne "Windows") {
+            chmod +x (Join-Path $packageRoot "${{ matrix.embedded_binary }}")
+            chmod +x (Join-Path $packageRoot "${{ matrix.sing_box_binary }}")
+          }
+
+          if ("${{ matrix.embedded_format }}" -eq "zip") {
+            Compress-Archive -Path (Join-Path $packageRoot "*") -DestinationPath (Join-Path "dist" "${{ matrix.embedded_asset }}") -Force
+          } else {
+            tar -C $packageRoot -czf (Join-Path "dist" "${{ matrix.embedded_asset }}") .
+          }
+
+      - name: Upload embedded sing-box artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.embedded_asset }}
+          path: dist/${{ matrix.embedded_asset }}
           if-no-files-found: error
 
   build-macos:
@@ -188,6 +266,184 @@ jobs:
           path: dist/v2raydar-macos-universal.app.zip
           if-no-files-found: error
 
+      - name: Stage embedded sing-box app bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="${SING_BOX_VERSION}"
+          embedded_asset="v2raydar-macos-universal_with_singbox.zip"
+          work="dist/sing-box-${version}-darwin"
+          mkdir -p "$work"
+
+          python3 <<'PY'
+          import json
+          import os
+          import re
+          import urllib.request
+
+          version = os.environ["SING_BOX_VERSION"]
+          work = os.path.join("dist", f"sing-box-{version}-darwin")
+          url = f"https://api.github.com/repos/SagerNet/sing-box/releases/tags/v{version}"
+          req = urllib.request.Request(url, headers={"User-Agent": "github-actions"})
+          release = json.load(urllib.request.urlopen(req))
+
+          def token(name, value):
+              return re.search(r"(^|[-_.])" + re.escape(value) + r"($|[-_.])", name) is not None
+
+          for arch in ("amd64", "arm64"):
+              for asset in release.get("assets", []):
+                  name = asset["name"].lower()
+                  if "darwin" in name and token(name, arch) and name.endswith((".tar.gz", ".tgz", ".zip")):
+                      target = os.path.join(work, asset["name"])
+                      urllib.request.urlretrieve(asset["browser_download_url"], target)
+                      break
+              else:
+                  raise SystemExit(f"No sing-box v{version} darwin-{arch} asset found")
+          PY
+
+          for archive in "$work"/*; do
+            mkdir -p "$work/extract/$(basename "$archive")"
+            case "$archive" in
+              *.zip) unzip -q "$archive" -d "$work/extract/$(basename "$archive")" ;;
+              *) tar -xf "$archive" -C "$work/extract/$(basename "$archive")" ;;
+            esac
+          done
+
+          amd64_bin="$(find "$work/extract" -path '*darwin-amd64*' -type f -name sing-box | head -n 1)"
+          arm64_bin="$(find "$work/extract" -path '*darwin-arm64*' -type f -name sing-box | head -n 1)"
+          test -n "$amd64_bin"
+          test -n "$arm64_bin"
+
+          lipo -create -output "dist/V2RayDAR.app/Contents/MacOS/sing-box" "$amd64_bin" "$arm64_bin"
+          chmod +x "dist/V2RayDAR.app/Contents/MacOS/sing-box"
+          "dist/V2RayDAR.app/Contents/MacOS/sing-box" version
+
+          ditto -c -k --sequesterRsrc --keepParent "dist/V2RayDAR.app" "dist/$embedded_asset"
+
+      - name: Upload embedded sing-box app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2raydar-macos-universal_with_singbox.zip
+          path: dist/v2raydar-macos-universal_with_singbox.zip
+          if-no-files-found: error
+
+  build-termux:
+    name: Build ${{ matrix.asset }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-linux-android
+            clang_prefix: aarch64-linux-android
+            asset: v2raydar-termux-aarch64.tar.gz
+            package_dir: v2raydar-termux-aarch64
+            label: aarch64
+          - target: x86_64-linux-android
+            clang_prefix: x86_64-linux-android
+            asset: v2raydar-termux-x86_64.tar.gz
+            package_dir: v2raydar-termux-x86_64
+            label: x86_64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache Cargo build state
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/${{ matrix.target }}
+          key: cargo-build-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-build-${{ runner.os }}-${{ matrix.target }}-
+
+      - name: Install Rust target
+        shell: bash
+        run: |
+          rustup default stable
+          rustup target add "${{ matrix.target }}"
+
+      - name: Build release binary
+        shell: bash
+        env:
+          API_LEVEL: "24"
+        run: |
+          set -euo pipefail
+
+          ndk="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
+          if [ -z "$ndk" ]; then
+            echo "ANDROID_NDK_HOME or ANDROID_NDK_LATEST_HOME is required" >&2
+            exit 1
+          fi
+
+          linker="${ndk}/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.clang_prefix }}${API_LEVEL}-clang"
+          ar="${ndk}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+          test -x "$linker"
+          test -x "$ar"
+
+          linker_var="CARGO_TARGET_$(echo "${{ matrix.target }}" | tr '[:lower:]-' '[:upper:]_')_LINKER"
+          cc_var="CC_$(echo "${{ matrix.target }}" | tr '-' '_')"
+          ar_var="AR_$(echo "${{ matrix.target }}" | tr '-' '_')"
+          export "$linker_var=$linker"
+          export "$cc_var=$linker"
+          export "$ar_var=$ar"
+          cargo build --release --locked --target "${{ matrix.target }}"
+
+      - name: Stage Termux package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          asset="${{ matrix.asset }}"
+          package="dist/${{ matrix.package_dir }}"
+          mkdir -p "$package"
+
+          cp target/${{ matrix.target }}/release/v2raydar "$package/v2raydar"
+          chmod +x "$package/v2raydar"
+
+          cat > "$package/install-termux.sh" <<EOF
+          #!/data/data/com.termux/files/usr/bin/bash
+          set -euo pipefail
+
+          cd "\$(dirname "\$0")"
+          pkg install -y sing-box=${SING_BOX_VERSION}
+          install -Dm755 v2raydar "\${PREFIX}/bin/v2raydar"
+
+          cat <<'MSG'
+          Installed V2RayDAR to \$PREFIX/bin/v2raydar.
+          Run with: v2raydar --no-tui
+          MSG
+          EOF
+          chmod +x "$package/install-termux.sh"
+
+          cat > "$package/README-termux.txt" <<EOF
+          V2RayDAR Termux ${{ matrix.label }} release
+
+          This package is built for ${{ matrix.label }} Android devices running Termux.
+          It does not include sing-box. Install the pinned Termux package:
+
+              pkg install sing-box=${SING_BOX_VERSION}
+
+          Quick install:
+
+              tar -xzf ${asset}
+              cd ${{ matrix.package_dir }}
+              ./install-termux.sh
+              v2raydar --no-tui
+          EOF
+
+          tar -C dist -czf "dist/$asset" "${{ matrix.package_dir }}"
+
+      - name: Upload Termux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -223,7 +479,7 @@ jobs:
 
   publish:
     name: Publish GitHub release
-    needs: [build, build-macos, test]
+    needs: [build, build-macos, build-termux, test]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     env:

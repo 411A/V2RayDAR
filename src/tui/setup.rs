@@ -53,6 +53,7 @@ pub async fn run(config: &mut AppConfig, paths: &AppPaths) -> Result<()> {
                         match sing_box::verify_path(&candidate).await {
                             Ok(()) => {
                                 config.probe.sing_box_path = candidate;
+                                config.probe.sing_box_path_auto = false;
                                 save_config(&paths.config_path, config)?;
                                 break Ok(());
                             }

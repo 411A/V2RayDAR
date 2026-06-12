@@ -22,21 +22,23 @@ pub fn save_config(path: &Path, config: &AppConfig) -> Result<()> {
 }
 
 fn save_json_config(path: &Path, config: &AppConfig) -> Result<()> {
-    let content = serde_json::to_string_pretty(config).context("unable to serialize config")?;
+    let config = persistable_config(config);
+    let content = serde_json::to_string_pretty(&config).context("unable to serialize config")?;
     fs::write(path, format!("{content}\n"))
         .with_context(|| format!("unable to write config to {}", path.display()))
 }
 
 fn save_yaml_config(path: &Path, config: &AppConfig) -> Result<()> {
+    let config = persistable_config(config);
     let original = fs::read_to_string(path)
         .with_context(|| format!("unable to read existing config {}", path.display()))?;
     let previous = AppConfig::load(path)
         .with_context(|| format!("unable to parse existing config {}", path.display()))?;
 
     let mut document = YamlDocument::new(original);
-    update_top_level_scalars(&mut document, &previous, config);
-    update_sharing_section(&mut document, &previous, config);
-    update_probe_section(&mut document, &previous, config);
+    update_top_level_scalars(&mut document, &previous, &config);
+    update_sharing_section(&mut document, &previous, &config);
+    update_probe_section(&mut document, &previous, &config);
     if previous.subscriptions != config.subscriptions
         && !document.update_subscriptions(&previous.subscriptions, &config.subscriptions)
     {
@@ -48,6 +50,15 @@ fn save_yaml_config(path: &Path, config: &AppConfig) -> Result<()> {
 
     fs::write(path, document.finish())
         .with_context(|| format!("unable to write config to {}", path.display()))
+}
+
+fn persistable_config(config: &AppConfig) -> AppConfig {
+    let mut config = config.clone();
+    if config.probe.sing_box_path_auto {
+        config.probe.sing_box_path.clear();
+        config.probe.sing_box_path_auto = false;
+    }
+    config
 }
 
 fn update_top_level_scalars(document: &mut YamlDocument, previous: &AppConfig, config: &AppConfig) {
@@ -748,6 +759,17 @@ mod tests {
         ))
     }
 
+    fn temp_config_path_with_extension(name: &str, extension: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is after unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "v2raydar-util-{name}-{}-{nonce}.{extension}",
+            std::process::id()
+        ))
+    }
+
     fn write_config(name: &str, content: &str) -> PathBuf {
         let path = temp_config_path(name);
         fs::write(&path, content).expect("temp config can be written");
@@ -890,5 +912,47 @@ subscriptions:
         assert!(saved.contains("  - name: second"));
         assert!(saved.contains("    priority: 2"));
         assert!(saved.contains("  accepted_statuses: [204, 200]"));
+    }
+
+    #[test]
+    fn yaml_save_does_not_persist_auto_sing_box_path() {
+        let path = write_config(
+            "auto-sing-box-path",
+            r#"probe:
+  sing_box_path: null
+
+subscriptions:
+  - name: first
+    url: data:,vless://first@example.com:443%23demo
+"#,
+        );
+        let mut config = AppConfig::load(&path).expect("config loads");
+        config.probe.sing_box_path = "/tmp/v2raydar/sing-box".to_string();
+        config.probe.sing_box_path_auto = true;
+        config.top_n = 11;
+
+        save_config(&path, &config).expect("config saves");
+        let saved = fs::read_to_string(&path).expect("config can be read");
+        fs::remove_file(&path).ok();
+
+        assert!(saved.contains("  sing_box_path: null"));
+        assert!(!saved.contains("/tmp/v2raydar/sing-box"));
+        assert!(saved.contains("top_n: 11"));
+    }
+
+    #[test]
+    fn json_save_does_not_persist_auto_sing_box_path_or_flag() {
+        let path = temp_config_path_with_extension("auto-sing-box-path", "json");
+        let mut config = AppConfig::default_for_first_run();
+        config.probe.sing_box_path = "/tmp/v2raydar/sing-box".to_string();
+        config.probe.sing_box_path_auto = true;
+
+        save_config(&path, &config).expect("config saves");
+        let saved = fs::read_to_string(&path).expect("config can be read");
+        fs::remove_file(&path).ok();
+
+        assert!(saved.contains(r#""sing_box_path": """#));
+        assert!(!saved.contains("sing_box_path_auto"));
+        assert!(!saved.contains("/tmp/v2raydar/sing-box"));
     }
 }

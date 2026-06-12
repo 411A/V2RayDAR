@@ -43,7 +43,9 @@ use crate::{
     paths::AppPaths,
     probe::probe_candidates,
     server::serve,
-    sing_box::{active_probe_needs_setup, recommended_version, setup_guide},
+    sing_box::{
+        active_probe_needs_setup, apply_runtime_sing_box_path, recommended_version, setup_guide,
+    },
     subscription::{
         FetchFailure, FetchOutcome, load_cached_candidates, load_candidates_with_cache,
         retry_failed_sources_with_proxy,
@@ -477,6 +479,7 @@ fn print_sing_box_setup_required(paths: &AppPaths) {
     println!("Download: {}", sing_box_download_url());
     println!("Choose the release asset: {}", guide.release_asset);
     println!("Use the executable named: {}", guide.executable_name);
+    println!("Embedded desktop builds also work when the executable is beside V2RayDAR.");
     println!("Set probe.sing_box_path to the executable path or a working PATH command.");
     println!("Examples:");
     for path in guide.example_paths {
@@ -619,10 +622,11 @@ fn resolve_paths(cli: &Cli) -> Result<AppPaths> {
 }
 
 fn load_config_and_persist_generated_token(path: &Path) -> Result<AppConfig> {
-    let (config, generated_token_requested) = AppConfig::load_with_generated_token_flag(path)?;
+    let (mut config, generated_token_requested) = AppConfig::load_with_generated_token_flag(path)?;
     if generated_token_requested {
         tui::util::save_config(path, &config)?;
     }
+    apply_runtime_sing_box_path(&mut config);
     Ok(config)
 }
 

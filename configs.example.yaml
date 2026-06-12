@@ -1,48 +1,74 @@
+#* Local HTTP bind address; avoid 0.0.0.0 unless you intend LAN exposure.
 bind: 127.0.0.1:27141
+# Number of best working configs published to subscription endpoints.
 top_n: 10
+# Auto-refresh interval in seconds; 0 disables timer refreshes.
 refresh_seconds: 300
+# true returns /subscription as base64 for v2rayN/v2rayNG compatibility.
 encoded_subscription: true
-# true re-pings the previous run's saved top-N first and keeps them ahead of newly
-# found low-ping configs. false simply prefers any working low-ping config.
-# The saved top-N lives in the cache folder and is wiped on every fresh run and quit.
+# true re-pings the last saved top-N first and keeps stable configs ahead.
 prioritize_stability: true
-# Publishes each working config immediately; early configs may not have the lowest ping or best stability.
+# true publishes early working configs before final ranking; results may be less optimal & unstable.
 return_configs_asap: false
+# true tests every candidate; expect longer runs and more CPU/network use.
 scan_all_configs: false
+# Per-source download timeout in milliseconds; raise only for slow sources.
 fetch_timeout_ms: 30000
+# Subscription sources fetched in parallel; high values can stress network/RAM.
 fetch_concurrency: 8
+# Maximum bytes accepted per source; high values allow large memory use.
 max_subscription_bytes: 33554432
-# When true, skip subscription URLs and test only cached subscription snapshots.
+# true skips live source downloads and tests only cached subscription snapshots.
 use_cache_only: false
-# Optional direct share link used through sing-box to fetch subscriptions on restricted networks.
+# Optional private share link used as a fetch bridge on restricted networks
 emergency_config: null
 
+#* LAN sharing controls for phones or other devices on your network.
 sharing:
+  # false keeps endpoints local-only unless bind is manually exposed.
   enabled: false
+  # true requires ?token=... for LAN subscription/results requests.
   require_token: false
+  # true auto-generates a token; a string sets your own shared secret.
   token: null
 
+#* Candidate validation settings.
 probe:
+  # active uses sing-box for real HTTP tests; tcp is only a lightweight diagnostic.
   mode: active
+  # null auto-detects bundled/Termux sing-box; set a path if needed.
   sing_box_path: null
+  # TCP diagnostic timeout in milliseconds; lower fails faster on bad networks.
   connect_timeout_ms: 5000
+  # HTTP active-probe timeout per candidate; high values slow failed probes.
   active_timeout_ms: 30000
+  # Wait time for each temporary sing-box process to start.
   startup_timeout_ms: 5000
+  # HTTP checks per active batch; high values can increase CPU/network pressure.
   concurrency: 16
+  # Initial candidates per sing-box batch; high values can raise process RAM use.
   batch_size: 20
-  # Auto or user values are internally capped (ACTIVE_PROBE_PROCESS_MAX_CONCURRENCY) to avoid process/socket congestion.
+  # Parallel sing-box processes; keep low or expect high RAM/socket usage.
   process_concurrency: null
+  # URL loaded through each candidate to prove reachability.
   test_url: https://www.gstatic.com/generate_204
+  # HTTP status codes treated as successful active probes.
   accepted_statuses: [204, 200]
+  # Optional speed-test URL; enabling it consumes extra bandwidth
+  # You can use this URL for example: https://archive.org/download/steamboat-willie_1928/steamboat-willie_1928.ia.mp4
   download_url: null
-  # Or:
-  # download_url: https://archive.org/download/steamboat-willie_1928/steamboat-willie_1928.ia.mp4
+  # Maximum bytes read per speed test; high values use more data/time.
   download_bytes_limit: 1048576
 
+#* Public subscription sources to fetch, parse, probe, and rank.
 subscriptions:
+  # Display name for this source in logs, TUI, and results.
   - name: src-1
+    # Subscription URL to fetch.
     url: https://raw.githubusercontent.com/masir-sefid/Sub/main/@Masir_Sefid.txt
+    # true includes this source in refreshes.
     enabled: true
+    # Lower numbers rank and schedule earlier than higher numbers.
     priority: 1
 
   - name: src-2

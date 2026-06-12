@@ -515,6 +515,7 @@ async fn probe_refresh_candidates(
         push_tui_progress(
             state,
             ProgressEvent::LiveLog(message.trim_end_matches('.').to_string()),
+            &HashSet::new(),
         )
         .await;
         return Vec::new();
@@ -538,6 +539,7 @@ async fn probe_refresh_candidates(
             "{label} started: {candidate_count} candidates with {:?}",
             config.probe.mode
         )),
+        &HashSet::new(),
     )
     .await;
 
@@ -656,12 +658,15 @@ async fn refresh_once(
     let started_instant = std::time::Instant::now();
     let previous_before_refresh = state.read().await.clone();
     let previous_top_n = if config.prioritize_stability {
-        load_stable_top_uris(cache_dir).await
+        load_stable_top_keys(cache_dir).await
     } else {
         HashSet::new()
     };
-    let (progress_tx, progress_task) =
-        spawn_tui_progress_forwarder(state.clone(), print_compact_progress);
+    let (progress_tx, progress_task) = spawn_tui_progress_forwarder(
+        state.clone(),
+        previous_top_n.clone(),
+        print_compact_progress,
+    );
     if print_compact_progress {
         print_log(format!(
             "Refresh started at {}.",
@@ -722,10 +727,10 @@ async fn refresh_once(
     };
     let mut fresh_success_count = fetched.successes.len();
     let mut fetched_count = fetched.candidates.len();
-    let mut seen_candidate_uris = fetched
+    let mut seen_candidate_keys = fetched
         .candidates
         .iter()
-        .map(|candidate| candidate.uri.clone())
+        .map(|candidate| candidate.dedup_key.clone())
         .collect::<HashSet<_>>();
     let mut fetch_errors = fetched.errors.clone();
     info!(
@@ -791,9 +796,9 @@ async fn refresh_once(
             {
                 Ok(mut retry) => {
                     let retry_before_dedup = retry.candidates.len();
-                    retry
-                        .candidates
-                        .retain(|candidate| seen_candidate_uris.insert(candidate.uri.clone()));
+                    retry.candidates.retain(|candidate| {
+                        seen_candidate_keys.insert(candidate.dedup_key.clone())
+                    });
                     let retry_count = retry.candidates.len();
                     fetched_count = fetched_count.saturating_add(retry_count);
                     fresh_success_count = fresh_success_count.saturating_add(retry.successes.len());
@@ -849,6 +854,7 @@ async fn refresh_once(
                         ProgressEvent::LiveLog(format!(
                             "Subscription retry through first working config failed: {error}"
                         )),
+                        &HashSet::new(),
                     )
                     .await;
                 }
@@ -860,6 +866,7 @@ async fn refresh_once(
                     "Subscription retry skipped: no emergency or active working config is available"
                         .to_string(),
                 ),
+                &HashSet::new(),
             )
             .await;
         }
@@ -883,7 +890,7 @@ async fn refresh_once(
                 let cache_before_dedup = cached.candidates.len();
                 cached
                     .candidates
-                    .retain(|candidate| seen_candidate_uris.insert(candidate.uri.clone()));
+                    .retain(|candidate| seen_candidate_keys.insert(candidate.dedup_key.clone()));
                 let cache_count = cached.candidates.len();
                 fetched_count = fetched_count.saturating_add(cache_count);
                 if !cached.errors.is_empty() {
@@ -936,6 +943,7 @@ async fn refresh_once(
                 push_tui_progress(
                     &state,
                     ProgressEvent::LiveLog(format!("Cache fallback failed: {error}")),
+                    &HashSet::new(),
                 )
                 .await;
             }
@@ -964,6 +972,7 @@ async fn refresh_once(
 
     let progress_state = state.read().await.clone();
     let mut stable_working_counts = previous_before_refresh.stable_working_counts.clone();
+    deduplicate_ranked_configs(&mut ranked);
     apply_stability_ranking(
         &mut ranked,
         &mut stable_working_counts,
@@ -971,7 +980,7 @@ async fn refresh_once(
         config.prioritize_stability,
     );
     if config.prioritize_stability {
-        save_stable_top_uris(cache_dir, &ranked, config.top_n).await;
+        save_stable_top_keys(cache_dir, &ranked, config.top_n).await;
     } else {
         delete_stable_top_cache(cache_dir).await;
     }
@@ -1029,20 +1038,28 @@ fn probe_stop_policy(
     previous_top_n: &HashSet<String>,
     candidates: &[crate::model::Candidate],
 ) -> ProbeStopPolicy {
-    let current_uris = candidates
+    let current_keys = candidates
         .iter()
-        .map(|candidate| candidate.uri.as_str())
+        .map(|candidate| candidate.dedup_key.as_str())
         .collect::<HashSet<_>>();
 
     ProbeStopPolicy {
         scan_all_configs: config.scan_all_configs,
         top_n: config.top_n,
         prioritize_stability: config.prioritize_stability,
-        previous_working_uris: previous_top_n
+        previous_working_keys: previous_top_n
             .iter()
-            .filter(|uri| current_uris.contains(uri.as_str()))
+            .filter(|key| current_keys.contains(key.as_str()))
             .cloned()
             .collect(),
+    }
+}
+
+fn deduplicate_ranked_configs(ranked: &mut Vec<RankedConfig>) {
+    let mut seen_keys = HashSet::new();
+    ranked.retain(|item| seen_keys.insert(item.dedup_key.clone()));
+    for (index, item) in ranked.iter_mut().enumerate() {
+        item.rank = index + 1;
     }
 }
 
@@ -1052,16 +1069,28 @@ fn apply_stability_ranking(
     previous_top_n: &HashSet<String>,
     prioritize_stability: bool,
 ) {
+    let reachable_keys = ranked
+        .iter()
+        .filter(|item| item.reachable)
+        .map(|item| item.dedup_key.clone())
+        .collect::<HashSet<_>>();
+    stable_working_counts.retain(|key, _| reachable_keys.contains(key));
+
     for item in ranked.iter_mut() {
-        if item.reachable && previous_top_n.contains(&item.uri) {
-            let count = stable_working_counts.entry(item.uri.clone()).or_default();
+        if item.reachable && previous_top_n.contains(&item.dedup_key) {
+            let count = stable_working_counts
+                .entry(item.dedup_key.clone())
+                .or_default();
             *count = count.saturating_add(1);
             item.stability_count = *count;
         } else if item.reachable {
-            stable_working_counts.remove(&item.uri);
+            stable_working_counts.remove(&item.dedup_key);
             item.stability_count = 1;
         } else {
-            item.stability_count = stable_working_counts.get(&item.uri).copied().unwrap_or(0);
+            item.stability_count = stable_working_counts
+                .get(&item.dedup_key)
+                .copied()
+                .unwrap_or(0);
         }
     }
 
@@ -1100,20 +1129,20 @@ fn compare_stability_ranked(
 }
 
 fn is_stable(config: &RankedConfig, previous_top_n: &HashSet<String>) -> bool {
-    config.reachable && previous_top_n.contains(&config.uri)
+    config.reachable && previous_top_n.contains(&config.dedup_key)
 }
 
 fn stable_top_cache_path(cache_dir: &Path) -> PathBuf {
     cache_dir.join(STABLE_TOP_CACHE_FILE_NAME)
 }
 
-async fn load_stable_top_uris(cache_dir: &Path) -> HashSet<String> {
+async fn load_stable_top_keys(cache_dir: &Path) -> HashSet<String> {
     let path = stable_top_cache_path(cache_dir);
     let Ok(bytes) = fs::read(&path).await else {
         return HashSet::new();
     };
     match serde_json::from_slice::<StableTopCache>(&bytes) {
-        Ok(cache) => cache.uris.into_iter().collect(),
+        Ok(cache) => cache.keys(),
         Err(err) => {
             warn!(
                 path = %path.display(),
@@ -1125,14 +1154,14 @@ async fn load_stable_top_uris(cache_dir: &Path) -> HashSet<String> {
     }
 }
 
-async fn save_stable_top_uris(cache_dir: &Path, ranked: &[RankedConfig], top_n: usize) {
-    let uris: Vec<String> = ranked
+async fn save_stable_top_keys(cache_dir: &Path, ranked: &[RankedConfig], top_n: usize) {
+    let keys: Vec<String> = ranked
         .iter()
         .filter(|item| item.reachable)
         .take(top_n)
-        .map(|item| item.uri.clone())
+        .map(|item| item.dedup_key.clone())
         .collect();
-    if uris.is_empty() {
+    if keys.is_empty() {
         delete_stable_top_cache(cache_dir).await;
         return;
     }
@@ -1145,7 +1174,10 @@ async fn save_stable_top_uris(cache_dir: &Path, ranked: &[RankedConfig], top_n: 
         return;
     }
     let path = stable_top_cache_path(cache_dir);
-    let cache = StableTopCache { uris };
+    let cache = StableTopCache {
+        keys,
+        uris: Vec::new(),
+    };
     match serde_json::to_vec_pretty(&cache) {
         Ok(bytes) => {
             if let Err(err) = fs::write(&path, bytes).await {
@@ -1179,7 +1211,31 @@ async fn delete_stable_top_cache(cache_dir: &Path) {
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct StableTopCache {
+    #[serde(default)]
+    keys: Vec<String>,
+    #[serde(default)]
     uris: Vec<String>,
+}
+
+impl StableTopCache {
+    fn keys(self) -> HashSet<String> {
+        if self.keys.is_empty() {
+            self.uris
+                .into_iter()
+                .map(|uri| stable_top_uri_key(&uri))
+                .collect()
+        } else {
+            self.keys.into_iter().collect()
+        }
+    }
+}
+
+fn stable_top_uri_key(uri: &str) -> String {
+    crate::parser::parse_subscription_document("stable-top", 0, uri.as_bytes())
+        .into_iter()
+        .next()
+        .map(|candidate| candidate.dedup_key)
+        .unwrap_or_else(|| uri.to_string())
 }
 
 fn spawn_refresh_loop(
@@ -1405,6 +1461,7 @@ async fn add_fetch_bytes(state: &Arc<RwLock<RuntimeState>>, bytes: u64) {
 
 fn spawn_tui_progress_forwarder(
     state: Arc<RwLock<RuntimeState>>,
+    previous_top_n: HashSet<String>,
     print_compact_progress: bool,
 ) -> (
     mpsc::UnboundedSender<ProgressEvent>,
@@ -1417,13 +1474,17 @@ fn spawn_tui_progress_forwarder(
             if let Some(reporter) = reporter.as_mut() {
                 reporter.on_event(&event);
             }
-            push_tui_progress(&state, event).await;
+            push_tui_progress(&state, event, &previous_top_n).await;
         }
     });
     (tx, task)
 }
 
-async fn push_tui_progress(state: &Arc<RwLock<RuntimeState>>, event: ProgressEvent) {
+async fn push_tui_progress(
+    state: &Arc<RwLock<RuntimeState>>,
+    event: ProgressEvent,
+    previous_top_n: &HashSet<String>,
+) {
     let mut state = state.write().await;
     match event {
         ProgressEvent::LiveLog(message) => push_live_log(&mut state, timestamped_log(message)),
@@ -1432,8 +1493,36 @@ async fn push_tui_progress(state: &Arc<RwLock<RuntimeState>>, event: ProgressEve
             state.reachable_candidates = state.reachable_candidates.saturating_add(working);
         }
         ProgressEvent::RankedSnapshot(mut ranked) => {
+            apply_snapshot_stability_counts(
+                &mut ranked,
+                &state.stable_working_counts,
+                previous_top_n,
+            );
             apply_snapshot_ranks(&mut ranked);
             state.ranked = ranked;
+        }
+    }
+}
+
+fn apply_snapshot_stability_counts(
+    ranked: &mut [RankedConfig],
+    stable_working_counts: &HashMap<String, u32>,
+    previous_top_n: &HashSet<String>,
+) {
+    for item in ranked {
+        if item.reachable && previous_top_n.contains(&item.dedup_key) {
+            item.stability_count = stable_working_counts
+                .get(&item.dedup_key)
+                .copied()
+                .unwrap_or(0)
+                .saturating_add(1);
+        } else if item.reachable {
+            item.stability_count = 1;
+        } else {
+            item.stability_count = stable_working_counts
+                .get(&item.dedup_key)
+                .copied()
+                .unwrap_or(0);
         }
     }
 }
@@ -1591,6 +1680,7 @@ mod tests {
             rank: 0,
             stability_count: 0,
             id: uri.to_string(),
+            dedup_key: uri.to_string(),
             source: "test".to_string(),
             priority: 1,
             protocol: "vless".to_string(),
@@ -1680,6 +1770,77 @@ mod tests {
         assert!(!ranked[1].reachable);
     }
 
+    #[test]
+    fn final_deduplication_keeps_first_seen_config_for_same_key() {
+        let mut first = ranked(
+            "first",
+            "vless://uuid@example.com:443#first",
+            true,
+            Some(200),
+        );
+        first.dedup_key = "vless|example.com|443|tcp|tls".to_string();
+        let mut duplicate = ranked(
+            "duplicate",
+            "vless://uuid@example.com:443#duplicate",
+            true,
+            Some(10),
+        );
+        duplicate.dedup_key = first.dedup_key.clone();
+        let mut different_transport = ranked(
+            "different",
+            "vless://uuid@example.com:443?type=ws#different",
+            true,
+            Some(5),
+        );
+        different_transport.dedup_key = "vless|example.com|443|ws|tls".to_string();
+        let mut ranked = vec![first, duplicate, different_transport];
+
+        deduplicate_ranked_configs(&mut ranked);
+
+        assert_eq!(ranked.len(), 2);
+        assert_eq!(ranked[0].name, "first");
+        assert_eq!(ranked[1].name, "different");
+    }
+
+    #[test]
+    fn stable_ranking_counts_same_key_after_remark_changes() {
+        let key = "vless|example.com|443|tcp|tls".to_string();
+        let mut stable = ranked(
+            "renamed-stable",
+            "vless://uuid@example.com:443#new-remark",
+            true,
+            Some(5_000),
+        );
+        stable.dedup_key = key.clone();
+        let mut ranked = vec![
+            ranked("fast-new", "vless://fast@example.com:443", true, Some(100)),
+            stable,
+        ];
+        let mut counts = HashMap::from([(key.clone(), 2)]);
+        let previous_top_n = HashSet::from([key]);
+
+        apply_stability_ranking(&mut ranked, &mut counts, &previous_top_n, true);
+
+        assert_eq!(ranked[0].name, "renamed-stable");
+        assert_eq!(ranked[0].stability_count, 3);
+    }
+
+    #[test]
+    fn legacy_stable_top_uris_are_loaded_as_dedup_keys() {
+        let cache = StableTopCache {
+            keys: Vec::new(),
+            uris: vec![
+                "vless://uuid@example.com:443?security=tls#old".to_string(),
+                "vless://uuid@example.com:443?security=tls#renamed".to_string(),
+            ],
+        };
+
+        let keys = cache.keys();
+
+        assert_eq!(keys.len(), 1);
+        assert!(keys.contains("vless|example.com|443|tcp|tls"));
+    }
+
     #[tokio::test]
     async fn ranked_snapshot_does_not_overwrite_live_working_counter() {
         let state = Arc::new(RwLock::new(RuntimeState {
@@ -1695,12 +1856,39 @@ mod tests {
                 true,
                 Some(100),
             )]),
+            &HashSet::new(),
         )
         .await;
 
         let state = state.read().await;
         assert_eq!(state.reachable_candidates, 5);
         assert_eq!(state.ranked.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn ranked_snapshot_updates_seen_from_stable_key_counts() {
+        let key = "vless|example.com|443|tcp|tls".to_string();
+        let state = Arc::new(RwLock::new(RuntimeState {
+            stable_working_counts: HashMap::from([(key.clone(), 2)]),
+            ..RuntimeState::default()
+        }));
+        let mut item = ranked(
+            "early",
+            "vless://uuid@example.com:443#renamed",
+            true,
+            Some(100),
+        );
+        item.dedup_key = key.clone();
+
+        push_tui_progress(
+            &state,
+            ProgressEvent::RankedSnapshot(vec![item]),
+            &HashSet::from([key]),
+        )
+        .await;
+
+        let state = state.read().await;
+        assert_eq!(state.ranked[0].stability_count, 3);
     }
 
     #[tokio::test]

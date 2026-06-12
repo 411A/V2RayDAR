@@ -238,7 +238,6 @@ where
     Fut: Future<Output = ()>,
 {
     let mut candidates = Vec::new();
-    let mut seen_uris = HashSet::new();
     let mut errors = Vec::new();
     let mut failures = Vec::new();
     let mut successes = Vec::new();
@@ -270,24 +269,20 @@ where
 
     while let Some((index, source, result)) = results.next().await {
         match result {
-            Ok(mut fetched) => {
+            Ok(fetched) => {
                 report_subscription_bytes(fetched.bytes_read, report_bytes).await;
-                let before_dedup = fetched.candidates.len();
-                fetched
-                    .candidates
-                    .retain(|candidate| seen_uris.insert(candidate.uri.clone()));
+                let parsed = fetched.candidates.len();
                 info!(
-                    parsed = before_dedup,
-                    unique = fetched.candidates.len(),
+                    parsed,
                     bytes_read = fetched.bytes_read,
-                    "subscription fetch result accepted"
+                    "subscription fetch result parsed"
                 );
                 send_progress(
                     &context.progress,
                     format!(
-                        "Subscription parsed: {} unique configs from {} links",
+                        "Subscription parsed: {} configs from {} links",
                         fetched.candidates.len(),
-                        before_dedup
+                        parsed
                     ),
                 );
                 successes.push(source);
@@ -307,7 +302,9 @@ where
         }
     }
     fetched_sources.sort_by_key(|(index, _)| *index);
+    let mut seen_keys = HashSet::new();
     for (_, mut fetched) in fetched_sources {
+        fetched.retain(|candidate| seen_keys.insert(candidate.dedup_key.clone()));
         candidates.append(&mut fetched);
     }
     failures.sort_by_key(|(index, _)| *index);

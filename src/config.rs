@@ -87,6 +87,8 @@ pub struct ProbeConfig {
     pub download_url: Option<String>,
     #[serde(default = "default_download_bytes_limit")]
     pub download_bytes_limit: usize,
+    #[serde(skip)]
+    pub sing_box_path_auto: bool,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, Eq, PartialEq)]
@@ -124,6 +126,7 @@ impl Default for ProbeConfig {
             accepted_statuses: default_accepted_statuses(),
             download_url: None,
             download_bytes_limit: default_download_bytes_limit(),
+            sing_box_path_auto: false,
         }
     }
 }

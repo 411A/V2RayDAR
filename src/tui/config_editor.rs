@@ -141,7 +141,10 @@ pub fn apply(config: &mut crate::config::AppConfig, key: ConfigKey, raw: &str) -
         ConfigKey::UseCacheOnly => config.use_cache_only = bool_value(value)?,
         ConfigKey::EmergencyConfig => config.emergency_config = optional(value),
         ConfigKey::ProbeMode => config.probe.mode = probe_mode(value)?,
-        ConfigKey::SingBoxPath => config.probe.sing_box_path = optional_string(value),
+        ConfigKey::SingBoxPath => {
+            config.probe.sing_box_path = optional_string(value);
+            config.probe.sing_box_path_auto = false;
+        }
         ConfigKey::ConnectTimeout => config.probe.connect_timeout_ms = nonzero(value, label(key))?,
         ConfigKey::ActiveTimeout => config.probe.active_timeout_ms = nonzero(value, label(key))?,
         ConfigKey::StartupTimeout => config.probe.startup_timeout_ms = nonzero(value, label(key))?,

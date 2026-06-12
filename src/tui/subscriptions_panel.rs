@@ -77,7 +77,7 @@ fn row_hits(area: Rect, count: usize) -> Vec<(usize, Rect)> {
     let first_y = area.y.saturating_add(2);
     let last_y = area.y.saturating_add(area.height.saturating_sub(1));
     for index in 0..count {
-        let y = first_y.saturating_add(index as u16);
+        let y = first_y.saturating_add(usize_to_u16_saturating(index));
         if y >= last_y {
             break;
         }
@@ -87,4 +87,8 @@ fn row_hits(area: Rect, count: usize) -> Vec<(usize, Rect)> {
         ));
     }
     rows
+}
+
+fn usize_to_u16_saturating(value: usize) -> u16 {
+    u16::try_from(value).unwrap_or(u16::MAX)
 }

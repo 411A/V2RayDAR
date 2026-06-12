@@ -13,7 +13,8 @@ use crate::{
     config::should_include_token_in_url,
     constants::{
         TUI_ANSI_UNDERLINE_DISABLE, TUI_ANSI_UNDERLINE_ENABLE, TUI_CONFIG_GROUP_HEIGHT,
-        TUI_CONFIG_KEY_WIDTH, TUI_OSC8_LINK_PREFIX, TUI_OSC8_LINK_SEPARATOR, TUI_OSC8_LINK_SUFFIX,
+        TUI_CONFIG_KEY_WIDTH, TUI_CONFIG_KEY_WIDTH_U16, TUI_OSC8_LINK_PREFIX,
+        TUI_OSC8_LINK_SEPARATOR, TUI_OSC8_LINK_SUFFIX,
     },
     model::RuntimeConfig,
     network::sharing_status,
@@ -120,9 +121,7 @@ fn format_mb(bytes: usize) -> String {
 }
 
 fn format_batch_size(value: Option<usize>) -> String {
-    value
-        .map(|size| size.to_string())
-        .unwrap_or_else(|| "auto".to_string())
+    value.map_or_else(|| "auto".to_string(), |size| size.to_string())
 }
 
 fn draw_group(
@@ -297,11 +296,11 @@ fn set_forced_width_cell(
     }
 }
 
-fn endpoint_label_width(area_width: u16) -> u16 {
-    if area_width <= TUI_CONFIG_KEY_WIDTH as u16 {
+const fn endpoint_label_width(area_width: u16) -> u16 {
+    if area_width <= TUI_CONFIG_KEY_WIDTH_U16 {
         0
     } else {
-        TUI_CONFIG_KEY_WIDTH as u16
+        TUI_CONFIG_KEY_WIDTH_U16
     }
 }
 

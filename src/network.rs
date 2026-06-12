@@ -122,7 +122,7 @@ fn route_local_ip() -> Option<IpAddr> {
     Some(socket.local_addr().ok()?.ip())
 }
 
-fn is_lan_reachable(ip: IpAddr) -> bool {
+const fn is_lan_reachable(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => {
             !ip.is_loopback()

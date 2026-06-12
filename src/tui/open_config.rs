@@ -197,9 +197,6 @@ fn try_spawn_terminal(editor: &str, path: &Path) -> std::io::Result<()> {
             "gnome-terminal" => Command::new(terminal)
                 .args(["--", editor, &path_arg(path)])
                 .spawn(),
-            "konsole" => Command::new(terminal)
-                .args(["-e", editor, &path_arg(path)])
-                .spawn(),
             _ => Command::new(terminal)
                 .args(["-e", editor, &path_arg(path)])
                 .spawn(),

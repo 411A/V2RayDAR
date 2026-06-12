@@ -71,8 +71,10 @@ pub fn sing_box_download_url() -> String {
 }
 
 pub const HTTP_EXCHANGE_OVERHEAD_BYTES: u64 = 1024;
-pub const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
-pub const FNV_PRIME: u64 = 0x100000001b3;
+pub const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+pub const FNV_PRIME: u64 = 0x0100_0000_01b3;
+pub const BITS_PER_BYTE: f64 = 8.0;
+pub const BITS_PER_MEGABIT: f64 = 1_000_000.0;
 pub const SUPPORTED_URI_SCHEMES: &[&str] = &[
     "vmess://",
     "vless://",
@@ -93,17 +95,19 @@ pub const TUI_CONFIG_PANEL_HEIGHT: u16 = 12;
 pub const TUI_CONFIG_PANEL_ENDPOINT_HEIGHT: u16 = 14;
 pub const TUI_CONFIG_GROUP_HEIGHT: u16 = 10;
 pub const TUI_CONFIG_KEY_WIDTH: usize = 14;
+pub const TUI_CONFIG_KEY_WIDTH_U16: u16 = 14;
 pub const TUI_ANSI_UNDERLINE_ENABLE: &str = "\x1b[4m";
 pub const TUI_ANSI_UNDERLINE_DISABLE: &str = "\x1b[24m";
 pub const TUI_OSC8_LINK_PREFIX: &str = "\x1b]8;;";
 pub const TUI_OSC8_LINK_SEPARATOR: &str = "\x1b\\";
 pub const TUI_OSC8_LINK_SUFFIX: &str = "\x1b]8;;\x1b\\";
 pub const BYTE_UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+pub const BYTES_PER_UNIT: f64 = 1024.0;
 pub const FIREWALL_RULE_NAME: &str = "V2RayDAR Subscription Sharing";
 pub const SUBSCRIPTION_READY_WAIT: Duration = Duration::from_secs(20);
 pub const SUBSCRIPTION_READY_POLL: Duration = Duration::from_millis(100);
 #[cfg(target_os = "windows")]
-pub const WINDOWS_CREATE_NO_WINDOW: u32 = 0x08000000;
+pub const WINDOWS_CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[cfg(test)]
 pub const TEST_REALITY_PUBLIC_KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";

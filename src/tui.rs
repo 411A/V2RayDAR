@@ -12,10 +12,10 @@ mod logs_panel;
 mod main_menu_panel;
 mod open_config;
 mod setup;
-pub(crate) mod state;
+pub mod state;
 mod subscriptions_panel;
 mod top;
-pub(crate) mod util;
+pub mod util;
 mod view;
 
 use std::{
@@ -107,10 +107,7 @@ fn drain_events(
                 }
             }
             Ok(Event::Mouse(mouse)) => {
-                if matches!(
-                    handle_mouse(tui, mouse, &paths.config_path)?,
-                    EventResult::Quit
-                ) {
+                if matches!(handle_mouse(tui, mouse), EventResult::Quit) {
                     return Ok(EventResult::Quit);
                 }
             }

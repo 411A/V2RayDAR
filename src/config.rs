@@ -18,6 +18,7 @@ use crate::constants::{
 };
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct AppConfig {
     #[serde(default = "default_bind")]
     pub bind: SocketAddr,
@@ -163,8 +164,7 @@ impl AppConfig {
             "yaml" | "yml" | "" => serde_yaml::from_str(&content).context("invalid YAML config")?,
             other => {
                 return Err(anyhow!(
-                    "unsupported config extension '.{}'; use .yaml, .yml, or .json",
-                    other
+                    "unsupported config extension '.{other}'; use .yaml, .yml, or .json"
                 ));
             }
         };
@@ -186,7 +186,7 @@ impl AppConfig {
         }
 
         let config = Self::default_for_first_run();
-        validate(config.clone()).context("default config template failed validation")?;
+        validate(config).context("default config template failed validation")?;
         fs::write(path, DEFAULT_CONFIG_TEMPLATE)
             .with_context(|| format!("unable to write default config to {}", path.display()))
     }
@@ -318,7 +318,7 @@ where
 {
     Ok(match Option::<Value>::deserialize(deserializer)? {
         Some(Value::Bool(true)) => generate_token(),
-        Some(Value::Bool(false)) | Some(Value::Null) | None => String::new(),
+        Some(Value::Bool(false) | Value::Null) | None => String::new(),
         Some(Value::String(value)) => normalize_sharing_token(&value),
         Some(_) => {
             return Err(serde::de::Error::custom(
@@ -411,35 +411,35 @@ fn default_bind() -> SocketAddr {
     DEFAULT_BIND.parse().expect("default bind address is valid")
 }
 
-fn default_top_n() -> usize {
+const fn default_top_n() -> usize {
     DEFAULT_TOP_N
 }
 
-fn default_refresh_seconds() -> u64 {
+const fn default_refresh_seconds() -> u64 {
     DEFAULT_REFRESH_SECONDS
 }
 
-fn default_encoded_subscription() -> bool {
+const fn default_encoded_subscription() -> bool {
     DEFAULT_ENCODED_SUBSCRIPTION
 }
 
-fn default_prioritize_stability() -> bool {
+const fn default_prioritize_stability() -> bool {
     DEFAULT_PRIORITIZE_STABILITY
 }
 
-fn default_return_configs_asap() -> bool {
+const fn default_return_configs_asap() -> bool {
     DEFAULT_RETURN_CONFIGS_ASAP
 }
 
-fn default_scan_all_configs() -> bool {
+const fn default_scan_all_configs() -> bool {
     DEFAULT_SCAN_ALL_CONFIGS
 }
 
-fn default_sharing_enabled() -> bool {
+const fn default_sharing_enabled() -> bool {
     DEFAULT_SHARING_ENABLED
 }
 
-fn default_require_token() -> bool {
+const fn default_require_token() -> bool {
     DEFAULT_REQUIRE_TOKEN
 }
 
@@ -447,31 +447,31 @@ fn default_sharing_token() -> String {
     DEFAULT_SHARING_TOKEN.to_string()
 }
 
-fn default_fetch_timeout_ms() -> u64 {
+const fn default_fetch_timeout_ms() -> u64 {
     DEFAULT_FETCH_TIMEOUT_MS
 }
 
-fn default_fetch_concurrency() -> usize {
+const fn default_fetch_concurrency() -> usize {
     DEFAULT_FETCH_CONCURRENCY
 }
 
-fn default_max_subscription_bytes() -> usize {
+const fn default_max_subscription_bytes() -> usize {
     DEFAULT_MAX_SUBSCRIPTION_BYTES
 }
 
-fn default_use_cache_only() -> bool {
+const fn default_use_cache_only() -> bool {
     DEFAULT_USE_CACHE_ONLY
 }
 
-fn default_priority() -> u32 {
+const fn default_priority() -> u32 {
     DEFAULT_SUBSCRIPTION_PRIORITY
 }
 
-fn default_subscription_enabled() -> bool {
+const fn default_subscription_enabled() -> bool {
     DEFAULT_SUBSCRIPTION_ENABLED
 }
 
-fn default_probe_mode() -> ProbeMode {
+const fn default_probe_mode() -> ProbeMode {
     ProbeMode::Active
 }
 
@@ -479,27 +479,27 @@ fn default_sing_box_path() -> String {
     DEFAULT_SING_BOX_PATH.to_string()
 }
 
-fn default_connect_timeout_ms() -> u64 {
+const fn default_connect_timeout_ms() -> u64 {
     DEFAULT_CONNECT_TIMEOUT_MS
 }
 
-fn default_active_timeout_ms() -> u64 {
+const fn default_active_timeout_ms() -> u64 {
     DEFAULT_ACTIVE_TIMEOUT_MS
 }
 
-fn default_startup_timeout_ms() -> u64 {
+const fn default_startup_timeout_ms() -> u64 {
     DEFAULT_STARTUP_TIMEOUT_MS
 }
 
-fn default_probe_concurrency() -> usize {
+const fn default_probe_concurrency() -> usize {
     DEFAULT_PROBE_CONCURRENCY
 }
 
-fn default_probe_batch_size() -> Option<usize> {
+const fn default_probe_batch_size() -> Option<usize> {
     DEFAULT_PROBE_BATCH_SIZE
 }
 
-fn default_probe_process_concurrency() -> Option<usize> {
+const fn default_probe_process_concurrency() -> Option<usize> {
     DEFAULT_PROBE_PROCESS_CONCURRENCY
 }
 
@@ -511,7 +511,7 @@ fn default_accepted_statuses() -> Vec<u16> {
     DEFAULT_ACCEPTED_STATUSES.to_vec()
 }
 
-fn default_download_bytes_limit() -> usize {
+const fn default_download_bytes_limit() -> usize {
     DEFAULT_DOWNLOAD_BYTES_LIMIT
 }
 

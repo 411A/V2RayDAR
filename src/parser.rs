@@ -76,7 +76,7 @@ fn collect_entries_from_json(
 ) {
     match value {
         JsonValue::String(text) => {
-            collect_entries_from_text(source, priority, text, candidates, seen)
+            collect_entries_from_text(source, priority, text, candidates, seen);
         }
         JsonValue::Array(values) => {
             for item in values {
@@ -101,7 +101,7 @@ fn collect_entries_from_yaml(
 ) {
     match value {
         YamlValue::String(text) => {
-            collect_entries_from_text(source, priority, text, candidates, seen)
+            collect_entries_from_text(source, priority, text, candidates, seen);
         }
         YamlValue::Sequence(values) => {
             for item in values {
@@ -117,7 +117,7 @@ fn collect_entries_from_yaml(
     }
 }
 
-fn is_token_boundary(ch: char) -> bool {
+const fn is_token_boundary(ch: char) -> bool {
     ch.is_whitespace() || matches!(ch, '"' | '\'' | ',' | '[' | ']')
 }
 
@@ -233,8 +233,7 @@ fn parse_shadowsocks(uri: &str) -> Result<ParsedLink> {
 
     let endpoint_part = authority
         .rsplit_once('@')
-        .map(|(_, endpoint)| endpoint)
-        .unwrap_or(authority.as_str());
+        .map_or(authority.as_str(), |(_, endpoint)| endpoint);
     let (host, port) = parse_host_port(endpoint_part)?;
     let name = fragment
         .map(clean_name)
@@ -315,8 +314,7 @@ fn parse_host_port(value: &str) -> Result<(String, u16)> {
 fn split_once(value: &str, delimiter: char) -> (&str, Option<&str>) {
     value
         .split_once(delimiter)
-        .map(|(left, right)| (left, Some(right)))
-        .unwrap_or((value, None))
+        .map_or((value, None), |(left, right)| (left, Some(right)))
 }
 
 fn json_value_to_u16(value: &JsonValue) -> Option<u16> {
@@ -411,13 +409,11 @@ fn vmess_dedup_parts(uri: &str) -> (String, String) {
         .get("net")
         .or_else(|| json.get("type"))
         .and_then(JsonValue::as_str)
-        .map(normalize_transport)
-        .unwrap_or_else(|| "tcp".to_string());
+        .map_or_else(|| "tcp".to_string(), normalize_transport);
     let tls = json
         .get("tls")
         .and_then(JsonValue::as_str)
-        .map(normalize_tls)
-        .unwrap_or_else(|| "none".to_string());
+        .map_or_else(|| "none".to_string(), normalize_tls);
 
     (transport, tls)
 }
@@ -428,16 +424,17 @@ fn shadowsocks_dedup_parts(uri: &str) -> (String, String) {
     };
     let (without_fragment, _) = split_once(body, '#');
     let (_, query) = split_once(without_fragment, '?');
-    query
-        .map(|query| query_dedup_parts(query, false))
-        .unwrap_or_else(|| ("tcp".to_string(), "none".to_string()))
+    query.map_or_else(
+        || ("tcp".to_string(), "none".to_string()),
+        |query| query_dedup_parts(query, false),
+    )
 }
 
 fn standard_uri_dedup_parts(uri: &str, default_tls: bool) -> (String, String) {
-    Url::parse(uri)
-        .ok()
-        .map(|url| query_dedup_parts(url.query().unwrap_or_default(), default_tls))
-        .unwrap_or_else(|| ("tcp".to_string(), "none".to_string()))
+    Url::parse(uri).ok().map_or_else(
+        || ("tcp".to_string(), "none".to_string()),
+        |url| query_dedup_parts(url.query().unwrap_or_default(), default_tls),
+    )
 }
 
 fn query_dedup_parts(query: &str, default_tls: bool) -> (String, String) {
@@ -446,8 +443,7 @@ fn query_dedup_parts(query: &str, default_tls: bool) -> (String, String) {
         .get("type")
         .or_else(|| params.get("net"))
         .or_else(|| params.get("network"))
-        .map(|value| normalize_transport(value))
-        .unwrap_or_else(|| "tcp".to_string());
+        .map_or_else(|| "tcp".to_string(), |value| normalize_transport(value));
     let reality_key = params
         .get("pbk")
         .or_else(|| params.get("public_key"))

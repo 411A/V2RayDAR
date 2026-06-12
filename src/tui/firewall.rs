@@ -80,7 +80,7 @@ pub fn remove_owned_rules(state_dir: &Path) -> Result<Vec<String>> {
             remaining_rules.push(rule);
             continue;
         }
-        match remove_owned_rule(rule.clone()) {
+        match remove_owned_rule(&rule) {
             Ok(message) => messages.push(message),
             Err(error) => {
                 failures.push(format!("firewall rule was not removed: {error}"));
@@ -123,17 +123,16 @@ fn linux(state_path: &Path, enabled: bool, port: u16) -> Result<String> {
             return Ok(format!(
                 "Sharing enabled; ufw allows TCP {port}; {ownership}"
             ));
-        } else {
-            return if remove_recorded_rule(state_path, FirewallBackend::LinuxUfw, port)? {
-                Ok(format!(
-                    "Sharing disabled; removed owned ufw TCP {port} rule"
-                ))
-            } else {
-                Ok(format!(
-                    "Sharing disabled; no V2RayDAR-owned ufw TCP {port} rule was recorded"
-                ))
-            };
         }
+        return if remove_recorded_rule(state_path, FirewallBackend::LinuxUfw, port)? {
+            Ok(format!(
+                "Sharing disabled; removed owned ufw TCP {port} rule"
+            ))
+        } else {
+            Ok(format!(
+                "Sharing disabled; no V2RayDAR-owned ufw TCP {port} rule was recorded"
+            ))
+        };
     }
 
     if command_exists("firewall-cmd") {
@@ -151,17 +150,16 @@ fn linux(state_path: &Path, enabled: bool, port: u16) -> Result<String> {
             return Ok(format!(
                 "Sharing enabled; firewalld allows TCP {port}; {ownership}"
             ));
-        } else {
-            return if remove_recorded_rule(state_path, FirewallBackend::LinuxFirewalld, port)? {
-                Ok(format!(
-                    "Sharing disabled; removed owned firewalld TCP {port} rule"
-                ))
-            } else {
-                Ok(format!(
-                    "Sharing disabled; no V2RayDAR-owned firewalld TCP {port} rule was recorded"
-                ))
-            };
         }
+        return if remove_recorded_rule(state_path, FirewallBackend::LinuxFirewalld, port)? {
+            Ok(format!(
+                "Sharing disabled; removed owned firewalld TCP {port} rule"
+            ))
+        } else {
+            Ok(format!(
+                "Sharing disabled; no V2RayDAR-owned firewalld TCP {port} rule was recorded"
+            ))
+        };
     }
 
     Ok("Sharing changed; no supported Linux firewall tool found".to_string())
@@ -201,7 +199,7 @@ fn remove_windows_rule() -> Result<()> {
     )
 }
 
-fn remove_owned_rule(rule: OwnedFirewallRule) -> Result<String> {
+fn remove_owned_rule(rule: &OwnedFirewallRule) -> Result<String> {
     match rule.backend {
         FirewallBackend::WindowsNetsh => {
             remove_windows_rule()?;
@@ -255,7 +253,7 @@ fn remove_recorded_rule(state_path: &Path, backend: FirewallBackend, port: u16) 
         return Ok(false);
     }
 
-    remove_owned_rule(OwnedFirewallRule { backend, port })?;
+    remove_owned_rule(&OwnedFirewallRule { backend, port })?;
     state
         .rules
         .retain(|rule| !(rule.backend == backend && rule.port == port));

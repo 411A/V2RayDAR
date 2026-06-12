@@ -32,8 +32,7 @@ pub fn draw(
     };
     let scan_time = runtime
         .refresh_duration_ms
-        .map(format_duration)
-        .unwrap_or_else(|| "-".to_string());
+        .map_or_else(|| "-".to_string(), format_duration);
     let cells = [
         (
             "Running For",
@@ -73,10 +72,9 @@ pub fn draw(
 
 fn refresh_status(runtime: &RuntimeView, refresh_seconds: u64, now: DateTime<Utc>) -> String {
     if runtime.refreshing {
-        let elapsed = runtime
-            .refresh_started_at
-            .map(|started_at| now.signed_duration_since(started_at).num_seconds().max(0) as u64)
-            .unwrap_or(0);
+        let elapsed = runtime.refresh_started_at.map_or(0, |started_at| {
+            non_negative_seconds(now.signed_duration_since(started_at).num_seconds())
+        });
         return format!("running {}", format_duration_ms(elapsed));
     }
 
@@ -87,9 +85,13 @@ fn refresh_status(runtime: &RuntimeView, refresh_seconds: u64, now: DateTime<Utc
     let Some(finished_at) = runtime.refresh_finished_at else {
         return "pending".to_string();
     };
-    let elapsed = now.signed_duration_since(finished_at).num_seconds().max(0) as u64;
+    let elapsed = non_negative_seconds(now.signed_duration_since(finished_at).num_seconds());
     let remaining = refresh_seconds.saturating_sub(elapsed);
-    format!("next {}", format_duration(remaining as u128 * 1000))
+    format!("next {}", format_duration(u128::from(remaining) * 1000))
+}
+
+fn non_negative_seconds(seconds: i64) -> u64 {
+    u64::try_from(seconds).unwrap_or_default()
 }
 
 fn format_duration_hms(total_seconds: u64) -> String {
@@ -106,7 +108,7 @@ fn format_duration_ms(total_seconds: u64) -> String {
 }
 
 fn format_duration(ms: u128) -> String {
-    let seconds = (ms / 1000) as u64;
+    let seconds = millis_to_seconds(ms);
     if seconds < 60 {
         return format!("{seconds}s");
     }
@@ -114,4 +116,8 @@ fn format_duration(ms: u128) -> String {
     let minutes = seconds / 60;
     let seconds = seconds % 60;
     format!("{minutes:02}:{seconds:02}")
+}
+
+fn millis_to_seconds(ms: u128) -> u64 {
+    u64::try_from(ms / 1000).unwrap_or(u64::MAX)
 }

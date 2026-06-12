@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
 use tokio::fs;
@@ -32,13 +32,11 @@ impl AppPaths {
     pub fn from_config_override(config_path: PathBuf) -> Self {
         let config_parent = config_path
             .parent()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."));
+            .map_or_else(|| PathBuf::from("."), PathBuf::from);
         let root_dir = config_parent
             .ancestors()
             .find(|path| path.file_name().and_then(|name| name.to_str()) == Some(APP_DATA_DIR_NAME))
-            .map(PathBuf::from)
-            .unwrap_or_else(|| config_parent.join(APP_DATA_DIR_NAME));
+            .map_or_else(|| config_parent.join(APP_DATA_DIR_NAME), PathBuf::from);
         Self::from_root_with_config(root_dir, config_path, false, false)
     }
 
@@ -73,30 +71,30 @@ impl AppPaths {
 fn installed_root_dir() -> Result<PathBuf> {
     if cfg!(target_os = "windows") {
         if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
-            return Ok(installed_data_root(PathBuf::from(local_app_data)));
+            return Ok(installed_data_root(&PathBuf::from(local_app_data)));
         }
 
         return Ok(installed_data_root(
-            home_dir()?.join("AppData").join("Local"),
+            &home_dir()?.join("AppData").join("Local"),
         ));
     }
 
     if cfg!(target_os = "macos") {
         return Ok(installed_data_root(
-            home_dir()?.join("Library").join("Application Support"),
+            &home_dir()?.join("Library").join("Application Support"),
         ));
     }
 
     if let Some(data_home) = std::env::var_os("XDG_DATA_HOME") {
-        return Ok(installed_data_root(PathBuf::from(data_home)));
+        return Ok(installed_data_root(&PathBuf::from(data_home)));
     }
 
     Ok(installed_data_root(
-        home_dir()?.join(".local").join("share"),
+        &home_dir()?.join(".local").join("share"),
     ))
 }
 
-fn installed_data_root(base_dir: PathBuf) -> PathBuf {
+fn installed_data_root(base_dir: &Path) -> PathBuf {
     base_dir.join(APP_NAME).join(APP_DATA_DIR_NAME)
 }
 
@@ -125,7 +123,7 @@ mod tests {
 
     #[test]
     fn installed_data_root_keeps_data_under_app_directory() {
-        let paths = installed_data_root(PathBuf::from("LocalAppData"));
+        let paths = installed_data_root(&PathBuf::from("LocalAppData"));
 
         assert_eq!(
             paths,

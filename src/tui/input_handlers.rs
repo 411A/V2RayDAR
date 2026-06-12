@@ -1,4 +1,3 @@
-use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::config::{AppConfig, SubscriptionSource};
@@ -47,7 +46,7 @@ pub fn start_input(state: &mut TuiState, mode: InputMode, value: &str) {
     };
 }
 
-pub fn handle_input_key(state: &mut TuiState, key: KeyEvent) -> Result<EventResult> {
+pub fn handle_input_key(state: &mut TuiState, key: KeyEvent) -> EventResult {
     match key.code {
         KeyCode::Esc => {
             state.input_mode = InputMode::None;
@@ -69,19 +68,18 @@ pub fn handle_input_key(state: &mut TuiState, key: KeyEvent) -> Result<EventResu
         _ => {}
     }
 
-    Ok(EventResult::Continue)
+    EventResult::Continue
 }
 
 fn commit_input(state: &mut TuiState) {
     match state.input_mode {
-        InputMode::None | InputMode::Command => {}
+        InputMode::None | InputMode::Command | InputMode::CleanCacheConfirm => {}
         InputMode::NewSubscription(step) => commit_new_subscription_step(state, step),
         InputMode::Name => commit_name(state),
         InputMode::Url => commit_url(state),
         InputMode::Priority => commit_priority(state),
         InputMode::ConfigValue(key) => commit_config(state, key),
         InputMode::ResetConfirm => commit_reset(state),
-        InputMode::CleanCacheConfirm => {}
     }
 }
 
@@ -114,12 +112,9 @@ fn commit_url(state: &mut TuiState) {
 }
 
 fn commit_priority(state: &mut TuiState) {
-    let value = match state.input.trim().parse::<u32>() {
-        Ok(value) => value,
-        Err(_) => {
-            state.status = "Priority must be a number".to_string();
-            return;
-        }
+    let Ok(value) = state.input.trim().parse::<u32>() else {
+        state.status = "Priority must be a number".to_string();
+        return;
     };
 
     if let Some(source) = state.selected_subscription_mut() {
@@ -172,12 +167,9 @@ fn commit_new_name(state: &mut TuiState) {
 }
 
 fn commit_new_priority(state: &mut TuiState) {
-    let value = match state.input.trim().parse::<u32>() {
-        Ok(value) => value,
-        Err(_) => {
-            state.status = "Priority must be a number".to_string();
-            return;
-        }
+    let Ok(value) = state.input.trim().parse::<u32>() else {
+        state.status = "Priority must be a number".to_string();
+        return;
     };
     if let Some(draft) = state.new_subscription.as_mut() {
         draft.priority = value;
@@ -191,12 +183,9 @@ fn commit_new_priority(state: &mut TuiState) {
 }
 
 fn commit_new_enabled(state: &mut TuiState) {
-    let enabled = match parse_bool(state.input.trim()) {
-        Some(value) => value,
-        None => {
-            state.status = "Enabled must be yes/no, true/false, on/off, or 1/0".to_string();
-            return;
-        }
+    let Some(enabled) = parse_bool(state.input.trim()) else {
+        state.status = "Enabled must be yes/no, true/false, on/off, or 1/0".to_string();
+        return;
     };
 
     let Some(mut draft) = state.new_subscription.take() else {
@@ -255,7 +244,7 @@ fn parse_bool(value: &str) -> Option<bool> {
     }
 }
 
-fn new_subscription_guide(step: NewSubscriptionStep) -> &'static str {
+const fn new_subscription_guide(step: NewSubscriptionStep) -> &'static str {
     match step {
         NewSubscriptionStep::Url => "Step 1/4: enter the subscription URL",
         NewSubscriptionStep::Name => "Step 2/4: enter a display name",

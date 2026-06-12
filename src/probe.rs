@@ -110,6 +110,7 @@ pub async fn probe_candidates(
             while let Some(result) = results.next().await {
                 send_probe_delta(&progress, 1, usize::from(result.reachable));
                 ranked.push(result);
+                send_asap_configs(&progress, &ranked, stop_policy);
             }
             ranked
         }
@@ -623,7 +624,11 @@ fn probe_stop_reason(
 
     let first_half = policy.top_n / 2;
     let second_half = policy.top_n.saturating_sub(first_half);
-    if first_half > 0 && reachable >= first_half && !state.half_snapshot_sent {
+    if !policy.return_configs_asap
+        && first_half > 0
+        && reachable >= first_half
+        && !state.half_snapshot_sent
+    {
         state.half_snapshot_sent = true;
         send_ranked_snapshot(progress, stability_snapshot(ranked, policy, first_half));
         send_progress(
@@ -769,6 +774,33 @@ fn send_ranked_snapshot(
 ) {
     if let Some(progress) = progress {
         let _ = progress.send(ProgressEvent::RankedSnapshot(ranked));
+    }
+}
+
+fn send_asap_configs(
+    progress: &Option<UnboundedSender<ProgressEvent>>,
+    ranked: &[RankedConfig],
+    policy: &ProbeStopPolicy,
+) {
+    if !policy.return_configs_asap {
+        return;
+    }
+
+    let mut seen_keys = std::collections::HashSet::new();
+    let working = ranked
+        .iter()
+        .filter(|item| item.reachable && seen_keys.insert(item.dedup_key.clone()))
+        .cloned()
+        .collect::<Vec<_>>();
+    if working.is_empty() {
+        return;
+    }
+
+    if let Some(progress) = progress {
+        let _ = progress.send(ProgressEvent::WorkingConfigsFound {
+            configs: working,
+            top_n: policy.top_n,
+        });
     }
 }
 
@@ -1073,6 +1105,7 @@ async fn probe_active_batch(
         let working_delta = results.iter().filter(|item| item.reachable).count();
         ranked.append(&mut results);
         send_probe_delta(progress, tested_delta, working_delta);
+        send_asap_configs(progress, &ranked, stop_policy);
         if completed == total_entries || completed % progress_interval == 0 {
             info!(
                 completed_probes = completed,
@@ -2285,6 +2318,7 @@ mod tests {
             scan_all_configs: false,
             top_n,
             prioritize_stability,
+            return_configs_asap: false,
             previous_working_keys,
         }
     }
@@ -2566,6 +2600,45 @@ mod tests {
             names,
             ["primary-old", "backup-old", "primary-new", "backup-new"]
         );
+    }
+
+    #[tokio::test]
+    async fn asap_event_publishes_working_configs_in_found_order() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut policy = stop_policy(1, false, std::collections::HashSet::new());
+        policy.return_configs_asap = true;
+        let ranked = vec![
+            ranked("one", "vless://one@example.com:443", true, Some(20)),
+            ranked("two", "vless://two@example.com:443", true, Some(10)),
+        ];
+
+        send_asap_configs(&Some(tx), &ranked, &policy);
+
+        let Some(ProgressEvent::WorkingConfigsFound { configs, top_n }) = rx.recv().await else {
+            panic!("expected working configs event");
+        };
+        assert_eq!(top_n, 1);
+        assert_eq!(
+            configs
+                .iter()
+                .map(|item| item.name.as_str())
+                .collect::<Vec<_>>(),
+            ["one", "two"]
+        );
+    }
+
+    #[tokio::test]
+    async fn asap_event_is_disabled_by_default() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let policy = stop_policy(1, false, std::collections::HashSet::new());
+
+        send_asap_configs(
+            &Some(tx),
+            &[ranked("one", "vless://one@example.com:443", true, Some(20))],
+            &policy,
+        );
+
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

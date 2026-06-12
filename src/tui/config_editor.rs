@@ -16,6 +16,7 @@ pub fn label(key: ConfigKey) -> &'static str {
         ConfigKey::RefreshSeconds => "refresh_seconds",
         ConfigKey::EncodedSubscription => "encoded_subscription",
         ConfigKey::PrioritizeStability => "prioritize_stability",
+        ConfigKey::ReturnConfigsAsap => "return_configs_asap",
         ConfigKey::ScanAllConfigs => "scan_all_configs",
         ConfigKey::FetchTimeout => "fetch_timeout_ms",
         ConfigKey::FetchConcurrency => "fetch_concurrency",
@@ -49,6 +50,7 @@ pub fn guide(key: ConfigKey) -> &'static str {
         ConfigKey::PrioritizeStability => {
             "true favors repeat working configs; false favors short wins"
         }
+        ConfigKey::ReturnConfigsAsap => "true publishes working configs immediately",
         ConfigKey::ScanAllConfigs => {
             "true scans every config; false stops after enough working configs"
         }
@@ -82,6 +84,7 @@ pub fn value(config: &crate::config::AppConfig, key: ConfigKey) -> String {
         ConfigKey::RefreshSeconds => config.refresh_seconds.to_string(),
         ConfigKey::EncodedSubscription => config.encoded_subscription.to_string(),
         ConfigKey::PrioritizeStability => config.prioritize_stability.to_string(),
+        ConfigKey::ReturnConfigsAsap => config.return_configs_asap.to_string(),
         ConfigKey::ScanAllConfigs => config.scan_all_configs.to_string(),
         ConfigKey::FetchTimeout => config.fetch_timeout_ms.to_string(),
         ConfigKey::FetchConcurrency => config.fetch_concurrency.to_string(),
@@ -132,6 +135,7 @@ pub fn apply(config: &mut crate::config::AppConfig, key: ConfigKey, raw: &str) -
         ConfigKey::RefreshSeconds => config.refresh_seconds = value.parse()?,
         ConfigKey::EncodedSubscription => config.encoded_subscription = bool_value(value)?,
         ConfigKey::PrioritizeStability => config.prioritize_stability = bool_value(value)?,
+        ConfigKey::ReturnConfigsAsap => config.return_configs_asap = bool_value(value)?,
         ConfigKey::ScanAllConfigs => config.scan_all_configs = bool_value(value)?,
         ConfigKey::FetchTimeout => config.fetch_timeout_ms = nonzero(value, label(key))?,
         ConfigKey::FetchConcurrency => config.fetch_concurrency = positive(value, label(key))?,

@@ -6,6 +6,8 @@ encoded_subscription: true
 # found low-ping configs. false simply prefers any working low-ping config.
 # The saved top-N lives in the cache folder and is wiped on every fresh run and quit.
 prioritize_stability: true
+# Publishes each working config immediately; early configs may not have the lowest ping or best stability.
+return_configs_asap: false
 scan_all_configs: false
 fetch_timeout_ms: 30000
 fetch_concurrency: 8

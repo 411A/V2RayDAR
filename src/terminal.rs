@@ -134,6 +134,7 @@ impl PlainProgressReporter {
                     ranked.len()
                 ));
             }
+            ProgressEvent::WorkingConfigsFound { .. } => {}
         }
     }
 

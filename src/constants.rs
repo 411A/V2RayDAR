@@ -20,6 +20,7 @@ pub const DEFAULT_TOP_N: usize = 10;
 pub const DEFAULT_REFRESH_SECONDS: u64 = 300;
 pub const DEFAULT_ENCODED_SUBSCRIPTION: bool = true;
 pub const DEFAULT_PRIORITIZE_STABILITY: bool = true;
+pub const DEFAULT_RETURN_CONFIGS_ASAP: bool = false;
 pub const DEFAULT_SCAN_ALL_CONFIGS: bool = false;
 pub const DEFAULT_SHARING_ENABLED: bool = false;
 pub const DEFAULT_REQUIRE_TOKEN: bool = false;
@@ -123,12 +124,13 @@ pub const SUBSCRIPTION_ACTIONS: [SubscriptionAction; 6] = [
     SubscriptionAction::Delete,
     SubscriptionAction::Back,
 ];
-pub const CONFIG_KEYS: [ConfigKey; 26] = [
+pub const CONFIG_KEYS: [ConfigKey; 27] = [
     ConfigKey::Bind,
     ConfigKey::TopN,
     ConfigKey::RefreshSeconds,
     ConfigKey::EncodedSubscription,
     ConfigKey::PrioritizeStability,
+    ConfigKey::ReturnConfigsAsap,
     ConfigKey::ScanAllConfigs,
     ConfigKey::FetchTimeout,
     ConfigKey::FetchConcurrency,
@@ -189,6 +191,11 @@ pub const SETTING_GUIDES: &[SettingGuide] = &[
         key: "prioritize_stability",
         label: "Stable ranking",
         help: "true keeps the previous run's top-N at the front (re-pinged first; held even if a new low-ping config appears). false simply prefers any working low-ping config.",
+    },
+    SettingGuide {
+        key: "return_configs_asap",
+        label: "ASAP results",
+        help: "true publishes working configs as they are found; early configs may not have the lowest ping or best stability.",
     },
     SettingGuide {
         key: "scan_all_configs",

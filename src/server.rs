@@ -186,7 +186,12 @@ async fn subscription_response(
 
     (
         StatusCode::OK,
-        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        [
+            (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store, no-cache, max-age=0"),
+            (header::PRAGMA, "no-cache"),
+            (header::EXPIRES, "0"),
+        ],
         body,
     )
         .into_response()
@@ -277,9 +282,12 @@ fn authorize_request(
 
 #[cfg(test)]
 mod tests {
-    use std::net::SocketAddr;
+    use std::{net::SocketAddr, sync::Arc};
 
-    use super::{authorize_request, bind_error_context};
+    use axum::body::to_bytes;
+    use tokio::sync::RwLock;
+
+    use super::{HttpState, authorize_request, bind_error_context, subscription_response};
     use crate::{
         constants::{
             DEFAULT_ACCEPTED_STATUSES, DEFAULT_ACTIVE_TIMEOUT_MS, DEFAULT_BIND,
@@ -289,7 +297,7 @@ mod tests {
             DEFAULT_SCAN_ALL_CONFIGS, DEFAULT_STARTUP_TIMEOUT_MS, DEFAULT_TEST_URL, DEFAULT_TOP_N,
             LOCALHOST_IP,
         },
-        model::RuntimeConfig,
+        model::{Endpoint, RankedConfig, RuntimeConfig, RuntimeState},
     };
 
     fn runtime_config(sharing_enabled: bool, require_token: bool) -> RuntimeConfig {
@@ -323,6 +331,31 @@ mod tests {
 
     fn addr(value: &str) -> SocketAddr {
         value.parse().expect("valid socket address")
+    }
+
+    fn ranked(name: &str, uri: &str, reachable: bool) -> RankedConfig {
+        RankedConfig {
+            rank: 1,
+            stability_count: 1,
+            id: uri.to_string(),
+            dedup_key: uri.to_string(),
+            source: "test".to_string(),
+            priority: 1,
+            protocol: "vless".to_string(),
+            name: name.to_string(),
+            endpoint: Endpoint {
+                host: "example.com".to_string(),
+                port: 443,
+            },
+            uri: uri.to_string(),
+            reachable,
+            validation: "active_http".to_string(),
+            latency_ms: Some(100),
+            http_status: Some(204),
+            download_mbps: None,
+            download_bytes: None,
+            error: None,
+        }
     }
 
     #[test]
@@ -361,5 +394,42 @@ mod tests {
         let message = bind_error_context(addr(&format!("{LOCALHOST_IP}:27141")));
 
         assert!(message.contains("127.0.0.1:27141"));
+    }
+
+    #[tokio::test]
+    async fn subscription_serves_live_ranked_state_during_refresh() {
+        let runtime = RuntimeState {
+            refreshing: true,
+            ranked: vec![ranked(
+                "live",
+                "vless://live@example.com:443?security=tls#live",
+                true,
+            )],
+            ..RuntimeState::default()
+        };
+        let config = runtime_config(false, false);
+        let state = HttpState {
+            runtime: Arc::new(RwLock::new(runtime)),
+            config: Arc::new(RwLock::new(config)),
+        };
+
+        let response =
+            subscription_response(&state, addr(&format!("{LOCALHOST_IP}:50000")), None, false)
+                .await;
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            response.headers().get(axum::http::header::CACHE_CONTROL),
+            Some(&axum::http::HeaderValue::from_static(
+                "no-store, no-cache, max-age=0"
+            ))
+        );
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body reads");
+        assert_eq!(
+            std::str::from_utf8(&body).expect("body is utf-8"),
+            "vless://live@example.com:443?security=tls#live\n"
+        );
     }
 }

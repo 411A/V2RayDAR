@@ -44,8 +44,7 @@ pub fn print_summary(state: &RuntimeState, top_n: usize) {
         let endpoint = format!("{}:{}", item.endpoint.host, item.endpoint.port);
         let latency = item
             .latency_ms
-            .map(|value| format!("{value} ms"))
-            .unwrap_or_else(|| "-".to_string());
+            .map_or_else(|| "-".to_string(), |value| format!("{value} ms"));
         println!(
             "{:<5} {:<8} {:<10} {:<28} {:<22} {:<12} {:>10}",
             item.rank,
@@ -126,7 +125,7 @@ impl PlainProgressReporter {
 
     pub fn on_event(&mut self, event: &ProgressEvent) {
         match event {
-            ProgressEvent::LiveLog(message) => self.on_log(message),
+            ProgressEvent::LiveLog(message) => Self::on_log(message),
             ProgressEvent::ProbeDelta { tested, working } => self.on_probe_delta(*tested, *working),
             ProgressEvent::RankedSnapshot(ranked) => {
                 print_log(format!(
@@ -138,7 +137,7 @@ impl PlainProgressReporter {
         }
     }
 
-    fn on_log(&self, message: &str) {
+    fn on_log(message: &str) {
         if should_print_plain_progress(message) {
             print_log(message);
         }

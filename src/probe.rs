@@ -31,9 +31,10 @@ use crate::{
     constants::{
         ACTIVE_PROBE_BATCH_CONCURRENCY_MULTIPLIER, ACTIVE_PROBE_BATCH_MAX_SIZE,
         ACTIVE_PROBE_BATCH_MIN_SIZE, ACTIVE_PROBE_HTTP_MAX_CONCURRENCY,
-        ACTIVE_PROBE_PROCESS_MAX_CONCURRENCY, LOCAL_PROXY_CONNECT_TIMEOUT,
-        LOCAL_PROXY_WAIT_INTERVAL, LOCALHOST_IP, SING_BOX_CLEANUP_TIMEOUT,
-        SING_BOX_CONFIG_FILE_PREFIX, SING_BOX_INBOUND_TAG_PREFIX, SING_BOX_OUTBOUND_TAG_PREFIX,
+        ACTIVE_PROBE_PROCESS_MAX_CONCURRENCY, BITS_PER_BYTE, BITS_PER_MEGABIT,
+        LOCAL_PROXY_CONNECT_TIMEOUT, LOCAL_PROXY_WAIT_INTERVAL, LOCALHOST_IP,
+        SING_BOX_CLEANUP_TIMEOUT, SING_BOX_CONFIG_FILE_PREFIX, SING_BOX_INBOUND_TAG_PREFIX,
+        SING_BOX_OUTBOUND_TAG_PREFIX,
     },
     model::{Candidate, ProbeStopPolicy, ProgressEvent, RankedConfig},
 };
@@ -52,7 +53,7 @@ pub async fn probe_candidates(
         "probe candidate queue received"
     );
     send_progress(
-        &progress,
+        progress.as_ref(),
         format!(
             "Testing {} loaded configs with {:?} mode (concurrency {})",
             candidates.len(),
@@ -67,13 +68,13 @@ pub async fn probe_candidates(
         );
         let failed = candidates.len();
         send_progress(
-            &progress,
+            progress.as_ref(),
             format!(
                 "sing-box unavailable at '{}'; marking {failed} configs failed",
                 config.sing_box_path
             ),
         );
-        send_probe_delta(&progress, failed, 0);
+        send_probe_delta(progress.as_ref(), failed, 0);
         return rank_configs(
             candidates
                 .into_iter()
@@ -98,7 +99,7 @@ pub async fn probe_candidates(
         ProbeMode::Tcp => {
             if !stop_policy.scan_all_configs {
                 send_progress(
-                    &progress,
+                    progress.as_ref(),
                     "Early stop is disabled in TCP diagnostic mode; active sing-box validation is required for shortcut results",
                 );
             }
@@ -108,9 +109,9 @@ pub async fn probe_candidates(
             .buffer_unordered(config.concurrency);
             let mut ranked = Vec::new();
             while let Some(result) = results.next().await {
-                send_probe_delta(&progress, 1, usize::from(result.reachable));
+                send_probe_delta(progress.as_ref(), 1, usize::from(result.reachable));
                 ranked.push(result);
-                send_asap_configs(&progress, &ranked, stop_policy);
+                send_asap_configs(progress.as_ref(), &ranked, stop_policy);
             }
             ranked
         }
@@ -118,7 +119,7 @@ pub async fn probe_candidates(
 
     info!(ranked = ranked.len(), "probe candidate queue completed");
     send_progress(
-        &progress,
+        progress.as_ref(),
         format!("Probe queue finished: {} results", ranked.len()),
     );
     rank_configs(ranked)
@@ -176,7 +177,7 @@ struct PreparedActiveCandidate {
 }
 
 impl PreparedActiveCandidate {
-    fn candidate_count(&self) -> usize {
+    const fn candidate_count(&self) -> usize {
         1 + self.aliases.len()
     }
 
@@ -193,7 +194,7 @@ struct BatchProbeFailure {
 }
 
 impl BatchProbeFailure {
-    fn retryable(entries: Vec<PreparedActiveCandidate>, error: anyhow::Error) -> Self {
+    const fn retryable(entries: Vec<PreparedActiveCandidate>, error: anyhow::Error) -> Self {
         Self {
             entries,
             failed_entry: None,
@@ -202,7 +203,7 @@ impl BatchProbeFailure {
         }
     }
 
-    fn unrecoverable(entries: Vec<PreparedActiveCandidate>, error: anyhow::Error) -> Self {
+    const fn unrecoverable(entries: Vec<PreparedActiveCandidate>, error: anyhow::Error) -> Self {
         Self {
             entries,
             failed_entry: None,
@@ -211,7 +212,7 @@ impl BatchProbeFailure {
         }
     }
 
-    fn invalid_entry(
+    const fn invalid_entry(
         entries: Vec<PreparedActiveCandidate>,
         failed_entry: PreparedActiveCandidate,
         error: anyhow::Error,
@@ -310,6 +311,7 @@ impl ProbeStopState {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn probe_active_batched(
     candidates: Vec<Candidate>,
     config: &ProbeConfig,
@@ -337,7 +339,7 @@ async fn probe_active_batched(
         "active probe preparation finished"
     );
     send_progress(
-        &progress,
+        progress.as_ref(),
         format!(
             "Prepared active test: {} sing-box definitions represent {} loaded configs; {} unsupported configs skipped",
             prepared.len(),
@@ -346,7 +348,7 @@ async fn probe_active_batched(
         ),
     );
     if !ranked.is_empty() {
-        send_probe_delta(&progress, ranked.len(), 0);
+        send_probe_delta(progress.as_ref(), ranked.len(), 0);
     }
     let mut stop_state = ProbeStopState::new(&prepared, stop_policy);
     let cancel = Arc::new(AtomicBool::new(false));
@@ -374,7 +376,7 @@ async fn probe_active_batched(
                 "active probe batch queued"
             );
             send_progress(
-                &progress,
+                progress.as_ref(),
                 format!(
                     "Batch {batch_index}: testing {batch_candidates} configs ({} sing-box definitions)",
                     batch.len()
@@ -394,7 +396,7 @@ async fn probe_active_batched(
                 let outcome = probe_active_batch_with_fallback(
                     batch,
                     config,
-                    &progress,
+                    progress.as_ref(),
                     &batch_stop_policy,
                     &mut batch_stop_state,
                     &[],
@@ -420,23 +422,25 @@ async fn probe_active_batched(
             );
             if !cancel.load(AtomicOrdering::Relaxed)
                 && let Some(reason) =
-                    probe_stop_reason(&ranked, stop_policy, &mut stop_state, &progress)
+                    probe_stop_reason(&ranked, stop_policy, &mut stop_state, progress.as_ref())
             {
                 cancel.store(true, AtomicOrdering::Relaxed);
-                send_progress(&progress, reason);
+                send_progress(progress.as_ref(), reason);
             }
         }
         update_stability_search_after_batch(wave_previous_working, stop_policy, &mut stop_state);
         let after = ranked.len();
         send_progress(
-            &progress,
+            progress.as_ref(),
             format!(
                 "Batch wave finished: {} configs checked in {}",
                 after.saturating_sub(before),
                 format_duration_short(wave_started.elapsed())
             ),
         );
-        if let Some(reason) = probe_stop_reason(&ranked, stop_policy, &mut stop_state, &progress) {
+        if let Some(reason) =
+            probe_stop_reason(&ranked, stop_policy, &mut stop_state, progress.as_ref())
+        {
             cancel.store(true, AtomicOrdering::Relaxed);
             info!(
                 batch_index,
@@ -444,7 +448,7 @@ async fn probe_active_batched(
                 reachable = ranked.iter().filter(|item| item.reachable).count(),
                 "active probe early stop reached"
             );
-            send_progress(&progress, reason);
+            send_progress(progress.as_ref(), reason);
             break;
         }
     }
@@ -454,9 +458,9 @@ async fn probe_active_batched(
         duration_ms = started.elapsed().as_millis(),
         "active probe batches finished"
     );
-    enrich_top_speedtests(&mut ranked, config, &progress, stop_policy).await;
+    enrich_top_speedtests(&mut ranked, config, progress.as_ref(), stop_policy).await;
     send_progress(
-        &progress,
+        progress.as_ref(),
         format!(
             "Active test finished: {} configs checked in {}",
             ranked.len(),
@@ -554,20 +558,19 @@ fn source_fair_candidates(
     for (index, candidate) in candidates.into_iter().enumerate() {
         let preferred = is_preferred(&candidate);
         let key = (candidate.source.clone(), candidate.priority);
-        let queue_index = match queue_indexes.get(&key).copied() {
-            Some(queue_index) => queue_index,
-            None => {
-                let queue_index = queues.len();
-                queue_indexes.insert(key, queue_index);
-                queues.push(SourceCandidateQueue {
-                    source: candidate.source.clone(),
-                    priority: candidate.priority,
-                    first_index: index,
-                    preferred: VecDeque::new(),
-                    regular: VecDeque::new(),
-                });
-                queue_index
-            }
+        let queue_index = if let Some(queue_index) = queue_indexes.get(&key).copied() {
+            queue_index
+        } else {
+            let queue_index = queues.len();
+            queue_indexes.insert(key, queue_index);
+            queues.push(SourceCandidateQueue {
+                source: candidate.source.clone(),
+                priority: candidate.priority,
+                first_index: index,
+                preferred: VecDeque::new(),
+                regular: VecDeque::new(),
+            });
+            queue_index
         };
         if preferred {
             queues[queue_index].preferred.push_back(candidate);
@@ -606,7 +609,7 @@ fn probe_stop_reason(
     ranked: &[RankedConfig],
     policy: &ProbeStopPolicy,
     state: &mut ProbeStopState,
-    progress: &Option<UnboundedSender<ProgressEvent>>,
+    progress: Option<&UnboundedSender<ProgressEvent>>,
 ) -> Option<String> {
     if policy.scan_all_configs || policy.top_n == 0 {
         return None;
@@ -666,7 +669,7 @@ fn probe_stop_reason_with_batch(
     ranked: &[RankedConfig],
     policy: &ProbeStopPolicy,
     state: &mut ProbeStopState,
-    progress: &Option<UnboundedSender<ProgressEvent>>,
+    progress: Option<&UnboundedSender<ProgressEvent>>,
 ) -> Option<String> {
     if policy.scan_all_configs {
         return None;
@@ -769,7 +772,7 @@ fn entry_has_previous_working_uri(
 }
 
 fn send_ranked_snapshot(
-    progress: &Option<UnboundedSender<ProgressEvent>>,
+    progress: Option<&UnboundedSender<ProgressEvent>>,
     ranked: Vec<RankedConfig>,
 ) {
     if let Some(progress) = progress {
@@ -778,7 +781,7 @@ fn send_ranked_snapshot(
 }
 
 fn send_asap_configs(
-    progress: &Option<UnboundedSender<ProgressEvent>>,
+    progress: Option<&UnboundedSender<ProgressEvent>>,
     ranked: &[RankedConfig],
     policy: &ProbeStopPolicy,
 ) {
@@ -840,7 +843,7 @@ struct BatchProbeOutcome {
 async fn probe_active_batch_with_fallback(
     batch: Vec<PreparedActiveCandidate>,
     config: &ProbeConfig,
-    progress: &Option<UnboundedSender<ProgressEvent>>,
+    progress: Option<&UnboundedSender<ProgressEvent>>,
     stop_policy: &ProbeStopPolicy,
     stop_state: &mut ProbeStopState,
     previous_ranked: &[RankedConfig],
@@ -947,11 +950,11 @@ async fn probe_active_batch_with_fallback(
     BatchProbeOutcome { ranked, stats }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 async fn probe_active_batch(
     entries: Vec<PreparedActiveCandidate>,
     config: &ProbeConfig,
-    progress: &Option<UnboundedSender<ProgressEvent>>,
+    progress: Option<&UnboundedSender<ProgressEvent>>,
     stop_policy: &ProbeStopPolicy,
     stop_state: &mut ProbeStopState,
     previous_ranked: &[RankedConfig],
@@ -1300,7 +1303,7 @@ async fn probe_active_target_inner(port: u16, config: &ProbeConfig) -> Result<Ac
 async fn enrich_top_speedtests(
     ranked: &mut [RankedConfig],
     config: &ProbeConfig,
-    progress: &Option<UnboundedSender<ProgressEvent>>,
+    progress: Option<&UnboundedSender<ProgressEvent>>,
     stop_policy: &ProbeStopPolicy,
 ) {
     let Some(download_url) = config
@@ -1334,10 +1337,10 @@ async fn enrich_top_speedtests(
     let startup_timeout = Duration::from_millis(config.startup_timeout_ms);
     let sing_box_path = config.sing_box_path.clone();
     let bytes_limit = config.download_bytes_limit;
-    let targets = indices
-        .iter()
-        .map(|index| (*index, ranked[*index].uri.clone()))
-        .collect::<Vec<_>>();
+    let mut targets = Vec::with_capacity(indices.len());
+    for index in indices {
+        targets.push((index, ranked[index].uri.clone()));
+    }
     let mut results = stream::iter(targets.into_iter().map(|(index, uri)| {
         let sing_box_path = sing_box_path.clone();
         async move {
@@ -1430,9 +1433,14 @@ async fn measure_download(
     }
 
     Ok(DownloadMeasurement {
-        mbps: (measured_bytes as f64 * 8.0) / elapsed / 1_000_000.0,
+        mbps: (usize_to_f64(measured_bytes) * BITS_PER_BYTE) / elapsed / BITS_PER_MEGABIT,
         bytes: measured_bytes,
     })
+}
+
+#[allow(clippy::cast_precision_loss)]
+const fn usize_to_f64(value: usize) -> f64 {
+    value as f64
 }
 
 async fn sing_box_available(path: &str) -> bool {
@@ -1617,14 +1625,14 @@ fn with_sing_box_stderr(err: anyhow::Error, stderr: &str) -> anyhow::Error {
     anyhow!("{err}; sing-box stderr: {stderr}")
 }
 
-fn send_progress(progress: &Option<UnboundedSender<ProgressEvent>>, message: impl Into<String>) {
+fn send_progress(progress: Option<&UnboundedSender<ProgressEvent>>, message: impl Into<String>) {
     if let Some(progress) = progress {
         let _ = progress.send(ProgressEvent::LiveLog(message.into()));
     }
 }
 
 fn send_probe_delta(
-    progress: &Option<UnboundedSender<ProgressEvent>>,
+    progress: Option<&UnboundedSender<ProgressEvent>>,
     tested: usize,
     working: usize,
 ) {
@@ -1863,9 +1871,8 @@ fn vmess_outbound(uri: &str) -> Result<Value> {
         json!(json_u64(&json, &["aid", "alterId"]).unwrap_or(0)),
     );
 
-    let tls_enabled = json_string(&json, &["tls"])
-        .map(|value| value.eq_ignore_ascii_case("tls"))
-        .unwrap_or(false);
+    let tls_enabled =
+        json_string(&json, &["tls"]).is_some_and(|value| value.eq_ignore_ascii_case("tls"));
     if tls_enabled {
         let tls = tls_config_from_values(
             true,
@@ -2004,8 +2011,7 @@ fn tls_config(
         reality_key,
         reality_short_id,
         first_param(params, &["allowInsecure", "insecure", "skip-cert-verify"])
-            .map(|value| truthy(&value))
-            .unwrap_or(false),
+            .is_some_and(|value| truthy(&value)),
     )))
 }
 
@@ -2237,8 +2243,7 @@ fn parse_host_port(value: &str) -> Result<(String, u16)> {
 fn split_once(value: &str, delimiter: char) -> (&str, Option<&str>) {
     value
         .split_once(delimiter)
-        .map(|(left, right)| (left, Some(right)))
-        .unwrap_or((value, None))
+        .map_or((value, None), |(left, right)| (left, Some(right)))
 }
 
 fn percent_decode(value: &str) -> String {
@@ -2347,7 +2352,7 @@ mod tests {
             stability_search_exhausted: false,
             remaining_previous_working: 0,
         };
-        probe_stop_reason(ranked, policy, &mut state, &None)
+        probe_stop_reason(ranked, policy, &mut state, None)
     }
 
     #[test]
@@ -2612,7 +2617,7 @@ mod tests {
             ranked("two", "vless://two@example.com:443", true, Some(10)),
         ];
 
-        send_asap_configs(&Some(tx), &ranked, &policy);
+        send_asap_configs(Some(&tx), &ranked, &policy);
 
         let Some(ProgressEvent::WorkingConfigsFound { configs, top_n }) = rx.recv().await else {
             panic!("expected working configs event");
@@ -2633,7 +2638,7 @@ mod tests {
         let policy = stop_policy(1, false, std::collections::HashSet::new());
 
         send_asap_configs(
-            &Some(tx),
+            Some(&tx),
             &[ranked("one", "vless://one@example.com:443", true, Some(20))],
             &policy,
         );

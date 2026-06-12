@@ -90,6 +90,7 @@ pub struct ProbeStopPolicy {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct RuntimeConfig {
     pub bind: SocketAddr,
     pub top_n: usize,

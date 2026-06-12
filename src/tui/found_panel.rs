@@ -25,8 +25,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, runtime: &RuntimeView, top_n: usi
     let rows = runtime.ranked.iter().take(top_n).map(|item| {
         let latency = item
             .latency_ms
-            .map(|value| format!("{value} ms"))
-            .unwrap_or_else(|| "-".to_string());
+            .map_or_else(|| "-".to_string(), |value| format!("{value} ms"));
         Row::new([
             Cell::from(item.rank.to_string()),
             Cell::from(item.stability_count.to_string()),

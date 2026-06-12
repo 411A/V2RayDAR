@@ -9,7 +9,7 @@ use crate::{
 
 use super::state::ConfigKey;
 
-pub fn label(key: ConfigKey) -> &'static str {
+pub const fn label(key: ConfigKey) -> &'static str {
     match key {
         ConfigKey::Bind => "bind",
         ConfigKey::TopN => "top_n",
@@ -41,7 +41,7 @@ pub fn label(key: ConfigKey) -> &'static str {
     }
 }
 
-pub fn guide(key: ConfigKey) -> &'static str {
+pub const fn guide(key: ConfigKey) -> &'static str {
     match key {
         ConfigKey::Bind => "host:port, e.g. 0.0.0.0:27141",
         ConfigKey::TopN => "positive number, e.g. 10",
@@ -100,13 +100,11 @@ pub fn value(config: &crate::config::AppConfig, key: ConfigKey) -> String {
         ConfigKey::ProbeBatchSize => config
             .probe
             .batch_size
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "auto".to_string()),
+            .map_or_else(|| "auto".to_string(), |value| value.to_string()),
         ConfigKey::ProbeProcessConcurrency => config
             .probe
             .process_concurrency
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "auto".to_string()),
+            .map_or_else(|| "auto".to_string(), |value| value.to_string()),
         ConfigKey::TestUrl => config.probe.test_url.clone(),
         ConfigKey::AcceptedStatuses => config
             .probe
@@ -140,7 +138,7 @@ pub fn apply(config: &mut crate::config::AppConfig, key: ConfigKey, raw: &str) -
         ConfigKey::FetchTimeout => config.fetch_timeout_ms = nonzero(value, label(key))?,
         ConfigKey::FetchConcurrency => config.fetch_concurrency = positive(value, label(key))?,
         ConfigKey::MaxSubscriptionBytes => {
-            config.max_subscription_bytes = positive(value, label(key))?
+            config.max_subscription_bytes = positive(value, label(key))?;
         }
         ConfigKey::UseCacheOnly => config.use_cache_only = bool_value(value)?,
         ConfigKey::EmergencyConfig => config.emergency_config = optional(value),
@@ -154,16 +152,16 @@ pub fn apply(config: &mut crate::config::AppConfig, key: ConfigKey, raw: &str) -
         ConfigKey::StartupTimeout => config.probe.startup_timeout_ms = nonzero(value, label(key))?,
         ConfigKey::ProbeConcurrency => config.probe.concurrency = positive(value, label(key))?,
         ConfigKey::ProbeBatchSize => {
-            config.probe.batch_size = optional_positive(value, label(key))?
+            config.probe.batch_size = optional_positive(value, label(key))?;
         }
         ConfigKey::ProbeProcessConcurrency => {
-            config.probe.process_concurrency = optional_positive(value, label(key))?
+            config.probe.process_concurrency = optional_positive(value, label(key))?;
         }
         ConfigKey::TestUrl => config.probe.test_url = required(value, label(key))?,
         ConfigKey::AcceptedStatuses => config.probe.accepted_statuses = statuses(value)?,
         ConfigKey::DownloadUrl => config.probe.download_url = optional(value),
         ConfigKey::DownloadLimit => {
-            config.probe.download_bytes_limit = positive(value, label(key))?
+            config.probe.download_bytes_limit = positive(value, label(key))?;
         }
         ConfigKey::TokenRequired => config.sharing.require_token = bool_value(value)?,
         ConfigKey::Token => config.sharing.token = normalize_sharing_token(value),

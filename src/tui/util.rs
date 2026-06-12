@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 
 use crate::{
     config::{AppConfig, ProbeMode, SubscriptionSource},
-    constants::BYTE_UNITS,
+    constants::{BYTE_UNITS, BYTES_PER_UNIT},
 };
 
 pub fn save_config(path: &Path, config: &AppConfig) -> Result<()> {
@@ -14,10 +14,10 @@ pub fn save_config(path: &Path, config: &AppConfig) -> Result<()> {
         .unwrap_or_default()
         .to_ascii_lowercase();
 
-    match extension.as_str() {
-        "json" => save_json_config(path, config),
-        "yaml" | "yml" | "" => save_yaml_config(path, config),
-        _ => save_yaml_config(path, config),
+    if extension == "json" {
+        save_json_config(path, config)
+    } else {
+        save_yaml_config(path, config)
     }
 }
 
@@ -114,8 +114,7 @@ fn update_top_level_scalars(document: &mut YamlDocument, previous: &AppConfig, c
                 .emergency_config
                 .as_deref()
                 .filter(|value| !value.trim().is_empty())
-                .map(yaml_scalar)
-                .unwrap_or_else(|| "null".to_string()),
+                .map_or_else(|| "null".to_string(), yaml_scalar),
         );
     }
 }
@@ -178,8 +177,7 @@ fn update_probe_section(document: &mut YamlDocument, previous: &AppConfig, confi
             config
                 .probe
                 .batch_size
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "null".to_string()),
+                .map_or_else(|| "null".to_string(), |value| value.to_string()),
         );
     }
     if previous.probe.process_concurrency != config.probe.process_concurrency {
@@ -189,8 +187,7 @@ fn update_probe_section(document: &mut YamlDocument, previous: &AppConfig, confi
             config
                 .probe
                 .process_concurrency
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "null".to_string()),
+                .map_or_else(|| "null".to_string(), |value| value.to_string()),
         );
     }
     if previous.probe.test_url != config.probe.test_url {
@@ -212,8 +209,7 @@ fn update_probe_section(document: &mut YamlDocument, previous: &AppConfig, confi
                 .download_url
                 .as_deref()
                 .filter(|value| !value.trim().is_empty())
-                .map(yaml_scalar)
-                .unwrap_or_else(|| "null".to_string()),
+                .map_or_else(|| "null".to_string(), yaml_scalar),
         );
     }
     if previous.probe.download_bytes_limit != config.probe.download_bytes_limit {
@@ -232,7 +228,8 @@ struct YamlDocument {
 }
 
 impl YamlDocument {
-    fn new(content: String) -> Self {
+    fn new(content: impl AsRef<str>) -> Self {
+        let content = content.as_ref();
         let newline = if content.contains("\r\n") {
             "\r\n"
         } else {
@@ -256,9 +253,10 @@ impl YamlDocument {
         content
     }
 
-    fn set_top_level_scalar(&mut self, key: &str, value: String) {
+    fn set_top_level_scalar(&mut self, key: &str, value: impl AsRef<str>) {
+        let value = value.as_ref();
         if let Some(index) = self.find_direct_key(key, 0, self.lines.len(), 0) {
-            self.replace_scalar_line(index, key, &value);
+            self.replace_scalar_line(index, key, value);
             return;
         }
 
@@ -270,10 +268,11 @@ impl YamlDocument {
         self.lines.insert(insert_at, format!("{key}: {value}"));
     }
 
-    fn set_nested_scalar(&mut self, section: &str, key: &str, value: String) {
+    fn set_nested_scalar(&mut self, section: &str, key: &str, value: impl AsRef<str>) {
+        let value = value.as_ref();
         if let Some((start, end, indent)) = self.section_range(section) {
             if let Some(index) = self.find_direct_key(key, start + 1, end, indent + 2) {
-                self.replace_scalar_line(index, key, &value);
+                self.replace_scalar_line(index, key, value);
                 return;
             }
 
@@ -408,8 +407,9 @@ impl YamlDocument {
         item_end: usize,
         item_indent: usize,
         key: &str,
-        value: String,
+        value: impl AsRef<str>,
     ) -> bool {
+        let value = value.as_ref();
         if let Some((line_key, _)) = parse_sequence_item_key(&self.lines[item_start])
             && line_key == key
         {
@@ -420,7 +420,7 @@ impl YamlDocument {
         }
 
         if let Some(index) = self.find_direct_key(key, item_start + 1, item_end, item_indent + 2) {
-            self.replace_scalar_line(index, key, &value);
+            self.replace_scalar_line(index, key, value);
             return true;
         }
 
@@ -569,8 +569,7 @@ fn scalar_line_has_empty_value(line: &str) -> bool {
 
     value
         .split_once(" #")
-        .map(|(value, _)| value)
-        .unwrap_or(value)
+        .map_or(value, |(value, _)| value)
         .trim()
         .is_empty()
 }
@@ -726,10 +725,10 @@ fn inserted_subscription_index(
 }
 
 pub fn human_bytes(bytes: u64) -> String {
-    let mut value = bytes as f64;
+    let mut value = u64_to_f64(bytes);
     let mut unit = 0_usize;
-    while value >= 1024.0 && unit < BYTE_UNITS.len() - 1 {
-        value /= 1024.0;
+    while value >= BYTES_PER_UNIT && unit < BYTE_UNITS.len() - 1 {
+        value /= BYTES_PER_UNIT;
         unit += 1;
     }
 
@@ -740,7 +739,12 @@ pub fn human_bytes(bytes: u64) -> String {
     }
 }
 
-pub fn bool_text(value: bool) -> &'static str {
+#[allow(clippy::cast_precision_loss)]
+const fn u64_to_f64(value: u64) -> f64 {
+    value as f64
+}
+
+pub const fn bool_text(value: bool) -> &'static str {
     if value { "on" } else { "off" }
 }
 

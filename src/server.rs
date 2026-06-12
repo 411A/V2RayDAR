@@ -99,10 +99,10 @@ async fn serve_lan_sharing(
             match task.await {
                 Ok(Ok(())) => info!(bind = %bind, "LAN sharing listener exited"),
                 Ok(Err(error)) => {
-                    warn!(bind = %bind, error = %error, "LAN sharing listener failed")
+                    warn!(bind = %bind, error = %error, "LAN sharing listener failed");
                 }
                 Err(error) => {
-                    warn!(bind = %bind, error = %error, "LAN sharing listener task failed")
+                    warn!(bind = %bind, error = %error, "LAN sharing listener task failed");
                 }
             }
         }

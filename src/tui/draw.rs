@@ -3,7 +3,9 @@ use ratatui::Frame;
 use crate::{model::RuntimeConfig, paths::AppPaths};
 
 use super::{
-    config_panel, footer, found_panel, layout, logs_panel, main_menu_panel, state::TuiState, top,
+    config_panel, footer, found_panel, layout, logs_panel, main_menu_panel,
+    state::{HitMap, TuiState},
+    top,
     view::RuntimeView,
 };
 
@@ -14,7 +16,7 @@ pub fn draw(
     runtime_config: &RuntimeConfig,
     paths: &AppPaths,
 ) {
-    state.hits = Default::default();
+    state.hits = HitMap::default();
     let areas = layout::main(
         frame.area(),
         layout::uses_tokenized_endpoint(&state.editable),

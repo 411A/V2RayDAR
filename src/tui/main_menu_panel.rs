@@ -85,7 +85,7 @@ fn draw_logs(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState, runtime: &
     );
 }
 
-fn draw_subscription_actions(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) {
+fn draw_subscription_actions(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
     let selected = state.selected_subscription_ref();
     let rows = SUBSCRIPTION_ACTIONS
         .iter()
@@ -276,7 +276,7 @@ fn row_style(selected: bool, value: &str) -> Style {
     }
 }
 
-fn action_label(action: SubscriptionAction) -> &'static str {
+const fn action_label(action: SubscriptionAction) -> &'static str {
     match action {
         SubscriptionAction::EditName => "Edit name",
         SubscriptionAction::EditUrl => "Edit URL",
@@ -335,7 +335,7 @@ fn row_hits_with_offset(area: Rect, count: usize, offset: usize) -> Vec<(usize, 
     let last_y = area.y.saturating_add(area.height.saturating_sub(1));
     for index in offset..count {
         let visible_index = index.saturating_sub(offset);
-        let y = first_y.saturating_add(visible_index as u16);
+        let y = first_y.saturating_add(usize_to_u16_saturating(visible_index));
         if y >= last_y {
             break;
         }
@@ -347,11 +347,15 @@ fn row_hits_with_offset(area: Rect, count: usize, offset: usize) -> Vec<(usize, 
     rows
 }
 
-fn visible_row_count(area: Rect) -> usize {
+fn usize_to_u16_saturating(value: usize) -> u16 {
+    u16::try_from(value).unwrap_or(u16::MAX)
+}
+
+const fn visible_row_count(area: Rect) -> usize {
     area.height.saturating_sub(3) as usize
 }
 
-fn scroll_offset(selected: usize, total: usize, visible: usize) -> usize {
+const fn scroll_offset(selected: usize, total: usize, visible: usize) -> usize {
     if visible == 0 || total <= visible {
         return 0;
     }

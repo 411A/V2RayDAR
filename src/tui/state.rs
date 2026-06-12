@@ -104,6 +104,7 @@ pub struct SubscriptionDraft {
 }
 
 #[derive(Debug, Clone, Default)]
+#[allow(clippy::struct_field_names)]
 pub struct HitMap {
     pub main_rows: Vec<(usize, ratatui::layout::Rect)>,
     pub subscription_rows: Vec<(usize, ratatui::layout::Rect)>,

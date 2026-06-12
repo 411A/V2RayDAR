@@ -59,7 +59,7 @@ fn bundled_sing_box_path() -> Option<PathBuf> {
 }
 
 #[cfg(target_os = "windows")]
-fn bundled_sing_box_file_name() -> &'static str {
+const fn bundled_sing_box_file_name() -> &'static str {
     "sing-box.exe"
 }
 
@@ -80,7 +80,7 @@ fn platform_default_sing_box_path() -> Option<PathBuf> {
 }
 
 #[cfg(not(target_os = "android"))]
-fn platform_default_sing_box_path() -> Option<PathBuf> {
+const fn platform_default_sing_box_path() -> Option<PathBuf> {
     None
 }
 
@@ -185,7 +185,7 @@ pub fn setup_guide() -> SetupGuide {
     }
 }
 
-pub fn recommended_version() -> &'static str {
+pub const fn recommended_version() -> &'static str {
     SING_BOX_VERSION
 }
 
@@ -207,13 +207,7 @@ pub async fn verify_path(path: &str) -> Result<()> {
         return Err(anyhow!("sing-box path cannot be empty"));
     }
 
-    let lower = path.to_ascii_lowercase();
-    if lower.ends_with(".tar.gz")
-        || lower.ends_with(".tgz")
-        || lower.ends_with(".tar.xz")
-        || lower.ends_with(".zip")
-        || lower.ends_with(".7z")
-    {
+    if is_archive_path(&path) {
         return Err(anyhow!(
             "'{path}' is an archive, not a sing-box executable. Extract it and point to the file named 'sing-box' inside the archive."
         ));
@@ -254,6 +248,25 @@ pub async fn verify_path(path: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn is_archive_path(path: &str) -> bool {
+    let path = std::path::Path::new(path);
+    let extension = path.extension().and_then(|value| value.to_str());
+    if extension.is_some_and(|ext| {
+        ext.eq_ignore_ascii_case("tgz")
+            || ext.eq_ignore_ascii_case("zip")
+            || ext.eq_ignore_ascii_case("7z")
+    }) {
+        return true;
+    }
+
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|name| {
+            name.to_ascii_lowercase().ends_with(".tar.gz")
+                || name.to_ascii_lowercase().ends_with(".tar.xz")
+        })
 }
 
 #[cfg(test)]

@@ -83,7 +83,7 @@ where
         "subscription fetch queue built"
     );
     send_progress(
-        &progress,
+        progress.as_ref(),
         format!(
             "Subscription load: fetching {} enabled sources",
             sources.len()
@@ -127,7 +127,7 @@ where
         .collect::<Vec<_>>();
 
     send_progress(
-        &progress,
+        progress.as_ref(),
         "All subscription fetches failed; trying cached subscription snapshots",
     );
 
@@ -178,7 +178,7 @@ where
         "retrying failed subscription fetches through sing-box proxy"
     );
     send_progress(
-        &progress,
+        progress.as_ref(),
         format!(
             "Subscription retry: fetching {} failed sources through sing-box proxy",
             sources.len()
@@ -278,7 +278,7 @@ where
                     "subscription fetch result parsed"
                 );
                 send_progress(
-                    &context.progress,
+                    context.progress.as_ref(),
                     format!(
                         "Subscription parsed: {} configs from {} links",
                         fetched.candidates.len(),
@@ -292,7 +292,7 @@ where
                 report_subscription_bytes(err.bytes_read, report_bytes).await;
                 warn!(error = %err.error, "subscription fetch failed");
                 send_progress(
-                    &context.progress,
+                    context.progress.as_ref(),
                     format!("Subscription fetch failed: {}", err.error),
                 );
                 let error = err.error.to_string();
@@ -340,7 +340,7 @@ struct FetchError {
 }
 
 impl FetchError {
-    fn new(error: anyhow::Error, bytes_read: u64) -> Self {
+    const fn new(error: anyhow::Error, bytes_read: u64) -> Self {
         Self { error, bytes_read }
     }
 
@@ -404,7 +404,7 @@ async fn fetch_source(
         "subscription source fetch started"
     );
     send_progress(
-        &progress,
+        progress.as_ref(),
         format!("Fetching subscription '{}'", source.name),
     );
     let fetched = fetch_body(client, &source.url, cache_dir, max_bytes, mode)
@@ -428,7 +428,7 @@ async fn fetch_source(
         "subscription source parse finished"
     );
     send_progress(
-        &progress,
+        progress.as_ref(),
         format!(
             "Loaded subscription '{}': {} configs, {} bytes",
             source.name,
@@ -454,7 +454,7 @@ fn is_http_url(url: &str) -> bool {
     url.starts_with("http://") || url.starts_with("https://")
 }
 
-fn send_progress(progress: &Option<UnboundedSender<ProgressEvent>>, message: impl Into<String>) {
+fn send_progress(progress: Option<&UnboundedSender<ProgressEvent>>, message: impl Into<String>) {
     if let Some(progress) = progress {
         let _ = progress.send(ProgressEvent::LiveLog(message.into()));
     }
@@ -560,7 +560,7 @@ async fn fetch_http_body(
     if let Some(cache_dir) = cache_dir {
         write_cache_snapshot(cache_dir, url, &body).await;
     }
-    Ok(FetchedBody { bytes_read, body })
+    Ok(FetchedBody { body, bytes_read })
 }
 
 async fn fetch_cached_http_body(
@@ -618,7 +618,7 @@ async fn read_cache_metadata(path: &Path) -> Result<CacheMetadata> {
     serde_json::from_slice(&bytes).context("invalid subscription cache metadata")
 }
 
-fn estimated_request_bytes(url: &str) -> u64 {
+const fn estimated_request_bytes(url: &str) -> u64 {
     HTTP_EXCHANGE_OVERHEAD_BYTES.saturating_add(url.len() as u64)
 }
 
@@ -647,7 +647,7 @@ async fn read_limited_response(
         ));
     }
 
-    let mut body = Vec::with_capacity(content_length as usize);
+    let mut body = Vec::with_capacity(usize::try_from(content_length).unwrap_or(max_bytes));
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|err| FetchError::new(err.into(), body.len() as u64))?;
@@ -715,7 +715,9 @@ fn cache_snapshot_file_name() -> String {
 
 pub fn is_cache_snapshot_file_name(name: &str) -> bool {
     name.len() >= "2026-06-08_22-08-09.985.txt".len()
-        && name.ends_with(".txt")
+        && std::path::Path::new(name)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("txt"))
         && !name.contains('/')
         && !name.contains('\\')
 }
@@ -724,10 +726,7 @@ fn parse_data_url(url: &str) -> Result<Vec<u8>> {
     let (_, payload) = url
         .split_once(',')
         .ok_or_else(|| anyhow!("invalid data URL subscription"))?;
-    let metadata = url
-        .split_once(',')
-        .map(|(metadata, _)| metadata)
-        .unwrap_or("");
+    let metadata = url.split_once(',').map_or("", |(metadata, _)| metadata);
 
     if metadata.ends_with(";base64") {
         return STANDARD

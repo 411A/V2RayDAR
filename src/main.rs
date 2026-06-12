@@ -56,6 +56,7 @@ use crate::{
 #[derive(Debug, Parser)]
 #[command(name = "v2raydar")]
 #[command(about = "Fast V2Ray subscription reachability scanner and local top-N endpoint")]
+#[allow(clippy::struct_excessive_bools)]
 struct Cli {
     #[arg(
         short,
@@ -116,7 +117,9 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    if !paths.config_path.exists() {
+    if paths.config_path.exists() {
+        paths.ensure().await?;
+    } else {
         if !paths.generated_config {
             return Err(anyhow!(
                 "config file does not exist: {}; create it or omit --config to use {}",
@@ -128,8 +131,6 @@ async fn main() -> Result<()> {
         paths.ensure().await?;
         AppConfig::write_default(&paths.config_path)?;
         println!("Created default config at {}", paths.config_path.display());
-    } else {
-        paths.ensure().await?;
     }
 
     let mut config = load_config_and_persist_generated_token(&paths.config_path)
@@ -632,6 +633,7 @@ fn load_config_and_persist_generated_token(path: &Path) -> Result<AppConfig> {
     Ok(config)
 }
 
+#[allow(clippy::significant_drop_tightening, clippy::too_many_lines)]
 async fn refresh_once(
     config: &AppConfig,
     cache_dir: &Path,
@@ -674,6 +676,10 @@ async fn refresh_once(
         ));
     }
     *runtime_config.write().await = RuntimeConfig::from(config);
+    let refresh_started_log = timestamped_log(format!(
+        "Refresh started at {}",
+        started_at.with_timezone(&Local).format("%H:%M:%S")
+    ));
     {
         let mut runtime = state.write().await;
         runtime.refreshing = true;
@@ -689,13 +695,7 @@ async fn refresh_once(
         if config.return_configs_asap {
             runtime.ranked.clear();
         }
-        push_live_log(
-            &mut runtime,
-            timestamped_log(format!(
-                "Refresh started at {}",
-                started_at.with_timezone(&Local).format("%H:%M:%S")
-            )),
-        );
+        push_live_log(&mut runtime, refresh_started_log);
     }
 
     let fetch_started = std::time::Instant::now();
@@ -750,19 +750,17 @@ async fn refresh_once(
             format_duration_short(fetch_started.elapsed().as_millis())
         ));
     }
+    let load_finished_log = timestamped_log(format!(
+        "Subscription loading finished: {} configs, {} source errors in {}",
+        fetched_count,
+        fetch_errors.len(),
+        format_duration_short(fetch_started.elapsed().as_millis())
+    ));
     {
         let mut runtime = state.write().await;
         runtime.total_candidates = fetched_count;
-        runtime.fetch_errors = fetch_errors.clone();
-        push_live_log(
-            &mut runtime,
-            timestamped_log(format!(
-                "Subscription loading finished: {} configs, {} source errors in {}",
-                fetched_count,
-                fetch_errors.len(),
-                format_duration_short(fetch_started.elapsed().as_millis())
-            )),
-        );
+        runtime.fetch_errors.clone_from(&fetch_errors);
+        push_live_log(&mut runtime, load_finished_log);
     }
 
     let probe_started = std::time::Instant::now();
@@ -821,19 +819,17 @@ async fn refresh_once(
                             format_duration_short(retry_started.elapsed().as_millis())
                         ));
                     }
+                    let retry_finished_log = timestamped_log(format!(
+                        "Subscription retry finished: {} new configs from {} fetched links; {} source errors remain",
+                        retry_count,
+                        retry_before_dedup,
+                        fetch_errors.len()
+                    ));
                     {
                         let mut runtime = state.write().await;
                         runtime.total_candidates = fetched_count;
-                        runtime.fetch_errors = fetch_errors.clone();
-                        push_live_log(
-                            &mut runtime,
-                            timestamped_log(format!(
-                                "Subscription retry finished: {} new configs from {} fetched links; {} source errors remain",
-                                retry_count,
-                                retry_before_dedup,
-                                fetch_errors.len()
-                            )),
-                        );
+                        runtime.fetch_errors.clone_from(&fetch_errors);
+                        push_live_log(&mut runtime, retry_finished_log);
                     }
                     if retry_count > 0 {
                         let mut retry_ranked = probe_refresh_candidates(
@@ -897,7 +893,7 @@ async fn refresh_once(
                 let cache_count = cached.candidates.len();
                 fetched_count = fetched_count.saturating_add(cache_count);
                 if !cached.errors.is_empty() {
-                    fetch_errors = cached.errors.clone();
+                    fetch_errors.clone_from(&cached.errors);
                 }
                 info!(
                     parsed = cache_before_dedup,
@@ -914,17 +910,14 @@ async fn refresh_once(
                         format_duration_short(cache_started.elapsed().as_millis())
                     ));
                 }
+                let cache_finished_log = timestamped_log(format!(
+                    "Cache fallback finished: {cache_count} configs from {cache_before_dedup} cached links"
+                ));
                 {
                     let mut runtime = state.write().await;
                     runtime.total_candidates = fetched_count;
-                    runtime.fetch_errors = fetch_errors.clone();
-                    push_live_log(
-                        &mut runtime,
-                        timestamped_log(format!(
-                            "Cache fallback finished: {} configs from {} cached links",
-                            cache_count, cache_before_dedup
-                        )),
-                    );
+                    runtime.fetch_errors.clone_from(&fetch_errors);
+                    push_live_log(&mut runtime, cache_finished_log);
                 }
                 if cache_count > 0 {
                     let mut cached_ranked = probe_refresh_candidates(
@@ -1238,8 +1231,7 @@ fn stable_top_uri_key(uri: &str) -> String {
     crate::parser::parse_subscription_document("stable-top", 0, uri.as_bytes())
         .into_iter()
         .next()
-        .map(|candidate| candidate.dedup_key)
-        .unwrap_or_else(|| uri.to_string())
+        .map_or_else(|| uri.to_string(), |candidate| candidate.dedup_key)
 }
 
 fn spawn_refresh_loop(
@@ -1310,7 +1302,7 @@ fn spawn_refresh_loop(
             tokio::pin!(sleep);
 
             tokio::select! {
-                _ = &mut sleep => {
+                () = &mut sleep => {
                     let config = config_rx.borrow().clone();
                     last_refresh_fingerprint = Some(RefreshFingerprint::from(&config));
                     mark_refresh_pending(&state).await;
@@ -1349,6 +1341,7 @@ async fn mark_refresh_pending(state: &Arc<RwLock<RuntimeState>>) {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
+#[allow(clippy::struct_excessive_bools)]
 struct RefreshFingerprint {
     top_n: usize,
     encoded_subscription: bool,
@@ -1455,6 +1448,7 @@ async fn record_refresh_error(state: &Arc<RwLock<RuntimeState>>, error: String) 
     state.reachable_candidates = 0;
     state.fetch_errors = vec![error.clone()];
     push_runtime_log(&mut state, format!("refresh error: {error}"));
+    drop(state);
 }
 
 async fn add_fetch_bytes(state: &Arc<RwLock<RuntimeState>>, bytes: u64) {
@@ -1511,6 +1505,7 @@ async fn push_tui_progress(
             append_asap_working_configs(&mut state, configs, top_n, previous_top_n);
         }
     }
+    drop(state);
 }
 
 fn append_asap_working_configs(
@@ -1624,7 +1619,7 @@ fn push_live_log(state: &mut RuntimeState, message: String) {
 }
 
 fn format_duration_short(ms: u128) -> String {
-    let seconds = (ms / 1000) as u64;
+    let seconds = millis_to_seconds(ms);
     if seconds < 60 {
         return format!("{seconds}s");
     }
@@ -1635,10 +1630,14 @@ fn format_duration_short(ms: u128) -> String {
 }
 
 fn format_minutes_seconds(ms: u128) -> String {
-    let total_seconds = (ms / 1000) as u64;
+    let total_seconds = millis_to_seconds(ms);
     let minutes = total_seconds / 60;
     let seconds = total_seconds % 60;
     format!("{minutes:02}:{seconds:02} minutes")
+}
+
+fn millis_to_seconds(ms: u128) -> u64 {
+    u64::try_from(ms / 1000).unwrap_or(u64::MAX)
 }
 
 impl From<&AppConfig> for RuntimeConfig {

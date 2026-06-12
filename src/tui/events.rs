@@ -50,7 +50,7 @@ pub fn handle_key(
         | InputMode::Url
         | InputMode::Priority
         | InputMode::ConfigValue(_)
-        | InputMode::ResetConfirm => handle_input_key(state, key),
+        | InputMode::ResetConfirm => Ok(handle_input_key(state, key)),
         InputMode::CleanCacheConfirm => handle_clean_cache_key(state, key, &paths.cache_dir),
         InputMode::None => handle_normal_key(state, key, paths, runtime_config),
     }
@@ -68,7 +68,7 @@ fn handle_normal_key(
         KeyCode::Enter => activate(state, paths, runtime_config)?,
         KeyCode::Up | KeyCode::Char('k') => move_up(state),
         KeyCode::Down | KeyCode::Char('j') => move_down(state),
-        KeyCode::Char('e') | KeyCode::Char('E') => edit_selected_subscription(state),
+        KeyCode::Char('e' | 'E') => edit_selected_subscription(state),
         KeyCode::Char(':') => start_input(state, InputMode::Command, ""),
         KeyCode::Char(' ') => run_action(state, Action::Toggle, &paths.config_path)?,
         KeyCode::Char('s') => run_action(state, Action::Save, &paths.config_path)?,
@@ -78,14 +78,14 @@ fn handle_normal_key(
     Ok(EventResult::Continue)
 }
 
-fn is_back_shortcut(key: KeyEvent) -> bool {
+const fn is_back_shortcut(key: KeyEvent) -> bool {
     if !key.modifiers.contains(KeyModifiers::CONTROL) {
         return false;
     }
 
     matches!(
         key.code,
-        KeyCode::Backspace | KeyCode::Delete | KeyCode::Char('h') | KeyCode::Char('H')
+        KeyCode::Backspace | KeyCode::Delete | KeyCode::Char('h' | 'H')
     )
 }
 
@@ -136,20 +136,16 @@ fn cancel_command(state: &mut TuiState) {
     state.status = "Command cancelled".to_string();
 }
 
-pub fn handle_mouse(
-    state: &mut TuiState,
-    mouse: MouseEvent,
-    _config_path: &Path,
-) -> Result<EventResult> {
+pub fn handle_mouse(state: &mut TuiState, mouse: MouseEvent) -> EventResult {
     if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
-        return Ok(EventResult::Continue);
+        return EventResult::Continue;
     }
 
     for (index, area) in &state.hits.main_rows {
         if contains(*area, mouse.column, mouse.row) {
             state.selected_main = *index;
             state.status = format!("Selected menu row {}", index + 1);
-            return Ok(EventResult::Continue);
+            return EventResult::Continue;
         }
     }
 
@@ -157,7 +153,7 @@ pub fn handle_mouse(
         if contains(*area, mouse.column, mouse.row) {
             state.selected_subscription = *index;
             state.status = format!("Selected row {}", index + 1);
-            return Ok(EventResult::Continue);
+            return EventResult::Continue;
         }
     }
 
@@ -165,14 +161,14 @@ pub fn handle_mouse(
         if contains(*area, mouse.column, mouse.row) {
             state.selected_config = *index;
             state.status = format!("Selected config row {}", index + 1);
-            return Ok(EventResult::Continue);
+            return EventResult::Continue;
         }
     }
 
-    Ok(EventResult::Continue)
+    EventResult::Continue
 }
 
-fn move_up(state: &mut TuiState) {
+const fn move_up(state: &mut TuiState) {
     match state.view {
         MenuView::Main => state.selected_main = state.selected_main.saturating_sub(1),
         MenuView::Subscriptions => {
@@ -180,7 +176,7 @@ fn move_up(state: &mut TuiState) {
         }
         MenuView::NewSubscription => {}
         MenuView::SubscriptionActions => {
-            state.selected_action = state.selected_action.saturating_sub(1)
+            state.selected_action = state.selected_action.saturating_sub(1);
         }
         MenuView::Configurations => state.selected_config = state.selected_config.saturating_sub(1),
         MenuView::Logs => state.selected_log = state.selected_log.saturating_add(1),
@@ -222,9 +218,8 @@ fn activate(
             }
             Ok(())
         }
-        MenuView::NewSubscription => Ok(()),
+        MenuView::NewSubscription | MenuView::Logs => Ok(()),
         MenuView::SubscriptionActions => activate_subscription_action(state, &paths.config_path),
-        MenuView::Logs => Ok(()),
         MenuView::Configurations => {
             let key = CONFIG_KEYS[state.selected_config];
             if key == ConfigKey::ResetDefaults {
@@ -387,8 +382,9 @@ fn activate_subscription_action(state: &mut TuiState, config_path: &Path) -> Res
 
 fn go_back(state: &mut TuiState) {
     state.view = match state.view {
-        MenuView::Main => MenuView::Main,
-        MenuView::Subscriptions | MenuView::Configurations | MenuView::Logs => MenuView::Main,
+        MenuView::Main | MenuView::Subscriptions | MenuView::Configurations | MenuView::Logs => {
+            MenuView::Main
+        }
         MenuView::NewSubscription => {
             state.input_mode = InputMode::None;
             state.input.clear();
@@ -404,6 +400,6 @@ fn reset_code() -> String {
     value.to_string()
 }
 
-fn contains(area: ratatui::layout::Rect, x: u16, y: u16) -> bool {
+const fn contains(area: ratatui::layout::Rect, x: u16, y: u16) -> bool {
     x >= area.x && x < area.x + area.width && y >= area.y && y < area.y + area.height
 }

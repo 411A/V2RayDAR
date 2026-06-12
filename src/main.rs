@@ -1811,7 +1811,7 @@ mod tests {
             Some(100),
         );
         fast_first.stability_count = 1;
-        let mut ranked = vec![fast_first, slow_stable];
+        let mut ranked = [fast_first, slow_stable];
 
         ranked.sort_by(|left, right| compare_stability_ranked(left, right, &HashSet::new()));
 

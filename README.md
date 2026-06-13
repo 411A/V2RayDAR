@@ -119,12 +119,10 @@ cd "$root"
 Termux uses the Termux release archive and the Termux `sing-box` package instead of a desktop `_with_singbox` archive.
 
 ```bash
-set -e
-
 echo "📦 Updating Termux packages"
-pkg update
+pkg update -y || true
 echo "🧰 Installing curl, tar, and sing-box"
-pkg install -y curl tar sing-box=1.13.13
+pkg install -y curl tar sing-box=1.13.13 || pkg install -y curl tar
 
 case "$(uname -m)" in
   aarch64|arm64) asset="v2raydar-termux-aarch64.tar.gz" ;;
@@ -136,13 +134,13 @@ root="$HOME/V2RayDAR"
 mkdir -p "$root"
 cd "$root"
 echo "⬇️ Downloading $asset"
-curl -fL "https://github.com/411A/V2RayDAR/releases/latest/download/$asset" -o "$asset"
+curl -fL "https://github.com/411A/V2RayDAR/releases/latest/download/$asset" -o "$asset" || { echo "❌ Download failed" >&2; exit 1; }
 echo "📦 Extracting archive"
 tar -xzf "$asset"
 cd "${asset%.tar.gz}"
 echo "🧩 Installing V2RayDAR command"
-./install-termux.sh
-echo "🚀 Starting V2RayDAR"
+./install-termux.sh || { echo "❌ Install failed" >&2; exit 1; }
+echo "🚀 Starting V2RayDAR (Ctrl+C to stop)"
 v2raydar --no-tui
 ```
 

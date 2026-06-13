@@ -428,10 +428,13 @@ jobs:
 
           cat > "$package/install-termux.sh" <<EOF
           #!/data/data/com.termux/files/usr/bin/bash
-          set -euo pipefail
 
           cd "\$(dirname "\$0")"
-          pkg install -y sing-box=${SING_BOX_VERSION}
+          echo "Installing sing-box..."
+          if ! pkg install -y sing-box=${SING_BOX_VERSION}; then
+            echo "⚠️  sing-box=${SING_BOX_VERSION} not available, trying latest..."
+            pkg install -y sing-box || echo "⚠️  Install sing-box manually later: pkg install sing-box"
+          fi
           install -Dm755 v2raydar "\${PREFIX}/bin/v2raydar"
 
           cat <<'MSG'

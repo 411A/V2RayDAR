@@ -78,6 +78,7 @@ pub enum ProgressEvent {
         configs: Vec<RankedConfig>,
         top_n: usize,
     },
+    FetchedDelta(usize),
 }
 
 #[derive(Debug, Clone)]

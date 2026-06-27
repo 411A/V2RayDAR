@@ -266,12 +266,14 @@ where
     }))
     .buffer_unordered(context.concurrency);
     let mut fetched_sources = Vec::new();
+    let mut running_count: usize = 0;
 
     while let Some((index, source, result)) = results.next().await {
         match result {
             Ok(fetched) => {
                 report_subscription_bytes(fetched.bytes_read, report_bytes).await;
                 let parsed = fetched.candidates.len();
+                running_count = running_count.saturating_add(parsed);
                 info!(
                     parsed,
                     bytes_read = fetched.bytes_read,
@@ -285,6 +287,7 @@ where
                         parsed
                     ),
                 );
+                send_fetched_delta(context.progress.as_ref(), running_count);
                 successes.push(source);
                 fetched_sources.push((index, fetched.candidates));
             }
@@ -457,6 +460,12 @@ fn is_http_url(url: &str) -> bool {
 fn send_progress(progress: Option<&UnboundedSender<ProgressEvent>>, message: impl Into<String>) {
     if let Some(progress) = progress {
         let _ = progress.send(ProgressEvent::LiveLog(message.into()));
+    }
+}
+
+fn send_fetched_delta(progress: Option<&UnboundedSender<ProgressEvent>>, total: usize) {
+    if let Some(progress) = progress {
+        let _ = progress.send(ProgressEvent::FetchedDelta(total));
     }
 }
 

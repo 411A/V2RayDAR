@@ -133,7 +133,7 @@ impl PlainProgressReporter {
                     ranked.len()
                 ));
             }
-            ProgressEvent::WorkingConfigsFound { .. } => {}
+            ProgressEvent::WorkingConfigsFound { .. } | ProgressEvent::FetchedDelta(_) => {}
         }
     }
 

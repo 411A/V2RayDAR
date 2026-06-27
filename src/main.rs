@@ -1489,6 +1489,9 @@ async fn push_tui_progress(
         ProgressEvent::WorkingConfigsFound { configs, top_n } => {
             append_asap_working_configs(&mut state, configs, top_n, previous_top_n);
         }
+        ProgressEvent::FetchedDelta(count) => {
+            state.total_candidates = count;
+        }
     }
     drop(state);
 }

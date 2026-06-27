@@ -22,6 +22,11 @@
   📘 <a href="README_detailed.md">Read the detailed developer guide</a>
 </p>
 
+🖥️ Windows TUI Preview:
+
+<p align="center">
+  <img src="assets/Windows_TUI_v0.2.3.png" alt="Windows TUI" width="100%">
+</p>
 
 ## Copy-paste setup (latest V2RayDAR + bundled sing-box)
 
@@ -170,12 +175,6 @@ Desktop scripts leave the downloaded archive and extracted app in the chosen `V2
 > - Not recommended for production environments.
 >
 > Please report issues and feedback.
-
-🖥️ Windows TUI Preview:
-
-<p align="center">
-  <img src="assets/Windows_TUI_v0.2.3.png" alt="Windows TUI" width="100%">
-</p>
 
 ## Quick start
 

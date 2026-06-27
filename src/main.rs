@@ -1063,26 +1063,19 @@ fn deduplicate_ranked_configs(ranked: &mut Vec<RankedConfig>) {
 fn apply_stability_ranking(
     ranked: &mut [RankedConfig],
     stable_working_counts: &mut HashMap<String, u32>,
-    previous_top_n: &HashSet<String>,
+    _previous_top_n: &HashSet<String>,
     prioritize_stability: bool,
 ) {
-    let reachable_keys = ranked
-        .iter()
-        .filter(|item| item.reachable)
-        .map(|item| item.dedup_key.clone())
-        .collect::<HashSet<_>>();
-    stable_working_counts.retain(|key, _| reachable_keys.contains(key));
+    let ranked_keys: HashSet<String> = ranked.iter().map(|item| item.dedup_key.clone()).collect();
+    stable_working_counts.retain(|key, _| ranked_keys.contains(key));
 
     for item in ranked.iter_mut() {
-        if item.reachable && previous_top_n.contains(&item.dedup_key) {
+        if item.reachable {
             let count = stable_working_counts
                 .entry(item.dedup_key.clone())
                 .or_default();
             *count = count.saturating_add(1);
             item.stability_count = *count;
-        } else if item.reachable {
-            stable_working_counts.remove(&item.dedup_key);
-            item.stability_count = 1;
         } else {
             item.stability_count = stable_working_counts
                 .get(&item.dedup_key)
@@ -1092,18 +1085,14 @@ fn apply_stability_ranking(
     }
 
     if prioritize_stability {
-        ranked.sort_by(|left, right| compare_stability_ranked(left, right, previous_top_n));
+        ranked.sort_by(compare_stability_ranked);
         for (index, item) in ranked.iter_mut().enumerate() {
             item.rank = index + 1;
         }
     }
 }
 
-fn compare_stability_ranked(
-    left: &RankedConfig,
-    right: &RankedConfig,
-    _previous_top_n: &HashSet<String>,
-) -> Ordering {
+fn compare_stability_ranked(left: &RankedConfig, right: &RankedConfig) -> Ordering {
     right
         .reachable
         .cmp(&left.reachable)
@@ -1813,7 +1802,7 @@ mod tests {
         fast_first.stability_count = 1;
         let mut ranked = [fast_first, slow_stable];
 
-        ranked.sort_by(|left, right| compare_stability_ranked(left, right, &HashSet::new()));
+        ranked.sort_by(compare_stability_ranked);
 
         assert_eq!(ranked[0].name, "slow-stable");
         assert_eq!(ranked[1].name, "fast-first");
@@ -2200,5 +2189,157 @@ mod tests {
             ]
         );
         remove_test_root(&root);
+    }
+
+    #[test]
+    fn stability_accumulates_for_all_reachable_configs_not_just_previous_top_n() {
+        let mut ranked_a = vec![
+            ranked("config-a", "vless://a@example.com:443", true, Some(500)),
+            ranked("config-c", "vless://c@example.com:443", true, Some(100)),
+        ];
+        let mut counts = HashMap::new();
+        let previous_top_n: HashSet<String> = HashSet::new();
+
+        apply_stability_ranking(&mut ranked_a, &mut counts, &previous_top_n, true);
+
+        assert_eq!(ranked_a[0].stability_count, 1);
+        assert_eq!(ranked_a[1].stability_count, 1);
+        assert_eq!(counts.len(), 2);
+    }
+
+    #[test]
+    fn alternating_configs_both_accumulate_stability_across_refreshes() {
+        let mut counts = HashMap::new();
+
+        let mut ranked_run1 = vec![
+            ranked("config-a", "vless://a@example.com:443", true, Some(500)),
+            ranked("config-c", "vless://c@example.com:443", true, Some(100)),
+        ];
+        let previous_top_n1: HashSet<String> = HashSet::new();
+        apply_stability_ranking(&mut ranked_run1, &mut counts, &previous_top_n1, true);
+
+        assert_eq!(counts["vless://a@example.com:443"], 1);
+        assert_eq!(counts["vless://c@example.com:443"], 1);
+
+        let mut ranked_run2 = vec![
+            ranked("config-a", "vless://a@example.com:443", true, Some(500)),
+            ranked("config-c", "vless://c@example.com:443", true, Some(100)),
+        ];
+        let previous_top_n2: HashSet<String> = HashSet::new();
+        apply_stability_ranking(&mut ranked_run2, &mut counts, &previous_top_n2, true);
+
+        assert_eq!(counts["vless://a@example.com:443"], 2);
+        assert_eq!(counts["vless://c@example.com:443"], 2);
+
+        let mut ranked_run3 = vec![
+            ranked("config-a", "vless://a@example.com:443", true, Some(500)),
+            ranked("config-c", "vless://c@example.com:443", true, Some(100)),
+        ];
+        let previous_top_n3: HashSet<String> = HashSet::new();
+        apply_stability_ranking(&mut ranked_run3, &mut counts, &previous_top_n3, true);
+
+        assert_eq!(counts["vless://a@example.com:443"], 3);
+        assert_eq!(counts["vless://c@example.com:443"], 3);
+
+        assert_eq!(ranked_run3[0].stability_count, 3);
+        assert_eq!(ranked_run3[1].stability_count, 3);
+    }
+
+    #[test]
+    fn config_that_was_absent_then_reappears_starts_fresh() {
+        let mut counts = HashMap::new();
+
+        let mut ranked_run1 = vec![
+            ranked("config-a", "vless://a@example.com:443", true, Some(100)),
+            ranked("config-b", "vless://b@example.com:443", true, Some(200)),
+        ];
+        let previous_top_n1: HashSet<String> = HashSet::new();
+        apply_stability_ranking(&mut ranked_run1, &mut counts, &previous_top_n1, true);
+        assert_eq!(counts["vless://a@example.com:443"], 1);
+        assert_eq!(counts["vless://b@example.com:443"], 1);
+
+        let mut ranked_run2 = vec![ranked(
+            "config-a",
+            "vless://a@example.com:443",
+            true,
+            Some(100),
+        )];
+        let previous_top_n2: HashSet<String> = HashSet::new();
+        apply_stability_ranking(&mut ranked_run2, &mut counts, &previous_top_n2, true);
+        assert_eq!(counts["vless://a@example.com:443"], 2);
+        assert!(!counts.contains_key("vless://b@example.com:443"));
+
+        let mut ranked_run3 = vec![
+            ranked("config-a", "vless://a@example.com:443", true, Some(100)),
+            ranked("config-b", "vless://b@example.com:443", true, Some(200)),
+        ];
+        let previous_top_n3: HashSet<String> = HashSet::new();
+        apply_stability_ranking(&mut ranked_run3, &mut counts, &previous_top_n3, true);
+
+        assert_eq!(counts["vless://a@example.com:443"], 3);
+        assert_eq!(counts["vless://b@example.com:443"], 1);
+    }
+
+    #[test]
+    fn config_becoming_unreachable_loses_count_retains_in_map_for_recovery() {
+        let mut counts = HashMap::new();
+
+        let mut ranked_run1 = vec![
+            ranked("config-a", "vless://a@example.com:443", true, Some(100)),
+            ranked("config-b", "vless://b@example.com:443", true, Some(200)),
+        ];
+        let previous_top_n1: HashSet<String> = HashSet::new();
+        apply_stability_ranking(&mut ranked_run1, &mut counts, &previous_top_n1, true);
+
+        let mut ranked_run2 = vec![
+            ranked("config-a", "vless://a@example.com:443", true, Some(100)),
+            ranked("config-b", "vless://b@example.com:443", false, None),
+        ];
+        let previous_top_n2: HashSet<String> = HashSet::new();
+        apply_stability_ranking(&mut ranked_run2, &mut counts, &previous_top_n2, true);
+
+        assert_eq!(counts["vless://a@example.com:443"], 2);
+        assert_eq!(counts["vless://b@example.com:443"], 1);
+        assert_eq!(ranked_run2[0].stability_count, 2);
+        assert_eq!(ranked_run2[1].stability_count, 1);
+    }
+
+    #[test]
+    fn slow_stable_config_beats_fast_new_config_in_ranking() {
+        let mut counts = HashMap::new();
+
+        for _ in 0..5 {
+            let mut ranked = vec![
+                ranked(
+                    "slow-stable",
+                    "vless://slow@example.com:443",
+                    true,
+                    Some(5_000),
+                ),
+                ranked("fast-new", "vless://fast@example.com:443", true, Some(50)),
+            ];
+            let previous_top_n: HashSet<String> = HashSet::new();
+            apply_stability_ranking(&mut ranked, &mut counts, &previous_top_n, true);
+        }
+
+        assert_eq!(counts["vless://slow@example.com:443"], 5);
+        assert_eq!(counts["vless://fast@example.com:443"], 5);
+
+        let mut final_ranked = vec![
+            ranked(
+                "slow-stable",
+                "vless://slow@example.com:443",
+                true,
+                Some(5_000),
+            ),
+            ranked("fast-new", "vless://fast@example.com:443", true, Some(50)),
+        ];
+        let previous_top_n: HashSet<String> = HashSet::new();
+        apply_stability_ranking(&mut final_ranked, &mut counts, &previous_top_n, true);
+
+        assert_eq!(counts["vless://slow@example.com:443"], 6);
+        assert_eq!(counts["vless://fast@example.com:443"], 6);
+        assert_eq!(final_ranked[0].stability_count, 6);
+        assert_eq!(final_ranked[1].stability_count, 6);
     }
 }

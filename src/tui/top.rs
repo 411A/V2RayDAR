@@ -20,6 +20,10 @@ pub fn draw(
     config: &RuntimeConfig,
     app_started_at: Instant,
 ) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+
     let now = Utc::now();
     let failed = runtime
         .tested_candidates
@@ -39,14 +43,24 @@ pub fn draw(
             format_duration_hms(app_started_at.elapsed().as_secs()),
         ),
         ("Refresh", refresh),
-        ("Last Scan Time", scan_time),
+        ("Last Scan", scan_time),
         ("Fetched", runtime.total_candidates.to_string()),
         ("Failed", failed.to_string()),
         ("Working", runtime.reachable_candidates.to_string()),
         ("Sub Usage", human_bytes(runtime.fetch_bytes)),
-        ("Speedtest Usage", speedtest),
+        ("Speedtest", speedtest),
     ];
 
+    if area.height >= 5 {
+        draw_full_grid(frame, area, &cells);
+    } else if area.height >= 3 {
+        draw_dense_grid(frame, area, &cells);
+    } else {
+        draw_minimal_line(frame, area, &cells);
+    }
+}
+
+fn draw_full_grid(frame: &mut Frame<'_>, area: Rect, cells: &[(&str, String); 8]) {
     let chunks = Layout::horizontal([Constraint::Ratio(1, 4); 4]).split(area);
     for (row, chunk) in chunks.iter().enumerate() {
         let inner = Layout::horizontal([Constraint::Ratio(1, 2); 2]).split(*chunk);
@@ -68,6 +82,84 @@ pub fn draw(
             );
         }
     }
+}
+
+fn draw_dense_grid(frame: &mut Frame<'_>, area: Rect, cells: &[(&str, String); 8]) {
+    let label_style = Style::default().fg(Color::DarkGray);
+    let value_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+
+    let half = area.height / 2;
+    let [top_half, bottom_half] =
+        Layout::vertical([Constraint::Length(half), Constraint::Min(half)]).areas(area);
+
+    for (row_index, row_area) in [top_half, bottom_half].iter().enumerate() {
+        if row_area.height == 0 {
+            continue;
+        }
+        let start = row_index * 4;
+        let row_cells = &cells[start..start + 4];
+        let columns = Layout::horizontal([Constraint::Ratio(1, 4); 4]).split(*row_area);
+        for (col_index, col_area) in columns.iter().enumerate() {
+            if col_area.width == 0 {
+                continue;
+            }
+            let (label, value) = &row_cells[col_index];
+            let text = Line::from(vec![
+                Span::styled(format!("{label}: "), label_style),
+                Span::styled(value.clone(), value_style),
+            ]);
+            frame.render_widget(Paragraph::new(text), *col_area);
+        }
+    }
+}
+
+fn draw_minimal_line(frame: &mut Frame<'_>, area: Rect, cells: &[(&str, String); 8]) {
+    let label_style = Style::default().fg(Color::DarkGray);
+    let value_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    let sep_span = Span::styled(" | ", Style::default().fg(Color::DarkGray));
+    let sep_width: usize = 3;
+
+    let all_stats: [(usize, &str); 8] = [
+        (0, "Up"),
+        (1, "Refresh"),
+        (2, "Scan"),
+        (3, "Fetch"),
+        (4, "Fail"),
+        (5, "Work"),
+        (6, "Sub"),
+        (7, "Speed"),
+    ];
+
+    let mut spans = Vec::new();
+    let mut used_width: usize = 0;
+    let max_width = area.width as usize;
+
+    for (i, (idx, short_label)) in all_stats.iter().enumerate() {
+        let (_, value) = &cells[*idx];
+        let entry_width = short_label.len() + 2 + value.len();
+        let needed = if i == 0 {
+            entry_width
+        } else {
+            sep_width + entry_width
+        };
+
+        if used_width + needed > max_width {
+            break;
+        }
+        used_width += needed;
+
+        if !spans.is_empty() {
+            spans.push(sep_span.clone());
+        }
+        spans.push(Span::styled(format!("{short_label}: "), label_style));
+        spans.push(Span::styled(value.clone(), value_style));
+    }
+
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn refresh_status(runtime: &RuntimeView, refresh_seconds: u64, now: DateTime<Utc>) -> String {

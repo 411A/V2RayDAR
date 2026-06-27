@@ -93,9 +93,7 @@ pub const TUI_MAX_VISIBLE_RANKED: usize = 64;
 pub const TUI_SETUP_POLL_INTERVAL: Duration = Duration::from_millis(150);
 pub const TUI_CONFIG_PANEL_HEIGHT: u16 = 12;
 pub const TUI_CONFIG_PANEL_ENDPOINT_HEIGHT: u16 = 14;
-pub const TUI_CONFIG_GROUP_HEIGHT: u16 = 10;
-pub const TUI_CONFIG_KEY_WIDTH: usize = 14;
-pub const TUI_CONFIG_KEY_WIDTH_U16: u16 = 14;
+
 pub const TUI_ANSI_UNDERLINE_ENABLE: &str = "\x1b[4m";
 pub const TUI_ANSI_UNDERLINE_DISABLE: &str = "\x1b[24m";
 pub const TUI_OSC8_LINK_PREFIX: &str = "\x1b]8;;";

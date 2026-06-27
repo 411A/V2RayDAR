@@ -21,10 +21,19 @@ pub fn draw(
         frame.area(),
         layout::uses_tokenized_endpoint(&state.editable),
     );
-    top::draw(frame, areas.top, runtime, runtime_config, state.started_at);
-    logs_panel::draw(frame, areas.logs, runtime);
-    found_panel::draw(frame, areas.found, runtime, runtime_config.top_n);
-    config_panel::draw(frame, areas.config, state, runtime_config, paths);
+
+    if !areas.top.is_empty() {
+        top::draw(frame, areas.top, runtime, runtime_config, state.started_at);
+    }
+    if !areas.logs.is_empty() {
+        logs_panel::draw(frame, areas.logs, runtime);
+    }
+    if !areas.found.is_empty() {
+        found_panel::draw(frame, areas.found, runtime, runtime_config.top_n);
+    }
+    if !areas.config.is_empty() {
+        config_panel::draw(frame, areas.config, state, runtime_config, paths);
+    }
 
     main_menu_panel::draw(frame, areas.menu, state, runtime);
     footer::draw(frame, areas.footer, state);

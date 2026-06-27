@@ -12,8 +12,7 @@ use ratatui::{
 use crate::{
     config::should_include_token_in_url,
     constants::{
-        TUI_ANSI_UNDERLINE_DISABLE, TUI_ANSI_UNDERLINE_ENABLE, TUI_CONFIG_GROUP_HEIGHT,
-        TUI_CONFIG_KEY_WIDTH, TUI_CONFIG_KEY_WIDTH_U16, TUI_OSC8_LINK_PREFIX,
+        TUI_ANSI_UNDERLINE_DISABLE, TUI_ANSI_UNDERLINE_ENABLE, TUI_OSC8_LINK_PREFIX,
         TUI_OSC8_LINK_SEPARATOR, TUI_OSC8_LINK_SUFFIX,
     },
     model::RuntimeConfig,
@@ -23,6 +22,44 @@ use crate::{
 
 use super::{state::TuiState, util::bool_text};
 
+struct ConfigView {
+    live_config: RuntimeConfig,
+    sharing: crate::network::SharingStatus,
+    show_endpoint: bool,
+    discoverable: String,
+}
+
+impl ConfigView {
+    fn from_state(state: &TuiState) -> Self {
+        let live_config = RuntimeConfig::from(&state.editable);
+        let mut sharing = sharing_status(&live_config);
+        let needs_restart = live_config.sharing_enabled
+            && live_config.bind != state.active_bind
+            && state.active_bind.ip().is_loopback()
+            && !live_config.bind.ip().is_loopback();
+        if needs_restart {
+            sharing.discoverable.push_str(" (restart V2RayDAR)");
+        }
+        let show_endpoint =
+            sharing.subscription_url.is_some() && should_include_token_in_url(&live_config.token);
+        let discoverable = if show_endpoint {
+            if needs_restart {
+                "yes (restart V2RayDAR)".to_string()
+            } else {
+                "yes".to_string()
+            }
+        } else {
+            sharing.discoverable.clone()
+        };
+        Self {
+            live_config,
+            sharing,
+            show_endpoint,
+            discoverable,
+        }
+    }
+}
+
 pub fn draw(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -30,26 +67,11 @@ pub fn draw(
     _runtime_config: &RuntimeConfig,
     _paths: &AppPaths,
 ) {
-    let live_config = RuntimeConfig::from(&state.editable);
-    let mut sharing = sharing_status(&live_config);
-    let needs_restart = live_config.sharing_enabled
-        && live_config.bind != state.active_bind
-        && state.active_bind.ip().is_loopback()
-        && !live_config.bind.ip().is_loopback();
-    if needs_restart {
-        sharing.discoverable.push_str(" (restart V2RayDAR)");
+    if area.height < 3 || area.width < 20 {
+        return;
     }
-    let show_endpoint_row =
-        sharing.subscription_url.is_some() && should_include_token_in_url(&live_config.token);
-    let discoverable = if show_endpoint_row {
-        if needs_restart {
-            "yes (restart V2RayDAR)".to_string()
-        } else {
-            "yes".to_string()
-        }
-    } else {
-        sharing.discoverable.clone()
-    };
+
+    let view = ConfigView::from_state(state);
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -57,9 +79,20 @@ pub fn draw(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    if inner.height < 2 {
+        return;
+    }
+
+    if inner.height <= 5 || inner.width < 40 {
+        draw_compact(frame, inner, &view);
+        return;
+    }
+
+    let group_height = inner.height.saturating_sub(3).min(10);
+    let endpoint_height = inner.height.saturating_sub(group_height + 1);
     let [groups, endpoint] = Layout::vertical([
-        Constraint::Length(TUI_CONFIG_GROUP_HEIGHT),
-        Constraint::Fill(1),
+        Constraint::Length(group_height),
+        Constraint::Length(endpoint_height.max(1)),
     ])
     .areas(inner);
     let [service, network] =
@@ -69,31 +102,38 @@ pub fn draw(
         service,
         "Service",
         vec![
-            ("bind", live_config.bind.to_string()),
-            ("top_n", live_config.top_n.to_string()),
-            ("refresh", format!("{}s", live_config.refresh_seconds)),
+            ("bind", view.live_config.bind.to_string()),
+            ("top_n", view.live_config.top_n.to_string()),
+            ("refresh", format!("{}s", view.live_config.refresh_seconds)),
             (
                 "stability",
-                bool_text(live_config.prioritize_stability).to_string(),
+                bool_text(view.live_config.prioritize_stability).to_string(),
             ),
             (
                 "asap",
-                bool_text(live_config.return_configs_asap).to_string(),
+                bool_text(view.live_config.return_configs_asap).to_string(),
             ),
             (
                 "scan_all",
-                bool_text(live_config.scan_all_configs).to_string(),
+                bool_text(view.live_config.scan_all_configs).to_string(),
             ),
             (
                 "subscriptions",
                 format!(
                     "{}/{}",
-                    live_config.enabled_subscription_count, live_config.subscription_count
+                    view.live_config.enabled_subscription_count,
+                    view.live_config.subscription_count
                 ),
             ),
-            ("max_sub_mb", format_mb(live_config.max_subscription_bytes)),
-            ("probe", live_config.probe_mode.clone()),
-            ("batch", format_batch_size(live_config.probe_batch_size)),
+            (
+                "max_sub_mb",
+                format_mb(view.live_config.max_subscription_bytes),
+            ),
+            ("probe", view.live_config.probe_mode.clone()),
+            (
+                "batch",
+                format_batch_size(view.live_config.probe_batch_size),
+            ),
         ],
     );
     draw_group(
@@ -101,19 +141,55 @@ pub fn draw(
         network,
         "Network",
         vec![
-            ("sharing", sharing.sharing.to_string()),
-            ("token", bool_text(live_config.require_token).to_string()),
-            ("discoverable", discoverable),
-            ("firewall", sharing.firewall),
+            ("sharing", view.sharing.sharing.to_string()),
+            (
+                "token",
+                bool_text(view.live_config.require_token).to_string(),
+            ),
+            ("discoverable", view.discoverable),
+            ("firewall", view.sharing.firewall),
         ],
     );
     draw_subscription_endpoint(
         frame,
         endpoint,
-        show_endpoint_row
-            .then_some(sharing.subscription_url.as_deref())
+        view.show_endpoint
+            .then_some(view.sharing.subscription_url.as_deref())
             .flatten(),
     );
+}
+
+fn draw_compact(frame: &mut Frame<'_>, area: Rect, view: &ConfigView) {
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("bind: ", Style::default().fg(Color::DarkGray)),
+            Span::raw(view.live_config.bind.to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled("top_n: ", Style::default().fg(Color::DarkGray)),
+            Span::raw(view.live_config.top_n.to_string()),
+            Span::styled("  refresh: ", Style::default().fg(Color::DarkGray)),
+            Span::raw(format!("{}s", view.live_config.refresh_seconds)),
+            Span::styled("  probe: ", Style::default().fg(Color::DarkGray)),
+            Span::raw(view.live_config.probe_mode.clone()),
+        ]),
+        Line::from(vec![
+            Span::styled("sharing: ", Style::default().fg(Color::DarkGray)),
+            Span::raw(view.sharing.sharing.to_string()),
+            Span::styled("  discoverable: ", Style::default().fg(Color::DarkGray)),
+            Span::raw(view.discoverable.clone()),
+        ]),
+    ];
+    if view.show_endpoint {
+        lines.push(Line::from(vec![
+            Span::styled("subs: ", Style::default().fg(Color::DarkGray)),
+            Span::raw(format!(
+                "{}/{}",
+                view.live_config.enabled_subscription_count, view.live_config.subscription_count
+            )),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
 }
 
 fn format_mb(bytes: usize) -> String {
@@ -136,12 +212,13 @@ fn draw_group(
             .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD),
     ))];
-    lines.extend(rows.into_iter().map(|(key, value)| {
-        Line::from(vec![
+    let visible = area.height.saturating_sub(1) as usize;
+    for (key, value) in rows.into_iter().take(visible) {
+        lines.push(Line::from(vec![
             Span::styled(format!("{key:<14}"), Style::default().fg(Color::DarkGray)),
             Span::styled(value, Style::default().fg(Color::White)),
-        ])
-    }));
+        ]));
+    }
 
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
 }
@@ -212,7 +289,11 @@ fn draw_plain_subscription_endpoint(frame: &mut Frame<'_>, area: Rect, url: &str
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
-                format!("{:<width$}", "subscription", width = TUI_CONFIG_KEY_WIDTH),
+                format!(
+                    "{:<width$}",
+                    "subscription",
+                    width = 14.min(area.width as usize)
+                ),
                 Style::default().fg(Color::DarkGray),
             ),
             Span::styled(
@@ -297,11 +378,7 @@ fn set_forced_width_cell(
 }
 
 const fn endpoint_label_width(area_width: u16) -> u16 {
-    if area_width <= TUI_CONFIG_KEY_WIDTH_U16 {
-        0
-    } else {
-        TUI_CONFIG_KEY_WIDTH_U16
-    }
+    if area_width <= 14 { 0 } else { 14 }
 }
 
 fn padded_label(label: &str, width: usize) -> String {

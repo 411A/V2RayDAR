@@ -8,39 +8,59 @@ use ratatui::{
 use super::view::RuntimeView;
 
 pub fn draw(frame: &mut Frame<'_>, area: Rect, runtime: &RuntimeView, top_n: usize) {
-    let header = Row::new([
-        "Rank",
-        "Seen",
-        "Subscription Name",
-        "Protocol",
-        "Name",
-        "Endpoint",
-        "Latency",
-    ])
-    .style(
-        Style::default()
-            .fg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD),
-    );
-    let rows = runtime.ranked.iter().take(top_n).map(|item| {
-        let latency = item
-            .latency_ms
-            .map_or_else(|| "-".to_string(), |value| format!("{value} ms"));
-        Row::new([
-            Cell::from(item.rank.to_string()),
-            Cell::from(item.stability_count.to_string()),
-            Cell::from(item.source.clone()),
-            Cell::from(item.protocol.clone()),
-            Cell::from(item.name.clone()),
-            Cell::from(item.endpoint.clone()),
-            Cell::from(latency),
-        ])
-    });
+    if area.width < 30 || area.height < 3 {
+        return;
+    }
 
-    frame.render_widget(
-        Table::new(
-            rows,
-            [
+    let narrow = area.width < 80;
+    let very_narrow = area.width < 55;
+
+    let (header, widths) = if very_narrow {
+        (
+            Row::new(["#", "Proto", "Name", "Latency"]).style(
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            vec![
+                Constraint::Length(4),
+                Constraint::Length(6),
+                Constraint::Fill(1),
+                Constraint::Length(9),
+            ],
+        )
+    } else if narrow {
+        (
+            Row::new(["#", "Proto", "Name", "Endpoint", "Latency"]).style(
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            vec![
+                Constraint::Length(4),
+                Constraint::Length(8),
+                Constraint::Length(16),
+                Constraint::Fill(1),
+                Constraint::Length(9),
+            ],
+        )
+    } else {
+        (
+            Row::new([
+                "Rank",
+                "Seen",
+                "Subscription Name",
+                "Protocol",
+                "Name",
+                "Endpoint",
+                "Latency",
+            ])
+            .style(
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            vec![
                 Constraint::Length(6),
                 Constraint::Length(6),
                 Constraint::Length(22),
@@ -50,12 +70,56 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, runtime: &RuntimeView, top_n: usi
                 Constraint::Fill(1),
             ],
         )
-        .header(header)
-        .block(
+    };
+
+    let rows = runtime.ranked.iter().take(top_n).map(|item| {
+        let latency = item
+            .latency_ms
+            .map_or_else(|| "-".to_string(), |value| format!("{value} ms"));
+        if very_narrow {
+            Row::new([
+                Cell::from(item.rank.to_string()),
+                Cell::from(truncate(&item.protocol, 6)),
+                Cell::from(truncate(&item.name, 16)),
+                Cell::from(latency),
+            ])
+        } else if narrow {
+            Row::new([
+                Cell::from(item.rank.to_string()),
+                Cell::from(truncate(&item.protocol, 8)),
+                Cell::from(truncate(&item.name, 16)),
+                Cell::from(truncate(&item.endpoint, 16)),
+                Cell::from(latency),
+            ])
+        } else {
+            Row::new([
+                Cell::from(item.rank.to_string()),
+                Cell::from(item.stability_count.to_string()),
+                Cell::from(item.source.clone()),
+                Cell::from(item.protocol.clone()),
+                Cell::from(item.name.clone()),
+                Cell::from(item.endpoint.clone()),
+                Cell::from(latency),
+            ])
+        }
+    });
+
+    frame.render_widget(
+        Table::new(rows, widths).header(header).block(
             Block::default()
                 .borders(Borders::ALL)
                 .title("Current Found Configs"),
         ),
         area,
     );
+}
+
+fn truncate(value: &str, width: usize) -> String {
+    if value.len() <= width {
+        value.to_string()
+    } else if width > 1 {
+        format!("{}~", &value[..width - 1])
+    } else {
+        value[..1].to_string()
+    }
 }

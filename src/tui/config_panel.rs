@@ -88,8 +88,8 @@ pub fn draw(
         return;
     }
 
-    let group_height = inner.height.saturating_sub(3).min(10);
-    let endpoint_height = inner.height.saturating_sub(group_height + 1);
+    let group_height = inner.height.saturating_sub(1).min(10);
+    let endpoint_height = inner.height.saturating_sub(group_height);
     let [groups, endpoint] = Layout::vertical([
         Constraint::Length(group_height),
         Constraint::Length(endpoint_height.max(1)),

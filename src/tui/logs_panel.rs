@@ -9,6 +9,9 @@ use ratatui::{
 use super::view::RuntimeView;
 
 pub fn draw(frame: &mut Frame<'_>, area: Rect, runtime: &RuntimeView) {
+    if area.height < 3 || area.width < 10 {
+        return;
+    }
     let lines = if runtime.logs.is_empty() {
         vec![Line::from("Waiting for refresh logs...")]
     } else {

@@ -17,130 +17,42 @@ The name means **V2Ray Detection And Reconnaissance** and is pronounced like `v2
 This document is the detailed user and developer guide. The short, ready-to-use guide is in [README.md](README.md).
 
 
-## Copy-paste setup (latest V2RayDAR + bundled sing-box)
+## Quick Install
 
-Copy the block for your OS into a terminal. Desktop scripts download the latest `_with_singbox` archive into `Desktop/V2RayDAR` when a Desktop folder exists, otherwise `~/V2RayDAR`, extract it, and start V2RayDAR from that folder. The bundled `sing-box` is auto-detected, so `probe.sing_box_path` can stay `null`.
+Copy the command for your OS into a terminal. The installer detects your platform, downloads the latest release with bundled `sing-box`, and sets everything up. Portable mode installs into `Desktop/V2RayDAR` when a Desktop folder exists, otherwise `~/V2RayDAR`. User mode installs the binary to `~/.local/bin`.
 
-<details>
-<summary>🪟 Windows PowerShell</summary>
-
-```powershell
-$ErrorActionPreference = 'Stop'
-if (-not [Environment]::Is64BitOperatingSystem) { throw 'The bundled Windows release is x86_64; 32-bit Windows is not supported.' }
-
-$asset = 'v2raydar-windows-x86_64_with_singbox.zip'
-$url = "https://github.com/411A/V2RayDAR/releases/latest/download/$asset"
-$homeDir = if ($HOME) { $HOME } elseif ($env:USERPROFILE) { $env:USERPROFILE } else { throw 'Cannot find your home folder.' }
-$desktop = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
-if ([string]::IsNullOrWhiteSpace($desktop)) { $desktop = Join-Path $homeDir 'Desktop' }
-$root = Join-Path $(if (Test-Path $desktop) { $desktop } else { $homeDir }) 'V2RayDAR'
-$archive = Join-Path $root $asset
-
-Write-Host "📁 Preparing $root"
-New-Item -ItemType Directory -Force $root | Out-Null
-Write-Host '⬇️ Downloading V2RayDAR with bundled sing-box'
-Invoke-WebRequest -Headers @{ 'User-Agent' = 'V2RayDAR-setup' } -Uri $url -OutFile $archive
-Write-Host '📦 Extracting archive'
-Expand-Archive -LiteralPath $archive -DestinationPath $root -Force
-
-$run = Join-Path $root 'v2raydar.exe'
-if (!(Test-Path $run)) { throw "Could not find $run after extraction." }
-Write-Host "✅ Ready in $root"
-Write-Host '🚀 Starting V2RayDAR'
-Set-Location $root
-& .\v2raydar.exe --portable
-```
-
-</details>
-
-<details>
-<summary>💻 Linux</summary>
-
+**Portable** (recommended) — everything in one folder, run with `--portable`:
 ```bash
-set -euo pipefail
-case "$(uname -m)" in x86_64|amd64) ;; *) echo "❌ The bundled Linux release is x86_64; found $(uname -m)." >&2; exit 1 ;; esac
+# Linux
+curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh
 
-asset="v2raydar-linux-x86_64_with_singbox.tar.gz"
-url="https://github.com/411A/V2RayDAR/releases/latest/download/$asset"
-base="$HOME"; [ -d "$HOME/Desktop" ] && base="$HOME/Desktop"
-root="$base/V2RayDAR"; archive="$root/$asset"
+# macOS
+curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh
 
-mkdir -p "$root"
-echo "📁 Preparing $root"
-echo "⬇️ Downloading V2RayDAR with bundled sing-box"
-if command -v curl >/dev/null 2>&1; then curl -fL "$url" -o "$archive"; elif command -v wget >/dev/null 2>&1; then wget -O "$archive" "$url"; else echo "❌ Install curl or wget first." >&2; exit 1; fi
-echo "📦 Extracting archive"
-tar -xzf "$archive" -C "$root"
-chmod +x "$root/v2raydar" "$root/sing-box"
-
-echo "✅ Ready in $root"
-echo "🚀 Starting V2RayDAR"
-cd "$root"
-./v2raydar --portable
+# Windows
+irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
 ```
 
-</details>
-
-<details>
-<summary>🍎 macOS</summary>
-
+**User install** — binary to `~/.local/bin`, data in home:
 ```bash
-set -euo pipefail
-asset="v2raydar-macos-universal_with_singbox.zip"
-url="https://github.com/411A/V2RayDAR/releases/latest/download/$asset"
-base="$HOME"; [ -d "$HOME/Desktop" ] && base="$HOME/Desktop"
-root="$base/V2RayDAR"; archive="$root/$asset"
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh -s -- --user
 
-mkdir -p "$root"
-echo "📁 Preparing $root"
-echo "⬇️ Downloading V2RayDAR with bundled sing-box"
-curl -fL "$url" -o "$archive"
-echo "📦 Extracting archive"
-ditto -x -k "$archive" "$root"
-chmod +x "$root/V2RayDAR.app/Contents/MacOS/"{V2RayDAR,v2raydar-bin,sing-box}
-
-echo "✅ Ready in $root"
-echo "🚀 Starting V2RayDAR"
-cd "$root"
-"$root/V2RayDAR.app/Contents/MacOS/V2RayDAR" --portable
+# Windows
+irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
+# Then choose option 2 when prompted
 ```
 
-</details>
-
-<details>
-<summary>📱 Android / Termux</summary>
-
-Termux uses the Termux release archive and the Termux `sing-box` package instead of a desktop `_with_singbox` archive.
-
+**Android / Termux:**
 ```bash
-echo "📦 Updating Termux packages"
-pkg update -y || true
-echo "🧰 Installing curl, tar, and sing-box"
-pkg install -y curl tar sing-box=1.13.13 || pkg install -y curl tar
-
-case "$(uname -m)" in
-  aarch64|arm64) asset="v2raydar-termux-aarch64.tar.gz" ;;
-  x86_64|amd64) asset="v2raydar-termux-x86_64.tar.gz" ;;
-  *) echo "❌ Unsupported Termux architecture: $(uname -m)" >&2; exit 1 ;;
-esac
-
-root="$HOME/V2RayDAR"
-mkdir -p "$root"
-cd "$root"
-echo "⬇️ Downloading $asset"
-curl -fL "https://github.com/411A/V2RayDAR/releases/latest/download/$asset" -o "$asset" || { echo "❌ Download failed" >&2; exit 1; }
-echo "📦 Extracting archive"
-tar -xzf "$asset"
-cd "${asset%.tar.gz}"
-echo "🧩 Installing V2RayDAR command"
-./install-termux.sh || { echo "❌ Install failed" >&2; exit 1; }
-echo "🚀 Starting V2RayDAR (Ctrl+C to stop)"
-v2raydar --no-tui
+# Same Linux binary — install sing-box, then run the installer
+pkg update -y && pkg install -y curl tar sing-box=1.13.13
+curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh
 ```
 
-</details>
+**Manual download** — grab the archive for your OS from [Releases](https://github.com/411A/V2RayDAR/releases/latest) and run with `--portable`.
 
-Desktop scripts leave the downloaded archive and extracted app in the chosen `V2RayDAR` folder, then run with `--portable` so config and database stay beside the executable. Termux installs the `v2raydar` command and uses the Termux-managed `sing-box` path.
+The installer verifies SHA-256 checksums, detects existing installations and offers to update (preserving `configs.yaml`, `data.db`, and `v2raydar_data/`), and never requires sudo by default.
 
 ---
 
@@ -223,7 +135,7 @@ Checksums verify integrity. They do not prevent Windows SmartScreen or macOS Gat
 
 ## First Run
 
-On first launch without `--config`, V2RayDAR creates `configs.yaml`. The copy-paste desktop setup runs with `--portable`, so config and cache stay beside the extracted executable; normal installed mode uses the platform app-data location.
+On first launch without `--config`, V2RayDAR creates `configs.yaml`. The portable installer runs with `--portable`, so config and database stay beside the executable; user-installed mode uses the platform app-data location.
 
 Windows:
 

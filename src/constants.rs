@@ -6,9 +6,8 @@ use crate::tui::state::{ConfigKey, MainItem, SubscriptionAction};
 
 pub const APP_NAME: &str = "V2RayDAR";
 pub const APP_DATA_DIR_NAME: &str = "v2raydar_data";
+pub const DB_FILE_NAME: &str = "data.db";
 pub const CACHE_DIR_NAME: &str = "cache";
-pub const CACHE_METADATA_FILE_NAME: &str = "metadata.json";
-pub const STABLE_TOP_CACHE_FILE_NAME: &str = "stable_top.json";
 pub const CONFIG_FILE_NAME: &str = "configs.yaml";
 pub const FIREWALL_STATE_FILE_NAME: &str = ".v2raydar-firewall.json";
 pub const LEGACY_APP_MARKER_FILE_NAME: &str = ".v2raydar";
@@ -41,6 +40,7 @@ pub const DEFAULT_PROBE_PROCESS_CONCURRENCY: Option<usize> = None;
 pub const DEFAULT_TEST_URL: &str = "https://www.gstatic.com/generate_204";
 pub const DEFAULT_ACCEPTED_STATUSES: &[u16] = &[204, 200];
 pub const DEFAULT_DOWNLOAD_BYTES_LIMIT: usize = 1_048_576;
+pub const DEFAULT_CLEAN_OFFLINES_AFTER_DAYS: u32 = 7;
 
 pub const MAX_TUI_LOGS: usize = 512;
 
@@ -71,8 +71,6 @@ pub fn sing_box_download_url() -> String {
 }
 
 pub const HTTP_EXCHANGE_OVERHEAD_BYTES: u64 = 1024;
-pub const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-pub const FNV_PRIME: u64 = 0x0100_0000_01b3;
 pub const BITS_PER_BYTE: f64 = 8.0;
 pub const BITS_PER_MEGABIT: f64 = 1_000_000.0;
 pub const SUPPORTED_URI_SCHEMES: &[&str] = &[
@@ -126,7 +124,7 @@ pub const SUBSCRIPTION_ACTIONS: [SubscriptionAction; 6] = [
     SubscriptionAction::Delete,
     SubscriptionAction::Back,
 ];
-pub const CONFIG_KEYS: [ConfigKey; 27] = [
+pub const CONFIG_KEYS: [ConfigKey; 28] = [
     ConfigKey::Bind,
     ConfigKey::TopN,
     ConfigKey::RefreshSeconds,
@@ -151,6 +149,7 @@ pub const CONFIG_KEYS: [ConfigKey; 27] = [
     ConfigKey::AcceptedStatuses,
     ConfigKey::DownloadUrl,
     ConfigKey::DownloadLimit,
+    ConfigKey::CleanOfflineDays,
     ConfigKey::TokenRequired,
     ConfigKey::Token,
     ConfigKey::ResetDefaults,
@@ -213,5 +212,10 @@ pub const SETTING_GUIDES: &[SettingGuide] = &[
         key: "probe.sing_box_path",
         label: "sing-box path",
         help: "Use sing-box on Linux, Termux, or macOS; use sing-box.exe on Windows.",
+    },
+    SettingGuide {
+        key: "clean_offlines_after_days",
+        label: "Offline cleanup",
+        help: "Configs not seen online for this many days are removed from the database.",
     },
 ];

@@ -1,9 +1,4 @@
-use std::{
-    collections::{BTreeMap, HashSet},
-    future::Future,
-    path::Path,
-    time::Duration,
-};
+use std::{collections::HashSet, future::Future, time::Duration};
 
 use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -11,16 +6,12 @@ use futures_util::{StreamExt, stream};
 use percent_encoding::percent_decode_str;
 use reqwest::Client;
 use reqwest::Proxy;
-use serde::{Deserialize, Serialize};
 use tokio::{fs, sync::mpsc::UnboundedSender};
 use tracing::{debug, info, warn};
 
 use crate::{
     config::{AppConfig, SubscriptionSource},
-    constants::{
-        CACHE_METADATA_FILE_NAME, FNV_OFFSET_BASIS, FNV_PRIME, HTTP_EXCHANGE_OVERHEAD_BYTES,
-        LOCALHOST_IP,
-    },
+    constants::{HTTP_EXCHANGE_OVERHEAD_BYTES, LOCALHOST_IP},
     model::{Candidate, ProgressEvent},
     parser::parse_subscription_document,
     probe::run_with_sing_box_proxy,
@@ -40,15 +31,8 @@ pub struct FetchFailure {
     pub error: String,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum FetchMode {
-    FreshOnly,
-    CacheOnly,
-}
-
 pub async fn load_candidates_with_cache<F, Fut>(
     config: &AppConfig,
-    cache_dir: Option<&Path>,
     mut report_bytes: F,
     progress: Option<UnboundedSender<ProgressEvent>>,
 ) -> Result<FetchOutcome>
@@ -94,11 +78,9 @@ where
         client,
         sources,
         FetchContext {
-            cache_dir,
             max_bytes: config.max_subscription_bytes,
             concurrency: config.fetch_concurrency,
             progress,
-            mode: FetchMode::FreshOnly,
         },
         &mut report_bytes,
     )
@@ -107,50 +89,10 @@ where
     Ok(outcome)
 }
 
-pub async fn load_cached_candidates<F, Fut>(
-    config: &AppConfig,
-    cache_dir: &Path,
-    mut report_bytes: F,
-    progress: Option<UnboundedSender<ProgressEvent>>,
-) -> Result<FetchOutcome>
-where
-    F: FnMut(u64) -> Fut,
-    Fut: Future<Output = ()>,
-{
-    let client =
-        build_http_client(config.fetch_timeout_ms).context("failed to build HTTP client")?;
-    let sources = config
-        .subscriptions
-        .iter()
-        .filter(|source| source.enabled)
-        .cloned()
-        .collect::<Vec<_>>();
-
-    send_progress(
-        progress.as_ref(),
-        "All subscription fetches failed; trying cached subscription snapshots",
-    );
-
-    Ok(fetch_sources_with_client(
-        client,
-        sources,
-        FetchContext {
-            cache_dir: Some(cache_dir),
-            max_bytes: config.max_subscription_bytes,
-            concurrency: config.fetch_concurrency,
-            progress,
-            mode: FetchMode::CacheOnly,
-        },
-        &mut report_bytes,
-    )
-    .await)
-}
-
 pub async fn retry_failed_sources_with_proxy<F, Fut>(
     config: &AppConfig,
     failures: &[FetchFailure],
     proxy_uri: &str,
-    cache_dir: Option<&Path>,
     report_bytes: F,
     progress: Option<UnboundedSender<ProgressEvent>>,
 ) -> Result<FetchOutcome>
@@ -203,11 +145,9 @@ where
                     client,
                     sources,
                     FetchContext {
-                        cache_dir,
                         max_bytes,
                         concurrency: fetch_concurrency,
                         progress,
-                        mode: FetchMode::FreshOnly,
                     },
                     &mut report_bytes,
                 )
@@ -219,18 +159,16 @@ where
 }
 
 #[derive(Clone)]
-struct FetchContext<'a> {
-    cache_dir: Option<&'a Path>,
+struct FetchContext {
     max_bytes: usize,
     concurrency: usize,
     progress: Option<UnboundedSender<ProgressEvent>>,
-    mode: FetchMode,
 }
 
 async fn fetch_sources_with_client<F, Fut>(
     client: Client,
     sources: Vec<SubscriptionSource>,
-    context: FetchContext<'_>,
+    context: FetchContext,
     report_bytes: &mut F,
 ) -> FetchOutcome
 where
@@ -243,24 +181,14 @@ where
     let mut successes = Vec::new();
     let mut results = stream::iter(sources.into_iter().enumerate().map(|(index, source)| {
         let client = client.clone();
-        let cache_dir = context.cache_dir.map(Path::to_path_buf);
         let progress = context.progress.clone();
-        let mode = context.mode;
         let max_bytes = context.max_bytes;
         let source_for_result = source.clone();
         async move {
             (
                 index,
                 source_for_result,
-                fetch_source(
-                    &client,
-                    source,
-                    cache_dir.as_deref(),
-                    max_bytes,
-                    progress,
-                    mode,
-                )
-                .await,
+                fetch_source(&client, source, max_bytes, progress).await,
             )
         }
     }))
@@ -399,10 +327,8 @@ fn build_proxied_http_client(timeout_ms: u64, port: u16) -> Result<Client> {
 async fn fetch_source(
     client: &Client,
     source: SubscriptionSource,
-    cache_dir: Option<&Path>,
     max_bytes: usize,
     progress: Option<UnboundedSender<ProgressEvent>>,
-    mode: FetchMode,
 ) -> FetchResult<FetchedSource> {
     let started = std::time::Instant::now();
     info!(
@@ -415,7 +341,7 @@ async fn fetch_source(
         progress.as_ref(),
         format!("Fetching subscription '{}'", source.name),
     );
-    let fetched = fetch_body(client, &source.url, cache_dir, max_bytes, mode)
+    let fetched = fetch_body(client, &source.url, max_bytes)
         .await
         .map_err(|err| {
             err.with_error_context(format!("failed to fetch subscription '{}'", source.name))
@@ -479,36 +405,9 @@ struct FetchedBody {
     bytes_read: u64,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
-struct CacheMetadata {
-    subscriptions: BTreeMap<String, Vec<CacheSnapshot>>,
-}
-
-#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
-struct CacheSnapshot {
-    file: String,
-    hash: String,
-}
-
-async fn fetch_body(
-    client: &Client,
-    url: &str,
-    cache_dir: Option<&Path>,
-    max_bytes: usize,
-    mode: FetchMode,
-) -> FetchResult<FetchedBody> {
+async fn fetch_body(client: &Client, url: &str, max_bytes: usize) -> FetchResult<FetchedBody> {
     if is_http_url(url) {
-        return match mode {
-            FetchMode::FreshOnly => fetch_http_body(client, url, cache_dir, max_bytes).await,
-            FetchMode::CacheOnly => fetch_cached_http_body(url, cache_dir, max_bytes).await,
-        };
-    }
-
-    if mode == FetchMode::CacheOnly {
-        return Err(FetchError::new(
-            anyhow!("cache fallback only supports HTTP subscriptions"),
-            0,
-        ));
+        return fetch_http_body(client, url, max_bytes).await;
     }
 
     if url.starts_with("data:") {
@@ -531,17 +430,8 @@ async fn fetch_body(
     })
 }
 
-async fn fetch_http_body(
-    client: &Client,
-    url: &str,
-    cache_dir: Option<&Path>,
-    max_bytes: usize,
-) -> FetchResult<FetchedBody> {
-    debug!(
-        url,
-        has_cache = cache_dir.is_some(),
-        "HTTP subscription request prepared"
-    );
+async fn fetch_http_body(client: &Client, url: &str, max_bytes: usize) -> FetchResult<FetchedBody> {
+    debug!(url, "HTTP subscription request prepared");
 
     let request_bytes = estimated_request_bytes(url);
 
@@ -571,65 +461,7 @@ async fn fetch_http_body(
         bytes_read,
         "HTTP subscription body read"
     );
-    if let Some(cache_dir) = cache_dir {
-        write_cache_snapshot(cache_dir, url, &body).await;
-    }
     Ok(FetchedBody { body, bytes_read })
-}
-
-async fn fetch_cached_http_body(
-    url: &str,
-    cache_dir: Option<&Path>,
-    max_bytes: usize,
-) -> FetchResult<FetchedBody> {
-    let Some(cache_dir) = cache_dir else {
-        return Err(FetchError::new(anyhow!("no cache directory configured"), 0));
-    };
-    let metadata = read_cache_metadata(&cache_dir.join(CACHE_METADATA_FILE_NAME))
-        .await
-        .map_err(|err| FetchError::new(err, 0))?;
-    let Some(snapshots) = metadata.subscriptions.get(url) else {
-        return Err(FetchError::new(
-            anyhow!("no cached subscription snapshots for {url}"),
-            0,
-        ));
-    };
-
-    for snapshot in snapshots.iter().rev() {
-        if !is_cache_snapshot_file_name(&snapshot.file) {
-            continue;
-        }
-        let path = cache_dir.join(&snapshot.file);
-        match fs::read(&path).await {
-            Ok(body) => {
-                ensure_body_size(body.len(), max_bytes)
-                    .map_err(|err| FetchError::new(err, body.len() as u64))?;
-                info!(
-                    url,
-                    file = %snapshot.file,
-                    body_bytes = body.len(),
-                    "HTTP subscription loaded from cache snapshot"
-                );
-                return Ok(FetchedBody {
-                    bytes_read: 0,
-                    body,
-                });
-            }
-            Err(err) => {
-                warn!(url, file = %snapshot.file, error = %err, "cached subscription snapshot unreadable");
-            }
-        }
-    }
-
-    Err(FetchError::new(
-        anyhow!("no readable cached subscription snapshots for {url}"),
-        0,
-    ))
-}
-
-async fn read_cache_metadata(path: &Path) -> Result<CacheMetadata> {
-    let bytes = fs::read(path).await?;
-    serde_json::from_slice(&bytes).context("invalid subscription cache metadata")
 }
 
 const fn estimated_request_bytes(url: &str) -> u64 {
@@ -682,60 +514,6 @@ fn ensure_body_size(size: usize, max_bytes: usize) -> Result<()> {
     ))
 }
 
-async fn write_cache_snapshot(cache_dir: &Path, url: &str, body: &[u8]) {
-    let _ = fs::create_dir_all(cache_dir).await;
-    let hash = cache_body_hash(body);
-    let metadata_path = cache_dir.join(CACHE_METADATA_FILE_NAME);
-    let mut metadata = read_cache_metadata(&metadata_path)
-        .await
-        .unwrap_or_default();
-    let snapshots = metadata.subscriptions.entry(url.to_string()).or_default();
-    if let Some(index) = snapshots.iter().position(|snapshot| snapshot.hash == hash) {
-        let snapshot = snapshots.remove(index);
-        snapshots.push(snapshot);
-        if let Ok(bytes) = serde_json::to_vec_pretty(&metadata) {
-            let _ = fs::write(metadata_path, bytes).await;
-        }
-        return;
-    }
-
-    let file_name = cache_snapshot_file_name();
-    if fs::write(cache_dir.join(&file_name), body).await.is_err() {
-        return;
-    }
-    snapshots.push(CacheSnapshot {
-        file: file_name,
-        hash,
-    });
-    if let Ok(bytes) = serde_json::to_vec_pretty(&metadata) {
-        let _ = fs::write(metadata_path, bytes).await;
-    }
-}
-
-fn cache_body_hash(body: &[u8]) -> String {
-    let mut hash = FNV_OFFSET_BASIS;
-    for byte in body {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-    format!("{hash:016x}")
-}
-
-fn cache_snapshot_file_name() -> String {
-    chrono::Utc::now()
-        .format("%Y-%m-%d_%H-%M-%S%.3f.txt")
-        .to_string()
-}
-
-pub fn is_cache_snapshot_file_name(name: &str) -> bool {
-    name.len() >= "2026-06-08_22-08-09.985.txt".len()
-        && std::path::Path::new(name)
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("txt"))
-        && !name.contains('/')
-        && !name.contains('\\')
-}
-
 fn parse_data_url(url: &str) -> Result<Vec<u8>> {
     let (_, payload) = url
         .split_once(',')
@@ -758,88 +536,24 @@ fn parse_data_url(url: &str) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
 
-    fn temp_cache_dir(name: &str) -> std::path::PathBuf {
-        let unique = format!(
-            "v2raydar-cache-{name}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::SystemTime::UNIX_EPOCH)
-                .expect("system time is after unix epoch")
-                .as_nanos()
-        );
-        std::env::temp_dir().join(unique)
+    #[test]
+    fn data_url_parsing_works() {
+        let body = parse_data_url("data:,hello%20world").expect("data url parses");
+        assert_eq!(body, b"hello world");
     }
 
     #[test]
-    fn cache_snapshot_file_names_are_safe() {
-        let file_name = cache_snapshot_file_name();
-        assert!(is_cache_snapshot_file_name(&file_name));
-        assert!(!is_cache_snapshot_file_name("../bad.txt"));
-        assert!(!is_cache_snapshot_file_name("metadata.json"));
+    fn base64_data_url_parsing_works() {
+        let body =
+            parse_data_url("data:text/plain;base64,aGVsbG8gd29ybGQ=").expect("base64 data url");
+        assert_eq!(body, b"hello world");
     }
 
-    #[tokio::test]
-    async fn duplicate_cache_body_reuses_existing_snapshot() {
-        let cache_dir = temp_cache_dir("dedup");
-        let url = "https://example.com/sub";
-
-        write_cache_snapshot(&cache_dir, url, b"same body").await;
-        write_cache_snapshot(&cache_dir, url, b"same body").await;
-
-        let metadata = read_cache_metadata(&cache_dir.join(CACHE_METADATA_FILE_NAME))
-            .await
-            .expect("metadata can be read");
-        let snapshots = metadata
-            .subscriptions
-            .get(url)
-            .expect("subscription metadata exists");
-        assert_eq!(snapshots.len(), 1);
-
-        let txt_count = std::fs::read_dir(&cache_dir)
-            .expect("cache dir can be read")
-            .filter_map(Result::ok)
-            .filter(|entry| {
-                entry
-                    .file_name()
-                    .to_str()
-                    .is_some_and(is_cache_snapshot_file_name)
-            })
-            .count();
-        assert_eq!(txt_count, 1);
-
-        let _ = std::fs::remove_dir_all(cache_dir);
-    }
-
-    #[tokio::test]
-    async fn duplicate_cache_body_moves_snapshot_to_newest_position() {
-        let cache_dir = temp_cache_dir("dedup-newest");
-        let url = "https://example.com/sub";
-
-        write_cache_snapshot(&cache_dir, url, b"first").await;
-        write_cache_snapshot(&cache_dir, url, b"second").await;
-        let metadata = read_cache_metadata(&cache_dir.join(CACHE_METADATA_FILE_NAME))
-            .await
-            .expect("metadata can be read");
-        let first_snapshot = metadata
-            .subscriptions
-            .get(url)
-            .expect("subscription metadata exists")
-            .first()
-            .expect("first snapshot exists")
-            .clone();
-
-        write_cache_snapshot(&cache_dir, url, b"first").await;
-
-        let metadata = read_cache_metadata(&cache_dir.join(CACHE_METADATA_FILE_NAME))
-            .await
-            .expect("metadata can be read");
-        let snapshots = metadata
-            .subscriptions
-            .get(url)
-            .expect("subscription metadata exists");
-        assert_eq!(snapshots.len(), 2);
-        assert_eq!(snapshots.last(), Some(&first_snapshot));
-
-        let _ = std::fs::remove_dir_all(cache_dir);
+    #[test]
+    fn http_url_detection() {
+        assert!(is_http_url("https://example.com"));
+        assert!(is_http_url("http://example.com"));
+        assert!(!is_http_url("data:,test"));
+        assert!(!is_http_url("file:///path"));
     }
 }

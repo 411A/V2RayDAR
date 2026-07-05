@@ -50,6 +50,7 @@ pub async fn run(
     paths: AppPaths,
     state: Arc<RwLock<RuntimeState>>,
     runtime_config: Arc<RwLock<RuntimeConfig>>,
+    database: Arc<crate::db::Database>,
 ) -> Result<()> {
     enable_raw_mode()?;
     let mut terminal = ratatui::try_init()?;
@@ -79,7 +80,7 @@ pub async fn run(
             .min(TUI_INPUT_POLL_INTERVAL);
         if event::poll(poll_timeout).unwrap_or(false)
             && matches!(
-                drain_events(&mut tui, &paths, &runtime_config)?,
+                drain_events(&mut tui, &paths, &runtime_config, &database)?,
                 EventResult::Quit
             )
         {
@@ -95,12 +96,13 @@ fn drain_events(
     tui: &mut TuiState,
     paths: &AppPaths,
     runtime_config: &Arc<RwLock<RuntimeConfig>>,
+    database: &Arc<crate::db::Database>,
 ) -> Result<EventResult> {
     for _ in 0..TUI_MAX_EVENTS_PER_FRAME {
         match event::read() {
             Ok(Event::Key(key)) => {
                 if matches!(
-                    handle_key(tui, key, paths, runtime_config)?,
+                    handle_key(tui, key, paths, runtime_config, database)?,
                     EventResult::Quit
                 ) {
                     return Ok(EventResult::Quit);

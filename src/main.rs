@@ -2,6 +2,7 @@ mod clash;
 mod config;
 mod constants;
 mod convert;
+mod db;
 mod geoip;
 mod model;
 mod network;
@@ -36,12 +37,12 @@ use tracing::{error, info, warn};
 use crate::{
     config::{AppConfig, ProbeMode},
     constants::{
-        APP_DATA_DIR_NAME, APP_NAME, CACHE_DIR_NAME, CACHE_METADATA_FILE_NAME, CONFIG_FILE_NAME,
-        CONFIG_WATCH_INTERVAL, DEFAULT_LOG_FILTER_PLAIN, DEFAULT_LOG_FILTER_TUI,
-        DEFAULT_LOG_FILTER_VERBOSE, FIREWALL_STATE_FILE_NAME, LEGACY_APP_MARKER_FILE_NAME,
-        LEGACY_CACHE_MARKER_FILE_NAME, LOCALHOST_IP, MAX_TUI_LOGS, STABLE_TOP_CACHE_FILE_NAME,
-        sing_box_download_url,
+        APP_DATA_DIR_NAME, APP_NAME, CACHE_DIR_NAME, CONFIG_FILE_NAME, CONFIG_WATCH_INTERVAL,
+        DB_FILE_NAME, DEFAULT_LOG_FILTER_PLAIN, DEFAULT_LOG_FILTER_TUI, DEFAULT_LOG_FILTER_VERBOSE,
+        FIREWALL_STATE_FILE_NAME, LEGACY_APP_MARKER_FILE_NAME, LEGACY_CACHE_MARKER_FILE_NAME,
+        LOCALHOST_IP, MAX_TUI_LOGS, sing_box_download_url,
     },
+    db::Database,
     model::{Candidate, ProbeStopPolicy, ProgressEvent, RankedConfig, RuntimeConfig, RuntimeState},
     paths::AppPaths,
     probe::{ping_configs, probe_candidates},
@@ -50,8 +51,7 @@ use crate::{
         active_probe_needs_setup, apply_runtime_sing_box_path, recommended_version, setup_guide,
     },
     subscription::{
-        FetchFailure, FetchOutcome, load_cached_candidates, load_candidates_with_cache,
-        retry_failed_sources_with_proxy,
+        FetchFailure, FetchOutcome, load_candidates_with_cache, retry_failed_sources_with_proxy,
     },
     terminal::{PlainProgressReporter, print_log, print_startup, print_summary},
 };
@@ -177,20 +177,23 @@ async fn main() -> Result<()> {
     let state = Arc::new(RwLock::new(RuntimeState::default()));
     let runtime_config = Arc::new(RwLock::new(RuntimeConfig::from(&config)));
 
-    delete_stable_top_cache(&paths.cache_dir).await;
+    let db_path = paths.root_dir.join(DB_FILE_NAME);
+    let database = Arc::new(
+        Database::open(&db_path)
+            .with_context(|| format!("failed to open database at {}", db_path.display()))?,
+    );
 
     if cli.once {
         print_startup(&config, &paths, cli.verbose);
         refresh_once(
             &config,
-            &paths.cache_dir,
+            database.clone(),
             state.clone(),
             runtime_config.clone(),
             true,
             !cli.verbose,
         )
         .await?;
-        delete_stable_top_cache(&paths.cache_dir).await;
         return Ok(());
     }
 
@@ -229,7 +232,7 @@ async fn main() -> Result<()> {
     let (config_tx, config_rx) = watch::channel(config.clone());
     spawn_refresh_loop(
         config_rx,
-        paths.cache_dir.clone(),
+        database.clone(),
         state.clone(),
         runtime_config.clone(),
         cli.no_tui,
@@ -237,17 +240,14 @@ async fn main() -> Result<()> {
     );
     spawn_config_watcher(paths.config_path.clone(), config.bind, config_tx);
 
-    let cache_dir_for_shutdown = paths.cache_dir.clone();
-    let result = if cli.no_tui {
+    if cli.no_tui {
         serve(config.bind, state, runtime_config).await
     } else {
         tokio::select! {
             result = serve(config.bind, state.clone(), runtime_config.clone()) => result,
-            result = tui::run(config, paths, state, runtime_config) => result,
+            result = tui::run(config, paths, state, runtime_config, database.clone()) => result,
         }
-    };
-    delete_stable_top_cache(&cache_dir_for_shutdown).await;
-    result
+    }
 }
 
 async fn uninstall(paths: &AppPaths, assume_yes: bool) -> Result<()> {
@@ -389,9 +389,10 @@ async fn is_known_app_root_entry(entry: &fs::DirEntry) -> Result<bool> {
         .with_context(|| format!("unable to inspect {}", entry.path().display()))?;
 
     match name {
-        CONFIG_FILE_NAME | FIREWALL_STATE_FILE_NAME | LEGACY_APP_MARKER_FILE_NAME => {
-            Ok(file_type.is_file())
-        }
+        CONFIG_FILE_NAME
+        | FIREWALL_STATE_FILE_NAME
+        | LEGACY_APP_MARKER_FILE_NAME
+        | DB_FILE_NAME => Ok(file_type.is_file()),
         CACHE_DIR_NAME => Ok(file_type.is_dir() && is_known_cache_dir(&entry.path()).await?),
         _ => Ok(false),
     }
@@ -404,6 +405,7 @@ async fn known_app_root_targets(paths: &AppPaths) -> Result<Vec<PathBuf>> {
         &mut targets,
         paths.root_dir.join(LEGACY_APP_MARKER_FILE_NAME),
     );
+    push_existing(&mut targets, paths.root_dir.join(DB_FILE_NAME));
     if is_known_cache_dir(&paths.cache_dir).await? {
         targets.push(paths.cache_dir.clone());
     } else {
@@ -476,31 +478,7 @@ async fn is_known_cache_entry(entry: &fs::DirEntry) -> Result<bool> {
         .await
         .with_context(|| format!("unable to inspect {}", entry.path().display()))?;
 
-    Ok(file_type.is_file()
-        && (name == LEGACY_CACHE_MARKER_FILE_NAME || is_subscription_cache_file_name(name)))
-}
-
-fn is_subscription_cache_file_name(name: &str) -> bool {
-    if name == CACHE_METADATA_FILE_NAME
-        || name == STABLE_TOP_CACHE_FILE_NAME
-        || subscription::is_cache_snapshot_file_name(name)
-    {
-        return true;
-    }
-    if let Some(key) = name.strip_suffix(".body") {
-        return is_cache_key(key);
-    }
-    if let Some(key) = name.strip_suffix(".json") {
-        return is_cache_key(key);
-    }
-    false
-}
-
-fn is_cache_key(value: &str) -> bool {
-    value.len() == 16
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    Ok(file_type.is_file() && (name == LEGACY_CACHE_MARKER_FILE_NAME || name == DB_FILE_NAME))
 }
 
 async fn remove_uninstall_target(path: &Path) -> Result<()> {
@@ -684,7 +662,7 @@ fn load_config_and_persist_generated_token(path: &Path) -> Result<AppConfig> {
 #[allow(clippy::significant_drop_tightening, clippy::too_many_lines)]
 async fn refresh_once(
     config: &AppConfig,
-    cache_dir: &Path,
+    database: Arc<Database>,
     state: Arc<RwLock<RuntimeState>>,
     runtime_config: Arc<RwLock<RuntimeConfig>>,
     print_terminal_summary: bool,
@@ -708,7 +686,11 @@ async fn refresh_once(
     let started_instant = std::time::Instant::now();
     let previous_before_refresh = state.read().await.clone();
     let previous_top_n = if config.prioritize_stability {
-        load_stable_top_keys(cache_dir).await
+        let db = database.clone();
+        tokio::task::spawn_blocking(move || db.load_stable_top_keys())
+            .await
+            .map_err(|e| anyhow!("{e}"))?
+            .unwrap_or_default()
     } else {
         HashSet::new()
     };
@@ -750,22 +732,52 @@ async fn refresh_once(
     info!("subscription load started");
     let cache_only = config.use_cache_only;
     let mut fetched = if cache_only {
-        load_cached_candidates(
-            config,
-            cache_dir,
-            |bytes| {
-                let state = state.clone();
-                async move {
-                    add_fetch_bytes(&state, bytes).await;
-                }
-            },
-            Some(progress_tx.clone()),
-        )
-        .await?
+        let db = database.clone();
+        let top_n = config.top_n;
+        let ranked_from_db = tokio::task::spawn_blocking(move || db.load_ranked_configs(top_n))
+            .await
+            .map_err(|e| anyhow!("{e}"))?
+            .unwrap_or_default();
+
+        if ranked_from_db.is_empty() {
+            FetchOutcome {
+                candidates: Vec::new(),
+                errors: vec!["no previously-probed configs in database".to_string()],
+                failures: Vec::new(),
+                successes: Vec::new(),
+            }
+        } else {
+            let _ = progress_tx.send(ProgressEvent::LiveLog(format!(
+                "Loaded {} previously-probed configs from database",
+                ranked_from_db.len()
+            )));
+            FetchOutcome {
+                candidates: ranked_from_db
+                    .into_iter()
+                    .map(|rc| Candidate {
+                        id: rc.id,
+                        dedup_key: rc.dedup_key,
+                        source: rc.source,
+                        priority: rc.priority,
+                        protocol: rc.protocol,
+                        name: rc.name,
+                        endpoint: rc.endpoint,
+                        uri: rc.uri,
+                    })
+                    .collect(),
+                errors: Vec::new(),
+                failures: Vec::new(),
+                successes: config
+                    .subscriptions
+                    .iter()
+                    .filter(|s| s.enabled)
+                    .cloned()
+                    .collect(),
+            }
+        }
     } else {
         load_candidates_with_cache(
             config,
-            Some(cache_dir),
             |bytes| {
                 let state = state.clone();
                 async move {
@@ -832,7 +844,6 @@ async fn refresh_once(
                 config,
                 &fetched.failures,
                 &proxy_uri,
-                Some(cache_dir),
                 |bytes| {
                     let state = state.clone();
                     async move {
@@ -920,46 +931,43 @@ async fn refresh_once(
     }
     if !cache_only && fresh_success_count == 0 {
         let cache_started = std::time::Instant::now();
-        match load_cached_candidates(
-            config,
-            cache_dir,
-            |bytes| {
-                let state = state.clone();
-                async move {
-                    add_fetch_bytes(&state, bytes).await;
-                }
-            },
-            Some(progress_tx.clone()),
-        )
-        .await
+        let db = database.clone();
+        let top_n = config.top_n;
+        match tokio::task::spawn_blocking(move || db.load_ranked_configs(top_n))
+            .await
+            .map_err(|e| anyhow!("{e}"))
         {
-            Ok(mut cached) => {
-                let cache_before_dedup = cached.candidates.len();
-                cached
-                    .candidates
-                    .retain(|candidate| seen_candidate_keys.insert(candidate.dedup_key.clone()));
-                let cache_count = cached.candidates.len();
+            Ok(Ok(db_configs)) if !db_configs.is_empty() => {
+                let candidates: Vec<Candidate> = db_configs
+                    .into_iter()
+                    .filter(|rc| seen_candidate_keys.insert(rc.dedup_key.clone()))
+                    .map(|rc| Candidate {
+                        id: rc.id,
+                        dedup_key: rc.dedup_key,
+                        source: rc.source,
+                        priority: rc.priority,
+                        protocol: rc.protocol,
+                        name: rc.name,
+                        endpoint: rc.endpoint,
+                        uri: rc.uri,
+                    })
+                    .collect();
+                let cache_count = candidates.len();
                 fetched_count = fetched_count.saturating_add(cache_count);
-                if !cached.errors.is_empty() {
-                    fetch_errors.clone_from(&cached.errors);
-                }
                 info!(
-                    parsed = cache_before_dedup,
                     unique = cache_count,
-                    cache_errors = cached.errors.len(),
                     duration_ms = cache_started.elapsed().as_millis(),
-                    "cached subscription fallback finished"
+                    "database fallback finished"
                 );
                 if print_compact_progress {
                     print_log(format!(
-                        "Cache fallback finished: {} configs, {} source errors in {}.",
+                        "Database fallback finished: {} configs in {}.",
                         cache_count,
-                        cached.errors.len(),
                         format_duration_short(cache_started.elapsed().as_millis())
                     ));
                 }
                 let cache_finished_log = timestamped_log(format!(
-                    "Cache fallback finished: {cache_count} configs from {cache_before_dedup} cached links"
+                    "Database fallback finished: {cache_count} configs from previously-probed entries"
                 ));
                 {
                     let mut runtime = state.write().await;
@@ -969,7 +977,7 @@ async fn refresh_once(
                 }
                 if cache_count > 0 {
                     let mut cached_ranked = probe_refresh_candidates(
-                        std::mem::take(&mut cached.candidates),
+                        candidates,
                         config,
                         &previous_top_n,
                         &state,
@@ -981,15 +989,8 @@ async fn refresh_once(
                     ranked.append(&mut cached_ranked);
                 }
             }
-            Err(err) => {
-                let error = err.to_string();
-                warn!(error = %error, "cached subscription fallback failed");
-                push_tui_progress(
-                    &state,
-                    ProgressEvent::LiveLog(format!("Cache fallback failed: {error}")),
-                    &HashSet::new(),
-                )
-                .await;
+            Ok(Ok(_) | Err(_)) | Err(_) => {
+                // Database fallback returned no configs or failed
             }
         }
     }
@@ -1023,10 +1024,49 @@ async fn refresh_once(
         &previous_top_n,
         config.prioritize_stability,
     );
-    if config.prioritize_stability {
-        save_stable_top_keys(cache_dir, &ranked, config.top_n).await;
-    } else {
-        delete_stable_top_cache(cache_dir).await;
+
+    // Persist configs to database
+    {
+        let db = database.clone();
+        let configs = ranked.clone();
+        let top_n = config.top_n;
+        tokio::task::spawn_blocking(move || {
+            db.upsert_configs(&configs)?;
+            if configs.is_empty() {
+                db.delete_stable_top_keys()?;
+            } else {
+                let keys: Vec<String> = configs
+                    .iter()
+                    .filter(|c| c.reachable)
+                    .take(top_n)
+                    .map(|c| c.dedup_key.clone())
+                    .collect();
+                if keys.is_empty() {
+                    db.delete_stable_top_keys()?;
+                } else {
+                    db.save_stable_top_keys(&keys)?;
+                }
+            }
+            Ok::<(), anyhow::Error>(())
+        })
+        .await
+        .map_err(|e| anyhow!("{e}"))?
+        .context("failed to persist configs to database")?;
+    }
+
+    // Async cleanup of offline configs
+    {
+        let db = database.clone();
+        let days = config.clean_offlines_after_days;
+        tokio::task::spawn_blocking(move || db.clean_offline_configs(days))
+            .await
+            .map_err(|e| anyhow!("{e}"))?
+            .map(|deleted| {
+                if deleted > 0 {
+                    info!(deleted, "cleaned offline configs from database");
+                }
+            })
+            .context("failed to clean offline configs")?;
     }
     let reachable_count = ranked.iter().filter(|item| item.reachable).count();
     let fetch_bytes = progress_state.fetch_bytes;
@@ -1162,114 +1202,9 @@ fn compare_stability_ranked(left: &RankedConfig, right: &RankedConfig) -> Orderi
         .then_with(|| left.uri.cmp(&right.uri))
 }
 
-fn stable_top_cache_path(cache_dir: &Path) -> PathBuf {
-    cache_dir.join(STABLE_TOP_CACHE_FILE_NAME)
-}
-
-async fn load_stable_top_keys(cache_dir: &Path) -> HashSet<String> {
-    let path = stable_top_cache_path(cache_dir);
-    let Ok(bytes) = fs::read(&path).await else {
-        return HashSet::new();
-    };
-    match serde_json::from_slice::<StableTopCache>(&bytes) {
-        Ok(cache) => cache.keys(),
-        Err(err) => {
-            warn!(
-                path = %path.display(),
-                error = %err,
-                "stable-top cache file unreadable; treating as empty"
-            );
-            HashSet::new()
-        }
-    }
-}
-
-async fn save_stable_top_keys(cache_dir: &Path, ranked: &[RankedConfig], top_n: usize) {
-    let keys: Vec<String> = ranked
-        .iter()
-        .filter(|item| item.reachable)
-        .take(top_n)
-        .map(|item| item.dedup_key.clone())
-        .collect();
-    if keys.is_empty() {
-        delete_stable_top_cache(cache_dir).await;
-        return;
-    }
-    if let Err(err) = fs::create_dir_all(cache_dir).await {
-        warn!(
-            path = %cache_dir.display(),
-            error = %err,
-            "unable to create cache directory for stable-top cache"
-        );
-        return;
-    }
-    let path = stable_top_cache_path(cache_dir);
-    let cache = StableTopCache {
-        keys,
-        uris: Vec::new(),
-    };
-    match serde_json::to_vec_pretty(&cache) {
-        Ok(bytes) => {
-            if let Err(err) = fs::write(&path, bytes).await {
-                warn!(
-                    path = %path.display(),
-                    error = %err,
-                    "unable to write stable-top cache"
-                );
-            }
-        }
-        Err(err) => {
-            warn!(error = %err, "unable to serialize stable-top cache");
-        }
-    }
-}
-
-async fn delete_stable_top_cache(cache_dir: &Path) {
-    let path = stable_top_cache_path(cache_dir);
-    match fs::remove_file(&path).await {
-        Ok(()) => info!(path = %path.display(), "stable-top cache cleared"),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-        Err(err) => {
-            warn!(
-                path = %path.display(),
-                error = %err,
-                "unable to delete stable-top cache"
-            );
-        }
-    }
-}
-
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
-struct StableTopCache {
-    #[serde(default)]
-    keys: Vec<String>,
-    #[serde(default)]
-    uris: Vec<String>,
-}
-
-impl StableTopCache {
-    fn keys(self) -> HashSet<String> {
-        if self.keys.is_empty() {
-            self.uris
-                .into_iter()
-                .map(|uri| stable_top_uri_key(&uri))
-                .collect()
-        } else {
-            self.keys.into_iter().collect()
-        }
-    }
-}
-
-fn stable_top_uri_key(uri: &str) -> String {
-    crate::parser::parse_subscription_document("stable-top", 0, uri.as_bytes())
-        .into_iter()
-        .next()
-        .map_or_else(|| uri.to_string(), |candidate| candidate.dedup_key)
-}
-
 fn spawn_refresh_loop(
     mut config_rx: watch::Receiver<AppConfig>,
-    cache_dir: PathBuf,
+    database: Arc<Database>,
     state: Arc<RwLock<RuntimeState>>,
     runtime_config: Arc<RwLock<RuntimeConfig>>,
     print_terminal_summary: bool,
@@ -1289,7 +1224,7 @@ fn spawn_refresh_loop(
                 last_refresh_fingerprint = Some(RefreshFingerprint::from(&config));
                 if let Err(err) = refresh_once(
                     &config,
-                    &cache_dir,
+                    database.clone(),
                     state.clone(),
                     runtime_config.clone(),
                     print_terminal_summary,
@@ -1317,7 +1252,7 @@ fn spawn_refresh_loop(
                 last_refresh_fingerprint = Some(fingerprint);
                 if let Err(err) = refresh_once(
                     &config,
-                    &cache_dir,
+                    database.clone(),
                     state.clone(),
                     runtime_config.clone(),
                     print_terminal_summary,
@@ -1339,7 +1274,7 @@ fn spawn_refresh_loop(
                     let config = config_rx.borrow().clone();
                     last_refresh_fingerprint = Some(RefreshFingerprint::from(&config));
                     mark_refresh_pending(&state).await;
-                    if let Err(err) = refresh_once(&config, &cache_dir, state.clone(), runtime_config.clone(), print_terminal_summary, print_compact_progress).await {
+                    if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), print_terminal_summary, print_compact_progress).await {
                         error!(error = %err, "refresh failed");
                         record_refresh_error(&state, err.to_string()).await;
                     }
@@ -1356,7 +1291,7 @@ fn spawn_refresh_loop(
                         continue;
                     }
                     last_refresh_fingerprint = Some(fingerprint);
-                    if let Err(err) = refresh_once(&config, &cache_dir, state.clone(), runtime_config.clone(), print_terminal_summary, print_compact_progress).await {
+                    if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), print_terminal_summary, print_compact_progress).await {
                         error!(error = %err, "refresh after config reload failed");
                         record_refresh_error(&state, err.to_string()).await;
                     }
@@ -1752,8 +1687,7 @@ mod tests {
 
     fn create_cache(cache_dir: &Path) {
         std::fs::create_dir_all(cache_dir).expect("cache directory can be created");
-        write_file(&cache_dir.join("0123456789abcdef.body"), "body");
-        write_file(&cache_dir.join("0123456789abcdef.json"), "{}");
+        write_file(&cache_dir.join(DB_FILE_NAME), "");
     }
 
     fn remove_test_root(path: &Path) {
@@ -1961,22 +1895,6 @@ mod tests {
 
         assert_eq!(ranked[0].name, "renamed-stable");
         assert_eq!(ranked[0].stability_count, 3);
-    }
-
-    #[test]
-    fn legacy_stable_top_uris_are_loaded_as_dedup_keys() {
-        let cache = StableTopCache {
-            keys: Vec::new(),
-            uris: vec![
-                "vless://uuid@example.com:443?security=tls#old".to_string(),
-                "vless://uuid@example.com:443?security=tls#renamed".to_string(),
-            ],
-        };
-
-        let keys = cache.keys();
-
-        assert_eq!(keys.len(), 1);
-        assert!(keys.contains("vless|example.com|443|tcp|tls"));
     }
 
     #[tokio::test]
@@ -2196,8 +2114,7 @@ mod tests {
             targets,
             vec![
                 paths.config_path.clone(),
-                paths.cache_dir.join("0123456789abcdef.body"),
-                paths.cache_dir.join("0123456789abcdef.json"),
+                paths.cache_dir.join(DB_FILE_NAME),
             ]
         );
         remove_test_root(&root);

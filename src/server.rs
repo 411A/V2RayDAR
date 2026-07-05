@@ -48,6 +48,7 @@ fn router(state: HttpState) -> Router {
         .route("/results", get(results))
         .route("/subscription", get(subscription))
         .route("/subscription.txt", get(subscription_txt))
+        .route("/mihomo.yaml", get(mihomo_yaml))
         .with_state(state)
 }
 
@@ -164,6 +165,61 @@ async fn subscription_txt(
     ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
 ) -> Response {
     subscription_response(&state, remote_addr, query.token.as_deref(), false).await
+}
+
+async fn mihomo_yaml(
+    State(state): State<HttpState>,
+    Query(query): Query<AuthQuery>,
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
+) -> Response {
+    mihomo_response(&state, remote_addr, query.token.as_deref()).await
+}
+
+async fn mihomo_response(
+    state: &HttpState,
+    remote_addr: SocketAddr,
+    token: Option<&str>,
+) -> Response {
+    if let Err(response) = authorize(state, remote_addr, token).await {
+        return response;
+    }
+
+    let config = state.config.read().await.clone();
+    let runtime = subscription_snapshot(&state.runtime).await;
+    let uris: Vec<String> = runtime
+        .ranked
+        .iter()
+        .filter(|item| item.reachable)
+        .take(config.top_n)
+        .map(|item| item.uri.clone())
+        .collect();
+
+    let uri_refs: Vec<&str> = uris.iter().map(String::as_str).collect();
+    let body = match crate::convert::generate_clash_config(&uri_refs) {
+        Ok(yaml) => yaml,
+        Err(err) => {
+            warn!(error = %err, "failed to generate clash config");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                format!("failed to generate clash config: {err}"),
+            )
+                .into_response();
+        }
+    };
+
+    // Always return raw YAML — Clash Verge / Mihomo clients parse it directly
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "text/yaml; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store, no-cache, max-age=0"),
+            (header::PRAGMA, "no-cache"),
+            (header::EXPIRES, "0"),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 async fn subscription_response(
@@ -355,6 +411,7 @@ mod tests {
             download_mbps: None,
             download_bytes: None,
             error: None,
+            country_code: None,
         }
     }
 

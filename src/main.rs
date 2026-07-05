@@ -1,5 +1,8 @@
+mod clash;
 mod config;
 mod constants;
+mod convert;
+mod geoip;
 mod model;
 mod network;
 mod parser;
@@ -41,7 +44,7 @@ use crate::{
     },
     model::{Candidate, ProbeStopPolicy, ProgressEvent, RankedConfig, RuntimeConfig, RuntimeState},
     paths::AppPaths,
-    probe::probe_candidates,
+    probe::{ping_configs, probe_candidates},
     server::serve,
     sing_box::{
         active_probe_needs_setup, apply_runtime_sing_box_path, recommended_version, setup_guide,
@@ -91,9 +94,24 @@ struct Cli {
 
     #[arg(long, help = "Skip confirmation for --uninstall")]
     yes: bool,
+
+    #[arg(
+        long,
+        help = "Ping config URIs and print latency results",
+        num_args = 1..
+    )]
+    ping: Vec<String>,
+
+    #[arg(
+        long,
+        help = "Ping config URIs read from a file (one per line)",
+        conflicts_with = "ping"
+    )]
+    ping_file: Option<PathBuf>,
 }
 
 #[tokio::main]
+#[allow(clippy::too_many_lines)]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     if cli.no_tui || cli.once {
@@ -136,6 +154,17 @@ async fn main() -> Result<()> {
     let mut config = load_config_and_persist_generated_token(&paths.config_path)
         .with_context(|| format!("failed to load config from {}", paths.config_path.display()))?;
 
+    // Initialize GeoIP database — embedded is primary, file is fallback
+    let geoip_path = config
+        .geoip_db_path
+        .as_ref()
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            let p = paths.root_dir.join("GeoLite2-Country.mmdb");
+            if p.exists() { Some(p) } else { None }
+        });
+    crate::geoip::init(geoip_path.as_deref());
+
     if active_probe_needs_setup(&config, &paths).await {
         if cli.no_tui || cli.once {
             print_sing_box_setup_required(&paths);
@@ -162,6 +191,25 @@ async fn main() -> Result<()> {
         )
         .await?;
         delete_stable_top_cache(&paths.cache_dir).await;
+        return Ok(());
+    }
+
+    if !cli.ping.is_empty() || cli.ping_file.is_some() {
+        let uris = if cli.ping.is_empty() {
+            let path = cli.ping_file.as_ref().expect("ping_file is Some");
+            fs::read_to_string(path)
+                .await
+                .with_context(|| format!("failed to read ping file: {}", path.display()))?
+                .lines()
+                .map(|line| line.trim().to_string())
+                .filter(|line| !line.is_empty() && !line.starts_with('#'))
+                .collect()
+        } else {
+            cli.ping
+        };
+        let probe_config = config.probe.clone();
+        let results = ping_configs(uris, &probe_config).await;
+        terminal::print_ping_results(&results);
         return Ok(());
     }
 
@@ -1734,6 +1782,7 @@ mod tests {
             download_mbps: None,
             download_bytes: None,
             error: None,
+            country_code: None,
         }
     }
 

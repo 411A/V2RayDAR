@@ -14,6 +14,7 @@ use serde_yaml::Value as YamlValue;
 use url::Url;
 
 use crate::{
+    clash::try_parse_clash_subscription,
     constants::SUPPORTED_URI_SCHEMES,
     model::{Candidate, Endpoint},
 };
@@ -34,6 +35,18 @@ pub fn parse_subscription_document(source: &str, priority: u32, body: &[u8]) -> 
             &mut candidates,
             &mut seen_entries,
         );
+    }
+
+    // Try Clash/Mihomo structured parsing before generic YAML extraction.
+    // If the body contains a `proxies:` list, this yields better results.
+    if candidates.is_empty()
+        && let Some(clash_candidates) = try_parse_clash_subscription(source, priority, body)
+    {
+        for candidate in clash_candidates {
+            if seen_entries.insert(candidate.uri.clone()) {
+                candidates.push(candidate);
+            }
+        }
     }
 
     if let Ok(json) = serde_json::from_str::<JsonValue>(&text) {
@@ -121,7 +134,7 @@ const fn is_token_boundary(ch: char) -> bool {
     ch.is_whitespace() || matches!(ch, '"' | '\'' | ',' | '[' | ']')
 }
 
-fn parse_share_link(source: &str, priority: u32, uri: &str) -> Result<Candidate> {
+pub fn parse_share_link(source: &str, priority: u32, uri: &str) -> Result<Candidate> {
     let lower = uri.to_ascii_lowercase();
     let parsed = if lower.starts_with("vmess://") {
         parse_vmess(uri)

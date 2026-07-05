@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 
 use crate::{
     constants::TUI_MAX_VISIBLE_RANKED,
+    geoip::format_display_name,
     model::{RuntimeConfig, RuntimeState},
 };
 
@@ -27,7 +28,7 @@ pub struct RankedView {
     pub stability_count: u32,
     pub source: String,
     pub protocol: String,
-    pub name: String,
+    pub display_name: String,
     pub endpoint: String,
     pub latency_ms: Option<u128>,
 }
@@ -51,14 +52,18 @@ impl RuntimeView {
                 .iter()
                 .filter(|item| item.reachable)
                 .take(config.top_n.min(TUI_MAX_VISIBLE_RANKED))
-                .map(|item| RankedView {
-                    rank: item.rank,
-                    stability_count: item.stability_count,
-                    source: item.source.clone(),
-                    protocol: item.protocol.clone(),
-                    name: item.name.clone(),
-                    endpoint: format!("{}:{}", item.endpoint.host, item.endpoint.port),
-                    latency_ms: item.latency_ms,
+                .map(|item| {
+                    let display_name =
+                        format_display_name(item.country_code.as_deref(), &item.name);
+                    RankedView {
+                        rank: item.rank,
+                        stability_count: item.stability_count,
+                        source: item.source.clone(),
+                        protocol: item.protocol.clone(),
+                        display_name,
+                        endpoint: format!("{}:{}", item.endpoint.host, item.endpoint.port),
+                        latency_ms: item.latency_ms,
+                    }
                 })
                 .collect(),
         }

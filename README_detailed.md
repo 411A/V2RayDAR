@@ -159,11 +159,13 @@ At runtime, V2RayDAR:
 - fetches enabled subscription sources concurrently,
 - stores HTTP subscription snapshots in a local cache,
 - parses raw text, base64, JSON, and YAML content from HTTP(S), single local-file, and `data:` subscription sources,
+- **parses Clash/Mihomo YAML subscription configs** — detects `proxies:` lists and extracts vmess, vless, trojan, and ss proxy entries,
 - extracts `vmess`, `vless`, `trojan`, `ss`, `ssr`, `hysteria2`, `hy2`, and `tuic` share links,
+- **converts between V2Ray share-link formats and Clash/Mihomo YAML proxy entries** (bidirectional),
 - validates candidates with either active `sing-box` HTTP probing or diagnostic TCP probing,
 - ranks reachable configs by priority, latency, speed-test result, protocol, name, and URI,
 - optionally promotes configs that worked across repeated refreshes,
-- serves the top working configs at local HTTP endpoints,
+- **serves working configs as both V2Ray share-links (`/subscription`) and full Mihomo YAML configs (`/mihomo.yaml`)**,
 - watches the config file and refreshes when relevant settings change,
 - provides a TUI for editing settings, subscriptions, sharing, logs, and cache state.
 
@@ -358,14 +360,17 @@ With the default bind address, V2RayDAR serves these URLs:
 | --- | --- |
 | `http://127.0.0.1:27141/subscription` | Top working configs. Base64 when `encoded_subscription: true`. |
 | `http://127.0.0.1:27141/subscription.txt` | Top working configs as newline-separated share links. |
+| `http://127.0.0.1:27141/mihomo.yaml` | Full Mihomo YAML config with proxies, proxy-groups, and rules (raw). |
 | `http://127.0.0.1:27141/results` | JSON runtime state, diagnostics, errors, logs, and ranked configs. |
 | `http://127.0.0.1:27141/health` | `ok` health response. |
 
-`/subscription` and `/subscription.txt` wait up to 20 seconds during an active refresh so clients have a chance to receive early working results instead of an empty feed.
+`/subscription` and `/subscription.txt` wait up to 20 seconds during an active refresh so clients have a chance to receive early working results instead of an empty feed. `/mihomo.yaml` behaves the same way.
 
-Local loopback requests are always allowed. LAN requests to `/subscription`, `/subscription.txt`, and `/results` are blocked unless `sharing.enabled` is true; `/health` is only a reachability check.
+Local loopback requests are always allowed. LAN requests to `/subscription`, `/subscription.txt`, `/mihomo.yaml`, and `/results` are blocked unless `sharing.enabled` is true; `/health` is only a reachability check.
 
 ## Client Setup
+
+### v2rayN / v2rayNG (share-link format)
 
 For a client on the same machine, keep the default bind address:
 
@@ -378,6 +383,16 @@ Then add this subscription URL in the client:
 ```text
 http://127.0.0.1:27141/subscription
 ```
+
+### Mihomo / Clash.Meta (YAML config format)
+
+For Mihomo, Clash Verge, or any Clash-compatible client, use the Mihomo endpoint:
+
+```text
+http://127.0.0.1:27141/mihomo.yaml
+```
+
+Import this URL directly in your Clash client's profile/subscription settings. V2RayDAR generates a complete Mihomo config with proxy entries, a `url-test` proxy group, and a catch-all `MATCH` rule.
 
 For a phone or another device on the same Wi-Fi, enable LAN sharing and use the PC's LAN IP:
 
@@ -469,6 +484,7 @@ String-like null values such as `null`, `"null"`, empty strings, `"none"`, and `
 | `emergency_config` | String or null | `null` | Optional working share link used as a bridge proxy when HTTP subscription fetches fail. |
 | `sharing` | Object | See below | LAN sharing and URL token settings. |
 | `probe` | Object | See below | Validation mode, timeouts, concurrency, and active-test settings. |
+| `geoip_db_path` | String or null | `null` | Optional path to a `GeoLite2-Country.mmdb` file. If `null`, uses the embedded database for country detection. |
 | `subscriptions` | Array | Two example entries | Sources to fetch and scan. |
 
 ## Sharing Settings
@@ -581,7 +597,8 @@ V2RayDAR extracts share links from:
 - plain newline-separated text,
 - base64-encoded newline-separated text,
 - JSON strings at any depth,
-- YAML strings at any depth.
+- YAML strings at any depth,
+- **Clash/Mihomo YAML configs** — detects `proxies:` lists with `type`/`server`/`port` entries and extracts proxy entries as share links.
 
 Parsed share-link schemes:
 
@@ -595,6 +612,8 @@ Parsed share-link schemes:
 - `tuic://`
 
 Duplicate URIs are removed while preserving source order.
+
+When a subscription source contains a Clash/Mihomo config (YAML with a `proxies:` list), V2RayDAR automatically detects it and converts each proxy entry to the corresponding share-link URI. Supported proxy types for extraction are `vmess`, `vless`, `trojan`, and `ss`. Unsupported types (e.g., `wireguard`, `hysteria`) are silently skipped.
 
 ## Active Validation Link Support
 
@@ -618,6 +637,57 @@ Supported active transports include:
 - HTTP upgrade (`httpupgrade`).
 
 Unsupported transports are skipped per candidate and reported in results instead of failing the whole scan.
+
+## Clash/Mihomo Support
+
+V2RayDAR provides full Clash/Mihomo integration on both input and output sides.
+
+### Input: Parsing Clash/Mihomo Subscription Sources
+
+You can add Clash/Mihomo subscription URLs directly as sources in `configs.yaml`. V2RayDAR automatically detects configs that contain a `proxies:` list with `type`/`server`/`port` entries and extracts proxy entries as share links.
+
+```yaml
+subscriptions:
+  - name: mihomo-source
+    url: https://example.com/mihomo.yaml
+    enabled: true
+    priority: 1
+  - name: v2ray-source
+    url: https://example.com/subscription.txt
+    enabled: true
+    priority: 2
+```
+
+Supported proxy types for extraction: `vmess`, `vless`, `trojan`, `ss`. Unsupported types (e.g., `wireguard`, `hysteria`) are silently skipped. The parser handles nested structures like `ws-opts`, `grpc-opts`, `h2-opts`, `reality-opts`, and `tls` settings.
+
+### Output: Serving Working Configs as Mihomo YAML
+
+The `/mihomo.yaml` endpoint generates a complete Mihomo-compatible YAML config on the fly from the current top-N working configs:
+
+```text
+http://127.0.0.1:27141/mihomo.yaml
+```
+
+The generated config includes:
+
+- A `proxies:` section with each working config converted to its Clash YAML format,
+- A `proxy-groups:` section with a `url-test` group pointing at `https://www.gstatic.com/generate_204`,
+- A `rules:` section with a catch-all `MATCH` rule routing to the `auto` group.
+
+Import this URL directly in any Clash-compatible client (Mihomo, Clash Verge, Clash Meta for Android, etc.).
+
+### Bidirectional Conversion
+
+The `convert` module handles all conversions between V2Ray share-link formats and Clash/Mihomo YAML proxy entries:
+
+| Direction | Example |
+| --- | --- |
+| `vless://` URI → Clash YAML entry | `vless://uuid@host:443?security=tls&type=ws` → `type: vless` with `tls: true`, `network: ws`, `ws-opts:` |
+| `vmess://` URI → Clash YAML entry | `vmess://<base64>` → `type: vmess` with `uuid`, `alterId`, `cipher`, transport settings |
+| Clash YAML entry → `vless://` URI | `type: vless` → `vless://uuid@host:port?params#name` |
+| Clash YAML entry → `vmess://` URI | `type: vmess` → `vmess://<base64 json>` |
+
+Supported transport mappings: TCP, WebSocket (`ws`), gRPC, HTTP/2 (`h2`), HTTPUpgrade. Supported TLS features: standard TLS, Reality (with `public-key` and `short-id`), uTLS fingerprinting.
 
 ## Cache Behavior
 
@@ -976,9 +1046,11 @@ Important modules:
 | `src/paths.rs` | Installed, portable, and custom-config path resolution. |
 | `src/subscription.rs` | Fetching subscription sources, cache snapshots, cache fallback, proxied retry. |
 | `src/parser.rs` | Share-link extraction and endpoint parsing. |
+| `src/clash.rs` | Clash/Mihomo YAML subscription parsing. |
+| `src/convert.rs` | Bidirectional V2Ray share-link ↔ Clash/Mihomo YAML conversion, shared field extraction, full Clash config generation. |
 | `src/probe.rs` | TCP probing, active `sing-box` probing, outbound conversion, speed testing. |
 | `src/sing_box.rs` | `sing-box` availability/setup helpers and temporary proxy execution. |
-| `src/server.rs` | Axum HTTP server, endpoint responses, LAN authorization. |
+| `src/server.rs` | Axum HTTP server, endpoint responses (`/subscription`, `/mihomo.yaml`, `/results`, `/health`), LAN authorization. |
 | `src/network.rs` | LAN IP discovery and sharing status. |
 | `src/terminal.rs` | Plain terminal startup, progress, and summary output. |
 | `src/model.rs` | Runtime state, ranked config, candidate, and serialized response models. |
@@ -991,7 +1063,7 @@ The refresh pipeline in `src/main.rs` is roughly:
 
 1. Load runtime config into shared state.
 2. Fetch enabled subscriptions directly unless `use_cache_only` is true.
-3. Parse fetched subscription bodies into candidates.
+3. Parse fetched subscription bodies into candidates — **including Clash/Mihomo YAML configs** which are detected by their `proxies:` structure and converted to share links.
 4. Probe candidates with `probe_candidates`. When `prioritize_stability: true`, the scheduler re-pings the previous run's saved top-N first.
 5. If direct fetches failed, retry failed HTTP sources through `emergency_config` or a working config when active mode is available, then probe newly loaded retry candidates.
 6. If no fresh subscription source was fetched successfully, try cached HTTP snapshots and probe cached candidates.
@@ -1008,7 +1080,7 @@ The HTTP server uses Axum and binds the configured `bind` address.
 
 When `sharing.enabled` is true and the configured bind is loopback, the server also attempts to start a LAN listener on the primary detected LAN IP using the same port.
 
-Authorization rules for `/subscription`, `/subscription.txt`, and `/results`:
+Authorization rules for `/subscription`, `/subscription.txt`, `/mihomo.yaml`, and `/results`:
 
 - Loopback requests are accepted.
 - LAN requests are rejected with `403` when sharing is disabled.
@@ -1018,9 +1090,12 @@ Subscription response format:
 
 - `/subscription` uses `encoded_subscription`.
 - `/subscription.txt` is always raw.
-- Both include only reachable configs and only the top `top_n` entries.
+- `/mihomo.yaml` is always raw YAML.
+- Both share-link and Mihomo endpoints include only reachable configs and only the top `top_n` entries.
 - With `return_configs_asap: true`, they can fill with working configs during an in-progress refresh before final ranking and speed-test enrichment complete.
 - The body ends with a trailing newline when at least one config is present.
+
+The `/mihomo.yaml` endpoint generates a complete Mihomo-compatible YAML config on the fly from the current top-N working configs. Each config is converted to its Clash proxy entry format, placed in a `proxies:` list, wrapped in a `url-test` proxy group, and completed with a catch-all `MATCH` rule.
 
 ## Cache Implementation
 

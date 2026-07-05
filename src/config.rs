@@ -48,6 +48,8 @@ pub struct AppConfig {
     pub probe: ProbeConfig,
     #[serde(default)]
     pub sharing: SharingConfig,
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
+    pub geoip_db_path: Option<String>,
     #[serde(default)]
     pub subscriptions: Vec<SubscriptionSource>,
 }

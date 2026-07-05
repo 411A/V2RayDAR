@@ -266,28 +266,33 @@ where
     }))
     .buffer_unordered(context.concurrency);
     let mut fetched_sources = Vec::new();
-    let mut running_count: usize = 0;
+    let mut seen_keys = HashSet::new();
+    let mut unique_count: usize = 0;
 
     while let Some((index, source, result)) = results.next().await {
         match result {
             Ok(fetched) => {
                 report_subscription_bytes(fetched.bytes_read, report_bytes).await;
                 let parsed = fetched.candidates.len();
-                running_count = running_count.saturating_add(parsed);
+                let new_unique = fetched
+                    .candidates
+                    .iter()
+                    .filter(|c| seen_keys.insert(c.dedup_key.clone()))
+                    .count();
+                unique_count = unique_count.saturating_add(new_unique);
                 info!(
                     parsed,
+                    new_unique,
                     bytes_read = fetched.bytes_read,
                     "subscription fetch result parsed"
                 );
                 send_progress(
                     context.progress.as_ref(),
                     format!(
-                        "Subscription parsed: {} configs from {} links",
-                        fetched.candidates.len(),
-                        parsed
+                        "Subscription parsed: {new_unique} unique configs from {parsed} fetched links",
                     ),
                 );
-                send_fetched_delta(context.progress.as_ref(), running_count);
+                send_fetched_delta(context.progress.as_ref(), unique_count);
                 successes.push(source);
                 fetched_sources.push((index, fetched.candidates));
             }
@@ -305,9 +310,9 @@ where
         }
     }
     fetched_sources.sort_by_key(|(index, _)| *index);
-    let mut seen_keys = HashSet::new();
+    let mut dedup_keys = HashSet::new();
     for (_, mut fetched) in fetched_sources {
-        fetched.retain(|candidate| seen_keys.insert(candidate.dedup_key.clone()));
+        fetched.retain(|candidate| dedup_keys.insert(candidate.dedup_key.clone()));
         candidates.append(&mut fetched);
     }
     failures.sort_by_key(|(index, _)| *index);

@@ -36,8 +36,48 @@ use crate::{
         SING_BOX_CLEANUP_TIMEOUT, SING_BOX_CONFIG_FILE_PREFIX, SING_BOX_INBOUND_TAG_PREFIX,
         SING_BOX_OUTBOUND_TAG_PREFIX,
     },
+    convert::{
+        decode_base64_bytes, decode_base64_to_string, first_param, json_string, json_u16, json_u64,
+        parse_host_port, percent_decode, query_pairs, split_once, truthy,
+    },
     model::{Candidate, ProbeStopPolicy, ProgressEvent, RankedConfig},
 };
+
+use std::sync::OnceLock;
+
+static SING_BOX_CACHE: OnceLock<Option<String>> = OnceLock::new();
+
+/// Check sing-box availability once per process lifetime.
+/// The path doesn't change mid-session, so re-checking is pure waste.
+async fn sing_box_available(path: &str) -> bool {
+    if let Some(cached) = SING_BOX_CACHE.get() {
+        return cached.as_deref() == Some(path);
+    }
+
+    debug!(sing_box_path = %path, "checking sing-box availability");
+    let started = Instant::now();
+    let available = Command::new(path)
+        .arg("version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .map(|status| status.success())
+        .unwrap_or(false);
+    info!(
+        sing_box_path = %path,
+        available,
+        duration_ms = started.elapsed().as_millis(),
+        "sing-box availability check finished"
+    );
+    let _ = SING_BOX_CACHE.set(if available {
+        Some(path.to_string())
+    } else {
+        None
+    });
+    available
+}
 
 pub async fn probe_candidates(
     candidates: Vec<Candidate>,
@@ -134,18 +174,82 @@ fn rank_configs(mut ranked: Vec<RankedConfig>) -> Vec<RankedConfig> {
     ranked
 }
 
+/// Standalone ping: test config URIs without starting the full refresh cycle.
+///
+/// Runs TCP probe on all URIs, then optionally active probe if sing-box is
+/// available. Returns results sorted by latency.
+pub async fn ping_configs(uris: Vec<String>, config: &ProbeConfig) -> Vec<RankedConfig> {
+    let candidates: Vec<Candidate> = uris
+        .into_iter()
+        .filter_map(|uri| crate::parser::parse_share_link("ping", 1, &uri).ok())
+        .collect();
+
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+
+    // Always run TCP probe first (no sing-box needed).
+    let mut results: Vec<RankedConfig> = stream::iter(candidates.into_iter().map(|candidate| {
+        let timeout = Duration::from_millis(config.connect_timeout_ms);
+        async move { probe_tcp(candidate, timeout).await }
+    }))
+    .buffer_unordered(config.concurrency)
+    .collect()
+    .await;
+
+    // If sing-box is available, upgrade with active probing.
+    if config.mode == ProbeMode::Active && sing_box_available(&config.sing_box_path).await {
+        let stop_policy = ProbeStopPolicy {
+            scan_all_configs: true,
+            top_n: results.len(),
+            prioritize_stability: false,
+            return_configs_asap: false,
+            previous_working_keys: std::collections::HashSet::new(),
+        };
+        let active_results =
+            probe_active_batched(candidates_from_ranked(&results), config, None, &stop_policy)
+                .await;
+        if !active_results.is_empty() {
+            results = active_results;
+        }
+    }
+
+    rank_configs(results)
+}
+
+fn candidates_from_ranked(ranked: &[RankedConfig]) -> Vec<Candidate> {
+    ranked
+        .iter()
+        .map(|r| Candidate {
+            id: r.id.clone(),
+            dedup_key: r.dedup_key.clone(),
+            source: r.source.clone(),
+            priority: r.priority,
+            protocol: r.protocol.clone(),
+            name: r.name.clone(),
+            endpoint: r.endpoint.clone(),
+            uri: r.uri.clone(),
+        })
+        .collect()
+}
+
 async fn probe_tcp(candidate: Candidate, timeout: Duration) -> RankedConfig {
     let target = (candidate.endpoint.host.as_str(), candidate.endpoint.port);
     let started = Instant::now();
     let result = tokio::time::timeout(timeout, TcpStream::connect(target)).await;
 
-    let (reachable, latency_ms, error) = match result {
-        Ok(Ok(_stream)) => (true, Some(started.elapsed().as_millis()), None),
-        Ok(Err(err)) => (false, None, Some(err.to_string())),
+    let (reachable, latency_ms, error, country_code) = match result {
+        Ok(Ok(stream)) => {
+            let ip = stream.peer_addr().ok().map(|addr| addr.ip());
+            let cc = ip.and_then(crate::geoip::lookup_country);
+            (true, Some(started.elapsed().as_millis()), None, cc)
+        }
+        Ok(Err(err)) => (false, None, Some(err.to_string()), None),
         Err(_) => (
             false,
             None,
             Some(format!("timed out after {} ms", timeout.as_millis())),
+            None,
         ),
     };
 
@@ -154,7 +258,7 @@ async fn probe_tcp(candidate: Candidate, timeout: Duration) -> RankedConfig {
         stability_count: 0,
         id: candidate.id,
         dedup_key: candidate.dedup_key,
-        source: candidate.source,
+        source: candidate.source.clone(),
         priority: candidate.priority,
         protocol: candidate.protocol,
         name: candidate.name,
@@ -167,6 +271,7 @@ async fn probe_tcp(candidate: Candidate, timeout: Duration) -> RankedConfig {
         download_mbps: None,
         download_bytes: None,
         error,
+        country_code,
     }
 }
 
@@ -320,11 +425,17 @@ async fn probe_active_batched(
 ) -> Vec<RankedConfig> {
     let started = Instant::now();
     let input_count = candidates.len();
+
+    let stop_policy_clone = stop_policy.clone();
     let ActivePreparation {
         mut prepared,
         mut ranked,
         prepared_candidates,
-    } = prepare_active_candidates(candidates, stop_policy);
+    } = tokio::task::spawn_blocking(move || {
+        prepare_active_candidates(candidates, &stop_policy_clone)
+    })
+    .await
+    .expect("prepare_active_candidates panicked");
 
     let process_concurrency = active_probe_process_concurrency(config.process_concurrency);
     let mut batch_sizer = ActiveBatchSizer::new(config.concurrency, config.batch_size);
@@ -474,39 +585,78 @@ fn prepare_active_candidates(
     candidates: Vec<Candidate>,
     stop_policy: &ProbeStopPolicy,
 ) -> ActivePreparation {
-    let mut prepared = Vec::<PreparedActiveCandidate>::new();
-    let mut prepared_by_outbound = HashMap::<String, usize>::new();
-    let mut ranked = Vec::new();
+    let scheduled = schedule_active_candidates(candidates, stop_policy);
+    let num_cpus = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
+    let chunk_size = (scheduled.len() / num_cpus.max(1)).max(1);
 
-    for candidate in schedule_active_candidates(candidates, stop_policy) {
-        match sing_box_outbound_from_share_link(&candidate.uri) {
-            Ok(outbound) => {
-                let key = normalized_outbound_key(&outbound);
-                if let Some(index) = prepared_by_outbound.get(&key).copied() {
-                    prepared[index].aliases.push(candidate);
-                } else {
-                    prepared_by_outbound.insert(key, prepared.len());
-                    prepared.push(PreparedActiveCandidate {
-                        candidate,
-                        aliases: Vec::new(),
-                        outbound,
-                    });
-                }
-            }
-            Err(err) => ranked.push(failed_config(candidate, "active_http", err.to_string())),
+    // Process candidates in parallel across threads
+    let mut all_prepared = Vec::new();
+    let mut all_ranked = Vec::new();
+
+    std::thread::scope(|s| {
+        let handles: Vec<_> = scheduled
+            .chunks(chunk_size)
+            .map(|chunk| {
+                s.spawn(move || {
+                    let mut prepared = Vec::new();
+                    let mut ranked = Vec::new();
+                    for candidate in chunk {
+                        match sing_box_outbound_from_share_link(&candidate.uri) {
+                            Ok(outbound) => {
+                                prepared.push(PreparedActiveCandidate {
+                                    candidate: candidate.clone(),
+                                    aliases: Vec::new(),
+                                    outbound,
+                                });
+                            }
+                            Err(err) => {
+                                ranked.push(failed_config(
+                                    candidate.clone(),
+                                    "active_http",
+                                    err.to_string(),
+                                ));
+                            }
+                        }
+                    }
+                    (prepared, ranked)
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            let (prepared, ranked) = handle.join().expect("preparation thread panicked");
+            all_prepared.extend(prepared);
+            all_ranked.extend(ranked);
+        }
+    });
+
+    // Deduplicate equivalent outbounds (same outbound definition)
+    let mut deduped: Vec<PreparedActiveCandidate> = Vec::new();
+    let mut seen_keys = HashMap::<String, usize>::new();
+    for entry in all_prepared {
+        let key = normalized_outbound_key(&entry.outbound);
+        if let Some(index) = seen_keys.get(&key).copied() {
+            deduped[index].aliases.push(entry.candidate);
+        } else {
+            seen_keys.insert(key, deduped.len());
+            deduped.push(entry);
         }
     }
 
-    let prepared_candidates = candidate_count(&prepared);
+    let prepared_candidates = candidate_count(&deduped);
     ActivePreparation {
-        prepared,
-        ranked,
+        prepared: deduped,
+        ranked: all_ranked,
         prepared_candidates,
     }
 }
 
 fn normalized_outbound_key(outbound: &Value) -> String {
-    serde_json::to_string(outbound).unwrap_or_else(|_| outbound.to_string())
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    outbound.to_string().hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 fn schedule_active_candidates(
@@ -1247,6 +1397,9 @@ fn ranked_configs_for_active_result(
 }
 
 fn successful_config(candidate: Candidate, active: &ActiveProbeSuccess) -> RankedConfig {
+    // Resolve endpoint host to IP for GeoIP lookup
+    let country_code = resolve_endpoint_country(&candidate.endpoint.host);
+
     RankedConfig {
         rank: 0,
         stability_count: 0,
@@ -1265,7 +1418,23 @@ fn successful_config(candidate: Candidate, active: &ActiveProbeSuccess) -> Ranke
         download_mbps: active.download_mbps,
         download_bytes: active.download_bytes,
         error: None,
+        country_code,
     }
+}
+
+/// Resolve a hostname to an IP and look up its country code.
+///
+/// Tries parsing as IP first, then DNS resolution. Returns the
+/// 2-letter ISO country code or `None` if resolution/lookup fails.
+fn resolve_endpoint_country(host: &str) -> Option<String> {
+    use std::net::ToSocketAddrs;
+
+    let ip = host
+        .parse::<std::net::IpAddr>()
+        .ok()
+        .or_else(|| (host, 0).to_socket_addrs().ok()?.next()?.ip().into())?;
+
+    crate::geoip::lookup_country(ip)
 }
 
 async fn probe_active_target_inner(port: u16, config: &ProbeConfig) -> Result<ActiveProbeSuccess> {
@@ -1443,36 +1612,22 @@ const fn usize_to_f64(value: usize) -> f64 {
     value as f64
 }
 
-async fn sing_box_available(path: &str) -> bool {
-    debug!(sing_box_path = %path, "checking sing-box availability");
-    let started = Instant::now();
-    let available = Command::new(path)
-        .arg("version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .await
-        .map(|status| status.success())
-        .unwrap_or(false);
-    info!(
-        sing_box_path = %path,
-        available,
-        duration_ms = started.elapsed().as_millis(),
-        "sing-box availability check finished"
-    );
-    available
-}
-
 async fn reserve_local_ports(count: usize) -> Result<Vec<ReservedLocalPort>> {
-    let mut reservations = Vec::with_capacity(count);
+    let mut handles = Vec::with_capacity(count);
     for _ in 0..count {
-        let listener = TcpListener::bind((LOCALHOST_IP, 0)).await?;
-        let port = listener.local_addr()?.port();
-        reservations.push(ReservedLocalPort {
-            port,
-            _listener: listener,
-        });
+        handles.push(tokio::spawn(async {
+            let listener = TcpListener::bind((LOCALHOST_IP, 0)).await?;
+            let port = listener.local_addr()?.port();
+            Ok::<_, anyhow::Error>(ReservedLocalPort {
+                port,
+                _listener: listener,
+            })
+        }));
+    }
+
+    let mut reservations = Vec::with_capacity(count);
+    for handle in handles {
+        reservations.push(handle.await??);
     }
 
     Ok(reservations)
@@ -1689,6 +1844,7 @@ fn failed_config(candidate: Candidate, validation: &str, error: String) -> Ranke
         download_mbps: None,
         download_bytes: None,
         error: Some(error),
+        country_code: None,
     }
 }
 
@@ -2173,116 +2329,6 @@ fn query_map(url: &Url) -> std::collections::BTreeMap<String, String> {
         .collect()
 }
 
-fn query_pairs(query: &str) -> std::collections::BTreeMap<String, String> {
-    url::form_urlencoded::parse(query.as_bytes())
-        .map(|(key, value)| (key.to_string(), value.to_string()))
-        .collect()
-}
-
-fn first_param(
-    params: &std::collections::BTreeMap<String, String>,
-    keys: &[&str],
-) -> Option<String> {
-    keys.iter()
-        .find_map(|key| params.get(*key).filter(|value| !value.is_empty()).cloned())
-}
-
-fn truthy(value: &str) -> bool {
-    matches!(
-        value.to_ascii_lowercase().as_str(),
-        "1" | "true" | "yes" | "y"
-    )
-}
-
-fn json_string(value: &Value, keys: &[&str]) -> Option<String> {
-    keys.iter().find_map(|key| {
-        value
-            .get(*key)
-            .and_then(Value::as_str)
-            .map(ToString::to_string)
-            .filter(|value| !value.is_empty())
-    })
-}
-
-fn json_u16(value: &Value, keys: &[&str]) -> Option<u16> {
-    json_u64(value, keys).and_then(|value| u16::try_from(value).ok())
-}
-
-fn json_u64(value: &Value, keys: &[&str]) -> Option<u64> {
-    keys.iter().find_map(|key| {
-        value.get(*key).and_then(|value| {
-            value
-                .as_u64()
-                .or_else(|| value.as_str()?.parse::<u64>().ok())
-        })
-    })
-}
-
-fn parse_host_port(value: &str) -> Result<(String, u16)> {
-    let value = value.trim();
-    if let Some(rest) = value.strip_prefix('[') {
-        let (host, tail) = rest
-            .split_once(']')
-            .ok_or_else(|| anyhow!("invalid IPv6 endpoint"))?;
-        let port = tail
-            .strip_prefix(':')
-            .and_then(|port| port.parse::<u16>().ok())
-            .ok_or_else(|| anyhow!("endpoint has no port"))?;
-        return Ok((host.to_string(), port));
-    }
-
-    let (host, port) = value
-        .rsplit_once(':')
-        .ok_or_else(|| anyhow!("endpoint has no port"))?;
-    let port = port
-        .parse::<u16>()
-        .map_err(|_| anyhow!("invalid endpoint port"))?;
-    Ok((host.to_string(), port))
-}
-
-fn split_once(value: &str, delimiter: char) -> (&str, Option<&str>) {
-    value
-        .split_once(delimiter)
-        .map_or((value, None), |(left, right)| (left, Some(right)))
-}
-
-fn percent_decode(value: &str) -> String {
-    percent_encoding::percent_decode_str(value)
-        .decode_utf8_lossy()
-        .to_string()
-}
-
-fn decode_base64_to_string(value: &str) -> Option<String> {
-    decode_base64_bytes(value).and_then(|decoded| String::from_utf8(decoded).ok())
-}
-
-fn decode_base64_bytes(value: &str) -> Option<Vec<u8>> {
-    let normalized = value.trim().replace(['\r', '\n'], "");
-    let padded = pad_base64(&normalized);
-    for candidate in [normalized, padded] {
-        for engine in [
-            &base64::engine::general_purpose::STANDARD,
-            &base64::engine::general_purpose::URL_SAFE,
-            &base64::engine::general_purpose::STANDARD_NO_PAD,
-            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-        ] {
-            if let Ok(decoded) = base64::Engine::decode(engine, candidate.as_bytes()) {
-                return Some(decoded);
-            }
-        }
-    }
-
-    None
-}
-
-fn pad_base64(value: &str) -> String {
-    let mut padded = value.to_string();
-    while !padded.len().is_multiple_of(4) {
-        padded.push('=');
-    }
-    padded
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2311,6 +2357,7 @@ mod tests {
             download_mbps: None,
             download_bytes: None,
             error: None,
+            country_code: None,
         }
     }
 

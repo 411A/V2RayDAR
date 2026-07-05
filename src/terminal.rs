@@ -191,3 +191,45 @@ fn truncate(value: &str, width: usize) -> String {
         truncated
     }
 }
+
+pub fn print_ping_results(results: &[crate::model::RankedConfig]) {
+    if results.is_empty() {
+        println!("No results. Provide valid config URIs with --ping or --ping-file.");
+        return;
+    }
+
+    let reachable = results.iter().filter(|r| r.reachable).count();
+    println!(
+        "Pinged {} configs; {} reachable.\n",
+        results.len(),
+        reachable
+    );
+
+    println!(
+        "{:<5} {:<10} {:<28} {:<22} {:>10} {:>10}",
+        "rank", "proto", "name", "endpoint", "tcp", "http"
+    );
+
+    for item in results {
+        let endpoint = format!("{}:{}", item.endpoint.host, item.endpoint.port);
+        let tcp = item
+            .latency_ms
+            .map_or_else(|| "-".to_string(), |v| format!("{v} ms"));
+        let http = item.http_status.map_or_else(
+            || "-".to_string(),
+            |s| {
+                item.latency_ms
+                    .map_or_else(|| format!("HTTP {s}"), |_| format!("HTTP {s}"))
+            },
+        );
+        println!(
+            "{:<5} {:<10} {:<28} {:<22} {:>10} {:>10}",
+            item.rank,
+            truncate(&item.protocol, 10),
+            truncate(&item.name, 28),
+            truncate(&endpoint, 22),
+            tcp,
+            http
+        );
+    }
+}

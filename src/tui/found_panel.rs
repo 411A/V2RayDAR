@@ -80,14 +80,14 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, runtime: &RuntimeView, top_n: usi
             Row::new([
                 Cell::from(item.rank.to_string()),
                 Cell::from(truncate(&item.protocol, 6)),
-                Cell::from(truncate(&item.name, 16)),
+                Cell::from(truncate(&item.display_name, 16)),
                 Cell::from(latency),
             ])
         } else if narrow {
             Row::new([
                 Cell::from(item.rank.to_string()),
                 Cell::from(truncate(&item.protocol, 8)),
-                Cell::from(truncate(&item.name, 16)),
+                Cell::from(truncate(&item.display_name, 16)),
                 Cell::from(truncate(&item.endpoint, 16)),
                 Cell::from(latency),
             ])
@@ -97,7 +97,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, runtime: &RuntimeView, top_n: usi
                 Cell::from(item.stability_count.to_string()),
                 Cell::from(item.source.clone()),
                 Cell::from(item.protocol.clone()),
-                Cell::from(item.name.clone()),
+                Cell::from(item.display_name.clone()),
                 Cell::from(item.endpoint.clone()),
                 Cell::from(latency),
             ])

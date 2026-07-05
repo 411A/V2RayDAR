@@ -44,6 +44,7 @@ pub struct RankedConfig {
     pub download_mbps: Option<f64>,
     pub download_bytes: Option<usize>,
     pub error: Option<String>,
+    pub country_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]

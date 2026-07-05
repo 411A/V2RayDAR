@@ -159,7 +159,10 @@ Desktop scripts leave the downloaded archive and extracted app in the chosen `V2
 
 - Pulls subscriptions in parallel from any number of sources you list.
 - Parses raw, base64, JSON, and YAML feeds — and `vmess`, `vless`, `trojan`, `ss`, `ssr`, `hysteria2`, `hy2`, `tuic` share-links.
+- **Parses Clash/Mihomo YAML configs** — add a Mihomo subscription URL and V2RayDAR extracts all proxy entries automatically.
+- **Bidirectional format conversion** — converts between V2Ray share-links and Clash/Mihomo YAML proxy entries.
 - Validates each candidate through your current network with `sing-box` (it actually loads a test URL through the proxy).
+- **Dual-format output** — serves working configs as V2Ray share-links (`/subscription`) **and** as full Mihomo YAML configs (`/mihomo.yaml`), so any client can use them.
 - Re-exposes the top working configs at a local URL so any compatible client just sees one always-fresh subscription.
 - Survives restricted networks via a snapshot cache, an in-network bridge config, or an `emergency_config`.
 - Optional LAN sharing with optional token protection, so the phone in your pocket can use the same feed.
@@ -189,6 +192,7 @@ Desktop scripts leave the downloaded archive and extracted app in the chosen `V2
 | --- | --- |
 | `http://127.0.0.1:27141/subscription` | base64 subscription feed — what v2rayN / v2rayNG expect |
 | `http://127.0.0.1:27141/subscription.txt` | the same, but plain newline-separated share-links |
+| `http://127.0.0.1:27141/mihomo.yaml` | full Mihomo YAML config (raw, importable by Clash Verge / Mihomo) |
 | `http://127.0.0.1:27141/results` | JSON diagnostics for the last refresh |
 | `http://127.0.0.1:27141/health` | reachability check — returns `ok` |
 
@@ -203,6 +207,10 @@ v2raydar --no-tui
 
 # one-shot — refresh once, print results, then exit
 v2raydar --once
+
+# ping — test config URIs and print latency results
+v2raydar --ping "vless://uuid@server:443?security=tls#name"
+v2raydar --ping-file configs.txt
 
 # use a custom config file
 v2raydar --config path/to/configs.yaml
@@ -250,6 +258,7 @@ Windows users replace `v2raydar` with `v2raydar.exe`. On macOS open the bundled 
 | `probe.accepted_statuses` | `[204, 200]` | HTTP statuses counted as success. |
 | `probe.download_url` | `null` | Optional throughput-test target. |
 | `probe.download_bytes_limit` | `1048576` | Upper bound for the optional download test. |
+| `geoip_db_path` | `null` | Optional path to a `GeoLite2-Country.mmdb` file. If `null`, uses the embedded database for country detection. |
 | `subscriptions` | _(two demo entries)_ | List of `{ name, url, enabled, priority }` sources. |
 
 </details>

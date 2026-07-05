@@ -5,16 +5,16 @@
 </p>
 
 <p align="center">
-  <img src="assets/V2RayDAR_logo_v1.png" alt="V2RayDAR logo" width="200" height="200">
+  <img src="../assets/V2RayDAR_logo_v1.png" alt="V2RayDAR logo" width="200" height="200">
 </p>
 
 # V2RayDAR Detailed Guide
 
-V2RayDAR is a Rust CLI/TUI application that fetches V2Ray-compatible subscription sources, extracts supported share links, checks which configs work on your current network, ranks the working results, and publishes the best ones through a local subscription endpoint.
+V2RayDAR is a Rust CLI/TUI application that fetches V2Ray / Clash / Mihomo subscription sources, extracts supported share links, checks which configs work on your current network, ranks the working results, and publishes the best ones through a local subscription endpoint — both as V2Ray share-links and as full Mihomo YAML configs.
 
 The name means **V2Ray Detection And Reconnaissance** and is pronounced like `v2ray` + `radar`.
 
-This document is the detailed user and developer guide. The short, ready-to-use guide is in [README.md](README.md).
+This document is the detailed user and developer guide. The short, ready-to-use guide is in [README.md](../README.md).
 
 
 ## Quick Install
@@ -87,7 +87,7 @@ Required:
 
 - A supported operating system: Windows, Linux, macOS, or Termux on Android.
 - A terminal.
-- A V2Ray-compatible client, such as v2rayN, v2rayNG, sing-box, or another client that can consume subscription URLs.
+- A V2Ray-compatible client (such as v2rayN, v2rayNG, sing-box) or a Clash/Mihomo-compatible client (such as Clash Verge, Mihomo, Clash Meta for Android) that can consume subscription URLs.
 
 Required for active validation:
 
@@ -135,7 +135,7 @@ Checksums verify integrity. They do not prevent Windows SmartScreen or macOS Gat
 
 ## First Run
 
-On first launch without `--config`, V2RayDAR creates `configs.yaml`. The portable installer runs with `--portable`, so config and database stay beside the executable; user-installed mode uses the platform app-data location.
+On first launch without `--config`, V2RayDAR creates `configs.yaml` with a set of pre-selected subscription sources to get you started. Adding your own sources is recommended for better coverage. The portable installer runs with `--portable`, so config and database stay beside the executable; user-installed mode uses the platform app-data location.
 
 Windows:
 
@@ -218,6 +218,13 @@ v2raydar --portable --uninstall
 v2raydar --uninstall --yes
 ```
 
+Ping config URIs and print latency results:
+
+```bash
+v2raydar --ping "vless://uuid@server:443?security=tls#name"
+v2raydar --ping-file configs.txt
+```
+
 Windows users can replace `v2raydar` with `v2raydar.exe`.
 
 ## Source Build Commands
@@ -296,6 +303,14 @@ Then add this subscription URL in the client:
 http://127.0.0.1:27141/subscription
 ```
 
+### sing-box (plain share-link format)
+
+For sing-box clients, use the plain-text endpoint:
+
+```text
+http://127.0.0.1:27141/subscription.txt
+```
+
 ### Mihomo / Clash.Meta (YAML config format)
 
 For Mihomo, Clash Verge, or any Clash-compatible client, use the Mihomo endpoint:
@@ -347,7 +362,7 @@ V2RayDAR accepts:
 
 Other config extensions are rejected.
 
-The generated default file is based on [configs.example.yaml](configs.example.yaml).
+The generated default file is based on [configs.example.yaml](../configs.example.yaml).
 
 When you use `--config path/to/configs.yaml`, V2RayDAR uses that file as the config and stores cache/state in a sibling `v2raydar_data` folder. If the custom config already lives inside a `v2raydar_data` folder, that folder is reused for cache/state.
 
@@ -398,7 +413,7 @@ String-like null values such as `null`, `"null"`, empty strings, `"none"`, and `
 | `sharing` | Object | See below | LAN sharing and URL token settings. |
 | `probe` | Object | See below | Validation mode, timeouts, concurrency, and active-test settings. |
 | `geoip_db_path` | String or null | `null` | Optional path to a `GeoLite2-Country.mmdb` file. If `null`, uses the embedded database for country detection. |
-| `subscriptions` | Array | Two example entries | Sources to fetch and scan. |
+| `subscriptions` | Array | Pre-selected sources | Sources to fetch and scan. Add your own for better results. |
 
 ## Sharing Settings
 
@@ -1259,6 +1274,8 @@ fetch_concurrency: 8
 max_subscription_bytes: 33554432
 use_cache_only: false
 emergency_config: null
+geoip_db_path: null
+clean_offlines_after_days: 7
 
 sharing:
   enabled: false
@@ -1350,10 +1367,10 @@ Avoid adding unrelated refactors to feature or bug-fix PRs.
 
 ## References
 
-- Main README: [README.md](README.md)
-- Example config: [configs.example.yaml](configs.example.yaml)
-- Release guide: [RELEASE.md](RELEASE.md)
-- License: [LICENSE](LICENSE)
+- Main README: [README.md](../README.md)
+- Example config: [configs.example.yaml](../configs.example.yaml)
+- Release guide: [release.md](release.md)
+- License: [LICENSE](../LICENSE)
 - sing-box releases: <https://github.com/SagerNet/sing-box/releases>
 - sing-box configuration docs: <https://sing-box.sagernet.org/configuration/>
 - v2rayN: <https://github.com/2dust/v2rayN>

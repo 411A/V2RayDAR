@@ -25,6 +25,8 @@ emergency_config: null
 # Optional path to a GeoLite2-Country.mmdb file for country detection.
 # null uses the embedded database; set a path only if you need a custom one.
 geoip_db_path: null
+# Days after which unreachable configs are removed from the database.
+clean_offlines_after_days: 7
 
 #* LAN sharing controls for phones or other devices on your network.
 sharing:

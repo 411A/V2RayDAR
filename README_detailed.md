@@ -140,7 +140,7 @@ v2raydar --no-tui
 
 </details>
 
-Desktop scripts leave the downloaded archive and extracted app in the chosen `V2RayDAR` folder, then run with `--portable` so config and cache stay beside the executable. Termux installs the `v2raydar` command and uses the Termux-managed `sing-box` path.
+Desktop scripts leave the downloaded archive and extracted app in the chosen `V2RayDAR` folder, then run with `--portable` so config and database stay beside the executable. Termux installs the `v2raydar` command and uses the Termux-managed `sing-box` path.
 
 ---
 
@@ -157,7 +157,7 @@ At runtime, V2RayDAR:
 - loads `configs.yaml` or a custom `.yaml`, `.yml`, or `.json` config file,
 - creates the app data folder when needed,
 - fetches enabled subscription sources concurrently,
-- stores HTTP subscription snapshots in a local cache,
+- stores previously-probed configs in a local SQLite database,
 - parses raw text, base64, JSON, and YAML content from HTTP(S), single local-file, and `data:` subscription sources,
 - **parses Clash/Mihomo YAML subscription configs** — detects `proxies:` lists and extracts vmess, vless, trojan, and ss proxy entries,
 - extracts `vmess`, `vless`, `trojan`, `ss`, `ssr`, `hysteria2`, `hy2`, and `tuic` share links,
@@ -167,7 +167,7 @@ At runtime, V2RayDAR:
 - optionally promotes configs that worked across repeated refreshes,
 - **serves working configs as both V2Ray share-links (`/subscription`) and full Mihomo YAML configs (`/mihomo.yaml`)**,
 - watches the config file and refreshes when relevant settings change,
-- provides a TUI for editing settings, subscriptions, sharing, logs, and cache state.
+- provides a TUI for editing settings, subscriptions, sharing, logs, and database state.
 
 ## Requirements
 
@@ -480,7 +480,8 @@ String-like null values such as `null`, `"null"`, empty strings, `"none"`, and `
 | `fetch_timeout_ms` | Integer milliseconds | `30000` | Per-source HTTP fetch timeout. |
 | `fetch_concurrency` | Integer | `8` | Number of subscription sources fetched in parallel. |
 | `max_subscription_bytes` | Integer bytes | `33554432` | Maximum accepted body size per subscription source. |
-| `use_cache_only` | Boolean | `false` | Skips fresh subscription fetches and tests only cached HTTP snapshots. |
+| `use_cache_only` | Boolean | `false` | Skips fresh subscription fetches and loads previously-probed configs from the database. |
+| `clean_offlines_after_days` | Integer | `7` | Days after which unreachable configs are removed from the database. |
 | `emergency_config` | String or null | `null` | Optional working share link used as a bridge proxy when HTTP subscription fetches fail. |
 | `sharing` | Object | See below | LAN sharing and URL token settings. |
 | `probe` | Object | See below | Validation mode, timeouts, concurrency, and active-test settings. |
@@ -689,27 +690,24 @@ The `convert` module handles all conversions between V2Ray share-link formats an
 
 Supported transport mappings: TCP, WebSocket (`ws`), gRPC, HTTP/2 (`h2`), HTTPUpgrade. Supported TLS features: standard TLS, Reality (with `public-key` and `short-id`), uTLS fingerprinting.
 
-## Cache Behavior
+## Database Behavior
 
-HTTP and HTTPS subscription responses are cached in:
+Previously-probed configs are stored in a local SQLite database:
 
 ```text
-v2raydar_data/cache/
+v2raydar_data/data.db
 ```
 
-The cache contains:
+The database contains:
 
-- timestamped `.txt` snapshot files,
-- `metadata.json`, which maps subscription URLs to snapshot files and content hashes,
-- `stable_top.json`, the previous run's saved top-N URIs used by `prioritize_stability` (created at the end of each refresh and deleted on every app startup and shutdown so it never survives across runs).
+- `configs` table — all known configs with dedup_key, URI, source, protocol, endpoint, reachability status, latency, stability count, and `last_online` timestamp,
+- `stable_top` table — the previous run's saved top-N dedup_keys used by `prioritize_stability`.
 
-When a fresh HTTP subscription fetch succeeds, V2RayDAR writes a cache snapshot. If a fetched body is identical to an existing snapshot, it reuses the existing file and moves that snapshot to the newest position in metadata.
-
-Local files and `data:` subscriptions are not used by cache fallback. Cache fallback supports HTTP and HTTPS subscription URLs.
+When a refresh completes, all probed configs are upserted into the database. Configs that are reachable get their `last_online` timestamp updated. Configs that are unreachable keep their existing `last_online` value. After each refresh, configs not seen online for `clean_offlines_after_days` (default: 7) are removed.
 
 ## Restricted-Network Behavior
 
-On very restricted networks, do not delete the cache unless you intentionally want to remove old subscription snapshots. The app can test cached HTTP subscription snapshots when fresh HTTP subscription URLs are unreachable.
+On very restricted networks, set `use_cache_only: true` to load previously-probed configs from the database instead of fetching fresh subscriptions. The app can test these previously-probed configs when fresh HTTP subscription URLs are unreachable.
 
 Refresh behavior is:
 
@@ -733,7 +731,7 @@ Example:
 emergency_config: vless://uuid@example.com:443?security=tls&sni=example.com#bridge
 ```
 
-To intentionally test only cached HTTP snapshots:
+To intentionally load previously-probed configs from the database:
 
 ```yaml
 use_cache_only: true
@@ -743,7 +741,7 @@ use_cache_only: true
 
 The final ranked list always puts reachable configs before failed configs. When `prioritize_stability: true`, reachable configs that were in the previous run's saved top-N are promoted before the remaining tie-breakers, so a higher-ping config that already proved working last refresh stays ahead of a newly discovered low-ping config. When `prioritize_stability: false`, the ranking simply prefers any working low-ping config without any carry-over.
 
-The saved top-N is written to `stable_top.json` in the cache folder at the end of each refresh, re-pinged at the start of the next refresh, and deleted on app startup and shutdown so each fresh run begins with no stability carry-over.
+The saved top-N is written to the `stable_top` table in the database at the end of each refresh, re-pinged at the start of the next refresh, and deleted on app startup and shutdown so each fresh run begins with no stability carry-over.
 
 The remaining tie-breakers are:
 
@@ -919,10 +917,7 @@ Typical files and folders:
 | Artifact | Meaning |
 | --- | --- |
 | `configs.yaml` | Main config file generated on first run. |
-| `cache/` | Cached HTTP subscription snapshots and the in-session top-N file. |
-| `cache/metadata.json` | Cache index mapping subscription URLs to snapshots. |
-| `cache/YYYY-MM-DD_HH-MM-SS.sss.txt` | Cached HTTP subscription body snapshot. |
-| `cache/stable_top.json` | Previous run's saved top-N URIs used by `prioritize_stability`; deleted on every app startup and shutdown. |
+| `data.db` | SQLite database storing previously-probed configs and stable top-N keys. |
 | `.v2raydar-firewall.json` | Records firewall rules created by V2RayDAR. |
 
 Legacy marker names are still recognized during cleanup:
@@ -1066,11 +1061,12 @@ The refresh pipeline in `src/main.rs` is roughly:
 3. Parse fetched subscription bodies into candidates — **including Clash/Mihomo YAML configs** which are detected by their `proxies:` structure and converted to share links.
 4. Probe candidates with `probe_candidates`. When `prioritize_stability: true`, the scheduler re-pings the previous run's saved top-N first.
 5. If direct fetches failed, retry failed HTTP sources through `emergency_config` or a working config when active mode is available, then probe newly loaded retry candidates.
-6. If no fresh subscription source was fetched successfully, try cached HTTP snapshots and probe cached candidates.
+6. If no fresh subscription source was fetched successfully, load previously-probed configs from the database and probe them.
 7. Apply stability ranking (carry the previous run's saved top-N to the front when enabled, otherwise rank purely by low ping).
 8. Publish ranked state to `/subscription`, `/subscription.txt`, and `/results`.
-9. Persist the new top-N to `stable_top.json` in the cache folder (when stability ranking is on) so the next refresh re-pings it first.
-10. Record refresh duration, errors, byte counters, logs, and consecutive-top-N counters.
+9. Persist all probed configs to the database and save the new top-N stable keys (when stability ranking is on) so the next refresh re-pings it first.
+10. Clean up configs not seen online for `clean_offlines_after_days` days.
+11. Record refresh duration, errors, byte counters, logs, and consecutive-top-N counters.
 
 The refresh loop starts immediately on app launch. Later refreshes are driven by the timer or relevant config-file changes.
 
@@ -1097,28 +1093,15 @@ Subscription response format:
 
 The `/mihomo.yaml` endpoint generates a complete Mihomo-compatible YAML config on the fly from the current top-N working configs. Each config is converted to its Clash proxy entry format, placed in a `proxies:` list, wrapped in a `url-test` proxy group, and completed with a catch-all `MATCH` rule.
 
-## Cache Implementation
+## Database Implementation
 
-Cache snapshots are written only for successful HTTP/HTTPS fetches.
+Previously-probed configs are stored in a SQLite database (`data.db`). The database uses WAL journal mode for concurrent read/write access.
 
-The cache metadata format is JSON and stores a map from subscription URL to snapshot records:
+The `configs` table stores each config with a unique `dedup_key` (protocol|host|port|transport|tls). On each refresh, configs are upserted — reachable configs get their `last_online` timestamp updated, while unreachable configs keep their existing `last_online` value.
 
-```json
-{
-  "subscriptions": {
-    "https://example.com/sub": [
-      {
-        "file": "2026-06-10_12-30-00.000.txt",
-        "hash": "0123456789abcdef"
-      }
-    ]
-  }
-}
-```
+The `stable_top` table stores a single row with the previous run's top-N dedup_keys for stability ranking.
 
-The hash is an internal FNV-style body hash used for deduplicating identical snapshots. It is not a cryptographic integrity check.
-
-Cache fallback loads the newest readable snapshot for each HTTP URL.
+After each refresh, configs not seen online for `clean_offlines_after_days` days are removed from the database.
 
 ## Active Probe Implementation
 
@@ -1311,7 +1294,7 @@ Possible causes:
 - All candidates failed validation.
 - `top_n` is too low only if you expected more than the published set.
 - Active mode could not run `sing-box`.
-- Fetches failed and no cache snapshots exist.
+- Fetches failed and no previously-probed configs exist in the database.
 
 Check:
 
@@ -1323,7 +1306,7 @@ Look at `fetch_errors`, `ranked`, `last_error`, `tested_candidates`, and `reacha
 
 ### Subscription URLs fail on a restricted network
 
-Keep the cache. Do not clean it unless you know you no longer need old snapshots.
+Previously-probed configs are stored in the database and can be used via `use_cache_only: true`.
 
 Add a known working config:
 
@@ -1339,7 +1322,7 @@ This is expected. Changing `bind` requires restarting V2RayDAR.
 
 ### Cache-only mode finds nothing
 
-`use_cache_only` can only load cached HTTP/HTTPS subscription snapshots. It cannot load local files or `data:` URLs from cache fallback.
+`use_cache_only` loads previously-probed configs from the database. Run at least one successful online refresh first so the database has configs to load.
 
 Disable cache-only mode:
 
@@ -1347,7 +1330,7 @@ Disable cache-only mode:
 use_cache_only: false
 ```
 
-Run one successful online refresh first so snapshots exist.
+Run at least one successful online refresh first so the database has configs to load.
 
 ## Sample Minimal Config
 

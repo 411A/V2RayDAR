@@ -58,6 +58,7 @@ pub enum ConfigKey {
     AcceptedStatuses,
     DownloadUrl,
     DownloadLimit,
+    CleanOfflineDays,
     TokenRequired,
     Token,
     ResetDefaults,

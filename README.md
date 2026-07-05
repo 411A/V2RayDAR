@@ -151,7 +151,7 @@ v2raydar --no-tui
 
 </details>
 
-Desktop scripts leave the downloaded archive and extracted app in the chosen `V2RayDAR` folder, then run with `--portable` so config and cache stay beside the executable. Termux installs the `v2raydar` command and uses the Termux-managed `sing-box` path.
+Desktop scripts leave the downloaded archive and extracted app in the chosen `V2RayDAR` folder, then run with `--portable` so config and database stay beside the executable. Termux installs the `v2raydar` command and uses the Termux-managed `sing-box` path.
 
 ---
 
@@ -164,7 +164,7 @@ Desktop scripts leave the downloaded archive and extracted app in the chosen `V2
 - Validates each candidate through your current network with `sing-box` (it actually loads a test URL through the proxy).
 - **Dual-format output** — serves working configs as V2Ray share-links (`/subscription`) **and** as full Mihomo YAML configs (`/mihomo.yaml`), so any client can use them.
 - Re-exposes the top working configs at a local URL so any compatible client just sees one always-fresh subscription.
-- Survives restricted networks via a snapshot cache, an in-network bridge config, or an `emergency_config`.
+- Survives restricted networks via previously-probed configs in the database, an in-network bridge config, or an `emergency_config`.
 - Optional LAN sharing with optional token protection, so the phone in your pocket can use the same feed.
 
 > [!WARNING]
@@ -241,8 +241,9 @@ Windows users replace `v2raydar` with `v2raydar.exe`. On macOS open the bundled 
 | `fetch_timeout_ms` | `30000` | Per-source fetch timeout. |
 | `fetch_concurrency` | `8` | Subscription sources fetched in parallel. |
 | `max_subscription_bytes` | `33554432` | Size cap per fetched subscription source (32 MiB). |
-| `use_cache_only` | `false` | When `true`, skip fresh fetches and test only cached HTTP snapshots — useful on heavily restricted networks. |
+| `use_cache_only` | `false` | When `true`, skip fresh fetches and load previously-probed configs from the database — useful on heavily restricted networks. |
 | `emergency_config` | `null` | Optional working share-link used through `sing-box` as a bridge when HTTP subscription fetches fail. |
+| `clean_offlines_after_days` | `7` | Days after which unreachable configs are removed from the database. |
 | `sharing.enabled` | `false` | Lets LAN clients read the endpoints. |
 | `sharing.require_token` | `false` | Requires `?token=...` for LAN requests. |
 | `sharing.token` | `null` | Leave empty, set `true` to auto-generate, or supply a string. |
@@ -265,7 +266,7 @@ Windows users replace `v2raydar` with `v2raydar.exe`. On macOS open the bundled 
 
 ## Notes for restricted networks
 
-- If you are on a very restricted network, it is recommended to never delete the cache so the app can test cached HTTP subscription snapshots.
+- If you are on a very restricted network, previously-probed configs are stored in the database and can be used via `use_cache_only: true`.
 - By default, if some HTTP subscription URLs don't connect on your network but one config is reachable, the app uses that config to retry those failed HTTP subscriptions too. And if there are no working configs on your network but you have one working config yourself, you can bring it into `configs.yaml`'s `emergency_config` so the app uses it to retry failed HTTP subscription fetches.
 
 ## Pointing common clients at V2RayDAR

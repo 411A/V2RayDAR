@@ -6,15 +6,15 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_yaml::Value;
 
 use crate::constants::{
-    DEFAULT_ACCEPTED_STATUSES, DEFAULT_ACTIVE_TIMEOUT_MS, DEFAULT_BIND, DEFAULT_CONFIG_TEMPLATE,
-    DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_DOWNLOAD_BYTES_LIMIT, DEFAULT_ENCODED_SUBSCRIPTION,
-    DEFAULT_FETCH_CONCURRENCY, DEFAULT_FETCH_TIMEOUT_MS, DEFAULT_MAX_SUBSCRIPTION_BYTES,
-    DEFAULT_PRIORITIZE_STABILITY, DEFAULT_PROBE_BATCH_SIZE, DEFAULT_PROBE_CONCURRENCY,
-    DEFAULT_PROBE_PROCESS_CONCURRENCY, DEFAULT_REFRESH_SECONDS, DEFAULT_REQUIRE_TOKEN,
-    DEFAULT_RETURN_CONFIGS_ASAP, DEFAULT_SCAN_ALL_CONFIGS, DEFAULT_SHARING_ENABLED,
-    DEFAULT_SHARING_TOKEN, DEFAULT_SING_BOX_PATH, DEFAULT_STARTUP_TIMEOUT_MS,
-    DEFAULT_SUBSCRIPTION_ENABLED, DEFAULT_SUBSCRIPTION_PRIORITY, DEFAULT_TEST_URL, DEFAULT_TOP_N,
-    DEFAULT_USE_CACHE_ONLY,
+    DEFAULT_ACCEPTED_STATUSES, DEFAULT_ACTIVE_TIMEOUT_MS, DEFAULT_BIND,
+    DEFAULT_CLEAN_OFFLINES_AFTER_DAYS, DEFAULT_CONFIG_TEMPLATE, DEFAULT_CONNECT_TIMEOUT_MS,
+    DEFAULT_DOWNLOAD_BYTES_LIMIT, DEFAULT_ENCODED_SUBSCRIPTION, DEFAULT_FETCH_CONCURRENCY,
+    DEFAULT_FETCH_TIMEOUT_MS, DEFAULT_MAX_SUBSCRIPTION_BYTES, DEFAULT_PRIORITIZE_STABILITY,
+    DEFAULT_PROBE_BATCH_SIZE, DEFAULT_PROBE_CONCURRENCY, DEFAULT_PROBE_PROCESS_CONCURRENCY,
+    DEFAULT_REFRESH_SECONDS, DEFAULT_REQUIRE_TOKEN, DEFAULT_RETURN_CONFIGS_ASAP,
+    DEFAULT_SCAN_ALL_CONFIGS, DEFAULT_SHARING_ENABLED, DEFAULT_SHARING_TOKEN,
+    DEFAULT_SING_BOX_PATH, DEFAULT_STARTUP_TIMEOUT_MS, DEFAULT_SUBSCRIPTION_ENABLED,
+    DEFAULT_SUBSCRIPTION_PRIORITY, DEFAULT_TEST_URL, DEFAULT_TOP_N, DEFAULT_USE_CACHE_ONLY,
 };
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -44,6 +44,8 @@ pub struct AppConfig {
     pub use_cache_only: bool,
     #[serde(default, deserialize_with = "deserialize_optional_string")]
     pub emergency_config: Option<String>,
+    #[serde(default = "default_clean_offlines_after_days")]
+    pub clean_offlines_after_days: u32,
     #[serde(default)]
     pub probe: ProbeConfig,
     #[serde(default)]
@@ -281,6 +283,10 @@ fn validate(mut config: AppConfig) -> Result<AppConfig> {
         return Err(anyhow!("probe.download_bytes_limit must be greater than 0"));
     }
 
+    if config.clean_offlines_after_days == 0 {
+        return Err(anyhow!("clean_offlines_after_days must be greater than 0"));
+    }
+
     for subscription in &config.subscriptions {
         if subscription.name.trim().is_empty() {
             return Err(anyhow!("subscription name cannot be empty"));
@@ -515,6 +521,10 @@ fn default_accepted_statuses() -> Vec<u16> {
 
 const fn default_download_bytes_limit() -> usize {
     DEFAULT_DOWNLOAD_BYTES_LIMIT
+}
+
+const fn default_clean_offlines_after_days() -> u32 {
+    DEFAULT_CLEAN_OFFLINES_AFTER_DAYS
 }
 
 #[cfg(test)]

@@ -35,6 +35,7 @@ pub const fn label(key: ConfigKey) -> &'static str {
         ConfigKey::AcceptedStatuses => "probe.accepted_statuses",
         ConfigKey::DownloadUrl => "probe.download_url",
         ConfigKey::DownloadLimit => "probe.download_bytes_limit",
+        ConfigKey::CleanOfflineDays => "clean_offlines_after_days",
         ConfigKey::TokenRequired => "sharing.require_token",
         ConfigKey::Token => "sharing.token",
         ConfigKey::ResetDefaults => "reset to defaults",
@@ -71,6 +72,7 @@ pub const fn guide(key: ConfigKey) -> &'static str {
         ConfigKey::AcceptedStatuses => "HTTP codes, e.g. 204,200",
         ConfigKey::DownloadUrl => "speedtest URL or off/null",
         ConfigKey::DownloadLimit => "speedtest byte limit",
+        ConfigKey::CleanOfflineDays => "days before offline configs are removed",
         ConfigKey::TokenRequired => "true/false for URL token",
         ConfigKey::Token => "token text, empty allowed",
         ConfigKey::ResetDefaults => "type shown code to reset",
@@ -119,6 +121,7 @@ pub fn value(config: &crate::config::AppConfig, key: ConfigKey) -> String {
             .clone()
             .unwrap_or_else(|| "off".into()),
         ConfigKey::DownloadLimit => config.probe.download_bytes_limit.to_string(),
+        ConfigKey::CleanOfflineDays => config.clean_offlines_after_days.to_string(),
         ConfigKey::TokenRequired => config.sharing.require_token.to_string(),
         ConfigKey::Token => config.sharing.token.clone(),
         ConfigKey::ResetDefaults => "keeps subscriptions".to_string(),
@@ -162,6 +165,9 @@ pub fn apply(config: &mut crate::config::AppConfig, key: ConfigKey, raw: &str) -
         ConfigKey::DownloadUrl => config.probe.download_url = optional(value),
         ConfigKey::DownloadLimit => {
             config.probe.download_bytes_limit = positive(value, label(key))?;
+        }
+        ConfigKey::CleanOfflineDays => {
+            config.clean_offlines_after_days = positive(value, label(key))?;
         }
         ConfigKey::TokenRequired => config.sharing.require_token = bool_value(value)?,
         ConfigKey::Token => config.sharing.token = normalize_sharing_token(value),

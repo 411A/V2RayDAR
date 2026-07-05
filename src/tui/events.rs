@@ -1,4 +1,4 @@
-use std::{fs, path::Path, sync::Arc};
+use std::{path::Path, sync::Arc};
 
 use anyhow::Result;
 use crossterm::event::{
@@ -8,7 +8,8 @@ use crossterm::event::{
 use tokio::sync::RwLock;
 
 use crate::{
-    constants::{CACHE_METADATA_FILE_NAME, CONFIG_KEYS, MAIN_ITEMS, SUBSCRIPTION_ACTIONS},
+    constants::{CONFIG_KEYS, MAIN_ITEMS, SUBSCRIPTION_ACTIONS},
+    db::Database,
     model::RuntimeConfig,
     paths::AppPaths,
 };
@@ -29,6 +30,7 @@ pub fn handle_key(
     key: KeyEvent,
     paths: &AppPaths,
     runtime_config: &Arc<RwLock<RuntimeConfig>>,
+    database: &Arc<Database>,
 ) -> Result<EventResult> {
     if key.kind != KeyEventKind::Press {
         return Ok(EventResult::Continue);
@@ -51,7 +53,7 @@ pub fn handle_key(
         | InputMode::Priority
         | InputMode::ConfigValue(_)
         | InputMode::ResetConfirm => Ok(handle_input_key(state, key)),
-        InputMode::CleanCacheConfirm => handle_clean_cache_key(state, key, &paths.cache_dir),
+        InputMode::CleanCacheConfirm => handle_clean_cache_key(state, key, database),
         InputMode::None => handle_normal_key(state, key, paths, runtime_config),
     }
 }
@@ -297,7 +299,7 @@ fn activate_main(
 fn handle_clean_cache_key(
     state: &mut TuiState,
     key: KeyEvent,
-    cache_dir: &Path,
+    database: &Arc<Database>,
 ) -> Result<EventResult> {
     match key.code {
         KeyCode::Esc => {
@@ -307,8 +309,18 @@ fn handle_clean_cache_key(
         }
         KeyCode::Enter => {
             if state.input.trim() == "DELETE" {
-                let removed = clean_cache_artifacts(cache_dir)?;
-                state.status = format!("Clean cache finished: removed {removed} files");
+                let db = database.clone();
+                let result = std::thread::spawn(move || db.delete_all())
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("database thread panicked"))?;
+                match result {
+                    Ok(()) => {
+                        state.status = "Clean cache finished: database cleared".to_string();
+                    }
+                    Err(err) => {
+                        state.status = format!("Clean cache failed: {err}");
+                    }
+                }
             } else {
                 state.status = "Type DELETE to clean cache".to_string();
                 return Ok(EventResult::Continue);
@@ -326,33 +338,6 @@ fn handle_clean_cache_key(
     }
 
     Ok(EventResult::Continue)
-}
-
-fn clean_cache_artifacts(cache_dir: &Path) -> Result<usize> {
-    if !cache_dir.is_dir() {
-        return Ok(0);
-    }
-
-    let mut removed = 0usize;
-    for entry in fs::read_dir(cache_dir)? {
-        let entry = entry?;
-        let file_type = entry.file_type()?;
-        if !file_type.is_file() {
-            continue;
-        }
-        let file_name = entry.file_name();
-        let Some(name) = file_name.to_str() else {
-            continue;
-        };
-        if name == CACHE_METADATA_FILE_NAME
-            || crate::subscription::is_cache_snapshot_file_name(name)
-        {
-            fs::remove_file(entry.path())?;
-            removed = removed.saturating_add(1);
-        }
-    }
-
-    Ok(removed)
 }
 
 fn update_live_runtime_config(runtime_config: &Arc<RwLock<RuntimeConfig>>, state: &mut TuiState) {

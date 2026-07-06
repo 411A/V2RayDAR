@@ -31,26 +31,34 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState, runtime: &R
 }
 
 fn draw_main(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) {
-    let rows = MAIN_ITEMS.iter().enumerate().map(|(index, item)| {
-        let (name, value) = match item {
-            MainItem::OpenConfig => ("Open Configs File", CONFIG_FILE_NAME),
-            MainItem::Sharing => (
-                "Share subscription URL on LAN",
-                if state.editable.sharing.enabled {
-                    "enabled"
-                } else {
-                    "disabled"
-                },
-            ),
-            MainItem::Subscriptions => ("Subscriptions", "enter to manage sources"),
-            MainItem::CleanCache => ("Clean Cache", "delete cached subscription snapshots"),
-            MainItem::Configurations => ("Configurations", "enter to edit config values"),
-            MainItem::Logs => ("Live Logs", "enter to inspect refresh progress"),
-        };
-        Row::new([Cell::from(name), Cell::from(value)])
-            .style(row_style(index == state.selected_main, value))
-    });
-    state.hits.main_rows = row_hits(area, MAIN_ITEMS.len());
+    let visible_rows = visible_row_count(area).max(1);
+    let total = MAIN_ITEMS.len();
+    let offset = scroll_offset(state.selected_main, total, visible_rows);
+    let rows = MAIN_ITEMS
+        .iter()
+        .enumerate()
+        .skip(offset)
+        .take(visible_rows)
+        .map(|(index, item)| {
+            let (name, value) = match item {
+                MainItem::OpenConfig => ("Open Configs File", CONFIG_FILE_NAME),
+                MainItem::Sharing => (
+                    "Share subscription URL on LAN",
+                    if state.editable.sharing.enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    },
+                ),
+                MainItem::Subscriptions => ("Subscriptions", "enter to manage sources"),
+                MainItem::CleanCache => ("Clean Cache", "delete cached subscription snapshots"),
+                MainItem::Configurations => ("Configurations", "enter to edit config values"),
+                MainItem::Logs => ("Live Logs", "enter to inspect refresh progress"),
+            };
+            Row::new([Cell::from(name), Cell::from(value)])
+                .style(row_style(index == state.selected_main, value))
+        });
+    state.hits.main_rows = row_hits_with_offset(area, total, offset);
     render_table(
         frame,
         area,
@@ -90,9 +98,14 @@ fn draw_logs(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState, runtime: &
 
 fn draw_subscription_actions(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
     let selected = state.selected_subscription_ref();
+    let visible_rows = visible_row_count(area).max(1);
+    let total = SUBSCRIPTION_ACTIONS.len();
+    let offset = scroll_offset(state.selected_action, total, visible_rows);
     let rows = SUBSCRIPTION_ACTIONS
         .iter()
         .enumerate()
+        .skip(offset)
+        .take(visible_rows)
         .map(|(index, action)| {
             Row::new([
                 Cell::from(action_label(*action)),
@@ -328,11 +341,7 @@ fn action_value(
     }
 }
 
-fn row_hits(area: Rect, count: usize) -> Vec<(usize, Rect)> {
-    row_hits_with_offset(area, count, 0)
-}
-
-fn row_hits_with_offset(area: Rect, count: usize, offset: usize) -> Vec<(usize, Rect)> {
+pub fn row_hits_with_offset(area: Rect, count: usize, offset: usize) -> Vec<(usize, Rect)> {
     let mut rows = Vec::new();
     let first_y = area.y.saturating_add(2);
     let last_y = area.y.saturating_add(area.height.saturating_sub(1));
@@ -350,15 +359,15 @@ fn row_hits_with_offset(area: Rect, count: usize, offset: usize) -> Vec<(usize, 
     rows
 }
 
-fn usize_to_u16_saturating(value: usize) -> u16 {
+pub fn usize_to_u16_saturating(value: usize) -> u16 {
     u16::try_from(value).unwrap_or(u16::MAX)
 }
 
-const fn visible_row_count(area: Rect) -> usize {
+pub const fn visible_row_count(area: Rect) -> usize {
     area.height.saturating_sub(3) as usize
 }
 
-const fn scroll_offset(selected: usize, total: usize, visible: usize) -> usize {
+pub const fn scroll_offset(selected: usize, total: usize, visible: usize) -> usize {
     if visible == 0 || total <= visible {
         return 0;
     }

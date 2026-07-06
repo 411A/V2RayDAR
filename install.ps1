@@ -78,9 +78,55 @@ function Get-LatestVersion {
 function Download-File {
     param([string]$Url, [string]$Dest)
     try {
-        Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $request = [Net.HttpWebRequest]::Create($Url)
+        $request.AllowAutoRedirect = $true
+        $request.Timeout = 300000
+
+        $response = $request.GetResponse()
+        $totalBytes = $response.ContentLength
+        $stream = $response.GetResponseStream()
+
+        $fileStream = [IO.File]::Create($Dest)
+        $buffer = New-Object byte[] 65536
+        $totalRead = 0
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        $lastBarLen = 0
+
+        while ($true) {
+            $read = $stream.Read($buffer, 0, $buffer.Length)
+            if ($read -eq 0) { break }
+            $fileStream.Write($buffer, 0, $read)
+            $totalRead += $read
+
+            $elapsed = $sw.Elapsed.TotalSeconds
+            if ($elapsed -gt 0) {
+                $speed = $totalRead / $elapsed
+                if ($speed -ge 1MB)     { $speedStr = "{0:N1} MB/s" -f ($speed / 1MB) }
+                elseif ($speed -ge 1KB) { $speedStr = "{0:N1} KB/s" -f ($speed / 1KB) }
+                else                    { $speedStr = "{0:N0} B/s"  -f $speed }
+
+                if ($totalBytes -gt 0) {
+                    $pct = [math]::Floor(($totalRead / $totalBytes) * 100)
+                    $dlMB = "{0:N2}" -f ($totalRead / 1MB)
+                    $totalMB = "{0:N2}" -f ($totalBytes / 1MB)
+                    $bar = "$pct%  $dlMB/$totalMB MB  $speedStr"
+                } else {
+                    $dlMB = "{0:N2}" -f ($totalRead / 1MB)
+                    $bar = "$dlMB MB  $speedStr"
+                }
+
+                $pad = " " * [math]::Max(0, $lastBarLen - $bar.Length)
+                Write-Host "`r$bar$pad" -NoNewline
+                $lastBarLen = $bar.Length
+            }
+        }
+
+        $fileStream.Close(); $stream.Close(); $response.Close()
+        if ($lastBarLen -gt 0) { Write-Host "" }
     }
     catch {
+        Write-Host ""
         Write-Err "failed to download $Url : $_"
     }
 }

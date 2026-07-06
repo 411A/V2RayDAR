@@ -77,9 +77,11 @@ irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
 
 **Android / Termux:**
 ```bash
-# Тот же Linux-бинарник — установите sing-box, затем запустите установочный скрипт
+# Установите sing-box, затем запустите установочный скрипт
 pkg update -y && pkg install -y curl tar sing-box=1.13.13
 curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh
+# Всегда используйте --no-tui в Termux (ввод мыши не работает в терминалах Termux)
+cd V2RayDAR && ./v2raydar --no-tui
 ```
 
 **Ручная загрузка** — скачайте архив для вашей ОС из [Releases](https://github.com/411A/V2RayDAR/releases/latest) и запустите с `--portable`.

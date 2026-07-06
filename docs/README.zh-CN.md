@@ -77,9 +77,11 @@ irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
 
 **Android / Termux：**
 ```bash
-# 使用相同的 Linux 二进制文件 — 先安装 sing-box，然后运行安装脚本
+# 先安装 sing-box，然后运行安装脚本
 pkg update -y && pkg install -y curl tar sing-box=1.13.13
 curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh
+# Termux 上请始终使用 --no-tui（Termux 终端不支持鼠标输入）
+cd V2RayDAR && ./v2raydar --no-tui
 ```
 
 **手动下载** — 从 [Releases](https://github.com/411A/V2RayDAR/releases/latest) 下载对应操作系统的压缩包，使用 `--portable` 运行。

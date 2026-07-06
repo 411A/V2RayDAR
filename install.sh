@@ -82,14 +82,14 @@ detect_termux() {
 # ─── Asset Selection ───────────────────────────────────────────────────────────
 
 select_asset() {
-    # Termux uses the same Linux binary — no separate "termux" build exists.
+    # Termux has its own release archives separate from Linux desktop builds.
     if [ "$IS_TERMUX" = "1" ]; then
         case "$ARCH" in
-            aarch64)  ASSET="v2raydar-linux-aarch64" ;;
-            x86_64)   ASSET="v2raydar-linux-x86_64" ;;
+            aarch64)  ASSET="v2raydar-termux-aarch64.tar.gz" ;;
+            x86_64)   ASSET="v2raydar-termux-x86_64.tar.gz" ;;
             *)        err "Termux only supports aarch64 and x86_64" ;;
         esac
-        ARCHIVE_TYPE="none"
+        ARCHIVE_TYPE="tar.gz"
         return
     fi
 

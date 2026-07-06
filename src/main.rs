@@ -56,6 +56,21 @@ use crate::{
     terminal::{PlainProgressReporter, print_log, print_startup, print_summary},
 };
 
+/// Preconfigured TLS for Android where rustls-platform-verifier can't initialize.
+static FALLBACK_TLS: std::sync::OnceLock<rustls::ClientConfig> = std::sync::OnceLock::new();
+
+fn build_tls_config() -> rustls::ClientConfig {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    rustls::ClientConfig::builder_with_provider(
+        rustls::crypto::aws_lc_rs::default_provider().into(),
+    )
+    .with_safe_default_protocol_versions()
+    .expect("TLS protocol versions")
+    .with_root_certificates(roots)
+    .with_no_client_auth()
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "v2raydar")]
 #[command(about = "Fast V2Ray subscription reachability scanner and local top-N endpoint")]
@@ -113,6 +128,12 @@ struct Cli {
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<()> {
+    // On Android, pre-build a rustls config with webpki-roots to bypass the
+    // platform verifier which requires JNI context unavailable in Termux.
+    if cfg!(target_os = "android") {
+        let _ = FALLBACK_TLS.set(build_tls_config());
+    }
+
     let cli = Cli::parse();
     if cli.no_tui || cli.once {
         let filter = if cli.verbose {

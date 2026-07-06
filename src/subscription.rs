@@ -307,19 +307,33 @@ struct FetchedSource {
 }
 
 fn build_http_client(timeout_ms: u64) -> Result<Client> {
-    Client::builder()
+    let mut builder = Client::builder()
         .timeout(Duration::from_millis(timeout_ms))
-        .user_agent(concat!("v2raydar/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .context("failed to build HTTP client")
+        .user_agent(concat!("v2raydar/", env!("CARGO_PKG_VERSION")));
+
+    if cfg!(target_os = "android")
+        && let Some(tls) = crate::FALLBACK_TLS.get()
+    {
+        builder = builder.tls_backend_preconfigured(tls.clone());
+    }
+
+    builder.build().context("failed to build HTTP client")
 }
 
 fn build_proxied_http_client(timeout_ms: u64, port: u16) -> Result<Client> {
     let proxy_url = format!("http://{LOCALHOST_IP}:{port}");
-    Client::builder()
+    let mut builder = Client::builder()
         .timeout(Duration::from_millis(timeout_ms))
         .user_agent(concat!("v2raydar/", env!("CARGO_PKG_VERSION")))
-        .proxy(Proxy::all(&proxy_url)?)
+        .proxy(Proxy::all(&proxy_url)?);
+
+    if cfg!(target_os = "android")
+        && let Some(tls) = crate::FALLBACK_TLS.get()
+    {
+        builder = builder.tls_backend_preconfigured(tls.clone());
+    }
+
+    builder
         .build()
         .context("failed to build proxied HTTP client")
 }

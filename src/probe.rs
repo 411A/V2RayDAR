@@ -469,7 +469,7 @@ async fn probe_active_batched(
         let mut wave = Vec::new();
         let mut wave_previous_working = 0_usize;
         for _ in 0..process_concurrency {
-            if prepared.is_empty() {
+            if prepared.is_empty() || cancel.load(AtomicOrdering::Relaxed) {
                 break;
             }
             batch_index += 1;
@@ -538,6 +538,10 @@ async fn probe_active_batched(
             {
                 cancel.store(true, AtomicOrdering::Relaxed);
                 send_progress(progress.as_ref(), reason);
+                break;
+            }
+            if cancel.load(AtomicOrdering::Relaxed) {
+                break;
             }
         }
         update_stability_search_after_batch(wave_previous_working, stop_policy, &mut stop_state);

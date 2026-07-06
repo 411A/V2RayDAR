@@ -128,11 +128,10 @@ struct Cli {
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<()> {
-    // On Android, pre-build a rustls config with webpki-roots to bypass the
-    // platform verifier which requires JNI context unavailable in Termux.
-    if cfg!(target_os = "android") {
-        let _ = FALLBACK_TLS.set(build_tls_config());
-    }
+    // Pre-build a rustls config with webpki-roots to bypass the platform verifier
+    // which requires JNI context unavailable in Termux. On non-Android builds
+    // the OnceLock stays empty and reqwest uses its default TLS backend.
+    let _ = FALLBACK_TLS.set(build_tls_config());
 
     let cli = Cli::parse();
     if cli.no_tui || cli.once {

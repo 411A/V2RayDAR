@@ -311,9 +311,7 @@ fn build_http_client(timeout_ms: u64) -> Result<Client> {
         .timeout(Duration::from_millis(timeout_ms))
         .user_agent(concat!("v2raydar/", env!("CARGO_PKG_VERSION")));
 
-    if cfg!(target_os = "android")
-        && let Some(tls) = crate::FALLBACK_TLS.get()
-    {
+    if let Some(tls) = crate::FALLBACK_TLS.get() {
         builder = builder.tls_backend_preconfigured(tls.clone());
     }
 
@@ -327,9 +325,7 @@ fn build_proxied_http_client(timeout_ms: u64, port: u16) -> Result<Client> {
         .user_agent(concat!("v2raydar/", env!("CARGO_PKG_VERSION")))
         .proxy(Proxy::all(&proxy_url)?);
 
-    if cfg!(target_os = "android")
-        && let Some(tls) = crate::FALLBACK_TLS.get()
-    {
+    if let Some(tls) = crate::FALLBACK_TLS.get() {
         builder = builder.tls_backend_preconfigured(tls.clone());
     }
 

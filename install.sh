@@ -9,14 +9,30 @@
 
 set -eu
 
+# ─── Cleanup on interrupt ─────────────────────────────────────────────────────
+_CLEANUP_DIRS=""
+cleanup() {
+    if [ -n "$_CLEANUP_DIRS" ]; then
+        for _d in $_CLEANUP_DIRS; do
+            [ -d "$_d" ] && rm -rf "$_d"
+        done
+    fi
+    printf '\n\033[1;33m!\033[0m cancelled\n' >&2
+    exit 130
+}
+trap cleanup INT TERM HUP
+
+# Temp dir creator that registers for auto-cleanup on interrupt
+mktemp_d() {
+    _td="$(mktemp -d)"
+    _CLEANUP_DIRS="$_CLEANUP_DIRS $_td"
+    echo "$_td"
+}
+
 REPO="411A/V2RayDAR"
 APP_NAME="v2raydar"
 GITHUB_API="https://api.github.com/repos/${REPO}/releases/latest"
 GITHUB_DOWNLOAD="https://github.com/${REPO}/releases/download"
-
-# Data files preserved across updates (portable mode)
-DATA_FILES="configs.yaml data.db"
-DATA_DIRS="v2raydar_data"
 
 # ─── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -126,21 +142,38 @@ get_latest_version() {
 download_file() {
     _url="$1"
     _dest="$2"
-    if command -v curl >/dev/null 2>&1; then
-        set +e
-        curl -fSL --progress-bar "$_url" -o "$_dest"
-        _dl_exit=$?
-        set -e
-        [ "$_dl_exit" -eq 0 ] || err "download failed (HTTP error or network issue)"
-    elif command -v wget >/dev/null 2>&1; then
-        set +e
-        wget -q --show-progress "$_url" -O "$_dest"
-        _dl_exit=$?
-        set -e
-        [ "$_dl_exit" -eq 0 ] || err "download failed (HTTP error or network issue)"
-    else
-        err "neither curl nor wget found"
-    fi
+    _max_retries=5
+    _retry_delay=3
+
+    for _attempt in $(seq 1 "$_max_retries"); do
+        if command -v curl >/dev/null 2>&1; then
+            set +e
+            if [ -f "$_dest" ] && [ -s "$_dest" ]; then
+                info "resuming download..."
+                curl -fSL -C - --progress-bar "$_url" -o "$_dest"
+            else
+                curl -fSL --progress-bar "$_url" -o "$_dest"
+            fi
+            _dl_exit=$?
+            set -e
+            [ "$_dl_exit" -eq 0 ] && return 0
+        elif command -v wget >/dev/null 2>&1; then
+            set +e
+            wget -c -q --show-progress "$_url" -O "$_dest"
+            _dl_exit=$?
+            set -e
+            [ "$_dl_exit" -eq 0 ] && return 0
+        else
+            err "neither curl nor wget found"
+        fi
+
+        if [ "$_attempt" -lt "$_max_retries" ]; then
+            _delay=$((_retry_delay * _attempt))
+            warn "download failed (attempt $_attempt/$_max_retries), retrying in ${_delay}s..."
+            sleep "$_delay"
+        fi
+    done
+    err "download failed after $_max_retries attempts"
 }
 
 verify_checksum() {
@@ -191,7 +224,7 @@ extract_archive() {
             fi
             ;;
         zip)
-            _tmpdir="$(mktemp -d)"
+            _tmpdir="$(mktemp_d)"
             unzip -qo "$_file" -d "$_tmpdir"
             # Find the v2raydar binary inside the .app bundle
             _app_binary="$(find "$_tmpdir" -name "$APP_NAME" -type f \( -perm /111 -o -perm +111 \) 2>/dev/null | head -1)"
@@ -205,36 +238,6 @@ extract_archive() {
     esac
 }
 
-# ─── Backup Data ───────────────────────────────────────────────────────────────
-
-backup_data() {
-    _dir="$1"
-    _tmpdir="$(mktemp -d)"
-
-    for _file in $DATA_FILES; do
-        if [ -f "$_dir/$_file" ]; then cp "$_dir/$_file" "$_tmpdir/"; fi
-    done
-    for _dir_name in $DATA_DIRS; do
-        if [ -d "$_dir/$_dir_name" ]; then cp -r "$_dir/$_dir_name" "$_tmpdir/"; fi
-    done
-
-    echo "$_tmpdir"
-}
-
-restore_data() {
-    _dir="$1"
-    _tmpdir="$2"
-
-    for _file in $DATA_FILES; do
-        if [ -f "$_tmpdir/$_file" ]; then cp "$_tmpdir/$_file" "$_dir/"; fi
-    done
-    for _dir_name in $DATA_DIRS; do
-        if [ -d "$_tmpdir/$_dir_name" ]; then cp -r "$_tmpdir/$_dir_name" "$_dir/"; fi
-    done
-
-    rm -rf "$_tmpdir"
-}
-
 # ─── Install ───────────────────────────────────────────────────────────────────
 
 do_portable_install() {
@@ -244,9 +247,7 @@ do_portable_install() {
     if [ -f "$_target/$APP_NAME" ] || [ -f "$_target/${APP_NAME}.exe" ]; then
         info "existing V2RayDAR installation found at $_target"
         if confirm "update to latest version?"; then
-            _tmpdata="$(backup_data "$_target")"
-
-            _tmpdir="$(mktemp -d)"
+            _tmpdir="$(mktemp_d)"
             _archive="$_tmpdir/$ASSET"
 
             info "downloading ${ASSET}..."
@@ -254,10 +255,16 @@ do_portable_install() {
             verify_checksum "$_archive"
 
             info "updating..."
-            extract_archive "$_archive" "$_target"
-            rm -rf "$_tmpdir"
+            extract_archive "$_archive" "$_tmpdir"
 
-            restore_data "$_target" "$_tmpdata"
+            # Replace only binaries — user data (configs, db, v2raydar_data) stays untouched
+            cp "$_tmpdir/$APP_NAME" "$_target/$APP_NAME"
+            chmod +x "$_target/$APP_NAME" 2>/dev/null || true
+            if [ -f "$_tmpdir/sing-box" ]; then
+                cp "$_tmpdir/sing-box" "$_target/sing-box"
+                chmod +x "$_target/sing-box" 2>/dev/null || true
+            fi
+            rm -rf "$_tmpdir"
 
             info "updated to v${VERSION}"
         else
@@ -268,7 +275,7 @@ do_portable_install() {
         info "fresh install to $_target"
         mkdir -p "$_target"
 
-        _tmpdir="$(mktemp -d)"
+        _tmpdir="$(mktemp_d)"
         _archive="$_tmpdir/$ASSET"
 
         info "downloading ${ASSET}..."
@@ -300,7 +307,7 @@ do_user_install() {
     if [ -f "$_bin_dir/$APP_NAME" ]; then
         info "existing V2RayDAR binary found at $_bin_dir/$APP_NAME"
         if confirm "update to latest version?"; then
-            _tmpdir="$(mktemp -d)"
+            _tmpdir="$(mktemp_d)"
             _archive="$_tmpdir/$ASSET"
 
             info "downloading ${ASSET}..."
@@ -324,7 +331,7 @@ do_user_install() {
         info "fresh install to $_bin_dir/$APP_NAME"
         mkdir -p "$_bin_dir"
 
-        _tmpdir="$(mktemp -d)"
+        _tmpdir="$(mktemp_d)"
         _archive="$_tmpdir/$ASSET"
 
         info "downloading ${ASSET}..."

@@ -1,0 +1,12 @@
+# Exclude non-Rust files from GitHub language statistics
+install.sh linguist-generated
+install.ps1 linguist-generated
+*.md linguist-generated
+*.yaml linguist-generated
+*.yml linguist-generated
+*.xml linguist-generated
+*.json linguist-generated
+LICENSE linguist-generated
+assets/* linguist-generated
+docs/* linguist-generated
+.github/* linguist-generated

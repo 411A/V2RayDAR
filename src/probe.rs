@@ -1456,7 +1456,9 @@ async fn probe_active_target_inner(port: u16, config: &ProbeConfig) -> Result<Ac
         .timeout(Duration::from_millis(config.active_timeout_ms))
         .proxy(Proxy::all(&proxy_url)?);
 
-    if let Some(tls) = crate::FALLBACK_TLS.get() {
+    if cfg!(target_os = "android")
+        && let Some(tls) = crate::FALLBACK_TLS.get()
+    {
         builder = builder.tls_backend_preconfigured(tls.clone());
     }
 
@@ -1574,7 +1576,9 @@ async fn measure_download_with_sing_box(
     run_with_sing_box_proxy(sing_box_path, uri, startup_timeout, |port| async move {
         let proxy_url = format!("http://{LOCALHOST_IP}:{port}");
         let mut builder = reqwest::Client::builder().proxy(Proxy::all(&proxy_url)?);
-        if let Some(tls) = crate::FALLBACK_TLS.get() {
+        if cfg!(target_os = "android")
+            && let Some(tls) = crate::FALLBACK_TLS.get()
+        {
             builder = builder.tls_backend_preconfigured(tls.clone());
         }
         let client = builder.build()?;

@@ -214,7 +214,7 @@ function Do-PortableInstall {
 
     Write-Host ""
     Write-Info "installed to: $exePath"
-    Write-Info "run:  cd $Target && .\$AppName.exe --portable"
+    Write-Info "run:  cd $Target; .\$AppName.exe --portable"
 }
 
 function Do-UserInstall {

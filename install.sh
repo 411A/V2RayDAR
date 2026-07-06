@@ -76,7 +76,9 @@ detect_termux() {
     case "${PREFIX:-}" in
         *com.termux*) IS_TERMUX=1 ;;
     esac
-    [ -d "/data/data/com.termux/files/usr" ] && IS_TERMUX=1
+    if [ -d "/data/data/com.termux/files/usr" ]; then
+        IS_TERMUX=1
+    fi
 }
 
 # ─── Asset Selection ───────────────────────────────────────────────────────────
@@ -109,7 +111,13 @@ select_asset() {
 
 get_latest_version() {
     need curl
-    _response="$(curl -fsSL "$GITHUB_API" 2>/dev/null)" || err "failed to query GitHub API (check network/proxy)"
+    set +e
+    _response="$(curl -fsSL "$GITHUB_API" 2>/dev/null)"
+    _curl_exit=$?
+    set -e
+    if [ "$_curl_exit" -ne 0 ] || [ -z "$_response" ]; then
+        err "failed to query GitHub API (check network/proxy/firewall)"
+    fi
     _version="$(echo "$_response" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"v\([^"]*\)".*/\1/')"
     [ -n "$_version" ] || err "failed to parse version from GitHub response"
     echo "$_version"
@@ -119,9 +127,17 @@ download_file() {
     _url="$1"
     _dest="$2"
     if command -v curl >/dev/null 2>&1; then
+        set +e
         curl -fSL --progress-bar "$_url" -o "$_dest"
+        _dl_exit=$?
+        set -e
+        [ "$_dl_exit" -eq 0 ] || err "download failed (HTTP error or network issue)"
     elif command -v wget >/dev/null 2>&1; then
+        set +e
         wget -q --show-progress "$_url" -O "$_dest"
+        _dl_exit=$?
+        set -e
+        [ "$_dl_exit" -eq 0 ] || err "download failed (HTTP error or network issue)"
     else
         err "neither curl nor wget found"
     fi
@@ -130,7 +146,14 @@ download_file() {
 verify_checksum() {
     _file="$1"
     _checksums_url="${GITHUB_DOWNLOAD}/v${VERSION}/checksums.txt"
-    _checksums="$(curl -fsSL "$_checksums_url" 2>/dev/null)" || { warn "could not fetch checksums, skipping verification"; return 0; }
+    set +e
+    _checksums="$(curl -fsSL "$_checksums_url" 2>/dev/null)"
+    _curl_exit=$?
+    set -e
+    if [ "$_curl_exit" -ne 0 ] || [ -z "$_checksums" ]; then
+        warn "could not fetch checksums, skipping verification"
+        return 0
+    fi
 
     _expected="$(echo "$_checksums" | grep "$(basename "$_file")" | awk '{print $1}')"
     [ -n "$_expected" ] || { warn "no checksum found for $(basename "$_file"), skipping verification"; return 0; }
@@ -189,10 +212,10 @@ backup_data() {
     _tmpdir="$(mktemp -d)"
 
     for _file in $DATA_FILES; do
-        [ -f "$_dir/$_file" ] && cp "$_dir/$_file" "$_tmpdir/"
+        if [ -f "$_dir/$_file" ]; then cp "$_dir/$_file" "$_tmpdir/"; fi
     done
     for _dir_name in $DATA_DIRS; do
-        [ -d "$_dir/$_dir_name" ] && cp -r "$_dir/$_dir_name" "$_tmpdir/"
+        if [ -d "$_dir/$_dir_name" ]; then cp -r "$_dir/$_dir_name" "$_tmpdir/"; fi
     done
 
     echo "$_tmpdir"
@@ -203,10 +226,10 @@ restore_data() {
     _tmpdir="$2"
 
     for _file in $DATA_FILES; do
-        [ -f "$_tmpdir/$_file" ] && cp "$_tmpdir/$_file" "$_dir/"
+        if [ -f "$_tmpdir/$_file" ]; then cp "$_tmpdir/$_file" "$_dir/"; fi
     done
     for _dir_name in $DATA_DIRS; do
-        [ -d "$_tmpdir/$_dir_name" ] && cp -r "$_tmpdir/$_dir_name" "$_dir/"
+        if [ -d "$_tmpdir/$_dir_name" ]; then cp -r "$_tmpdir/$_dir_name" "$_dir/"; fi
     done
 
     rm -rf "$_tmpdir"
@@ -336,8 +359,8 @@ add_to_path() {
     _shell_rc=""
 
     case "${SHELL:-}" in
-        */bash) [ -f "$HOME/.bashrc" ] && _shell_rc="$HOME/.bashrc"
-                [ -z "$_shell_rc" ] && _shell_rc="$HOME/.profile" ;;
+        */bash) if [ -f "$HOME/.bashrc" ]; then _shell_rc="$HOME/.bashrc"; fi
+                if [ -z "$_shell_rc" ]; then _shell_rc="$HOME/.profile"; fi ;;
         */zsh)  _shell_rc="$HOME/.zshrc" ;;
         */fish) _shell_rc="$HOME/.config/fish/config.fish" ;;
         *)      _shell_rc="$HOME/.profile" ;;
@@ -370,7 +393,7 @@ add_to_path() {
 interactive_install() {
     _detected_os="$OS"
     _detected_arch="$ARCH"
-    [ "$IS_TERMUX" = "1" ] && _detected_os="termux"
+    if [ "$IS_TERMUX" = "1" ]; then _detected_os="termux"; fi
 
     echo ""
     echo "  ========================================"
@@ -393,10 +416,13 @@ interactive_install() {
 
     if [ "${NON_INTERACTIVE:-0}" = "1" ]; then
         CHOICE="${INSTALL_MODE_NUM:-1}"
-    else
+    elif [ -t 0 ] || [ -t 2 ]; then
         printf '\033[1;36m?\033[0m Choose mode [1-2, default: 1]: '
         read -r CHOICE </dev/tty || CHOICE=""
         CHOICE="${CHOICE:-1}"
+    else
+        info "non-interactive mode detected, defaulting to portable install"
+        CHOICE=1
     fi
 
     case "$CHOICE" in
@@ -404,10 +430,12 @@ interactive_install() {
             INSTALL_MODE="portable"
             if [ "${NON_INTERACTIVE:-0}" = "1" ]; then
                 INSTALL_DIR="${INSTALL_DIR:-$_portable_default}"
-            else
+            elif [ -t 0 ] || [ -t 2 ]; then
                 printf '\033[1;36m?\033[0m Install directory [%s]: ' "$_portable_default"
                 read -r _input_dir </dev/tty || _input_dir=""
                 INSTALL_DIR="${_input_dir:-$_portable_default}"
+            else
+                INSTALL_DIR="$_portable_default"
             fi
             ;;
         2)
@@ -480,7 +508,7 @@ main() {
     # Default portable directory: Desktop if it exists, otherwise home
     if [ "$INSTALL_MODE" = "portable" ] && [ -z "$INSTALL_DIR" ]; then
         INSTALL_DIR="$HOME/V2RayDAR"
-        [ -d "$HOME/Desktop" ] && INSTALL_DIR="$HOME/Desktop/V2RayDAR"
+        if [ -d "$HOME/Desktop" ]; then INSTALL_DIR="$HOME/Desktop/V2RayDAR"; fi
     fi
 
     # User install default

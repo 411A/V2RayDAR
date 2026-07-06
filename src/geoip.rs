@@ -36,11 +36,9 @@ pub fn country_flag(code: &str) -> String {
 pub fn lookup_country(ip: IpAddr) -> Option<String> {
     let reader = GEOIP_READER.get()?;
     let reader = reader.as_ref()?;
-    let country = reader.lookup::<maxminddb::geoip2::Country>(ip).ok()?;
-    country
-        .country
-        .and_then(|c| c.iso_code)
-        .map(ToString::to_string)
+    let result = reader.lookup(ip).ok()?;
+    let country = result.decode::<maxminddb::geoip2::Country>().ok()??;
+    country.country.iso_code.map(ToString::to_string)
 }
 
 /// Reader that borrows either the embedded `&'static [u8]` or a file-backed `Vec<u8>`.

@@ -1781,6 +1781,12 @@ async fn write_sing_box_outbound_config(outbounds: &[Value], ports: &[u16]) -> R
                     "address": "1.1.1.1",
                     "strategy": "prefer_ipv4",
                     "detour": "direct-out"
+                },
+                {
+                    "tag": "dns-alternative",
+                    "address": "223.5.5.5",
+                    "strategy": "prefer_ipv4",
+                    "detour": "direct-out"
                 }
             ]
         },
@@ -1788,8 +1794,7 @@ async fn write_sing_box_outbound_config(outbounds: &[Value], ports: &[u16]) -> R
         "outbounds": tagged_outbounds,
         "route": {
             "rules": rules,
-            "final": format!("{SING_BOX_OUTBOUND_TAG_PREFIX}-0"),
-            "auto_detect_interface": true
+            "final": format!("{SING_BOX_OUTBOUND_TAG_PREFIX}-0")
         }
     });
 

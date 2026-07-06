@@ -46,6 +46,30 @@ use crate::{
 use std::sync::OnceLock;
 
 static SING_BOX_CACHE: OnceLock<Option<String>> = OnceLock::new();
+static SING_BOX_VERSION_DETECTED: OnceLock<Option<(u32, u32, u32)>> = OnceLock::new();
+
+/// Parse sing-box version string like "1.13.14" into (major, minor, patch).
+fn parse_sing_box_version(output: &str) -> Option<(u32, u32, u32)> {
+    let first_line = output.lines().next()?;
+    let version_str = first_line.strip_prefix("sing-box version ")?;
+    let parts: Vec<u32> = version_str
+        .split('.')
+        .filter_map(|p| p.parse().ok())
+        .collect();
+    if parts.len() >= 3 {
+        Some((parts[0], parts[1], parts[2]))
+    } else {
+        None
+    }
+}
+
+/// Check if the detected sing-box version is >= (major, minor, patch).
+fn sing_box_version_at_least(major: u32, minor: u32, patch: u32) -> bool {
+    match SING_BOX_VERSION_DETECTED.get() {
+        Some(Some((maj, min, pat))) => (*maj, *min, *pat) >= (major, minor, patch),
+        _ => false,
+    }
+}
 
 /// Check sing-box availability once per process lifetime.
 /// The path doesn't change mid-session, so re-checking is pure waste.
@@ -56,15 +80,25 @@ async fn sing_box_available(path: &str) -> bool {
 
     debug!(sing_box_path = %path, "checking sing-box availability");
     let started = Instant::now();
-    let available = Command::new(path)
+    let output = Command::new(path)
         .arg("version")
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
         .await
-        .map(|status| status.success())
-        .unwrap_or(false);
+        .ok();
+    let available = output.as_ref().is_some_and(|o| o.status.success());
+    if let Some(ref out) = output
+        && let Some(version) = parse_sing_box_version(&String::from_utf8_lossy(&out.stdout))
+    {
+        let _ = SING_BOX_VERSION_DETECTED.set(Some(version));
+        info!(
+            sing_box_path = %path,
+            version = ?version,
+            "sing-box version detected"
+        );
+    }
     info!(
         sing_box_path = %path,
         available,
@@ -1768,36 +1802,53 @@ async fn write_sing_box_outbound_config(outbounds: &[Value], ports: &[u16]) -> R
     });
     tagged_outbounds.push(direct_outbound);
 
-    let config = json!({
-        "log": {
-            "disabled": true
-        },
-        "dns": {
-            "servers": [
-                {
-                    "tag": "dns-direct",
-                    "type": "udp",
-                    "server": "8.8.8.8"
-                },
-                {
-                    "tag": "dns-fallback",
-                    "type": "udp",
-                    "server": "1.1.1.1"
-                },
-                {
-                    "tag": "dns-alternative",
-                    "type": "udp",
-                    "server": "223.5.5.5"
-                }
-            ]
-        },
-        "inbounds": inbounds,
-        "outbounds": tagged_outbounds,
-        "route": {
-            "rules": rules,
-            "final": format!("{SING_BOX_OUTBOUND_TAG_PREFIX}-0")
-        }
-    });
+    // Version-aware DNS config: new format for >= 1.12.0, legacy for older
+    let dns_servers = if sing_box_version_at_least(1, 12, 0) {
+        json!([
+            { "tag": "dns-direct", "type": "udp", "server": "8.8.8.8" },
+            { "tag": "dns-fallback", "type": "udp", "server": "1.1.1.1" },
+            { "tag": "dns-alternative", "type": "udp", "server": "223.5.5.5" }
+        ])
+    } else {
+        json!([
+            { "tag": "dns-direct", "address": "8.8.8.8", "strategy": "prefer_ipv4", "detour": "direct-out" },
+            { "tag": "dns-fallback", "address": "1.1.1.1", "strategy": "prefer_ipv4", "detour": "direct-out" },
+            { "tag": "dns-alternative", "address": "223.5.5.5", "strategy": "prefer_ipv4", "detour": "direct-out" }
+        ])
+    };
+
+    let config = if sing_box_version_at_least(1, 12, 0) {
+        json!({
+            "log": {
+                "disabled": true
+            },
+            "dns": {
+                "servers": dns_servers
+            },
+            "inbounds": inbounds,
+            "outbounds": tagged_outbounds,
+            "route": {
+                "rules": rules,
+                "final": format!("{SING_BOX_OUTBOUND_TAG_PREFIX}-0"),
+                "default_domain_resolver": "dns-direct"
+            }
+        })
+    } else {
+        json!({
+            "log": {
+                "disabled": true
+            },
+            "dns": {
+                "servers": dns_servers
+            },
+            "inbounds": inbounds,
+            "outbounds": tagged_outbounds,
+            "route": {
+                "rules": rules,
+                "final": format!("{SING_BOX_OUTBOUND_TAG_PREFIX}-0")
+            }
+        })
+    };
 
     fs::write(&path, serde_json::to_vec_pretty(&config)?).await?;
     Ok(path)

@@ -956,6 +956,31 @@ probe:
 
 The active probe process concurrency is internally capped to avoid local process and socket congestion.
 
+## Resource Footprint
+
+Measured on a Windows x86_64 machine with 21 subscription sources, 8758 candidates, `--once` mode:
+
+| Metric | Value | Notes |
+| --- | --- | --- |
+| Release binary size | 16 MB | Stripped + LTO + panic=abort |
+| Embedded GeoIP database | 8.5 MB | Inside the binary |
+| Startup RSS | ~33 MB | Before any network I/O |
+| Peak RSS (fetch phase) | ~55 MB | Parsing candidates from all sources |
+| Peak RSS (probe phase) | ~73 MB | Parallel sing-box processes |
+| RSS after probe completes | ~42 MB | sing-box processes exited |
+| Total CPU time | ~0.8 s | Across all cores |
+| Wall clock (fetch + probe) | ~40 s | 8 s fetch + 30 s probe + 2 s retry |
+| Database size after run | ~628 KB | 319 ranked configs stored |
+| Network per refresh cycle | ~4-5 MB | Subscription body downloads |
+
+**Low-end device guidance:**
+
+| RAM | Recommendation |
+| --- | --- |
+| 256 MB+ | Default settings work comfortably |
+| 128 MB | Lower `probe.process_concurrency: 1-2` to reduce parallel sing-box processes |
+| 64 MB | Use `top_n: 5`, `fetch_concurrency: 4`, `probe.concurrency: 8`, `probe.process_concurrency: 1` |
+
 ## Developer Architecture
 
 Important modules:

@@ -96,9 +96,11 @@ irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
 <div dir="ltr">
 
 ```bash
-# Same Linux binary — install sing-box, then run the installer
+# Install sing-box, then run the installer
 pkg update -y && pkg install -y curl tar sing-box=1.13.13
 curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh
+# Always use --no-tui on Termux (TUI mouse input doesn't work in Termux terminals)
+cd V2RayDAR && ./v2raydar --no-tui
 ```
 
 </div>

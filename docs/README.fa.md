@@ -7,11 +7,12 @@
 </p>
 
 <p align="center">
-  <a href="../README.md"><img src="https://img.shields.io/badge/🇬🇧-English-brightgreen" alt="English"></a>
-  <a href="README.fa.md"><img src="https://img.shields.io/badge/🇮🇷-Persian-brightgreen" alt="Persian"></a>
-  <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/🇨🇳-简体中文-brightgreen" alt="简体中文"></a>
-  <a href="README.ru.md"><img src="https://img.shields.io/badge/🇷🇺-Русский-brightgreen" alt="Русский"></a>
-  <a href="README.fr.md"><img src="https://img.shields.io/badge/🇫🇷-Français-brightgreen" alt="Français"></a>
+  <strong>🌐 Available in</strong><br>
+  <strong><a href="../README.md">English</a></strong>
+  • <strong><a href="README.fa.md">فارسی</a></strong>
+  • <strong><a href="README.zh-CN.md">简体中文</a></strong>
+  • <strong><a href="README.ru.md">Русский</a></strong>
+  • <strong><a href="README.fr.md">Français</a></strong>
 </p>
 
 <p align="center">

@@ -16,14 +16,21 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
+# ─── Cleanup on Ctrl+C / forced exit ─────────────────────────────────────────
+$Script:TempPaths = @()
+function Remove-TempItems {
+    foreach ($p in $Script:TempPaths) {
+        if (Test-Path $p) {
+            try { Remove-Item -Path $p -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+        }
+    }
+}
+Register-EngineEvent PowerShell.Exiting -Action { Remove-TempItems } | Out-Null
+
 $Repo = "411A/V2RayDAR"
 $AppName = "v2raydar"
 $GitHubApi = "https://api.github.com/repos/$Repo/releases/latest"
 $GitHubDownload = "https://github.com/$Repo/releases/download"
-
-# Data files preserved across updates (portable mode)
-$DataFiles = @("configs.yaml", "data.db")
-$DataDirs = @("v2raydar_data")
 
 # ─── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -35,7 +42,15 @@ function Confirm {
     param([string]$Prompt, [bool]$Default = $true)
     if ($Yes) { return $true }
     $suffix = if ($Default) { " [Y/n] " } else { " [y/N] " }
-    $answer = Read-Host "$Prompt$suffix"
+    try {
+        $answer = Read-Host "$Prompt$suffix"
+    }
+    catch {
+        Remove-TempItems
+        Write-Host ""
+        Write-Info "cancelled"
+        exit 130
+    }
     if ([string]::IsNullOrWhiteSpace($answer)) { return $Default }
     return $answer -match '^[Yy]'
 }
@@ -77,57 +92,106 @@ function Get-LatestVersion {
 
 function Download-File {
     param([string]$Url, [string]$Dest)
-    try {
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        $request = [Net.HttpWebRequest]::Create($Url)
-        $request.AllowAutoRedirect = $true
-        $request.Timeout = 300000
 
-        $response = $request.GetResponse()
-        $totalBytes = $response.ContentLength
-        $stream = $response.GetResponseStream()
+    $maxRetries = 5
+    $retryDelay = 3
 
-        $fileStream = [IO.File]::Create($Dest)
-        $buffer = New-Object byte[] 65536
-        $totalRead = 0
-        $sw = [Diagnostics.Stopwatch]::StartNew()
-        $lastBarLen = 0
+    for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
+        $fileStream = $null; $stream = $null; $response = $null
+        try {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-        while ($true) {
-            $read = $stream.Read($buffer, 0, $buffer.Length)
-            if ($read -eq 0) { break }
-            $fileStream.Write($buffer, 0, $read)
-            $totalRead += $read
+            $existingBytes = 0
+            if (Test-Path $Dest) {
+                $existingBytes = (Get-Item $Dest).Length
+            }
 
-            $elapsed = $sw.Elapsed.TotalSeconds
-            if ($elapsed -gt 0) {
-                $speed = $totalRead / $elapsed
-                if ($speed -ge 1MB)     { $speedStr = "{0:N1} MB/s" -f ($speed / 1MB) }
-                elseif ($speed -ge 1KB) { $speedStr = "{0:N1} KB/s" -f ($speed / 1KB) }
-                else                    { $speedStr = "{0:N0} B/s"  -f $speed }
+            $request = [Net.HttpWebRequest]::Create($Url)
+            $request.AllowAutoRedirect = $true
+            $request.Timeout = 300000
 
-                if ($totalBytes -gt 0) {
-                    $pct = [math]::Floor(($totalRead / $totalBytes) * 100)
-                    $dlMB = "{0:N2}" -f ($totalRead / 1MB)
-                    $totalMB = "{0:N2}" -f ($totalBytes / 1MB)
-                    $bar = "$pct%  $dlMB/$totalMB MB  $speedStr"
-                } else {
-                    $dlMB = "{0:N2}" -f ($totalRead / 1MB)
-                    $bar = "$dlMB MB  $speedStr"
+            if ($existingBytes -gt 0) {
+                $request.AddRange($existingBytes)
+                Write-Info "resuming from $("{0:N2}" -f ($existingBytes / 1MB)) MB..."
+            }
+
+            $response = $request.GetResponse()
+
+            if ($response.StatusCode -ne [Net.HttpStatusCode]::PartialContent) {
+                $existingBytes = 0
+            }
+
+            $totalBytes = if ($response.ContentLength -gt 0) { $response.ContentLength + $existingBytes } else { 0 }
+            $stream = $response.GetResponseStream()
+
+            if ($existingBytes -gt 0 -and (Test-Path $Dest)) {
+                $fileStream = [IO.File]::Open($Dest, [IO.FileMode]::Append, [IO.FileAccess]::Write, [IO.FileShare]::None)
+            }
+            else {
+                $fileStream = [IO.File]::Create($Dest)
+            }
+
+            $buffer = New-Object byte[] 65536
+            $totalRead = $existingBytes
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            $lastBarLen = 0
+
+            while ($true) {
+                $read = $stream.Read($buffer, 0, $buffer.Length)
+                if ($read -eq 0) { break }
+                $fileStream.Write($buffer, 0, $read)
+                $totalRead += $read
+
+                $elapsed = $sw.Elapsed.TotalSeconds
+                if ($elapsed -gt 0) {
+                    $speed = $totalRead / $elapsed
+                    if ($speed -ge 1MB)     { $speedStr = "{0:N1} MB/s" -f ($speed / 1MB) }
+                    elseif ($speed -ge 1KB) { $speedStr = "{0:N1} KB/s" -f ($speed / 1KB) }
+                    else                    { $speedStr = "{0:N0} B/s"  -f $speed }
+
+                    if ($totalBytes -gt 0) {
+                        $pct = [math]::Floor(($totalRead / $totalBytes) * 100)
+                        $dlMB = "{0:N2}" -f ($totalRead / 1MB)
+                        $totalMB = "{0:N2}" -f ($totalBytes / 1MB)
+                        $bar = "$pct%  $dlMB/$totalMB MB  $speedStr"
+                    } else {
+                        $dlMB = "{0:N2}" -f ($totalRead / 1MB)
+                        $bar = "$dlMB MB  $speedStr"
+                    }
+
+                    $pad = " " * [math]::Max(0, $lastBarLen - $bar.Length)
+                    Write-Host "`r$bar$pad" -NoNewline
+                    $lastBarLen = $bar.Length
                 }
+            }
 
-                $pad = " " * [math]::Max(0, $lastBarLen - $bar.Length)
-                Write-Host "`r$bar$pad" -NoNewline
-                $lastBarLen = $bar.Length
+            $fileStream.Close(); $stream.Close(); $response.Close()
+            if ($lastBarLen -gt 0) { Write-Host "" }
+            return
+        }
+        catch {
+            try { if ($fileStream)  { $fileStream.Close() } } catch {}
+            try { if ($stream)      { $stream.Close() }     } catch {}
+            try { if ($response)    { $response.Close() }   } catch {}
+
+            if ($_.Exception -is [System.OperationCanceledException] -or
+                $_.Exception -is [System.Management.Automation.PipelineStoppedException]) {
+                Remove-TempItems
+                Write-Host ""
+                Write-Info "cancelled"
+                exit 130
+            }
+
+            if ($attempt -lt $maxRetries) {
+                $delay = $retryDelay * $attempt
+                Write-Warn "download failed (attempt $attempt/$maxRetries), retrying in ${delay}s..."
+                Start-Sleep -Seconds $delay
+            }
+            else {
+                Write-Host ""
+                Write-Err "failed to download $Url after $maxRetries attempts : $_"
             }
         }
-
-        $fileStream.Close(); $stream.Close(); $response.Close()
-        if ($lastBarLen -gt 0) { Write-Host "" }
-    }
-    catch {
-        Write-Host ""
-        Write-Err "failed to download $Url : $_"
     }
 }
 
@@ -135,6 +199,7 @@ function Verify-Checksum {
     param([string]$FilePath)
 
     try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         $checksumsUrl = "$GitHubDownload/v$Version/checksums.txt"
         $checksums = (Invoke-WebRequest -Uri $checksumsUrl -UseBasicParsing).Content
         $fileName = Split-Path $FilePath -Leaf
@@ -158,42 +223,7 @@ function Verify-Checksum {
     }
 }
 
-# ─── Backup/Restore Data ──────────────────────────────────────────────────────
-
-function Backup-Data {
-    param([string]$Dir)
-
-    $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
-    New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
-
-    foreach ($file in $DataFiles) {
-        $src = Join-Path $Dir $file
-        if (Test-Path $src) { Copy-Item -Path $src -Destination $tmpDir -Force }
-    }
-    foreach ($dirName in $DataDirs) {
-        $src = Join-Path $Dir $dirName
-        if (Test-Path $src) { Copy-Item -Path $src -Destination $tmpDir -Recurse -Force }
-    }
-
-    return $tmpDir
-}
-
-function Restore-Data {
-    param([string]$Dir, [string]$TmpDir)
-
-    foreach ($file in $DataFiles) {
-        $src = Join-Path $TmpDir $file
-        if (Test-Path $src) { Copy-Item -Path $src -Destination $Dir -Force }
-    }
-    foreach ($dirName in $DataDirs) {
-        $src = Join-Path $TmpDir $dirName
-        if (Test-Path $src) { Copy-Item -Path $src -Destination $Dir -Recurse -Force }
-    }
-
-    Remove-Item -Path $TmpDir -Recurse -Force -ErrorAction SilentlyContinue
-}
-
-# ─── Extract ───────────────────────────────────────────────────────────────────
+# ─── Install Modes ─────────────────────────────────────────────────────────────
 
 function Extract-Archive {
     param([string]$FilePath, [string]$Dest)
@@ -220,10 +250,9 @@ function Do-PortableInstall {
     if ($existing) {
         Write-Info "existing V2RayDAR installation found at $Target"
         if (Confirm -Prompt "update to latest version?") {
-            $backupDir = Backup-Data -Dir $Target
-
             $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
             New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
+            $Script:TempPaths += $tmpDir
             $archive = Join-Path $tmpDir $Asset
 
             Write-Info "downloading ${Asset}..."
@@ -232,10 +261,15 @@ function Do-PortableInstall {
             Verify-Checksum -FilePath $archive
 
             Write-Info "updating..."
-            Extract-Archive -FilePath $archive -Dest $Target
-            Remove-Item -Path $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
+            Extract-Archive -FilePath $archive -Dest $tmpDir
 
-            Restore-Data -Dir $Target -TmpDir $backupDir
+            # Replace only binaries — user data stays untouched
+            Copy-Item -Path "$tmpDir\$AppName.exe" -Destination $exePath -Force
+            $singBox = Join-Path $tmpDir "sing-box.exe"
+            if (Test-Path $singBox) {
+                Copy-Item -Path $singBox -Destination (Join-Path $Target "sing-box.exe") -Force
+            }
+            Remove-Item -Path $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
 
             Write-Info "updated to v$Version"
         }
@@ -252,6 +286,7 @@ function Do-PortableInstall {
 
         $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
         New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
+        $Script:TempPaths += $tmpDir
         $archive = Join-Path $tmpDir $Asset
 
         Write-Info "downloading ${Asset}..."
@@ -282,6 +317,7 @@ function Do-UserInstall {
         if (Confirm -Prompt "update to latest version?") {
             $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
             New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
+            $Script:TempPaths += $tmpDir
             $archive = Join-Path $tmpDir $Asset
 
             Write-Info "downloading ${Asset}..."
@@ -319,6 +355,7 @@ function Do-UserInstall {
 
         $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
         New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
+        $Script:TempPaths += $tmpDir
         $archive = Join-Path $tmpDir $Asset
 
         Write-Info "downloading ${Asset}..."
@@ -420,54 +457,59 @@ Options:
 # ─── Main ──────────────────────────────────────────────────────────────────────
 
 function Main {
-    if ($Help) { Show-Help; return }
+    try {
+        if ($Help) { Show-Help; return }
 
-    # Get version
-    if ([string]::IsNullOrWhiteSpace($Version)) {
-        $Version = Get-LatestVersion
+        # Get version
+        if ([string]::IsNullOrWhiteSpace($Version)) {
+            $Version = Get-LatestVersion
+        }
+        Write-Info "version: $Version"
+
+        # Detect arch
+        $arch = Get-Arch
+        Write-Info "arch: $arch"
+
+        $Asset = Select-Asset -Arch $arch
+        Write-Info "asset: $Asset"
+
+        # Determine install mode
+        if ($Portable) {
+            $Script:InstallMode = "portable"
+            $desktop = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
+            if ([string]::IsNullOrWhiteSpace($desktop)) { $desktop = Join-Path $env:USERPROFILE "Desktop" }
+            $defaultDir = if (Test-Path $desktop) { Join-Path $desktop "V2RayDAR" } else { Join-Path $env:USERPROFILE "V2RayDAR" }
+            $Script:InstallDir = if (-not [string]::IsNullOrWhiteSpace($Dir)) { $Dir } else { $defaultDir }
+        }
+        elseif ($User) {
+            $Script:InstallMode = "user"
+            $localAppData = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { "$env:USERPROFILE\AppData\Local" }
+            $Script:InstallDir = Join-Path $localAppData "V2RayDAR"
+        }
+        else {
+            Select-InstallMode
+        }
+
+        Write-Host ""
+        Write-Info "will install to: $InstallDir"
+
+        if (-not (Confirm -Prompt "Proceed with installation?" -Default $true)) {
+            Write-Host "installation cancelled" -ForegroundColor Yellow
+            return
+        }
+
+        switch ($InstallMode) {
+            "portable" { Do-PortableInstall -Target $InstallDir }
+            "user"     { Do-UserInstall -BinDir $InstallDir }
+        }
+
+        Write-Host ""
+        Write-Info "done!"
+        Write-Host ""
     }
-    Write-Info "version: $Version"
-
-    # Detect arch
-    $arch = Get-Arch
-    Write-Info "arch: $arch"
-
-    $Asset = Select-Asset -Arch $arch
-    Write-Info "asset: $Asset"
-
-    # Determine install mode
-    if ($Portable) {
-        $Script:InstallMode = "portable"
-        $desktop = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
-        if ([string]::IsNullOrWhiteSpace($desktop)) { $desktop = Join-Path $env:USERPROFILE "Desktop" }
-        $defaultDir = if (Test-Path $desktop) { Join-Path $desktop "V2RayDAR" } else { Join-Path $env:USERPROFILE "V2RayDAR" }
-        $Script:InstallDir = if (-not [string]::IsNullOrWhiteSpace($Dir)) { $Dir } else { $defaultDir }
+    finally {
+        Remove-TempItems
     }
-    elseif ($User) {
-        $Script:InstallMode = "user"
-        $localAppData = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { "$env:USERPROFILE\AppData\Local" }
-        $Script:InstallDir = Join-Path $localAppData "V2RayDAR"
-    }
-    else {
-        Select-InstallMode
-    }
-
-    Write-Host ""
-    Write-Info "will install to: $InstallDir"
-
-    if (-not (Confirm -Prompt "Proceed with installation?" -Default $true)) {
-        Write-Host "installation cancelled" -ForegroundColor Yellow
-        return
-    }
-
-    switch ($InstallMode) {
-        "portable" { Do-PortableInstall -Target $InstallDir }
-        "user"     { Do-UserInstall -BinDir $InstallDir }
-    }
-
-    Write-Host ""
-    Write-Info "done!"
-    Write-Host ""
 }
 
 Main

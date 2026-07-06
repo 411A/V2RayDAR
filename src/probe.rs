@@ -1757,9 +1757,32 @@ async fn write_sing_box_outbound_config(outbounds: &[Value], ports: &[u16]) -> R
         }));
     }
 
+    // Add a direct outbound for DNS queries (DNS must not route through the proxy)
+    let direct_outbound = json!({
+        "type": "direct",
+        "tag": "direct-out"
+    });
+    tagged_outbounds.push(direct_outbound);
+
     let config = json!({
         "log": {
             "disabled": true
+        },
+        "dns": {
+            "servers": [
+                {
+                    "tag": "dns-direct",
+                    "address": "8.8.8.8",
+                    "strategy": "prefer_ipv4",
+                    "detour": "direct-out"
+                },
+                {
+                    "tag": "dns-fallback",
+                    "address": "1.1.1.1",
+                    "strategy": "prefer_ipv4",
+                    "detour": "direct-out"
+                }
+            ]
         },
         "inbounds": inbounds,
         "outbounds": tagged_outbounds,

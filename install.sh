@@ -42,7 +42,7 @@ confirm() {
     case "$_answer" in
         [Yy]*) return 0 ;;
         [Nn]*) return 1 ;;
-        "")    [ "$_default" = "y" ] && return 0 || return 1 ;;
+        "")    if [ "$_default" = "y" ]; then return 0; else return 1; fi ;;
         *)     return 0 ;;
     esac
 }
@@ -118,7 +118,7 @@ get_latest_version() {
     if [ "$_curl_exit" -ne 0 ] || [ -z "$_response" ]; then
         err "failed to query GitHub API (check network/proxy/firewall)"
     fi
-    _version="$(echo "$_response" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"v\([^"]*\)".*/\1/')"
+    _version="$(echo "$_response" | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p' | head -1)"
     [ -n "$_version" ] || err "failed to parse version from GitHub response"
     echo "$_version"
 }
@@ -194,7 +194,7 @@ extract_archive() {
             _tmpdir="$(mktemp -d)"
             unzip -qo "$_file" -d "$_tmpdir"
             # Find the v2raydar binary inside the .app bundle
-            _app_binary="$(find "$_tmpdir" -name "$APP_NAME" -type f -perm +111 2>/dev/null | head -1)"
+            _app_binary="$(find "$_tmpdir" -name "$APP_NAME" -type f \( -perm /111 -o -perm +111 \) 2>/dev/null | head -1)"
             [ -n "$_app_binary" ] || err "could not find $APP_NAME binary inside archive"
             cp "$_app_binary" "$_dest/$APP_NAME"
             # Copy sing-box if present
@@ -366,7 +366,7 @@ add_to_path() {
         *)      _shell_rc="$HOME/.profile" ;;
     esac
 
-    [ -n "$_shell_rc" ] || return 1
+    if [ -z "$_shell_rc" ]; then return 1; fi
 
     # Check if already in PATH
     case ":$PATH:" in

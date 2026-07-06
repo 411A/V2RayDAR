@@ -158,7 +158,13 @@ extract_archive() {
 
     case "$ARCHIVE_TYPE" in
         tar.gz)
-            tar xzf "$_file" -C "$_dest" --no-same-owner 2>/dev/null || tar xzf "$_file" -C "$_dest"
+            if [ "$IS_TERMUX" = "1" ]; then
+                # Termux archives contain a top-level directory — strip it
+                tar xzf "$_file" -C "$_dest" --strip-components=1 --no-same-owner 2>/dev/null \
+                    || tar xzf "$_file" -C "$_dest" --strip-components=1
+            else
+                tar xzf "$_file" -C "$_dest" --no-same-owner 2>/dev/null || tar xzf "$_file" -C "$_dest"
+            fi
             ;;
         zip)
             _tmpdir="$(mktemp -d)"

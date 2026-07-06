@@ -109,8 +109,9 @@ select_asset() {
 
 get_latest_version() {
     need curl
-    _version="$(curl -fsSL "$GITHUB_API" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"v\([^"]*\)".*/\1/')"
-    [ -n "$_version" ] || err "failed to query latest version from GitHub"
+    _response="$(curl -fsSL "$GITHUB_API" 2>/dev/null)" || err "failed to query GitHub API (check network/proxy)"
+    _version="$(echo "$_response" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"v\([^"]*\)".*/\1/')"
+    [ -n "$_version" ] || err "failed to parse version from GitHub response"
     echo "$_version"
 }
 

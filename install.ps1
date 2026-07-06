@@ -43,8 +43,16 @@ function Confirm {
 # ─── Platform Detection ────────────────────────────────────────────────────────
 
 function Get-Arch {
-    if ([System.Environment]::Is64BitOperatingSystem) { return "x86_64" }
-    return "i686"
+    $cpu = $env:PROCESSOR_ARCHITECTURE
+    switch -Regex ($cpu) {
+        'ARM64|aarch64' { return "aarch64" }
+        'ARM|armv7'     { return "armv7" }
+        'AMD64|x86_64'  { return "x86_64" }
+        default {
+            if ([System.Environment]::Is64BitOperatingSystem) { return "x86_64" }
+            return "i686"
+        }
+    }
 }
 
 # ─── Asset Selection ───────────────────────────────────────────────────────────

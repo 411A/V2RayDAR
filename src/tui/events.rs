@@ -139,35 +139,84 @@ fn cancel_command(state: &mut TuiState) {
 }
 
 pub fn handle_mouse(state: &mut TuiState, mouse: MouseEvent) -> EventResult {
-    if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
-        return EventResult::Continue;
-    }
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            for (index, area) in &state.hits.main_rows {
+                if contains(*area, mouse.column, mouse.row) {
+                    state.selected_main = *index;
+                    state.status = format!("Selected menu row {}", index + 1);
+                    return EventResult::Continue;
+                }
+            }
 
-    for (index, area) in &state.hits.main_rows {
-        if contains(*area, mouse.column, mouse.row) {
-            state.selected_main = *index;
-            state.status = format!("Selected menu row {}", index + 1);
-            return EventResult::Continue;
-        }
-    }
+            for (index, area) in &state.hits.subscription_rows {
+                if contains(*area, mouse.column, mouse.row) {
+                    state.selected_subscription = *index;
+                    state.status = format!("Selected row {}", index + 1);
+                    return EventResult::Continue;
+                }
+            }
 
-    for (index, area) in &state.hits.subscription_rows {
-        if contains(*area, mouse.column, mouse.row) {
-            state.selected_subscription = *index;
-            state.status = format!("Selected row {}", index + 1);
-            return EventResult::Continue;
+            for (index, area) in &state.hits.config_rows {
+                if contains(*area, mouse.column, mouse.row) {
+                    state.selected_config = *index;
+                    state.status = format!("Selected config row {}", index + 1);
+                    return EventResult::Continue;
+                }
+            }
         }
-    }
-
-    for (index, area) in &state.hits.config_rows {
-        if contains(*area, mouse.column, mouse.row) {
-            state.selected_config = *index;
-            state.status = format!("Selected config row {}", index + 1);
-            return EventResult::Continue;
-        }
+        MouseEventKind::ScrollUp => scroll_up(state, mouse.column, mouse.row),
+        MouseEventKind::ScrollDown => scroll_down(state, mouse.column, mouse.row),
+        _ => {}
     }
 
     EventResult::Continue
+}
+
+fn scroll_up(state: &mut TuiState, x: u16, y: u16) {
+    if let Some(area) = state.hits.logs_area
+        && contains(area, x, y)
+    {
+        state.scroll.logs = state.scroll.logs.saturating_add(1);
+        return;
+    }
+
+    if let Some(area) = state.hits.found_area
+        && contains(area, x, y)
+    {
+        state.scroll.found = state.scroll.found.saturating_sub(1);
+        return;
+    }
+
+    if let Some(area) = state.hits.live_logs_area
+        && contains(area, x, y)
+        && state.view == MenuView::Logs
+    {
+        state.selected_log = state.selected_log.saturating_add(1);
+    }
+}
+
+fn scroll_down(state: &mut TuiState, x: u16, y: u16) {
+    if let Some(area) = state.hits.logs_area
+        && contains(area, x, y)
+    {
+        state.scroll.logs = state.scroll.logs.saturating_sub(1);
+        return;
+    }
+
+    if let Some(area) = state.hits.found_area
+        && contains(area, x, y)
+    {
+        state.scroll.found = state.scroll.found.saturating_add(1);
+        return;
+    }
+
+    if let Some(area) = state.hits.live_logs_area
+        && contains(area, x, y)
+        && state.view == MenuView::Logs
+    {
+        state.selected_log = state.selected_log.saturating_sub(1);
+    }
 }
 
 const fn move_up(state: &mut TuiState) {

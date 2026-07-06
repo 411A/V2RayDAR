@@ -7,7 +7,14 @@ use ratatui::{
 
 use super::view::RuntimeView;
 
-pub fn draw(frame: &mut Frame<'_>, area: Rect, runtime: &RuntimeView, top_n: usize) {
+#[allow(clippy::too_many_lines)]
+pub fn draw(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    runtime: &RuntimeView,
+    top_n: usize,
+    scroll: &mut usize,
+) {
     if area.width < 30 || area.height < 3 {
         return;
     }
@@ -72,37 +79,48 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, runtime: &RuntimeView, top_n: usi
         )
     };
 
-    let rows = runtime.ranked.iter().take(top_n).map(|item| {
-        let latency = item
-            .latency_ms
-            .map_or_else(|| "-".to_string(), |value| format!("{value} ms"));
-        if very_narrow {
-            Row::new([
-                Cell::from(item.rank.to_string()),
-                Cell::from(truncate(&item.protocol, 6)),
-                Cell::from(truncate(&item.display_name, 16)),
-                Cell::from(latency),
-            ])
-        } else if narrow {
-            Row::new([
-                Cell::from(item.rank.to_string()),
-                Cell::from(truncate(&item.protocol, 8)),
-                Cell::from(truncate(&item.display_name, 16)),
-                Cell::from(truncate(&item.endpoint, 16)),
-                Cell::from(latency),
-            ])
-        } else {
-            Row::new([
-                Cell::from(item.rank.to_string()),
-                Cell::from(item.stability_count.to_string()),
-                Cell::from(item.source.as_str()),
-                Cell::from(item.protocol.as_str()),
-                Cell::from(item.display_name.as_str()),
-                Cell::from(item.endpoint.as_str()),
-                Cell::from(latency),
-            ])
-        }
-    });
+    let visible_rows = area.height.saturating_sub(3) as usize;
+    let total_items = runtime.ranked.iter().take(top_n).count();
+    let max_offset = total_items.saturating_sub(visible_rows);
+    *scroll = (*scroll).min(max_offset);
+
+    let rows = runtime
+        .ranked
+        .iter()
+        .take(top_n)
+        .skip(*scroll)
+        .take(visible_rows)
+        .map(|item| {
+            let latency = item
+                .latency_ms
+                .map_or_else(|| "-".to_string(), |value| format!("{value} ms"));
+            if very_narrow {
+                Row::new([
+                    Cell::from(item.rank.to_string()),
+                    Cell::from(truncate(&item.protocol, 6)),
+                    Cell::from(truncate(&item.display_name, 16)),
+                    Cell::from(latency),
+                ])
+            } else if narrow {
+                Row::new([
+                    Cell::from(item.rank.to_string()),
+                    Cell::from(truncate(&item.protocol, 8)),
+                    Cell::from(truncate(&item.display_name, 16)),
+                    Cell::from(truncate(&item.endpoint, 16)),
+                    Cell::from(latency),
+                ])
+            } else {
+                Row::new([
+                    Cell::from(item.rank.to_string()),
+                    Cell::from(item.stability_count.to_string()),
+                    Cell::from(item.source.as_str()),
+                    Cell::from(item.protocol.as_str()),
+                    Cell::from(item.display_name.as_str()),
+                    Cell::from(item.endpoint.as_str()),
+                    Cell::from(latency),
+                ])
+            }
+        });
 
     frame.render_widget(
         Table::new(rows, widths).header(header).block(

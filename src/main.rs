@@ -879,7 +879,7 @@ async fn refresh_once(
                         ));
                     }
                     let retry_finished_log = timestamped_log(format!(
-                        "Subscription retry finished: {} new configs from {} fetched links; {} source errors remain",
+                        "Subscription retry finished: {} new configs from {} entries; {} source errors remain",
                         retry_count,
                         retry_before_dedup,
                         fetch_errors.len()
@@ -1571,7 +1571,7 @@ fn compare_ranked_snapshot(left: &RankedConfig, right: &RankedConfig) -> Orderin
 }
 
 fn timestamped_log(message: impl Into<String>) -> String {
-    format!("{} {}", Local::now().format("%H:%M:%S"), message.into())
+    format!("{} {}", Local::now().format("%H:%M:%S%.3f"), message.into())
 }
 
 fn push_runtime_log(state: &mut RuntimeState, message: String) {

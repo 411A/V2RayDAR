@@ -8,19 +8,24 @@ use ratatui::{
 
 use super::view::RuntimeView;
 
-pub fn draw(frame: &mut Frame<'_>, area: Rect, runtime: &RuntimeView) {
+pub fn draw(frame: &mut Frame<'_>, area: Rect, runtime: &RuntimeView, scroll: &mut usize) {
     if area.height < 3 || area.width < 10 {
         return;
     }
+    let visible_height = area.height.saturating_sub(2) as usize;
+    let total = runtime.logs.len();
+    let max_offset = total.saturating_sub(visible_height);
+    *scroll = (*scroll).min(max_offset);
+
     let lines = if runtime.logs.is_empty() {
         vec![Line::from("Waiting for refresh logs...")]
     } else {
+        let start = max_offset.saturating_sub(*scroll);
         runtime
             .logs
             .iter()
-            .rev()
-            .take(area.height.saturating_sub(2) as usize)
-            .rev()
+            .skip(start)
+            .take(visible_height)
             .map(|line| Line::from(line.clone()))
             .collect()
     };

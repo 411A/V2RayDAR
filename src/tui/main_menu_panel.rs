@@ -23,7 +23,10 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState, runtime: &R
         MenuView::NewSubscription => draw_new_subscription(frame, area, state),
         MenuView::SubscriptionActions => draw_subscription_actions(frame, area, state),
         MenuView::Configurations => draw_configurations(frame, area, state),
-        MenuView::Logs => draw_logs(frame, area, state, runtime),
+        MenuView::Logs => {
+            state.hits.live_logs_area = Some(area);
+            draw_logs(frame, area, state, runtime);
+        }
     }
 }
 

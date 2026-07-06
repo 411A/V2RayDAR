@@ -26,10 +26,18 @@ pub fn draw(
         top::draw(frame, areas.top, runtime, runtime_config, state.started_at);
     }
     if !areas.logs.is_empty() {
-        logs_panel::draw(frame, areas.logs, runtime);
+        state.hits.logs_area = Some(areas.logs);
+        logs_panel::draw(frame, areas.logs, runtime, &mut state.scroll.logs);
     }
     if !areas.found.is_empty() {
-        found_panel::draw(frame, areas.found, runtime, runtime_config.top_n);
+        state.hits.found_area = Some(areas.found);
+        found_panel::draw(
+            frame,
+            areas.found,
+            runtime,
+            runtime_config.top_n,
+            &mut state.scroll.found,
+        );
     }
     if !areas.config.is_empty() {
         config_panel::draw(frame, areas.config, state, runtime_config, paths);

@@ -344,9 +344,7 @@ add_to_path() {
     if [ "$(basename "$_shell_rc")" = "config.fish" ]; then
         echo "set -gx PATH \"$_dir \$PATH\"" >> "$_shell_rc"
     else
-        echo "" >> "$_shell_rc"
-        echo "# V2RayDAR" >> "$_shell_rc"
-        echo "export PATH=\"$_dir:\$PATH\"" >> "$_shell_rc"
+        { echo ""; echo "# V2RayDAR"; echo "export PATH=\"$_dir:\$PATH\""; } >> "$_shell_rc"
     fi
     info "added $_dir to PATH in $_shell_rc"
     warn "restart your shell or run: source $_shell_rc"

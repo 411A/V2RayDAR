@@ -95,10 +95,10 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, runtime: &RuntimeView, top_n: usi
             Row::new([
                 Cell::from(item.rank.to_string()),
                 Cell::from(item.stability_count.to_string()),
-                Cell::from(item.source.clone()),
-                Cell::from(item.protocol.clone()),
-                Cell::from(item.display_name.clone()),
-                Cell::from(item.endpoint.clone()),
+                Cell::from(item.source.as_str()),
+                Cell::from(item.protocol.as_str()),
+                Cell::from(item.display_name.as_str()),
+                Cell::from(item.endpoint.as_str()),
                 Cell::from(latency),
             ])
         }
@@ -114,12 +114,12 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, runtime: &RuntimeView, top_n: usi
     );
 }
 
-fn truncate(value: &str, width: usize) -> String {
+fn truncate(value: &str, width: usize) -> std::borrow::Cow<'_, str> {
     if value.len() <= width {
-        value.to_string()
+        std::borrow::Cow::Borrowed(value)
     } else if width > 1 {
-        format!("{}~", &value[..width - 1])
+        std::borrow::Cow::Owned(format!("{}~", &value[..width - 1]))
     } else {
-        value[..1].to_string()
+        std::borrow::Cow::Borrowed(&value[..1])
     }
 }

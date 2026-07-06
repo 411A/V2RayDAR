@@ -4,11 +4,6 @@ use std::{
 };
 
 use anyhow::{Result, anyhow};
-use base64::{
-    Engine as _,
-    engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD},
-};
-use percent_encoding::percent_decode_str;
 use serde_json::Value as JsonValue;
 use serde_yaml::Value as YamlValue;
 use url::Url;
@@ -16,6 +11,10 @@ use url::Url;
 use crate::{
     clash::try_parse_clash_subscription,
     constants::SUPPORTED_URI_SCHEMES,
+    convert::{
+        decode_base64_to_string, parse_host_port as shared_parse_host_port, percent_decode,
+        query_pairs, split_once,
+    },
     model::{Candidate, Endpoint},
 };
 
@@ -186,7 +185,7 @@ fn parse_vmess(uri: &str) -> Result<ParsedLink> {
         let name = json
             .get("ps")
             .and_then(JsonValue::as_str)
-            .map(clean_name)
+            .map(percent_decode)
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| format!("{host}:{port}"));
 
@@ -220,7 +219,7 @@ fn parse_standard_uri(uri: &str) -> Result<ParsedLink> {
     .to_string();
     let name = url
         .fragment()
-        .map(clean_name)
+        .map(percent_decode)
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| format!("{host}:{port}"));
 
@@ -247,9 +246,9 @@ fn parse_shadowsocks(uri: &str) -> Result<ParsedLink> {
     let endpoint_part = authority
         .rsplit_once('@')
         .map_or(authority.as_str(), |(_, endpoint)| endpoint);
-    let (host, port) = parse_host_port(endpoint_part)?;
+    let (host, port) = shared_parse_host_port(endpoint_part)?;
     let name = fragment
-        .map(clean_name)
+        .map(percent_decode)
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| format!("{host}:{port}"));
 
@@ -295,39 +294,11 @@ fn extract_ssr_remarks(query: &str) -> Option<String> {
         if key == "remarks" {
             return value
                 .and_then(decode_base64_to_string)
-                .map(|text| clean_name(&text));
+                .map(|text| percent_decode(&text));
         }
     }
 
     None
-}
-
-fn parse_host_port(value: &str) -> Result<(String, u16)> {
-    let value = value.trim();
-    if let Some(rest) = value.strip_prefix('[') {
-        let (host, tail) = rest
-            .split_once(']')
-            .ok_or_else(|| anyhow!("invalid IPv6 endpoint"))?;
-        let port = tail
-            .strip_prefix(':')
-            .and_then(|port| port.parse::<u16>().ok())
-            .ok_or_else(|| anyhow!("endpoint has no port"))?;
-        return Ok((host.to_string(), port));
-    }
-
-    let (host, port) = value
-        .rsplit_once(':')
-        .ok_or_else(|| anyhow!("endpoint has no port"))?;
-    let port = port
-        .parse::<u16>()
-        .map_err(|_| anyhow!("invalid endpoint port"))?;
-    Ok((host.to_string(), port))
-}
-
-fn split_once(value: &str, delimiter: char) -> (&str, Option<&str>) {
-    value
-        .split_once(delimiter)
-        .map_or((value, None), |(left, right)| (left, Some(right)))
 }
 
 fn json_value_to_u16(value: &JsonValue) -> Option<u16> {
@@ -335,48 +306,6 @@ fn json_value_to_u16(value: &JsonValue) -> Option<u16> {
         .as_u64()
         .and_then(|value| u16::try_from(value).ok())
         .or_else(|| value.as_str().and_then(|value| value.parse::<u16>().ok()))
-}
-
-fn decode_base64_to_string(value: &str) -> Option<String> {
-    let decoded = decode_base64(value.trim())?;
-    String::from_utf8(decoded).ok()
-}
-
-fn decode_base64(value: &str) -> Option<Vec<u8>> {
-    let normalized = value.trim().replace(['\r', '\n'], "");
-    if normalized.is_empty() {
-        return None;
-    }
-
-    for engine in [&STANDARD, &URL_SAFE, &STANDARD_NO_PAD, &URL_SAFE_NO_PAD] {
-        if let Ok(decoded) = engine.decode(normalized.as_bytes()) {
-            return Some(decoded);
-        }
-    }
-
-    let padded = pad_base64(&normalized);
-    for engine in [&STANDARD, &URL_SAFE] {
-        if let Ok(decoded) = engine.decode(padded.as_bytes()) {
-            return Some(decoded);
-        }
-    }
-
-    None
-}
-
-fn pad_base64(value: &str) -> String {
-    let mut padded = value.to_string();
-    while !padded.len().is_multiple_of(4) {
-        padded.push('=');
-    }
-    padded
-}
-
-fn clean_name(value: &str) -> String {
-    percent_decode_str(value)
-        .decode_utf8_lossy()
-        .trim()
-        .to_string()
 }
 
 fn hash_uri(uri: &str) -> String {
@@ -476,12 +405,6 @@ fn query_dedup_parts(query: &str, default_tls: bool) -> (String, String) {
     (transport, tls)
 }
 
-fn query_pairs(query: &str) -> std::collections::BTreeMap<String, String> {
-    url::form_urlencoded::parse(query.as_bytes())
-        .map(|(key, value)| (key.to_string(), value.to_string()))
-        .collect()
-}
-
 fn normalize_transport(value: &str) -> String {
     match value.trim().to_ascii_lowercase().as_str() {
         "" | "tcp" => "tcp".to_string(),
@@ -512,7 +435,7 @@ fn protocol_defaults_to_tls(protocol: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::engine::general_purpose::STANDARD;
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
 
     #[test]
     fn parses_base64_vmess_subscription() {

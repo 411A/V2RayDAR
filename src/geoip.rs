@@ -43,16 +43,31 @@ pub fn lookup_country(ip: IpAddr) -> Option<String> {
         .map(ToString::to_string)
 }
 
-static GEOIP_READER: OnceLock<Option<Reader<Vec<u8>>>> = OnceLock::new();
+/// Reader that borrows either the embedded `&'static [u8]` or a file-backed `Vec<u8>`.
+/// The enum avoids heap-copying the 8.9MB embedded database on startup.
+enum GeoIpSource {
+    Embedded(&'static [u8]),
+    File(Vec<u8>),
+}
+
+impl AsRef<[u8]> for GeoIpSource {
+    fn as_ref(&self) -> &[u8] {
+        match self {
+            Self::Embedded(data) => data,
+            Self::File(data) => data,
+        }
+    }
+}
+
+static GEOIP_READER: OnceLock<Option<Reader<GeoIpSource>>> = OnceLock::new();
 
 /// Initialize the `GeoIP` database.
 ///
 /// Tries the embedded database first (zero-config). If a custom path
 /// is provided and the embedded database failed, falls back to file.
 pub fn init(custom_path: Option<&std::path::Path>) {
-    // Try embedded database first (copy to Vec for type consistency)
-    let embedded_owned = EMBEDDED_GEOIP.to_vec();
-    match Reader::from_source(embedded_owned) {
+    // Try embedded database first — zero-copy borrow of the static bytes
+    match Reader::from_source(GeoIpSource::Embedded(EMBEDDED_GEOIP)) {
         Ok(reader) => {
             info!("GeoIP database loaded (embedded)");
             let _ = GEOIP_READER.set(Some(reader));
@@ -66,8 +81,9 @@ pub fn init(custom_path: Option<&std::path::Path>) {
     // Fall back to file-based lookup
     if let Some(path) = custom_path
         && path.exists()
+        && let Ok(bytes) = std::fs::read(path)
     {
-        match Reader::open_readfile(path) {
+        match Reader::from_source(GeoIpSource::File(bytes)) {
             Ok(reader) => {
                 info!(geoip_path = %path.display(), "GeoIP database loaded (file)");
                 let _ = GEOIP_READER.set(Some(reader));

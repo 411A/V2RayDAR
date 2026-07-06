@@ -110,6 +110,15 @@ pub struct HitMap {
     pub main_rows: Vec<(usize, ratatui::layout::Rect)>,
     pub subscription_rows: Vec<(usize, ratatui::layout::Rect)>,
     pub config_rows: Vec<(usize, ratatui::layout::Rect)>,
+    pub logs_area: Option<ratatui::layout::Rect>,
+    pub found_area: Option<ratatui::layout::Rect>,
+    pub live_logs_area: Option<ratatui::layout::Rect>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ScrollState {
+    pub logs: usize,
+    pub found: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -130,6 +139,7 @@ pub struct TuiState {
     pub status: String,
     pub dirty: bool,
     pub hits: HitMap,
+    pub scroll: ScrollState,
 }
 
 impl TuiState {
@@ -152,6 +162,7 @@ impl TuiState {
             status: "Ready".to_string(),
             dirty: false,
             hits: HitMap::default(),
+            scroll: ScrollState::default(),
         }
     }
 

@@ -505,6 +505,7 @@ async fn probe_active_batched(
                 let batch_stop_policy = stop_policy.clone();
                 let mut batch_stop_state = ProbeStopState::new(&batch, &batch_stop_policy);
                 let outcome = probe_active_batch_with_fallback(
+                    batch_index,
                     batch,
                     config,
                     progress.as_ref(),
@@ -990,7 +991,9 @@ struct BatchProbeOutcome {
     stats: BatchProbeStats,
 }
 
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 async fn probe_active_batch_with_fallback(
+    batch_index: usize,
     batch: Vec<PreparedActiveCandidate>,
     config: &ProbeConfig,
     progress: Option<&UnboundedSender<ProgressEvent>>,
@@ -1009,6 +1012,7 @@ async fn probe_active_batch_with_fallback(
         }
         let batch_len = batch.len();
         match probe_active_batch(
+            batch_index,
             batch,
             config,
             progress,
@@ -1040,7 +1044,7 @@ async fn probe_active_batch_with_fallback(
                     send_progress(
                         progress,
                         format!(
-                            "sing-box rejected one generated test config; retrying {} remaining definitions",
+                            "Batch {batch_index}: sing-box rejected one generated test config; retrying {} remaining definitions",
                             failure.entries.len()
                         ),
                     );
@@ -1059,7 +1063,7 @@ async fn probe_active_batch_with_fallback(
                     send_progress(
                         progress,
                         format!(
-                            "Batch could not start cleanly; splitting {} server definitions and retrying",
+                            "Batch {batch_index}: could not start cleanly; splitting {} server definitions and retrying",
                             failure.entries.len()
                         ),
                     );
@@ -1073,7 +1077,10 @@ async fn probe_active_batch_with_fallback(
                         error = %error,
                         "active probe batch failed"
                     );
-                    send_progress(progress, format!("Active probe batch failed: {error}"));
+                    send_progress(
+                        progress,
+                        format!("Batch {batch_index}: probe failed: {error}"),
+                    );
                     let failed_count = candidate_count(&failure.entries);
                     stats.failed_candidates = stats.failed_candidates.saturating_add(failed_count);
                     send_probe_delta(progress, failed_count, 0);
@@ -1102,6 +1109,7 @@ async fn probe_active_batch_with_fallback(
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 async fn probe_active_batch(
+    batch_index: usize,
     entries: Vec<PreparedActiveCandidate>,
     config: &ProbeConfig,
     progress: Option<&UnboundedSender<ProgressEvent>>,
@@ -1126,7 +1134,7 @@ async fn probe_active_batch(
     let entry_candidates = candidate_count(&entries);
     send_progress(
         progress,
-        format!("Starting sing-box test process for {entry_candidates} configs"),
+        format!("Batch {batch_index}: starting sing-box test for {entry_candidates} configs"),
     );
     let reservations = match reserve_local_ports(entries.len()).await {
         Ok(reservations) => reservations,
@@ -1220,7 +1228,7 @@ async fn probe_active_batch(
         );
         send_progress(
             progress,
-            format!("sing-box test process was not ready: {err}"),
+            format!("Batch {batch_index}: sing-box test process was not ready: {err}"),
         );
         return Err(BatchProbeFailure::retryable(entries, err));
     }
@@ -1272,7 +1280,7 @@ async fn probe_active_batch(
             send_progress(
                 progress,
                 format!(
-                    "Batch progress: {}/{} configs checked, {} working",
+                    "Batch {batch_index}: {}/{} configs checked, {} working",
                     ranked.len(),
                     total_candidates,
                     ranked.iter().filter(|item| item.reachable).count()

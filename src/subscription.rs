@@ -217,7 +217,7 @@ where
                 send_progress(
                     context.progress.as_ref(),
                     format!(
-                        "Subscription parsed: {new_unique} unique configs from {parsed} fetched links",
+                        "Subscription parsed: {new_unique} unique configs from {parsed} entries",
                     ),
                 );
                 send_fetched_delta(context.progress.as_ref(), unique_count);

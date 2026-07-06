@@ -1776,21 +1776,18 @@ async fn write_sing_box_outbound_config(outbounds: &[Value], ports: &[u16]) -> R
             "servers": [
                 {
                     "tag": "dns-direct",
-                    "address": "8.8.8.8",
-                    "strategy": "prefer_ipv4",
-                    "detour": "direct-out"
+                    "type": "udp",
+                    "server": "8.8.8.8"
                 },
                 {
                     "tag": "dns-fallback",
-                    "address": "1.1.1.1",
-                    "strategy": "prefer_ipv4",
-                    "detour": "direct-out"
+                    "type": "udp",
+                    "server": "1.1.1.1"
                 },
                 {
                     "tag": "dns-alternative",
-                    "address": "223.5.5.5",
-                    "strategy": "prefer_ipv4",
-                    "detour": "direct-out"
+                    "type": "udp",
+                    "server": "223.5.5.5"
                 }
             ]
         },

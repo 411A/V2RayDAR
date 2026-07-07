@@ -40,7 +40,7 @@
 ## &#x200F;🖥️ پیش‌نمایش TUI ویندوز
 
 <p align="center">
-  <img src="../assets/Windows_TUI_v0.2.3.png" alt="Windows TUI" width="100%">
+  <img src="../assets/Windows_TUI_v0.5.1.png" alt="Windows TUI" width="100%">
 </p>
 
 ## &#x200F;🤔 چرا V2RayDAR

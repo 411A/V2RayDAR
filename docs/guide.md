@@ -427,6 +427,38 @@ If `sharing.token: true` is configured, V2RayDAR generates a URL-safe token and 
 
 Token checks apply only to LAN requests. Local requests from `127.0.0.1` are allowed even when token protection is enabled.
 
+#### Proxy settings
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `proxy.enabled` | Boolean | `false` | Starts a persistent `sing-box` process with the best-ranked config, exposing a mixed SOCKS5/HTTP proxy on `proxy.port`. |
+| `proxy.port` | Integer | `27910` | Port for the mixed SOCKS5/HTTP proxy. Must not equal `bind` port. |
+| `proxy.discoverable` | Boolean | `false` | Binds to `0.0.0.0` instead of `127.0.0.1` and adds a firewall rule for LAN access. |
+| `proxy.health_check_url` | String | `https://www.gstatic.com/generate_204` | URL tested through the proxy to verify it's alive. |
+| `proxy.health_check_interval_seconds` | Integer | `60` | Seconds between proxy health checks. On failure, auto-failovers to the next ranked config. |
+
+When `proxy.discoverable: true`, other devices on the same LAN can use the proxy. Replace `YOUR_LAN_IP` with the actual LAN IP shown in the TUI's **Current Configuration** panel under **Network**, and open the URL on your phone:
+
+```
+https://t.me/socks?server=YOUR_LAN_IP&port=27910
+```
+
+For example, if the TUI shows `192.168.1.2`:
+```
+https://t.me/socks?server=192.168.1.2&port=27910
+```
+
+Proxy example:
+
+```yaml
+proxy:
+  enabled: true
+  port: 27910
+  discoverable: true
+  health_check_url: https://www.gstatic.com/generate_204
+  health_check_interval_seconds: 60
+```
+
 Token-protected LAN example:
 
 ```yaml

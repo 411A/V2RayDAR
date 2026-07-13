@@ -34,7 +34,7 @@
 ## 🖥️ Предпросмотр TUI в Windows
 
 <p align="center">
-  <img src="../assets/Windows_TUI_v0.5.1.png" alt="Windows TUI" width="100%">
+  <img src="../assets/Windows_TUI_v0.5.2.png" alt="Windows TUI" width="100%">
 </p>
 
 ## 🤔 Почему V2RayDAR
@@ -151,6 +151,11 @@ Windows-пользователи заменяют `v2raydar` на `v2raydar.exe`
 | `sharing.enabled` | `false` | Разрешает клиентам LAN доступ к эндпоинтам. |
 | `sharing.require_token` | `false` | Запросы LAN требуют `?token=...`. |
 | `sharing.token` | `null` | Пусто = отключён, `true` = авто-генерация, строка = указанное значение. |
+| `proxy.enabled` | `false` | Запускает постоянный процесс SOCKS5/HTTP прокси через `sing-box`. |
+| `proxy.port` | `27910` | Порт смешанного SOCKS5/HTTP прокси. |
+| `proxy.discoverable` | `false` | Привязывается к `0.0.0.0` и добавляет правило файрвола для доступа по LAN. |
+| `proxy.health_check_url` | `https://www.gstatic.com/generate_204` | URL для проверки работоспособности прокси. |
+| `proxy.health_check_interval_seconds` | `60` | Секунды между проверками работоспособности. Автопереключение при сбое. |
 | `probe.mode` | `active` | `active` использует `sing-box`; `tcp` только для диагностики. |
 | `probe.sing_box_path` | `null` | Необязательный путь к `sing-box`. Для десктопных сборок `_with_singbox` или пакета Termux оставьте `null`. |
 | `probe.connect_timeout_ms` | `5000` | Таймаут TCP-подключения в диагностическом режиме. |
@@ -179,6 +184,44 @@ Windows-пользователи заменяют `v2raydar` на `v2raydar.exe`
 - **v2rayNG / телефон в той же Wi-Fi** — привяжитесь к LAN-IP ПК (например, `192.168.1.23:27141`), включите `sharing.enabled`, затем используйте `http://192.168.1.23:27141/subscription` на телефоне. Сначала проверьте `/health` с телефона.
 
 Подробное руководство по настройке клиентов, защите токеном и файрволу для каждой ОС см. в [руководстве разработчика](guide.md).
+
+### 📱 Постоянный прокси для трафика приложений
+
+V2RayDAR может запускать постоянный SOCKS5/HTTP прокси рядом с эндпоинтом подписки. Любое приложение на системе — Telegram, браузеры, curl, Python — может маршрутизировать трафик через него без отдельного VPN-клиента.
+
+**Включите в `configs.yaml`:**
+```yaml
+proxy:
+  enabled: true
+  port: 27910
+  discoverable: false   # true = доступ по LAN + правило файрвола
+```
+
+**Локальное использование (на устройстве с V2RayDAR):**
+```bash
+curl --socks5 127.0.0.1:27910 https://api.ipify.org
+```
+
+**Использование по LAN (телефон в той же Wi-Fi):**
+1. Установите `proxy.discoverable: true` — V2RayDAR добавит правило файрвола и привяжется к `0.0.0.0`.
+2. Найдите LAN IP устройства с V2RayDAR в панели TUI в разделе **Network** (или выполните `ipconfig` / `ip addr`). Например `192.168.1.2`.
+3. **Telegram:** замените `YOUR_LAN_IP` на ваш реальный LAN IP и откройте этот URL на телефоне:
+
+   ```
+   https://t.me/socks?server=YOUR_LAN_IP&port=27910
+   ```
+
+   Например, если ваш LAN IP — `192.168.1.2`:
+   ```
+   https://t.me/socks?server=192.168.1.2&port=27910
+   ```
+
+   Или вручную: Telegram → Настройки → Данные и память → Настройки прокси → Добавить прокси:
+   - Тип: **SOCKS5** или **HTTP**
+   - Хост: `YOUR_LAN_IP` (IP, отображаемый в панели TUI)
+   - Порт: `27910`
+
+4. **Глобально на Android:** Настройки → WiFi → долгое нажатие на сеть → Изменить → Дополнительно → Прокси → Вручную → Сервер: `YOUR_LAN_IP`, Порт: `27910`.
 
 ## 🤝 Участие
 

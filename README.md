@@ -34,7 +34,7 @@
 ## 🖥️ Windows TUI Preview
 
 <p align="center">
-  <img src="assets/Windows_TUI_v0.5.1.png" alt="Windows TUI" width="100%">
+  <img src="assets/Windows_TUI_v0.5.2.png" alt="Windows TUI" width="100%">
 </p>
 
 ## 🤔 Why V2RayDAR
@@ -46,6 +46,8 @@
 - Validates each candidate through your current network with `sing-box` (it actually loads a test URL through the proxy).
 - **Dual-format output** — serves working configs as V2Ray share-links (`/subscription`) **and** as full Mihomo YAML configs (`/mihomo.yaml`), so any client can use them.
 - Re-exposes the top working configs at a local URL so any compatible client just sees one always-fresh subscription.
+- **Persistent HTTP/SOCKS5 proxy** — keeps a `sing-box` process running with the best config, exposing a local proxy port any app can use. Enable `proxy.enabled` in `configs.yaml` and point Telegram, browsers, or any app at `127.0.0.1:27910`.
+- **LAN proxy sharing** — set `proxy.discoverable: true` to bind `0.0.0.0` and add firewall rules, so every phone on your Wi-Fi can use the proxy. Telegram one-tap setup: `https://t.me/socks?server=192.168.1.2&port=27910`.
 - Survives restricted networks via previously-probed configs in the database, an in-network bridge config, or an `emergency_config`.
 - Optional LAN sharing with optional token protection, so the phone in your pocket can use the same feed.
 
@@ -151,6 +153,11 @@ Windows users replace `v2raydar` with `v2raydar.exe`. On macOS open the bundled 
 | `sharing.enabled` | `false` | Lets LAN clients read the endpoints. |
 | `sharing.require_token` | `false` | Requires `?token=...` for LAN requests. |
 | `sharing.token` | `null` | Leave empty, set `true` to auto-generate, or supply a string. |
+| `proxy.enabled` | `false` | Starts a persistent `sing-box` process exposing a mixed SOCKS5/HTTP proxy. |
+| `proxy.port` | `27910` | Port for the mixed SOCKS5/HTTP proxy. |
+| `proxy.discoverable` | `false` | Binds to `0.0.0.0` and adds a firewall rule for LAN access. |
+| `proxy.health_check_url` | `https://www.gstatic.com/generate_204` | URL tested through the proxy to verify it's alive. |
+| `proxy.health_check_interval_seconds` | `60` | Seconds between proxy health checks. Auto-failover on failure. |
 | `probe.mode` | `active` | `active` uses `sing-box`; `tcp` is diagnostic only. |
 | `probe.sing_box_path` | `null` | Optional path to `sing-box`. Leave `null` for desktop `_with_singbox` builds or Termux's package path. |
 | `probe.connect_timeout_ms` | `5000` | TCP connect timeout for diagnostic probing. |
@@ -179,6 +186,50 @@ Windows users replace `v2raydar` with `v2raydar.exe`. On macOS open the bundled 
 - **v2rayNG / phone on the same Wi-Fi** — bind to the PC's LAN IP (e.g. `192.168.1.23:27141`), turn on `sharing.enabled`, then use `http://192.168.1.23:27141/subscription` on the phone. Visit `/health` from the phone first to confirm reachability.
 
 Full client walkthroughs, token-protected sharing, and OS-specific firewall details are in the [detailed guide](docs/guide.md).
+
+### 📱 Persistent proxy for app traffic
+
+V2RayDAR can run a persistent SOCKS5/HTTP proxy alongside the subscription endpoint. Any app on the system — Telegram, browsers, curl, Python — can route traffic through it without a separate VPN client.
+
+**Enable in `configs.yaml`:**
+```yaml
+proxy:
+  enabled: true
+  port: 27910
+  discoverable: false   # true = LAN access + firewall rule
+```
+
+**Local usage (on the device running V2RayDAR):**
+```bash
+# SOCKS5
+curl --socks5 127.0.0.1:27910 https://api.ipify.org
+
+# HTTP
+curl --proxy http://127.0.0.1:27910 https://api.ipify.org
+```
+
+**LAN usage (phone on same Wi-Fi):**
+1. Set `proxy.discoverable: true` — V2RayDAR adds a firewall rule and binds to `0.0.0.0`.
+2. Find your PC's LAN IP in the TUI's **Current Configuration** panel under **Network** (or run `ipconfig` / `ip addr`). For example `192.168.1.2`.
+3. **Telegram:** replace `YOUR_LAN_IP` with your actual LAN IP and open this URL on your phone:
+
+   ```
+   https://t.me/socks?server=YOUR_LAN_IP&port=27910
+   ```
+
+   For example, if your LAN IP is `192.168.1.2`:
+   ```
+   https://t.me/socks?server=192.168.1.2&port=27910
+   ```
+
+   Or manually: Telegram → Settings → Data and Storage → Proxy Settings → Add Proxy:
+   - Type: **SOCKS5** or **HTTP**
+   - Host: `YOUR_LAN_IP` (the IP shown in V2RayDAR's TUI panel)
+   - Port: `27910`
+
+4. **System-wide on Android:** Settings → WiFi → long-press your network → Modify → Advanced → Proxy → Manual → Server: `YOUR_LAN_IP`, Port: `27910`.
+
+The proxy auto-failovers to the next best config when the current one fails, and switches to a better config on each refresh cycle.
 
 ## 🤝 Contributing
 

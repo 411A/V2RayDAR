@@ -34,7 +34,7 @@
 ## 🖥️ Windows TUI 预览
 
 <p align="center">
-  <img src="../assets/Windows_TUI_v0.5.1.png" alt="Windows TUI" width="100%">
+  <img src="../assets/Windows_TUI_v0.5.2.png" alt="Windows TUI" width="100%">
 </p>
 
 ## 🤔 为什么选择 V2RayDAR
@@ -151,6 +151,11 @@ Windows 用户将 `v2raydar` 替换为 `v2raydar.exe`。macOS 上首次打开捆
 | `sharing.enabled` | `false` | 允许局域网客户端访问端点。 |
 | `sharing.require_token` | `false` | 局域网请求需要 `?token=...`。 |
 | `sharing.token` | `null` | 留空则禁用，设为 `true` 自动生成，或提供字符串。 |
+| `proxy.enabled` | `false` | 启动持久的 SOCKS5/HTTP 代理进程。 |
+| `proxy.port` | `27910` | 混合 SOCKS5/HTTP 代理端口。 |
+| `proxy.discoverable` | `false` | 绑定到 0.0.0.0 并添加防火墙规则以允许局域网访问。 |
+| `proxy.health_check_url` | `https://www.gstatic.com/generate_204` | 通过代理测试的健康检查 URL。 |
+| `proxy.health_check_interval_seconds` | `60` | 代理健康检查间隔（秒）。故障时自动切换。 |
 | `probe.mode` | `active` | `active` 使用 `sing-box`；`tcp` 仅用于诊断。 |
 | `probe.sing_box_path` | `null` | 可选的 `sing-box` 路径。桌面 `_with_singbox` 构建或 Termux 包路径可设为 `null`。 |
 | `probe.connect_timeout_ms` | `5000` | 诊断探测的 TCP 连接超时。 |
@@ -179,6 +184,44 @@ Windows 用户将 `v2raydar` 替换为 `v2raydar.exe`。macOS 上首次打开捆
 - **v2rayNG / 同一 Wi-Fi 的手机** — 绑定到电脑的局域网 IP（如 `192.168.1.23:27141`），开启 `sharing.enabled`，然后在手机上使用 `http://192.168.1.23:27141/subscription`。先从手机访问 `/health` 确认可达性。
 
 完整的客户端配置指南、令牌保护共享和操作系统特定防火墙详情请参阅 [开发者指南](guide.md)。
+
+### 📱 用于应用流量的持久代理
+
+V2RayDAR 可以在订阅端点旁边运行一个持久的 SOCKS5/HTTP 代理。系统上的任何应用 — Telegram、浏览器、curl、Python — 都可以通过它路由流量，无需单独的 VPN 客户端。
+
+**在 `configs.yaml` 中启用：**
+```yaml
+proxy:
+  enabled: true
+  port: 27910
+  discoverable: false   # true = 局域网访问 + 防火墙规则
+```
+
+**本地使用（在运行 V2RayDAR 的设备上）：**
+```bash
+curl --socks5 127.0.0.1:27910 https://api.ipify.org
+```
+
+**局域网使用（同一 Wi-Fi 的手机）：**
+1. 设置 `proxy.discoverable: true` — V2RayDAR 会添加防火墙规则并绑定到 `0.0.0.0`。
+2. 在 TUI 的 **Current Configuration** 面板 **Network** 部分找到电脑的局域网 IP（或运行 `ipconfig` / `ip addr`）。例如 `192.168.1.2`。
+3. **Telegram：** 将 `YOUR_LAN_IP` 替换为你的实际局域网 IP，在手机上打开此 URL：
+
+   ```
+   https://t.me/socks?server=YOUR_LAN_IP&port=27910
+   ```
+
+   例如，如果你的局域网 IP 是 `192.168.1.2`：
+   ```
+   https://t.me/socks?server=192.168.1.2&port=27910
+   ```
+
+   或手动：Telegram → 设置 → 数据和存储 → 代理设置 → 添加代理：
+   - 类型：**SOCKS5** 或 **HTTP**
+   - 主机：`YOUR_LAN_IP`（V2RayDAR TUI 面板中显示的 IP）
+   - 端口：`27910`
+
+4. **Android 全局代理：** 设置 → WiFi → 长按网络 → 修改 → 高级 → 代理 → 手动 → 服务器：`YOUR_LAN_IP`，端口：`27910`。
 
 ## 🤝 贡献
 

@@ -34,7 +34,7 @@
 ## 🖥️ Aperçu TUI Windows
 
 <p align="center">
-  <img src="../assets/Windows_TUI_v0.5.1.png" alt="Windows TUI" width="100%">
+  <img src="../assets/Windows_TUI_v0.5.2.png" alt="Windows TUI" width="100%">
 </p>
 
 ## 🤔 Pourquoi V2RayDAR
@@ -151,6 +151,11 @@ Les utilisateurs Windows remplacent `v2raydar` par `v2raydar.exe`. Sous macOS, o
 | `sharing.enabled` | `false` | Autorise les clients LAN à accéder aux endpoints. |
 | `sharing.require_token` | `false` | Les requêtes LAN nécessitent `?token=...`. |
 | `sharing.token` | `null` | Vide = désactivé, `true` = génération automatique, chaîne = valeur exacte. |
+| `proxy.enabled` | `false` | Démarre un processus SOCKS5/HTTP persistant via `sing-box`. |
+| `proxy.port` | `27910` | Port du proxy mixte SOCKS5/HTTP. |
+| `proxy.discoverable` | `false` | Lie sur `0.0.0.0` et ajoute une règle de pare-feu pour l'accès LAN. |
+| `proxy.health_check_url` | `https://www.gstatic.com/generate_204` | URL testée via le proxy pour vérifier son état. |
+| `proxy.health_check_interval_seconds` | `60` | Secondes entre les vérifications de santé. Bascul automatique en cas d'échec. |
 | `probe.mode` | `active` | `active` utilise `sing-box` ; `tcp` est uniquement diagnostique. |
 | `probe.sing_box_path` | `null` | Chemin optionnel vers `sing-box`. Laissez `null` pour les builds `_with_singbox` ou le chemin du package Termux. |
 | `probe.connect_timeout_ms` | `5000` | Délai de connexion TCP en mode diagnostique. |
@@ -179,6 +184,44 @@ Les utilisateurs Windows remplacent `v2raydar` par `v2raydar.exe`. Sous macOS, o
 - **v2rayNG / téléphone sur le même Wi-Fi** — liez-vous à l'IP LAN du PC (ex. `192.168.1.23:27141`), activez `sharing.enabled`, puis utilisez `http://192.168.1.23:27141/subscription` sur le téléphone. Vérifiez d'abord `/health` depuis le téléphone.
 
 Le guide complet de configuration des clients, le partage protégé par token et les détails de pare-feu par OS sont dans le [guide développeur](guide.md).
+
+### 📱 Proxy persistant pour le trafic des applications
+
+V2RayDAR peut exécuter un proxy SOCKS5/HTTP persistant à côté de l'endpoint d'abonnement. Toute application sur le système — Telegram, navigateurs, curl, Python — peut y router son trafic sans client VPN séparé.
+
+**Activer dans `configs.yaml` :**
+```yaml
+proxy:
+  enabled: true
+  port: 27910
+  discoverable: false   # true = accès LAN + règle de pare-feu
+```
+
+**Usage local (sur l'appareil exécutant V2RayDAR) :**
+```bash
+curl --socks5 127.0.0.1:27910 https://api.ipify.org
+```
+
+**Usage LAN (téléphone sur le même Wi-Fi) :**
+1. Réglez `proxy.discoverable: true` — V2RayDAR ajoutera une règle de pare-feu et écoutera sur `0.0.0.0`.
+2. Trouvez l'IP LAN de l'appareil exécutant V2RayDAR dans le panneau TUI sous **Network** (ou exécutez `ipconfig` / `ip addr`). Par exemple `192.168.1.2`.
+3. **Telegram :** remplacez `YOUR_LAN_IP` par votre vraie IP LAN et ouvrez cette URL sur le téléphone :
+
+   ```
+   https://t.me/socks?server=YOUR_LAN_IP&port=27910
+   ```
+
+   Par exemple, si votre IP LAN est `192.168.1.2` :
+   ```
+   https://t.me/socks?server=192.168.1.2&port=27910
+   ```
+
+   Ou manuellement : Telegram → Paramètres → Données et stockage → Paramètres du proxy → Ajouter un proxy :
+   - Type : **SOCKS5** ou **HTTP**
+   - Host : `YOUR_LAN_IP` (l'IP affichée dans le panneau TUI de V2RayDAR)
+   - Port : `27910`
+
+4. **Globalement sur Android :** Paramètres → WiFi → appui long sur le réseau → Modifier → Avancé → Proxy → Manuel → Serveur : `YOUR_LAN_IP`, Port : `27910`.
 
 ## 🤝 Contribuer
 

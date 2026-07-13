@@ -40,7 +40,7 @@
 ## &#x200F;🖥️ پیش‌نمایش TUI ویندوز
 
 <p align="center">
-  <img src="../assets/Windows_TUI_v0.5.1.png" alt="Windows TUI" width="100%">
+  <img src="../assets/Windows_TUI_v0.5.2.png" alt="Windows TUI" width="100%">
 </p>
 
 ## &#x200F;🤔 چرا V2RayDAR
@@ -188,6 +188,11 @@ v2raydar --uninstall    # حذف داده‌های برنامه و قوانین 
 | <code>sharing.enabled</code> | <code>false</code> | &#x200F;اشتراک‌گذاری LAN |
 | <code>sharing.require_token</code> | <code>false</code> | &#x200F;نیاز به توکن برای LAN |
 | <code>sharing.token</code> | <code>null</code> | &#x200F;توکن اشتراک‌گذاری |
+| <code>proxy.enabled</code> | <code>false</code> | &#x200F;شروع پروکسی SOCKS5/HTTP پایدار |
+| <code>proxy.port</code> | <code>27910</code> | &#x200F;پورت پروکسی مختلط SOCKS5/HTTP |
+| <code>proxy.discoverable</code> | <code>false</code> | &#x200F;اتصال به 0.0.0.0 و قانون فایروال برای LAN |
+| <code>proxy.health_check_url</code> | <code>https://www.gstatic.com/generate_204</code> | &#x200F;URL تست سلامت پروکسی |
+| <code>proxy.health_check_interval_seconds</code> | <code>60</code> | &#x200F; ثانیه بین بررسی‌های سلامت |
 | <code>probe.mode</code> | <code>active</code> | &#x200F;حالت بررسی |
 | <code>probe.sing_box_path</code> | <code>null</code> | &#x200F;مسیر sing-box |
 | <code>probe.connect_timeout_ms</code> | <code>5000</code> | &#x200F;زمان اتصال TCP |
@@ -218,6 +223,44 @@ v2raydar --uninstall    # حذف داده‌های برنامه و قوانین 
 - &#x200F;<strong>v2rayNG / گوشی در همان Wi-Fi</strong> — به IP LAN رایانه (مثلاً <code>192.168.1.23:27141</code>) متصل شوید، <code>sharing.enabled</code> &#x200F;را فعال کرده و سپس در گوشی از <code>http://192.168.1.23:27141/subscription</code> &#x200F;استفاده کنید. ابتدا از گوشی <code>/health</code> &#x200F;را بررسی کنید.
 
 &#x200F;راهنمای کامل نصب کلاینت، اشتراک‌گذاری با محافظت توکن و جزئیات فایروال هر سیستم‌عامل در <a href="guide.md">راهنمای توسعه‌دهندگان</a> موجود است.
+
+### &#x200F;📱 پروکسی پایدار برای ترافیک برنامه‌ها
+
+V2RayDAR می‌تواند یک پروکسی SOCKS5/HTTP پایدار در کنار endpoint اشتراک اجرا کند. هر برنامه‌ای روی سیستم — تلگرام، مرورگرها، curl، Python — می‌تواند ترافیک را از طریق آن مسیریابی کند.
+
+**فعال‌سازی در `configs.yaml`:**
+```yaml
+proxy:
+  enabled: true
+  port: 27910
+  discoverable: false   # true = دسترسی LAN + قانون فایروال
+```
+
+**استفاده محلی (روی دستگاه اجراکنندهی V2RayDAR):**
+```bash
+curl --socks5 127.0.0.1:27910 https://api.ipify.org
+```
+
+**استفاده LAN (گوشی در همان Wi-Fi):**
+1. `proxy.discoverable: true` را تنظیم کنید — V2RayDAR قانون فایروال اضافه کرده و به `0.0.0.0` متصل می‌شود.
+2. IP LAN دستگاه اجراکنندهی V2RayDAR را از پنل TUI در بخش **Network** پیدا کنید (یا `ipconfig` / `ip addr` اجرا کنید). به عنوان مثال `192.168.1.2`.
+3. **تلگرام:** `YOUR_LAN_IP` را با IP LAN واقعی خود جایگزین کنید و این URL را روی گوشی باز کنید:
+
+   ```
+   https://t.me/socks?server=YOUR_LAN_IP&port=27910
+   ```
+
+   به عنوان مثال، اگر IP LAN شما `192.168.1.2` باشد:
+   ```
+   https://t.me/socks?server=192.168.1.2&port=27910
+   ```
+
+   یا دستی: تلگرام → تنظیمات → داده و ذخیره‌سازی → تنظیمات پروکسی → افزودن پروکسی:
+   - نوع: **SOCKS5** یا **HTTP**
+   - میزبان: `YOUR_LAN_IP` (آیپی نشان داده شده در پنل TUI)
+   - پورت: `27910`
+
+پروکسی به صورت خودکار به بهترین پیکربندی بعدی سوئیچ می‌کند.
 
 ## &#x200F;🤝 مشارکت
 

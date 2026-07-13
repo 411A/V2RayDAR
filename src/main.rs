@@ -1118,10 +1118,10 @@ async fn refresh_once(
         .tested_candidates
         .saturating_sub(runtime.reachable_candidates);
     let summary = format!(
-        "Started {}, End: {} (Took {}), {} Fetched, {} Failed, {} Working.",
+        "{} → {} ({}) · {} fetched, {} failed, {} working",
         started_at.with_timezone(&Local).format("%H:%M:%S"),
         finished_at.with_timezone(&Local).format("%H:%M:%S"),
-        format_minutes_seconds(runtime.refresh_duration_ms.unwrap_or_default()),
+        format_duration_short(runtime.refresh_duration_ms.unwrap_or_default()),
         runtime.total_candidates,
         failed_count,
         runtime.reachable_candidates
@@ -1621,13 +1621,6 @@ fn format_duration_short(ms: u128) -> String {
     let minutes = seconds / 60;
     let seconds = seconds % 60;
     format!("{minutes}m {seconds}s")
-}
-
-fn format_minutes_seconds(ms: u128) -> String {
-    let total_seconds = millis_to_seconds(ms);
-    let minutes = total_seconds / 60;
-    let seconds = total_seconds % 60;
-    format!("{minutes:02}:{seconds:02} minutes")
 }
 
 fn millis_to_seconds(ms: u128) -> u64 {

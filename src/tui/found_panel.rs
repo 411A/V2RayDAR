@@ -136,8 +136,10 @@ fn truncate(value: &str, width: usize) -> std::borrow::Cow<'_, str> {
     if value.len() <= width {
         std::borrow::Cow::Borrowed(value)
     } else if width > 1 {
-        std::borrow::Cow::Owned(format!("{}~", &value[..width - 1]))
+        let truncated: String = value.chars().take(width.saturating_sub(1)).collect();
+        std::borrow::Cow::Owned(format!("{truncated}~"))
     } else {
-        std::borrow::Cow::Borrowed(&value[..1])
+        let first: String = value.chars().take(1).collect();
+        std::borrow::Cow::Owned(first)
     }
 }

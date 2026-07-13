@@ -1,3 +1,6 @@
+use std::time::Instant;
+
+use chrono::{DateTime, Utc};
 use ratatui::Frame;
 
 use crate::{model::RuntimeConfig, paths::AppPaths};
@@ -15,6 +18,8 @@ pub fn draw(
     runtime: &RuntimeView,
     runtime_config: &RuntimeConfig,
     paths: &AppPaths,
+    instant_now: Instant,
+    utc_now: DateTime<Utc>,
 ) {
     state.hits = HitMap::default();
     let areas = layout::main(
@@ -23,7 +28,15 @@ pub fn draw(
     );
 
     if !areas.top.is_empty() {
-        top::draw(frame, areas.top, runtime, runtime_config, state.started_at);
+        top::draw(
+            frame,
+            areas.top,
+            runtime,
+            runtime_config,
+            state.started_at,
+            instant_now,
+            utc_now,
+        );
     }
     if !areas.logs.is_empty() {
         state.hits.logs_area = Some(areas.logs);

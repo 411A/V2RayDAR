@@ -16,6 +16,9 @@ const EMBEDDED_GEOIP: &[u8] = include_bytes!("../data/GeoLite2-Country.mmdb");
 ///
 /// Uses Unicode Regional Indicator symbols: each ASCII letter maps to
 /// U+1F1E6 + (letter - 'A'). For example, "US" -> flag US, "JP" -> flag JP.
+///
+/// Requires a terminal that supports color emoji rendering (Windows Terminal,
+/// VS Code, Alacritty, `WezTerm`, etc.). Legacy conhost does not support these.
 pub fn country_flag(code: &str) -> String {
     let bytes = code.as_bytes();
     if bytes.len() != 2 || !bytes[0].is_ascii_alphabetic() || !bytes[1].is_ascii_alphabetic() {

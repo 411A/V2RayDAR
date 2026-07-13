@@ -13,22 +13,36 @@ use crate::model::RuntimeConfig;
 
 use super::{util::human_bytes, view::RuntimeView};
 
+// Fixed widths per value prevent the Paragraph trailing-space style boundary
+// from shifting when digits change, which is what causes terminal flicker.
+const W_RUNNING_FOR: usize = 8;
+const W_REFRESH: usize = 14;
+const W_LAST_SCAN: usize = 6;
+const W_FETCHED: usize = 6;
+const W_FAILED: usize = 6;
+const W_WORKING: usize = 6;
+const W_SUB_USAGE: usize = 10;
+const W_SPEEDTEST: usize = 10;
+
+#[allow(clippy::too_many_arguments)]
 pub fn draw(
     frame: &mut Frame<'_>,
     area: Rect,
     runtime: &RuntimeView,
     config: &RuntimeConfig,
     app_started_at: Instant,
+    instant_now: Instant,
+    utc_now: DateTime<Utc>,
 ) {
     if area.height == 0 || area.width == 0 {
         return;
     }
 
-    let now = Utc::now();
+    let elapsed = instant_now.saturating_duration_since(app_started_at);
     let failed = runtime
         .tested_candidates
         .saturating_sub(runtime.reachable_candidates);
-    let refresh = refresh_status(runtime, config.refresh_seconds, now);
+    let refresh = refresh_status(runtime, config.refresh_seconds, utc_now);
     let speedtest = if config.speedtest_enabled {
         human_bytes(runtime.speedtest_bytes)
     } else {
@@ -40,15 +54,37 @@ pub fn draw(
     let cells = [
         (
             "Running For",
-            format_duration_hms(app_started_at.elapsed().as_secs()),
+            format!(
+                "{:<w$}",
+                format_duration_hms(elapsed.as_secs()),
+                w = W_RUNNING_FOR
+            ),
         ),
-        ("Refresh", refresh),
-        ("Last Scan", scan_time),
-        ("Fetched", runtime.total_candidates.to_string()),
-        ("Failed", failed.to_string()),
-        ("Working", runtime.reachable_candidates.to_string()),
-        ("Sub Usage", human_bytes(runtime.fetch_bytes)),
-        ("Speedtest", speedtest),
+        ("Refresh", format!("{refresh:<W_REFRESH$}")),
+        ("Last Scan", format!("{scan_time:<W_LAST_SCAN$}")),
+        (
+            "Fetched",
+            format!(
+                "{runtime_fetched:<W_FETCHED$}",
+                runtime_fetched = runtime.total_candidates
+            ),
+        ),
+        ("Failed", format!("{failed:<W_FAILED$}")),
+        (
+            "Working",
+            format!(
+                "{runtime_working:<W_WORKING$}",
+                runtime_working = runtime.reachable_candidates
+            ),
+        ),
+        (
+            "Sub Usage",
+            format!(
+                "{sub_usage:<W_SUB_USAGE$}",
+                sub_usage = human_bytes(runtime.fetch_bytes)
+            ),
+        ),
+        ("Speedtest", format!("{speedtest:<W_SPEEDTEST$}")),
     ];
 
     if area.height >= 5 {

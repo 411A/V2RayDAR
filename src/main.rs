@@ -253,10 +253,23 @@ async fn main() -> Result<()> {
     }
 
     let shared_ranked: Arc<RwLock<Vec<RankedConfig>>> = Arc::new(RwLock::new(Vec::new()));
+    let (proxy_log_tx, mut proxy_log_rx) = mpsc::unbounded_channel::<ProgressEvent>();
     let shared = Arc::new(tokio::sync::Mutex::new(proxy::PersistentProxy::new(
         config.proxy.clone(),
         config.probe.sing_box_path.clone(),
+        Some(proxy_log_tx),
     )));
+
+    // Drain proxy log events into TUI live logs
+    {
+        let state = state.clone();
+        let previous_top_n = HashSet::new();
+        tokio::spawn(async move {
+            while let Some(event) = proxy_log_rx.recv().await {
+                push_tui_progress(&state, event, &previous_top_n).await;
+            }
+        });
+    }
 
     if config.proxy.enabled
         && config.proxy.discoverable
@@ -1306,24 +1319,25 @@ fn spawn_refresh_loop(
                 let config = config_rx.borrow().clone();
                 *runtime_config.write().await = RuntimeConfig::from(&config);
                 let fingerprint = RefreshFingerprint::from(&config);
-                if last_refresh_fingerprint.as_ref() == Some(&fingerprint) {
-                    continue;
-                }
-                last_refresh_fingerprint = Some(fingerprint);
-                if let Err(err) = refresh_once(
-                    &config,
-                    database.clone(),
-                    state.clone(),
-                    runtime_config.clone(),
-                    print_terminal_summary,
-                    print_compact_progress,
-                )
-                .await
-                {
-                    error!(error = %err, "refresh after config reload failed");
-                    record_refresh_error(&state, err.to_string()).await;
+                if last_refresh_fingerprint.as_ref() != Some(&fingerprint) {
+                    last_refresh_fingerprint = Some(fingerprint);
+                    if let Err(err) = refresh_once(
+                        &config,
+                        database.clone(),
+                        state.clone(),
+                        runtime_config.clone(),
+                        print_terminal_summary,
+                        print_compact_progress,
+                    )
+                    .await
+                    {
+                        error!(error = %err, "refresh after config reload failed");
+                        record_refresh_error(&state, err.to_string()).await;
+                    }
                 }
 
+                // Always update proxy on config change — even if the refresh
+                // fingerprint hasn't changed (e.g. proxy enable/disable).
                 update_proxy_and_ranked(&proxy, &shared_ranked, &state, &config).await;
 
                 continue;
@@ -1352,15 +1366,16 @@ fn spawn_refresh_loop(
                     let config = config_rx.borrow().clone();
                     *runtime_config.write().await = RuntimeConfig::from(&config);
                     let fingerprint = RefreshFingerprint::from(&config);
-                    if last_refresh_fingerprint.as_ref() == Some(&fingerprint) {
-                        continue;
-                    }
-                    last_refresh_fingerprint = Some(fingerprint);
-                    if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), print_terminal_summary, print_compact_progress).await {
-                        error!(error = %err, "refresh after config reload failed");
-                        record_refresh_error(&state, err.to_string()).await;
+                    if last_refresh_fingerprint.as_ref() != Some(&fingerprint) {
+                        last_refresh_fingerprint = Some(fingerprint);
+                        if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), print_terminal_summary, print_compact_progress).await {
+                            error!(error = %err, "refresh after config reload failed");
+                            record_refresh_error(&state, err.to_string()).await;
+                        }
                     }
 
+                    // Always update proxy on config change — even if the refresh
+                    // fingerprint hasn't changed (e.g. proxy enable/disable).
                     update_proxy_and_ranked(&proxy, &shared_ranked, &state, &config).await;
                 }
             }
@@ -1387,7 +1402,9 @@ async fn update_proxy_and_ranked(
     let snapshot = proxy.lock().await.snapshot().await;
     let mut runtime = state.write().await;
     runtime.proxy_running = snapshot.running;
-    runtime.proxy_active_config = snapshot.active_config;
+    runtime
+        .proxy_active_config
+        .clone_from(&snapshot.active_config);
     runtime.proxy_port = snapshot.port;
     runtime.proxy_discoverable = snapshot.discoverable;
 }

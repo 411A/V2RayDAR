@@ -336,9 +336,15 @@ fn activate_main(
             };
         }
         MainItem::Proxy => {
-            state.editable.proxy.discoverable = !state.editable.proxy.discoverable;
-            if state.editable.proxy.discoverable && !state.editable.proxy.enabled {
+            // Three-state cycle: disabled → enabled (local) → enabled (LAN) → disabled
+            if !state.editable.proxy.enabled {
                 state.editable.proxy.enabled = true;
+                state.editable.proxy.discoverable = false;
+            } else if !state.editable.proxy.discoverable {
+                state.editable.proxy.discoverable = true;
+            } else {
+                state.editable.proxy.enabled = false;
+                state.editable.proxy.discoverable = false;
             }
             state.dirty = true;
             super::util::save_config(&paths.config_path, &state.editable)?;

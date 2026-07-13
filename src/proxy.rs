@@ -20,13 +20,14 @@ use tracing::{error, info, warn};
 use crate::{
     config::ProxyConfig,
     constants::{
-        LOCALHOST_IP, PROXY_DNS_FALLBACK, PROXY_DNS_PRIMARY, PROXY_HEALTH_CHECK_TIMEOUT,
-        PROXY_MAX_CONSECUTIVE_FAILURES, PROXY_PORT_POLL_INTERVAL, PROXY_SING_BOX_TAG_DIRECT,
-        PROXY_SING_BOX_TAG_DNS_DIRECT, PROXY_SING_BOX_TAG_DNS_FALLBACK,
-        PROXY_SING_BOX_TAG_DNS_PROXY, PROXY_SING_BOX_TAG_INBOUND, PROXY_SING_BOX_TAG_OUTBOUND,
-        PROXY_STARTUP_TIMEOUT, SING_BOX_CLEANUP_TIMEOUT, SING_BOX_CONFIG_FILE_PREFIX,
+        LOCALHOST_IP, PROXY_DNS_FALLBACK, PROXY_DNS_PRIMARY, PROXY_FAILOVER_COOLDOWN,
+        PROXY_HEALTH_CHECK_TIMEOUT, PROXY_MAX_CONSECUTIVE_FAILURES, PROXY_MAX_RECENTLY_FAILED_KEYS,
+        PROXY_PORT_POLL_INTERVAL, PROXY_SING_BOX_TAG_DIRECT, PROXY_SING_BOX_TAG_DNS_DIRECT,
+        PROXY_SING_BOX_TAG_DNS_FALLBACK, PROXY_SING_BOX_TAG_DNS_PROXY, PROXY_SING_BOX_TAG_INBOUND,
+        PROXY_SING_BOX_TAG_OUTBOUND, PROXY_STARTUP_TIMEOUT, SING_BOX_CLEANUP_TIMEOUT,
+        SING_BOX_CONFIG_FILE_PREFIX,
     },
-    model::RankedConfig,
+    model::{ProgressEvent, RankedConfig},
     probe::{sing_box_outbound_from_share_link, sing_box_version_at_least},
 };
 
@@ -36,6 +37,7 @@ pub struct PersistentProxy {
     sing_box_path: String,
     state: Arc<RwLock<ProxyState>>,
     process: Mutex<Option<ManagedProcess>>,
+    events: Option<tokio::sync::mpsc::UnboundedSender<ProgressEvent>>,
 }
 
 struct ProxyState {
@@ -46,16 +48,21 @@ struct ProxyState {
     consecutive_failures: u32,
     last_health_check: Option<Instant>,
     last_health_ok: bool,
+    last_failover: Option<Instant>,
+    failed_config_keys: Vec<String>,
     proxy_config: ProxyConfig,
 }
 
 struct ManagedProcess {
     child: tokio::process::Child,
     config_path: PathBuf,
+    stderr_task: tokio::task::JoinHandle<()>,
 }
 
 impl Drop for ManagedProcess {
     fn drop(&mut self) {
+        // Cancel the stderr reader task before cleaning up
+        self.stderr_task.abort();
         // Sync file removal — safe because temp files are small and infrequent.
         // Async removal happens in stop(); this is the fallback for Drop paths
         // (e.g. startup failure, panic, or kill_on_drop).
@@ -64,7 +71,11 @@ impl Drop for ManagedProcess {
 }
 
 impl PersistentProxy {
-    pub fn new(config: ProxyConfig, sing_box_path: String) -> Self {
+    pub fn new(
+        config: ProxyConfig,
+        sing_box_path: String,
+        events: Option<tokio::sync::mpsc::UnboundedSender<ProgressEvent>>,
+    ) -> Self {
         Self {
             sing_box_path,
             state: Arc::new(RwLock::new(ProxyState {
@@ -75,9 +86,18 @@ impl PersistentProxy {
                 consecutive_failures: 0,
                 last_health_check: None,
                 last_health_ok: false,
+                last_failover: None,
+                failed_config_keys: Vec::new(),
                 proxy_config: config,
             })),
             process: Mutex::new(None),
+            events,
+        }
+    }
+
+    fn emit_log(&self, message: String) {
+        if let Some(tx) = &self.events {
+            let _ = tx.send(ProgressEvent::LiveLog(message));
         }
     }
 
@@ -89,14 +109,19 @@ impl PersistentProxy {
         {
             let mut state = self.state.write().await;
             state.proxy_config = config.clone();
+            // Clear recently-failed blacklist on each refresh cycle so configs
+            // get a fresh chance to be tried after network conditions change.
+            state.failed_config_keys.clear();
         }
 
         if !config.enabled {
-            if self.is_process_alive().await || {
+            let was_running = {
                 let state = self.state.read().await;
                 state.running
-            } {
+            } || self.is_process_alive().await;
+            if was_running {
                 info!("proxy: disabled in config, stopping");
+                self.emit_log("proxy: disabled".into());
                 self.stop().await;
             }
             return;
@@ -104,27 +129,26 @@ impl PersistentProxy {
 
         let Some(best) = ranked.iter().find(|c| c.reachable) else {
             warn!("proxy: no reachable configs available");
+            self.emit_log("proxy: no reachable configs".into());
             return;
         };
 
-        let should_switch = {
+        let (should_switch, reason) = {
             let state = self.state.read().await;
             match &state.active_config_uri {
-                None => true,
-                Some(uri) if uri != &best.uri => true,
+                None => (true, "starting"),
+                Some(uri) if uri != &best.uri => (true, "new config"),
                 Some(_) => {
                     let running = state.running;
                     let failures = state.consecutive_failures;
                     drop(state);
 
                     if !running || !self.is_process_alive().await {
-                        info!("proxy: process died, switching to new config");
-                        true
+                        (true, "restarted")
                     } else if failures >= PROXY_MAX_CONSECUTIVE_FAILURES {
-                        info!("proxy: too many health failures, switching config");
-                        true
+                        (true, "failover")
                     } else {
-                        false
+                        (false, "")
                     }
                 }
             }
@@ -138,13 +162,20 @@ impl PersistentProxy {
             name = %best.name,
             protocol = %best.protocol,
             latency_ms = ?best.latency_ms,
+            reason,
             "proxy: switching to new config"
         );
 
         if let Err(err) = self.start_with_config(best).await {
             error!(error = %err, "proxy: failed to start");
+            self.emit_log(format!("proxy: failed → {err}"));
             return;
         }
+
+        self.emit_log(format!(
+            "proxy: {reason} → {} (port {})",
+            best.name, config.port
+        ));
 
         let mut state = self.state.write().await;
         state.active_config_uri = Some(best.uri.clone());
@@ -217,6 +248,28 @@ impl PersistentProxy {
             .spawn()
             .context("failed to start sing-box proxy process")?;
 
+        // Spawn background stderr reader to capture sing-box logs
+        let stderr = child.stderr.take();
+        let stderr_task = tokio::spawn(async move {
+            if let Some(mut stderr) = stderr {
+                use tokio::io::{AsyncBufReadExt, BufReader};
+                let mut reader = BufReader::new(&mut stderr).lines();
+                while let Ok(Some(line)) = reader.next_line().await {
+                    let trimmed = line.trim();
+                    if !trimmed.is_empty() {
+                        // Log sing-box stderr lines at appropriate levels
+                        if trimmed.contains("error") || trimmed.contains("fatal") {
+                            error!(target: "sing-box", "{trimmed}");
+                        } else if trimmed.contains("warn") {
+                            warn!(target: "sing-box", "{trimmed}");
+                        } else {
+                            info!(target: "sing-box", "{trimmed}");
+                        }
+                    }
+                }
+            }
+        });
+
         // Wait for port — if this fails, the Drop impl on ManagedProcess
         // cleans up the config file, and kill_on_drop kills the process.
         wait_for_port(current_config.port, PROXY_STARTUP_TIMEOUT)
@@ -230,7 +283,11 @@ impl PersistentProxy {
                 }
             })?;
 
-        let managed = ManagedProcess { child, config_path };
+        let managed = ManagedProcess {
+            child,
+            config_path,
+            stderr_task,
+        };
 
         {
             let mut state = self.state.write().await;
@@ -280,12 +337,34 @@ impl PersistentProxy {
             state.proxy_config.health_check_url.clone()
         };
 
-        let ok = match client.get(&health_url).send().await {
-            Ok(resp) => resp.status().is_success() || resp.status().as_u16() == 204,
-            Err(err) => {
-                warn!(error = %err, "proxy: health check failed");
-                false
+        // Try primary URL first; if it fails, try fallback URLs
+        let fallback_urls = [
+            "https://1.1.1.1",
+            "https://cloudflare.com",
+            "https://api.ipify.org?format=json",
+            "https://httpbin.org/ip",
+        ];
+
+        let ok = if let Ok(resp) = client.get(&health_url).send().await {
+            resp.status().is_success() || resp.status().as_u16() == 204
+        } else {
+            // Primary failed - try fallbacks
+            let mut any_ok = false;
+            for fallback in &fallback_urls {
+                if let Ok(resp) = client.get(*fallback).send().await
+                    && (resp.status().is_success() || resp.status().as_u16() == 204)
+                {
+                    any_ok = true;
+                    break;
+                }
             }
+            if !any_ok {
+                warn!(
+                    primary = %health_url,
+                    "proxy: all health check URLs failed"
+                );
+            }
+            any_ok
         };
 
         let mut state = self.state.write().await;
@@ -301,20 +380,65 @@ impl PersistentProxy {
     }
 
     pub async fn failover(&self, ranked: &[RankedConfig]) -> Result<()> {
-        let current_uri = {
+        let (current_uri, last_failover, failed_keys) = {
             let state = self.state.read().await;
-            state.active_config_uri.clone()
+            (
+                state.active_config_uri.clone(),
+                state.last_failover,
+                state.failed_config_keys.clone(),
+            )
         };
 
+        // Failover cooldown: wait between failovers to avoid rapid cycling
+        if let Some(last) = last_failover {
+            let elapsed = last.elapsed();
+            if elapsed < PROXY_FAILOVER_COOLDOWN {
+                info!(
+                    remaining_ms = (PROXY_FAILOVER_COOLDOWN - elapsed).as_millis(),
+                    "proxy: failover cooldown active, waiting"
+                );
+                time::sleep(PROXY_FAILOVER_COOLDOWN - elapsed).await;
+            }
+        }
+
+        // Try configs that haven't failed recently
         let candidates: Vec<&RankedConfig> = ranked
             .iter()
-            .filter(|c| c.reachable && current_uri.as_deref() != Some(&c.uri))
+            .filter(|c| {
+                c.reachable
+                    && current_uri.as_deref() != Some(&c.uri)
+                    && !failed_keys.contains(&c.dedup_key)
+            })
             .collect();
+
+        // If all candidates recently failed, clear the blacklist and retry
+        let candidates = if candidates.is_empty() {
+            warn!("proxy: all configs recently failed, clearing blacklist");
+            self.emit_log("proxy: blacklist cleared".into());
+            {
+                let mut state = self.state.write().await;
+                state.failed_config_keys.clear();
+            }
+            ranked
+                .iter()
+                .filter(|c| c.reachable && current_uri.as_deref() != Some(&c.uri))
+                .collect()
+        } else {
+            candidates
+        };
 
         for candidate in candidates {
             info!(name = %candidate.name, "proxy: attempting failover");
             if self.start_with_config(candidate).await.is_ok() && self.health_check().await {
+                let port = {
+                    let state = self.state.read().await;
+                    state.proxy_config.port
+                };
                 info!(name = %candidate.name, "proxy: failover succeeded");
+                self.emit_log(format!(
+                    "proxy: failover → {} (port {})",
+                    candidate.name, port
+                ));
                 {
                     let mut state = self.state.write().await;
                     state.active_config_uri = Some(candidate.uri.clone());
@@ -323,8 +447,14 @@ impl PersistentProxy {
                         .active_config_country
                         .clone_from(&candidate.country_code);
                     state.consecutive_failures = 0;
+                    state.last_failover = Some(Instant::now());
                 }
                 return Ok(());
+            }
+            // Mark this config as failed
+            let mut state = self.state.write().await;
+            if state.failed_config_keys.len() < PROXY_MAX_RECENTLY_FAILED_KEYS {
+                state.failed_config_keys.push(candidate.dedup_key.clone());
             }
         }
 
@@ -333,6 +463,7 @@ impl PersistentProxy {
             state.running = false;
         }
 
+        self.emit_log("proxy: failover exhausted".into());
         Err(anyhow!("proxy: all failover candidates exhausted"))
     }
 
@@ -344,6 +475,7 @@ impl PersistentProxy {
                 let _ = time::timeout(SING_BOX_CLEANUP_TIMEOUT, managed.child.wait()).await;
                 let _ = fs::remove_file(&managed.config_path).await;
                 info!("proxy: stopped");
+                self.emit_log("proxy: stopped".into());
             }
         }
 
@@ -416,11 +548,16 @@ pub fn spawn_health_loop(proxy: SharedProxy, ranked: Arc<RwLock<Vec<RankedConfig
             }
 
             if consecutive_failures < PROXY_MAX_CONSECUTIVE_FAILURES {
+                let next = consecutive_failures + 1;
                 warn!(
-                    failures = consecutive_failures + 1,
+                    failures = next,
                     max = PROXY_MAX_CONSECUTIVE_FAILURES,
                     "proxy: health check failed, waiting for more failures before failover"
                 );
+                let p = proxy.lock().await;
+                p.emit_log(format!(
+                    "proxy: health fail {next}/{PROXY_MAX_CONSECUTIVE_FAILURES}"
+                ));
                 continue;
             }
 
@@ -429,6 +566,7 @@ pub fn spawn_health_loop(proxy: SharedProxy, ranked: Arc<RwLock<Vec<RankedConfig
             let p = proxy.lock().await;
             if let Err(err) = p.failover(&ranked_snapshot).await {
                 error!(error = %err, "proxy: failover failed");
+                p.emit_log(format!("proxy: failover failed: {err}"));
             }
         }
     });

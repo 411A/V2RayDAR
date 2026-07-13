@@ -252,29 +252,26 @@ async fn main() -> Result<()> {
         );
     }
 
-    let proxy: Option<proxy::SharedProxy> = if config.proxy.enabled {
-        let shared = Arc::new(tokio::sync::Mutex::new(proxy::PersistentProxy::new(
-            config.proxy.clone(),
-            config.probe.sing_box_path.clone(),
-        )));
+    let shared_ranked: Arc<RwLock<Vec<RankedConfig>>> = Arc::new(RwLock::new(Vec::new()));
+    let shared = Arc::new(tokio::sync::Mutex::new(proxy::PersistentProxy::new(
+        config.proxy.clone(),
+        config.probe.sing_box_path.clone(),
+    )));
 
-        if config.proxy.discoverable
-            && let Err(err) = crate::tui::firewall::apply(
-                &paths.root_dir,
-                true,
-                config.proxy.port,
-                constants::FIREWALL_PROXY_RULE_NAME,
-            )
-        {
-            tracing::warn!(error = %err, "failed to add proxy firewall rule");
-        }
+    if config.proxy.enabled
+        && config.proxy.discoverable
+        && let Err(err) = crate::tui::firewall::apply(
+            &paths.root_dir,
+            true,
+            config.proxy.port,
+            constants::FIREWALL_PROXY_RULE_NAME,
+        )
+    {
+        tracing::warn!(error = %err, "failed to add proxy firewall rule");
+    }
 
-        proxy::spawn_health_loop(shared.clone(), Arc::new(RwLock::new(Vec::new())));
-
-        Some(shared)
-    } else {
-        None
-    };
+    proxy::spawn_health_loop(shared.clone(), shared_ranked.clone());
+    let proxy = shared;
 
     let (config_tx, config_rx) = watch::channel(config.clone());
     spawn_refresh_loop(
@@ -283,6 +280,7 @@ async fn main() -> Result<()> {
         state.clone(),
         runtime_config.clone(),
         proxy.clone(),
+        shared_ranked,
         cli.no_tui,
         cli.no_tui && !cli.verbose,
     );
@@ -297,9 +295,7 @@ async fn main() -> Result<()> {
         }
     };
 
-    if let Some(proxy) = &proxy {
-        proxy.lock().await.shutdown().await;
-    }
+    proxy.lock().await.shutdown().await;
 
     result
 }
@@ -1260,12 +1256,14 @@ fn compare_stability_ranked(left: &RankedConfig, right: &RankedConfig) -> Orderi
         .then_with(|| left.uri.cmp(&right.uri))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_refresh_loop(
     mut config_rx: watch::Receiver<AppConfig>,
     database: Arc<Database>,
     state: Arc<RwLock<RuntimeState>>,
     runtime_config: Arc<RwLock<RuntimeConfig>>,
-    proxy: Option<proxy::SharedProxy>,
+    proxy: proxy::SharedProxy,
+    shared_ranked: Arc<RwLock<Vec<RankedConfig>>>,
     print_terminal_summary: bool,
     print_compact_progress: bool,
 ) {
@@ -1295,10 +1293,7 @@ fn spawn_refresh_loop(
                     record_refresh_error(&state, err.to_string()).await;
                 }
 
-                if let Some(proxy) = &proxy {
-                    let ranked = state.read().await.ranked.clone();
-                    proxy.lock().await.update(&ranked).await;
-                }
+                update_proxy_and_ranked(&proxy, &shared_ranked, &state, &config).await;
 
                 continue;
             }
@@ -1329,10 +1324,7 @@ fn spawn_refresh_loop(
                     record_refresh_error(&state, err.to_string()).await;
                 }
 
-                if let Some(proxy) = &proxy {
-                    let ranked = state.read().await.ranked.clone();
-                    proxy.lock().await.update(&ranked).await;
-                }
+                update_proxy_and_ranked(&proxy, &shared_ranked, &state, &config).await;
 
                 continue;
             }
@@ -1350,10 +1342,7 @@ fn spawn_refresh_loop(
                         record_refresh_error(&state, err.to_string()).await;
                     }
 
-                    if let Some(proxy) = &proxy {
-                        let ranked = state.read().await.ranked.clone();
-                        proxy.lock().await.update(&ranked).await;
-                    }
+                    update_proxy_and_ranked(&proxy, &shared_ranked, &state, &config).await;
                 }
                 changed = config_rx.changed() => {
                     if changed.is_err() {
@@ -1372,14 +1361,35 @@ fn spawn_refresh_loop(
                         record_refresh_error(&state, err.to_string()).await;
                     }
 
-                    if let Some(proxy) = &proxy {
-                        let ranked = state.read().await.ranked.clone();
-                        proxy.lock().await.update(&ranked).await;
-                    }
+                    update_proxy_and_ranked(&proxy, &shared_ranked, &state, &config).await;
                 }
             }
         }
     });
+}
+
+/// Update the proxy with fresh ranked configs, sync the shared ranked list for
+/// the health-check failover loop, and reflect proxy state in `RuntimeState`.
+async fn update_proxy_and_ranked(
+    proxy: &proxy::SharedProxy,
+    shared_ranked: &Arc<RwLock<Vec<RankedConfig>>>,
+    state: &Arc<RwLock<RuntimeState>>,
+    config: &AppConfig,
+) {
+    let ranked = state.read().await.ranked.clone();
+
+    // Sync ranked list for the health-check failover loop
+    (*shared_ranked.write().await).clone_from(&ranked);
+
+    proxy.lock().await.update(&config.proxy, &ranked).await;
+
+    // Reflect proxy state in RuntimeState so the TUI shows live info
+    let snapshot = proxy.lock().await.snapshot().await;
+    let mut runtime = state.write().await;
+    runtime.proxy_running = snapshot.running;
+    runtime.proxy_active_config = snapshot.active_config;
+    runtime.proxy_port = snapshot.port;
+    runtime.proxy_discoverable = snapshot.discoverable;
 }
 
 async fn mark_refresh_pending(state: &Arc<RwLock<RuntimeState>>) {

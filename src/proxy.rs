@@ -9,6 +9,7 @@ use reqwest::Proxy;
 use serde_json::{Value, json};
 use tokio::{
     fs,
+    io::AsyncReadExt,
     net::TcpStream,
     process::Command,
     sync::{Mutex, RwLock},
@@ -18,7 +19,13 @@ use tracing::{error, info, warn};
 
 use crate::{
     config::ProxyConfig,
-    constants::{LOCALHOST_IP, SING_BOX_CLEANUP_TIMEOUT, SING_BOX_CONFIG_FILE_PREFIX},
+    constants::{
+        LOCALHOST_IP, PROXY_DNS_FALLBACK, PROXY_DNS_PRIMARY, PROXY_HEALTH_CHECK_TIMEOUT,
+        PROXY_MAX_CONSECUTIVE_FAILURES, PROXY_PORT_POLL_INTERVAL, PROXY_SING_BOX_TAG_DIRECT,
+        PROXY_SING_BOX_TAG_DNS_DIRECT, PROXY_SING_BOX_TAG_DNS_FALLBACK,
+        PROXY_SING_BOX_TAG_DNS_PROXY, PROXY_SING_BOX_TAG_INBOUND, PROXY_SING_BOX_TAG_OUTBOUND,
+        PROXY_STARTUP_TIMEOUT, SING_BOX_CLEANUP_TIMEOUT, SING_BOX_CONFIG_FILE_PREFIX,
+    },
     model::RankedConfig,
     probe::{sing_box_outbound_from_share_link, sing_box_version_at_least},
 };
@@ -27,7 +34,6 @@ pub type SharedProxy = Arc<Mutex<PersistentProxy>>;
 
 pub struct PersistentProxy {
     sing_box_path: String,
-    config: ProxyConfig,
     state: Arc<RwLock<ProxyState>>,
     process: Mutex<Option<ManagedProcess>>,
 }
@@ -37,8 +43,10 @@ struct ProxyState {
     active_config_name: Option<String>,
     active_config_country: Option<String>,
     running: bool,
+    consecutive_failures: u32,
     last_health_check: Option<Instant>,
     last_health_ok: bool,
+    proxy_config: ProxyConfig,
 }
 
 struct ManagedProcess {
@@ -46,38 +54,83 @@ struct ManagedProcess {
     config_path: PathBuf,
 }
 
+impl Drop for ManagedProcess {
+    fn drop(&mut self) {
+        // Sync file removal — safe because temp files are small and infrequent.
+        // Async removal happens in stop(); this is the fallback for Drop paths
+        // (e.g. startup failure, panic, or kill_on_drop).
+        let _ = std::fs::remove_file(&self.config_path);
+    }
+}
+
 impl PersistentProxy {
     pub fn new(config: ProxyConfig, sing_box_path: String) -> Self {
         Self {
             sing_box_path,
-            config,
             state: Arc::new(RwLock::new(ProxyState {
                 active_config_uri: None,
                 active_config_name: None,
                 active_config_country: None,
                 running: false,
+                consecutive_failures: 0,
                 last_health_check: None,
                 last_health_ok: false,
+                proxy_config: config,
             })),
             process: Mutex::new(None),
         }
     }
 
-    pub async fn update(&self, ranked: &[RankedConfig]) {
-        let best = match ranked.iter().find(|c| c.reachable) {
-            Some(config) => config,
-            None => {
-                warn!("proxy: no reachable configs available");
-                return;
+    /// Update the proxy with the best config from the ranked list.
+    /// Takes the current `ProxyConfig` so it reacts to TUI config changes
+    /// (enable/disable, port, discoverable) without restart.
+    pub async fn update(&self, config: &ProxyConfig, ranked: &[RankedConfig]) {
+        // Sync the latest config into state so the health loop can read it
+        {
+            let mut state = self.state.write().await;
+            state.proxy_config = config.clone();
+        }
+
+        if !config.enabled {
+            if self.is_process_alive().await || {
+                let state = self.state.read().await;
+                state.running
+            } {
+                info!("proxy: disabled in config, stopping");
+                self.stop().await;
+            }
+            return;
+        }
+
+        let Some(best) = ranked.iter().find(|c| c.reachable) else {
+            warn!("proxy: no reachable configs available");
+            return;
+        };
+
+        let should_switch = {
+            let state = self.state.read().await;
+            match &state.active_config_uri {
+                None => true,
+                Some(uri) if uri != &best.uri => true,
+                Some(_) => {
+                    let running = state.running;
+                    let failures = state.consecutive_failures;
+                    drop(state);
+
+                    if !running || !self.is_process_alive().await {
+                        info!("proxy: process died, switching to new config");
+                        true
+                    } else if failures >= PROXY_MAX_CONSECUTIVE_FAILURES {
+                        info!("proxy: too many health failures, switching config");
+                        true
+                    } else {
+                        false
+                    }
+                }
             }
         };
 
-        let current_uri = {
-            let state = self.state.read().await;
-            state.active_config_uri.clone()
-        };
-
-        if current_uri.as_deref() == Some(&best.uri) {
+        if !should_switch {
             return;
         }
 
@@ -96,7 +149,41 @@ impl PersistentProxy {
         let mut state = self.state.write().await;
         state.active_config_uri = Some(best.uri.clone());
         state.active_config_name = Some(best.name.clone());
-        state.active_config_country = best.country_code.clone();
+        state.active_config_country.clone_from(&best.country_code);
+        state.consecutive_failures = 0;
+    }
+
+    /// Check if the managed sing-box process is still alive.
+    /// Returns `true` if the process is running, `false` if it has exited.
+    /// Cleans up the dead process entry when detected.
+    async fn is_process_alive(&self) -> bool {
+        let mut process = self.process.lock().await;
+        let Some(ref mut managed) = *process else {
+            return false;
+        };
+
+        match managed.child.try_wait() {
+            Ok(Some(status)) => {
+                // Process exited — capture stderr before cleanup
+                let stderr_msg = read_child_stderr(&mut managed.child).await;
+                warn!(
+                    status = %status,
+                    stderr = stderr_msg.as_deref().unwrap_or("(no output)"),
+                    "proxy: sing-box process exited"
+                );
+                let _ = fs::remove_file(&managed.config_path).await;
+                *process = None;
+                drop(process);
+                let mut state = self.state.write().await;
+                state.running = false;
+                false
+            }
+            Ok(None) => true,
+            Err(err) => {
+                warn!(error = %err, "proxy: failed to check process status");
+                false
+            }
+        }
     }
 
     async fn start_with_config(&self, config: &RankedConfig) -> Result<()> {
@@ -105,16 +192,21 @@ impl PersistentProxy {
         let outbound = sing_box_outbound_from_share_link(&config.uri)
             .context("failed to convert config to sing-box outbound")?;
 
-        let listen = if self.config.discoverable {
+        let current_config = {
+            let state = self.state.read().await;
+            state.proxy_config.clone()
+        };
+
+        let listen = if current_config.discoverable {
             "0.0.0.0"
         } else {
             LOCALHOST_IP
         };
 
-        let config_json = build_sing_box_config(&outbound, self.config.port, listen);
+        let config_json = build_sing_box_config(&outbound, current_config.port, listen);
         let config_path = write_proxy_config(&config_json).await?;
 
-        let child = Command::new(&self.sing_box_path)
+        let mut child = Command::new(&self.sing_box_path)
             .arg("run")
             .arg("-c")
             .arg(&config_path)
@@ -125,15 +217,25 @@ impl PersistentProxy {
             .spawn()
             .context("failed to start sing-box proxy process")?;
 
-        let managed = ManagedProcess { child, config_path };
-
-        wait_for_port(self.config.port, Duration::from_secs(5))
+        // Wait for port — if this fails, the Drop impl on ManagedProcess
+        // cleans up the config file, and kill_on_drop kills the process.
+        wait_for_port(current_config.port, PROXY_STARTUP_TIMEOUT)
             .await
-            .context("sing-box proxy did not start in time")?;
+            .map_err(|err| {
+                let stderr_msg = child.block_on_stderr();
+                if stderr_msg.is_empty() {
+                    err
+                } else {
+                    anyhow!("{err}: sing-box stderr: {stderr_msg}")
+                }
+            })?;
+
+        let managed = ManagedProcess { child, config_path };
 
         {
             let mut state = self.state.write().await;
             state.running = true;
+            state.consecutive_failures = 0;
             state.last_health_check = None;
             state.last_health_ok = false;
         }
@@ -141,7 +243,7 @@ impl PersistentProxy {
         *self.process.lock().await = Some(managed);
 
         info!(
-            port = self.config.port,
+            port = current_config.port,
             name = %config.name,
             "proxy: started"
         );
@@ -150,26 +252,35 @@ impl PersistentProxy {
     }
 
     pub async fn health_check(&self) -> bool {
-        let proxy_url = format!("http://{}:{}", LOCALHOST_IP, self.config.port);
+        if !self.is_process_alive().await {
+            return false;
+        }
+
+        let port = {
+            let state = self.state.read().await;
+            state.proxy_config.port
+        };
+
+        let proxy_url = format!("http://{LOCALHOST_IP}:{port}");
         let Ok(proxy) = Proxy::all(&proxy_url) else {
             warn!("proxy: invalid proxy URL for health check");
             return false;
         };
-        let client = match reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
+        let Ok(client) = reqwest::Client::builder()
+            .timeout(PROXY_HEALTH_CHECK_TIMEOUT)
             .proxy(proxy)
             .build()
-        {
-            Ok(client) => client,
-            Err(err) => {
-                warn!(error = %err, "proxy: health check client build failed");
-                return false;
-            }
+        else {
+            warn!("proxy: health check client build failed");
+            return false;
         };
 
-        let result = client.get(&self.config.health_check_url).send().await;
+        let health_url = {
+            let state = self.state.read().await;
+            state.proxy_config.health_check_url.clone()
+        };
 
-        let ok = match result {
+        let ok = match client.get(&health_url).send().await {
             Ok(resp) => resp.status().is_success() || resp.status().as_u16() == 204,
             Err(err) => {
                 warn!(error = %err, "proxy: health check failed");
@@ -180,6 +291,11 @@ impl PersistentProxy {
         let mut state = self.state.write().await;
         state.last_health_check = Some(Instant::now());
         state.last_health_ok = ok;
+        if ok {
+            state.consecutive_failures = 0;
+        } else {
+            state.consecutive_failures = state.consecutive_failures.saturating_add(1);
+        }
 
         ok
     }
@@ -196,12 +312,18 @@ impl PersistentProxy {
             .collect();
 
         for candidate in candidates {
-            info!(
-                name = %candidate.name,
-                "proxy: attempting failover"
-            );
+            info!(name = %candidate.name, "proxy: attempting failover");
             if self.start_with_config(candidate).await.is_ok() && self.health_check().await {
                 info!(name = %candidate.name, "proxy: failover succeeded");
+                {
+                    let mut state = self.state.write().await;
+                    state.active_config_uri = Some(candidate.uri.clone());
+                    state.active_config_name = Some(candidate.name.clone());
+                    state
+                        .active_config_country
+                        .clone_from(&candidate.country_code);
+                    state.consecutive_failures = 0;
+                }
                 return Ok(());
             }
         }
@@ -215,12 +337,14 @@ impl PersistentProxy {
     }
 
     pub async fn stop(&self) {
-        let mut process = self.process.lock().await;
-        if let Some(mut managed) = process.take() {
-            let _ = managed.child.start_kill();
-            let _ = time::timeout(SING_BOX_CLEANUP_TIMEOUT, managed.child.wait()).await;
-            let _ = fs::remove_file(&managed.config_path).await;
-            info!("proxy: stopped");
+        {
+            let mut process = self.process.lock().await;
+            if let Some(mut managed) = process.take() {
+                let _ = managed.child.start_kill();
+                let _ = time::timeout(SING_BOX_CLEANUP_TIMEOUT, managed.child.wait()).await;
+                let _ = fs::remove_file(&managed.config_path).await;
+                info!("proxy: stopped");
+            }
         }
 
         let mut state = self.state.write().await;
@@ -231,18 +355,17 @@ impl PersistentProxy {
         self.stop().await;
     }
 
-    #[allow(dead_code)]
     pub async fn snapshot(&self) -> ProxySnapshot {
         let state = self.state.read().await;
         ProxySnapshot {
             active_config: state.active_config_name.clone(),
             running: state.running,
             port: if state.running {
-                Some(self.config.port)
+                Some(state.proxy_config.port)
             } else {
                 None
             },
-            discoverable: self.config.discoverable,
+            discoverable: state.proxy_config.discoverable,
             country: state.active_config_country.clone(),
         }
     }
@@ -250,22 +373,34 @@ impl PersistentProxy {
 
 pub fn spawn_health_loop(proxy: SharedProxy, ranked: Arc<RwLock<Vec<RankedConfig>>>) {
     tokio::spawn(async move {
-        let interval_secs = {
-            let p = proxy.lock().await;
-            p.config.health_check_interval_seconds
-        };
-
-        let mut ticker = time::interval(Duration::from_secs(interval_secs));
-        ticker.tick().await;
+        let mut last_interval = 0u64;
 
         loop {
-            ticker.tick().await;
-
-            let running = {
+            // Read interval from state — reactive to config changes
+            let (running, consecutive_failures, interval) = {
                 let p = proxy.lock().await;
                 let state = p.state.read().await;
-                state.running
+                let result = (
+                    state.running,
+                    state.consecutive_failures,
+                    state.proxy_config.health_check_interval_seconds,
+                );
+                drop(state);
+                drop(p);
+                result
             };
+
+            // Restart ticker if interval changed (e.g. user edited config)
+            if interval != last_interval && interval > 0 {
+                last_interval = interval;
+            }
+
+            if last_interval == 0 {
+                time::sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+
+            time::sleep(Duration::from_secs(last_interval)).await;
 
             if !running {
                 continue;
@@ -280,10 +415,19 @@ pub fn spawn_health_loop(proxy: SharedProxy, ranked: Arc<RwLock<Vec<RankedConfig
                 continue;
             }
 
+            if consecutive_failures < PROXY_MAX_CONSECUTIVE_FAILURES {
+                warn!(
+                    failures = consecutive_failures + 1,
+                    max = PROXY_MAX_CONSECUTIVE_FAILURES,
+                    "proxy: health check failed, waiting for more failures before failover"
+                );
+                continue;
+            }
+
             warn!("proxy: health check failed, attempting failover");
-            let ranked_guard = ranked.read().await;
+            let ranked_snapshot = ranked.read().await.clone();
             let p = proxy.lock().await;
-            if let Err(err) = p.failover(&ranked_guard).await {
+            if let Err(err) = p.failover(&ranked_snapshot).await {
                 error!(error = %err, "proxy: failover failed");
             }
         }
@@ -300,15 +444,49 @@ pub struct ProxySnapshot {
     pub country: Option<String>,
 }
 
+/// Read remaining stderr from a child process (non-blocking attempt).
+async fn read_child_stderr(child: &mut tokio::process::Child) -> Option<String> {
+    let mut stderr = child.stderr.take()?;
+    let mut buf = String::new();
+    let _ = tokio::time::timeout(Duration::from_millis(100), stderr.read_to_string(&mut buf)).await;
+    let trimmed = buf.trim().to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+/// Blocking stderr read for use in sync-like contexts (e.g. error mapping).
+trait ReadChildStderr {
+    fn block_on_stderr(&mut self) -> String;
+}
+
+impl ReadChildStderr for tokio::process::Child {
+    fn block_on_stderr(&mut self) -> String {
+        let Some(mut stderr) = self.stderr.take() else {
+            return String::new();
+        };
+        let mut buf = String::new();
+        // Best-effort: if it's not ready in 100ms, return what we have
+        tokio::runtime::Handle::current().block_on(async {
+            let _ =
+                tokio::time::timeout(Duration::from_millis(100), stderr.read_to_string(&mut buf))
+                    .await;
+        });
+        buf.trim().to_string()
+    }
+}
+
 async fn wait_for_port(port: u16, timeout: Duration) -> Result<()> {
     let deadline = Instant::now() + timeout;
-    let addr = format!("{}:{port}", LOCALHOST_IP);
+    let addr = format!("{LOCALHOST_IP}:{port}");
 
     while Instant::now() < deadline {
-        match TcpStream::connect(&addr).await {
-            Ok(_) => return Ok(()),
-            Err(_) => time::sleep(Duration::from_millis(50)).await,
+        if TcpStream::connect(&addr).await.is_ok() {
+            return Ok(());
         }
+        time::sleep(PROXY_PORT_POLL_INTERVAL).await;
     }
 
     Err(anyhow!(
@@ -332,36 +510,38 @@ async fn write_proxy_config(config: &Value) -> Result<PathBuf> {
 fn build_sing_box_config(outbound: &Value, port: u16, listen: &str) -> Value {
     let mut outbound = outbound.clone();
     if let Some(obj) = outbound.as_object_mut() {
-        obj.insert("tag".to_string(), json!("proxy-0"));
+        obj.insert("tag".to_string(), json!(PROXY_SING_BOX_TAG_OUTBOUND));
     }
 
     let direct_outbound = json!({
         "type": "direct",
-        "tag": "direct-out"
+        "tag": PROXY_SING_BOX_TAG_DIRECT
     });
 
     let dns_servers = if sing_box_version_at_least(1, 12, 0) {
         json!([
-            { "tag": "dns-direct", "type": "udp", "server": "8.8.8.8" },
-            { "tag": "dns-fallback", "type": "udp", "server": "1.1.1.1" }
+            { "tag": PROXY_SING_BOX_TAG_DNS_DIRECT, "type": "udp", "server": PROXY_DNS_PRIMARY },
+            { "tag": PROXY_SING_BOX_TAG_DNS_FALLBACK, "type": "udp", "server": PROXY_DNS_FALLBACK },
+            { "tag": PROXY_SING_BOX_TAG_DNS_PROXY, "type": "udp", "server": PROXY_DNS_PRIMARY, "detour": PROXY_SING_BOX_TAG_OUTBOUND }
         ])
     } else {
         json!([
-            { "tag": "dns-direct", "address": "8.8.8.8", "strategy": "prefer_ipv4", "detour": "direct-out" },
-            { "tag": "dns-fallback", "address": "1.1.1.1", "strategy": "prefer_ipv4", "detour": "direct-out" }
+            { "tag": PROXY_SING_BOX_TAG_DNS_DIRECT, "address": PROXY_DNS_PRIMARY, "strategy": "prefer_ipv4", "detour": PROXY_SING_BOX_TAG_DIRECT },
+            { "tag": PROXY_SING_BOX_TAG_DNS_FALLBACK, "address": PROXY_DNS_FALLBACK, "strategy": "prefer_ipv4", "detour": PROXY_SING_BOX_TAG_DIRECT },
+            { "tag": PROXY_SING_BOX_TAG_DNS_PROXY, "address": PROXY_DNS_PRIMARY, "strategy": "prefer_ipv4", "detour": PROXY_SING_BOX_TAG_OUTBOUND }
         ])
     };
 
     let route = if sing_box_version_at_least(1, 12, 0) {
         json!({
             "rules": [{ "protocol": "bittorrent", "action": "reject" }],
-            "final": "proxy-0",
-            "default_domain_resolver": "dns-direct"
+            "final": PROXY_SING_BOX_TAG_OUTBOUND,
+            "default_domain_resolver": PROXY_SING_BOX_TAG_DNS_DIRECT
         })
     } else {
         json!({
             "rules": [{ "protocol": "bittorrent", "action": "reject" }],
-            "final": "proxy-0"
+            "final": PROXY_SING_BOX_TAG_OUTBOUND
         })
     };
 
@@ -370,7 +550,7 @@ fn build_sing_box_config(outbound: &Value, port: u16, listen: &str) -> Value {
         "dns": { "servers": dns_servers },
         "inbounds": [{
             "type": "mixed",
-            "tag": "proxy-in",
+            "tag": PROXY_SING_BOX_TAG_INBOUND,
             "listen": listen,
             "listen_port": port
         }],
@@ -401,9 +581,15 @@ mod tests {
         assert_eq!(config["inbounds"][0]["listen_port"], 27910);
         assert_eq!(config["inbounds"][0]["listen"], "127.0.0.1");
         assert_eq!(config["inbounds"][0]["type"], "mixed");
-        assert_eq!(config["outbounds"][0]["tag"], "proxy-0");
+        assert_eq!(
+            config["outbounds"][0]["tag"].as_str().unwrap(),
+            PROXY_SING_BOX_TAG_OUTBOUND
+        );
         assert_eq!(config["outbounds"][1]["type"], "direct");
-        assert_eq!(config["route"]["final"], "proxy-0");
+        assert_eq!(
+            config["route"]["final"].as_str().unwrap(),
+            PROXY_SING_BOX_TAG_OUTBOUND
+        );
     }
 
     #[test]
@@ -440,5 +626,80 @@ mod tests {
         let config = build_sing_box_config(&outbound, 27910, "127.0.0.1");
         let rules = config["route"]["rules"].as_array().unwrap();
         assert!(rules.iter().any(|r| r["protocol"] == json!("bittorrent")));
+    }
+
+    #[test]
+    fn build_config_has_proxy_dns() {
+        let outbound = json!({
+            "type": "vless",
+            "settings": {
+                "vnext": [{
+                    "address": "example.com",
+                    "port": 443,
+                    "users": [{ "id": "test-uuid" }]
+                }]
+            }
+        });
+
+        let config = build_sing_box_config(&outbound, 27910, "127.0.0.1");
+        let dns_servers = config["dns"]["servers"].as_array().unwrap();
+        let has_proxy_dns = dns_servers
+            .iter()
+            .any(|s| s["tag"].as_str() == Some(PROXY_SING_BOX_TAG_DNS_PROXY));
+        assert!(
+            has_proxy_dns,
+            "dns-proxy server should be present for outbound resolution"
+        );
+    }
+
+    #[test]
+    fn build_config_uses_centralized_dns_constants() {
+        let outbound = json!({
+            "type": "vless",
+            "settings": {
+                "vnext": [{
+                    "address": "example.com",
+                    "port": 443,
+                    "users": [{ "id": "test-uuid" }]
+                }]
+            }
+        });
+
+        let config = build_sing_box_config(&outbound, 27910, "127.0.0.1");
+        let dns_servers = config["dns"]["servers"].as_array().unwrap();
+
+        let (server_key, _addr_key) = if sing_box_version_at_least(1, 12, 0) {
+            ("server", "server")
+        } else {
+            ("address", "detour")
+        };
+
+        let primary = dns_servers
+            .iter()
+            .find(|s| s["tag"].as_str() == Some(PROXY_SING_BOX_TAG_DNS_DIRECT))
+            .expect("dns-direct should exist");
+        assert_eq!(
+            primary[server_key].as_str().unwrap(),
+            PROXY_DNS_PRIMARY,
+            "primary DNS should use centralized constant"
+        );
+
+        let fallback = dns_servers
+            .iter()
+            .find(|s| s["tag"].as_str() == Some(PROXY_SING_BOX_TAG_DNS_FALLBACK))
+            .expect("dns-fallback should exist");
+        assert_eq!(
+            fallback[server_key].as_str().unwrap(),
+            PROXY_DNS_FALLBACK,
+            "fallback DNS should use centralized constant"
+        );
+
+        if !sing_box_version_at_least(1, 12, 0) {
+            assert_eq!(
+                primary["detour"].as_str().unwrap(),
+                PROXY_SING_BOX_TAG_DIRECT,
+                "old-format DNS direct should detour to direct-out"
+            );
+        }
     }
 }

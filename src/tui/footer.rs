@@ -62,11 +62,13 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
 }
 
 fn truncate_guide(text: &str, max_len: usize) -> String {
-    if text.len() <= max_len {
+    let char_count = text.chars().count();
+    if char_count <= max_len {
         text.to_string()
     } else if max_len > 3 {
-        format!("{}...", &text[..max_len - 3])
+        let truncated: String = text.chars().take(max_len - 3).collect();
+        format!("{truncated}...")
     } else {
-        text[..max_len.min(text.len())].to_string()
+        text.chars().take(max_len).collect()
     }
 }

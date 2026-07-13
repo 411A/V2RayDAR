@@ -38,6 +38,7 @@ fn save_yaml_config(path: &Path, config: &AppConfig) -> Result<()> {
     let mut document = YamlDocument::new(original);
     update_top_level_scalars(&mut document, &previous, &config);
     update_sharing_section(&mut document, &previous, &config);
+    update_proxy_section(&mut document, &previous, &config);
     update_probe_section(&mut document, &previous, &config);
     if previous.subscriptions != config.subscriptions
         && !document.update_subscriptions(&previous.subscriptions, &config.subscriptions)
@@ -132,6 +133,36 @@ fn update_sharing_section(document: &mut YamlDocument, previous: &AppConfig, con
     }
     if previous.sharing.token != config.sharing.token {
         document.set_nested_scalar("sharing", "token", nullable_string(&config.sharing.token));
+    }
+}
+
+fn update_proxy_section(document: &mut YamlDocument, previous: &AppConfig, config: &AppConfig) {
+    if previous.proxy.enabled != config.proxy.enabled {
+        document.set_nested_scalar("proxy", "enabled", config.proxy.enabled.to_string());
+    }
+    if previous.proxy.port != config.proxy.port {
+        document.set_nested_scalar("proxy", "port", config.proxy.port.to_string());
+    }
+    if previous.proxy.discoverable != config.proxy.discoverable {
+        document.set_nested_scalar(
+            "proxy",
+            "discoverable",
+            config.proxy.discoverable.to_string(),
+        );
+    }
+    if previous.proxy.health_check_url != config.proxy.health_check_url {
+        document.set_nested_scalar(
+            "proxy",
+            "health_check_url",
+            config.proxy.health_check_url.clone(),
+        );
+    }
+    if previous.proxy.health_check_interval_seconds != config.proxy.health_check_interval_seconds {
+        document.set_nested_scalar(
+            "proxy",
+            "health_check_interval_seconds",
+            config.proxy.health_check_interval_seconds.to_string(),
+        );
     }
 }
 
@@ -964,5 +995,46 @@ subscriptions:
         assert!(saved.contains(r#""sing_box_path": """#));
         assert!(!saved.contains("sing_box_path_auto"));
         assert!(!saved.contains("/tmp/v2raydar/sing-box"));
+    }
+
+    #[test]
+    fn yaml_save_persists_proxy_settings() {
+        let path = write_config(
+            "proxy-persist",
+            r#"bind: 127.0.0.1:27141
+top_n: 10
+
+proxy:
+  enabled: false
+  port: 27910
+  discoverable: false
+  health_check_url: https://www.gstatic.com/generate_204
+  health_check_interval_seconds: 60
+
+probe:
+  accepted_statuses: [204, 200]
+
+subscriptions:
+  - name: first
+    url: data:,vless://uuid@example.com:443%23demo
+"#,
+        );
+        let mut config = AppConfig::load(&path).expect("config loads");
+        assert!(!config.proxy.enabled, "starts disabled");
+        config.proxy.enabled = true;
+        config.proxy.discoverable = true;
+        config.proxy.port = 10808;
+
+        save_config(&path, &config).expect("config saves");
+        let saved = fs::read_to_string(&path).expect("config can be read");
+        let reloaded = AppConfig::load(&path).expect("saved config reloads");
+        fs::remove_file(&path).ok();
+
+        assert!(saved.contains("enabled: true"));
+        assert!(saved.contains("discoverable: true"));
+        assert!(saved.contains("port: 10808"));
+        assert!(reloaded.proxy.enabled);
+        assert!(reloaded.proxy.discoverable);
+        assert_eq!(reloaded.proxy.port, 10808);
     }
 }

@@ -46,7 +46,7 @@ proxy:
   # true binds to 0.0.0.0 and adds a firewall rule for LAN access.
   discoverable: false
   # URL tested through the proxy to verify it's alive.
-  health_check_url: https://www.gstatic.com/generate_204
+  health_check_url: https://cp.cloudflare.com
   # Seconds between proxy health checks.
   health_check_interval_seconds: 60
 

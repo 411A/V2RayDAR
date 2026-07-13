@@ -16,6 +16,12 @@ struct FirewallState {
 struct OwnedFirewallRule {
     backend: FirewallBackend,
     port: u16,
+    #[serde(default = "default_rule_name")]
+    rule_name: String,
+}
+
+fn default_rule_name() -> String {
+    FIREWALL_RULE_NAME.to_string()
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
@@ -26,22 +32,20 @@ enum FirewallBackend {
     LinuxFirewalld,
 }
 
-pub fn apply(state_dir: &Path, enabled: bool, port: u16) -> Result<String> {
+pub fn apply(state_dir: &Path, enabled: bool, port: u16, rule_name: &str) -> Result<String> {
     let state_path = firewall_state_path(state_dir);
     if cfg!(target_os = "windows") {
         read_state(&state_path)?;
-        windows(enabled, port)?;
+        windows(enabled, port, rule_name)?;
         if enabled {
-            record_rule(&state_path, FirewallBackend::WindowsNetsh, port)?;
-            Ok(format!(
-                "Sharing enabled; Windows firewall allows TCP {port}"
-            ))
+            record_rule(&state_path, FirewallBackend::WindowsNetsh, port, rule_name)?;
+            Ok(format!("Windows firewall allows TCP {port} ({rule_name})"))
         } else {
-            remove_recorded_backend(&state_path, FirewallBackend::WindowsNetsh)?;
-            Ok("Sharing disabled; Windows firewall rule removed".to_string())
+            remove_recorded_rule_by_port(&state_path, FirewallBackend::WindowsNetsh, port)?;
+            Ok(format!("Windows firewall rule removed for TCP {port}"))
         }
     } else if cfg!(target_os = "linux") {
-        linux(&state_path, enabled, port)
+        linux(&state_path, enabled, port, rule_name)
     } else {
         Ok("Firewall auto-change is unsupported on this OS".to_string())
     }
@@ -53,38 +57,13 @@ pub fn remove_owned_rules(state_dir: &Path) -> Result<Vec<String>> {
     let state_path = firewall_state_path(state_dir);
     let mut state = read_state(&state_path)?;
 
-    if cfg!(target_os = "windows") {
-        let had_record = state
-            .rules
-            .iter()
-            .any(|rule| rule.backend == FirewallBackend::WindowsNetsh);
-        match remove_windows_rule() {
-            Ok(()) => {
-                messages.push("removed Windows firewall rule".to_string());
-                state
-                    .rules
-                    .retain(|rule| rule.backend != FirewallBackend::WindowsNetsh);
-            }
-            Err(error) if had_record => {
-                failures.push(format!("Windows firewall rule was not removed: {error}"));
-            }
-            Err(error) => messages.push(format!(
-                "Windows firewall rule was not removed or was already absent: {error}"
-            )),
-        }
-    }
-
     let mut remaining_rules = Vec::new();
-    for rule in state.rules {
-        if cfg!(target_os = "windows") && rule.backend == FirewallBackend::WindowsNetsh {
-            remaining_rules.push(rule);
-            continue;
-        }
-        match remove_owned_rule(&rule) {
+    for rule in &state.rules {
+        match remove_owned_rule(rule) {
             Ok(message) => messages.push(message),
             Err(error) => {
                 failures.push(format!("firewall rule was not removed: {error}"));
-                remaining_rules.push(rule);
+                remaining_rules.push(rule.clone());
             }
         }
     }
@@ -105,7 +84,7 @@ fn firewall_state_path(state_dir: &Path) -> std::path::PathBuf {
     state_dir.join(FIREWALL_STATE_FILE_NAME)
 }
 
-fn linux(state_path: &Path, enabled: bool, port: u16) -> Result<String> {
+fn linux(state_path: &Path, enabled: bool, port: u16, rule_name: &str) -> Result<String> {
     read_state(state_path)?;
 
     if command_exists("ufw") {
@@ -113,24 +92,20 @@ fn linux(state_path: &Path, enabled: bool, port: u16) -> Result<String> {
             let existed = ufw_allows_port(port)?;
             run("ufw", &["allow", &format!("{port}/tcp")])?;
             if !existed {
-                record_rule(state_path, FirewallBackend::LinuxUfw, port)?;
+                record_rule(state_path, FirewallBackend::LinuxUfw, port, rule_name)?;
             }
             let ownership = if existed {
                 "pre-existing rule left user-owned"
             } else {
                 "owned rule recorded"
             };
-            return Ok(format!(
-                "Sharing enabled; ufw allows TCP {port}; {ownership}"
-            ));
+            return Ok(format!("{rule_name}: ufw allows TCP {port}; {ownership}"));
         }
-        return if remove_recorded_rule(state_path, FirewallBackend::LinuxUfw, port)? {
-            Ok(format!(
-                "Sharing disabled; removed owned ufw TCP {port} rule"
-            ))
+        return if remove_recorded_rule_by_port(state_path, FirewallBackend::LinuxUfw, port)? {
+            Ok(format!("{rule_name}: removed owned ufw TCP {port} rule"))
         } else {
             Ok(format!(
-                "Sharing disabled; no V2RayDAR-owned ufw TCP {port} rule was recorded"
+                "{rule_name}: no owned ufw TCP {port} rule was recorded"
             ))
         };
     }
@@ -140,7 +115,7 @@ fn linux(state_path: &Path, enabled: bool, port: u16) -> Result<String> {
             let existed = firewalld_allows_port(port)?;
             firewalld_port("--add-port", port)?;
             if !existed {
-                record_rule(state_path, FirewallBackend::LinuxFirewalld, port)?;
+                record_rule(state_path, FirewallBackend::LinuxFirewalld, port, rule_name)?;
             }
             let ownership = if existed {
                 "pre-existing rule left user-owned"
@@ -148,24 +123,24 @@ fn linux(state_path: &Path, enabled: bool, port: u16) -> Result<String> {
                 "owned rule recorded"
             };
             return Ok(format!(
-                "Sharing enabled; firewalld allows TCP {port}; {ownership}"
+                "{rule_name}: firewalld allows TCP {port}; {ownership}"
             ));
         }
-        return if remove_recorded_rule(state_path, FirewallBackend::LinuxFirewalld, port)? {
+        return if remove_recorded_rule_by_port(state_path, FirewallBackend::LinuxFirewalld, port)? {
             Ok(format!(
-                "Sharing disabled; removed owned firewalld TCP {port} rule"
+                "{rule_name}: removed owned firewalld TCP {port} rule"
             ))
         } else {
             Ok(format!(
-                "Sharing disabled; no V2RayDAR-owned firewalld TCP {port} rule was recorded"
+                "{rule_name}: no owned firewalld TCP {port} rule was recorded"
             ))
         };
     }
 
-    Ok("Sharing changed; no supported Linux firewall tool found".to_string())
+    Ok("Firewall changed; no supported Linux firewall tool found".to_string())
 }
 
-fn windows(enabled: bool, port: u16) -> Result<()> {
+fn windows(enabled: bool, port: u16, rule_name: &str) -> Result<()> {
     if enabled {
         run(
             "netsh",
@@ -174,7 +149,7 @@ fn windows(enabled: bool, port: u16) -> Result<()> {
                 "firewall",
                 "add",
                 "rule",
-                &format!("name={FIREWALL_RULE_NAME}"),
+                &format!("name={rule_name}"),
                 "dir=in",
                 "action=allow",
                 "protocol=TCP",
@@ -182,28 +157,42 @@ fn windows(enabled: bool, port: u16) -> Result<()> {
             ],
         )
     } else {
-        remove_windows_rule()
+        remove_windows_rule(rule_name)
     }
 }
 
-fn remove_windows_rule() -> Result<()> {
-    run(
-        "netsh",
-        &[
+fn remove_windows_rule(rule_name: &str) -> Result<()> {
+    let output = Command::new("netsh")
+        .args([
             "advfirewall",
             "firewall",
             "delete",
             "rule",
-            &format!("name={FIREWALL_RULE_NAME}"),
-        ],
-    )
+            &format!("name={rule_name}"),
+        ])
+        .output()?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!("{stdout}{stderr}");
+    if combined.contains("No rules") || combined.contains("does not exist") {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "firewall command failed; run as admin/root if needed"
+    ))
 }
 
 fn remove_owned_rule(rule: &OwnedFirewallRule) -> Result<String> {
     match rule.backend {
         FirewallBackend::WindowsNetsh => {
-            remove_windows_rule()?;
-            Ok("removed Windows firewall rule".to_string())
+            remove_windows_rule(&rule.rule_name)?;
+            Ok(format!(
+                "removed Windows firewall rule '{}' for TCP {}",
+                rule.rule_name, rule.port
+            ))
         }
         FirewallBackend::LinuxUfw => {
             run("ufw", &["delete", "allow", &format!("{}/tcp", rule.port)])?;
@@ -225,38 +214,46 @@ fn firewalld_port(action: &str, port: u16) -> Result<()> {
     Ok(())
 }
 
-fn record_rule(state_path: &Path, backend: FirewallBackend, port: u16) -> Result<()> {
+fn record_rule(
+    state_path: &Path,
+    backend: FirewallBackend,
+    port: u16,
+    rule_name: &str,
+) -> Result<()> {
     let mut state = read_state(state_path)?;
     if !state
         .rules
         .iter()
         .any(|rule| rule.backend == backend && rule.port == port)
     {
-        state.rules.push(OwnedFirewallRule { backend, port });
+        state.rules.push(OwnedFirewallRule {
+            backend,
+            port,
+            rule_name: rule_name.to_string(),
+        });
     }
     write_state(state_path, &state)
 }
 
-fn remove_recorded_backend(state_path: &Path, backend: FirewallBackend) -> Result<()> {
+fn remove_recorded_rule_by_port(
+    state_path: &Path,
+    backend: FirewallBackend,
+    port: u16,
+) -> Result<bool> {
     let mut state = read_state(state_path)?;
-    state.rules.retain(|rule| rule.backend != backend);
-    write_state(state_path, &state)
-}
-
-fn remove_recorded_rule(state_path: &Path, backend: FirewallBackend, port: u16) -> Result<bool> {
-    let mut state = read_state(state_path)?;
-    if !state
+    let rule = state
         .rules
         .iter()
-        .any(|rule| rule.backend == backend && rule.port == port)
-    {
+        .find(|rule| rule.backend == backend && rule.port == port)
+        .cloned();
+    let Some(rule) = rule else {
         return Ok(false);
-    }
+    };
 
-    remove_owned_rule(&OwnedFirewallRule { backend, port })?;
+    remove_owned_rule(&rule)?;
     state
         .rules
-        .retain(|rule| !(rule.backend == backend && rule.port == port));
+        .retain(|r| !(r.backend == backend && r.port == port));
     write_state(state_path, &state)?;
     Ok(true)
 }

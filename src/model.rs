@@ -65,6 +65,10 @@ pub struct RuntimeState {
     pub fetch_errors: Vec<String>,
     pub ranked: Vec<RankedConfig>,
     pub stable_working_counts: HashMap<String, u32>,
+    pub proxy_active_config: Option<String>,
+    pub proxy_running: bool,
+    pub proxy_port: Option<u16>,
+    pub proxy_discoverable: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -118,6 +122,9 @@ pub struct RuntimeConfig {
     pub download_bytes_limit: usize,
     pub subscription_count: usize,
     pub enabled_subscription_count: usize,
+    pub proxy_enabled: bool,
+    pub proxy_port: u16,
+    pub proxy_discoverable: bool,
 }
 
 impl RuntimeConfig {

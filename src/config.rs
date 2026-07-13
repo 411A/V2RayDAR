@@ -11,10 +11,12 @@ use crate::constants::{
     DEFAULT_DOWNLOAD_BYTES_LIMIT, DEFAULT_ENCODED_SUBSCRIPTION, DEFAULT_FETCH_CONCURRENCY,
     DEFAULT_FETCH_TIMEOUT_MS, DEFAULT_MAX_SUBSCRIPTION_BYTES, DEFAULT_PRIORITIZE_STABILITY,
     DEFAULT_PROBE_BATCH_SIZE, DEFAULT_PROBE_CONCURRENCY, DEFAULT_PROBE_PROCESS_CONCURRENCY,
-    DEFAULT_REFRESH_SECONDS, DEFAULT_REQUIRE_TOKEN, DEFAULT_RETURN_CONFIGS_ASAP,
-    DEFAULT_SCAN_ALL_CONFIGS, DEFAULT_SHARING_ENABLED, DEFAULT_SHARING_TOKEN,
-    DEFAULT_SING_BOX_PATH, DEFAULT_STARTUP_TIMEOUT_MS, DEFAULT_SUBSCRIPTION_ENABLED,
-    DEFAULT_SUBSCRIPTION_PRIORITY, DEFAULT_TEST_URL, DEFAULT_TOP_N, DEFAULT_USE_CACHE_ONLY,
+    DEFAULT_PROXY_DISCOVERABLE, DEFAULT_PROXY_ENABLED, DEFAULT_PROXY_HEALTH_CHECK_INTERVAL,
+    DEFAULT_PROXY_HEALTH_CHECK_URL, DEFAULT_PROXY_PORT, DEFAULT_REFRESH_SECONDS,
+    DEFAULT_REQUIRE_TOKEN, DEFAULT_RETURN_CONFIGS_ASAP, DEFAULT_SCAN_ALL_CONFIGS,
+    DEFAULT_SHARING_ENABLED, DEFAULT_SHARING_TOKEN, DEFAULT_SING_BOX_PATH,
+    DEFAULT_STARTUP_TIMEOUT_MS, DEFAULT_SUBSCRIPTION_ENABLED, DEFAULT_SUBSCRIPTION_PRIORITY,
+    DEFAULT_TEST_URL, DEFAULT_TOP_N, DEFAULT_USE_CACHE_ONLY,
 };
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -50,6 +52,8 @@ pub struct AppConfig {
     pub probe: ProbeConfig,
     #[serde(default)]
     pub sharing: SharingConfig,
+    #[serde(default)]
+    pub proxy: ProxyConfig,
     #[serde(default, deserialize_with = "deserialize_optional_string")]
     pub geoip_db_path: Option<String>,
     #[serde(default)]
@@ -119,6 +123,20 @@ pub struct SharingConfig {
     pub token: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ProxyConfig {
+    #[serde(default = "default_proxy_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_proxy_port")]
+    pub port: u16,
+    #[serde(default = "default_proxy_discoverable")]
+    pub discoverable: bool,
+    #[serde(default = "default_proxy_health_check_url")]
+    pub health_check_url: String,
+    #[serde(default = "default_proxy_health_check_interval")]
+    pub health_check_interval_seconds: u64,
+}
+
 impl Default for ProbeConfig {
     fn default() -> Self {
         Self {
@@ -145,6 +163,18 @@ impl Default for SharingConfig {
             enabled: default_sharing_enabled(),
             require_token: default_require_token(),
             token: default_sharing_token(),
+        }
+    }
+}
+
+impl Default for ProxyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_proxy_enabled(),
+            port: default_proxy_port(),
+            discoverable: default_proxy_discoverable(),
+            health_check_url: default_proxy_health_check_url(),
+            health_check_interval_seconds: default_proxy_health_check_interval(),
         }
     }
 }
@@ -304,6 +334,26 @@ fn validate(mut config: AppConfig) -> Result<AppConfig> {
         return Err(anyhow!(
             "sharing.token must be a string or true when sharing.require_token is true"
         ));
+    }
+
+    if config.proxy.enabled {
+        if config.proxy.port == 0 {
+            return Err(anyhow!("proxy.port must be greater than 0"));
+        }
+
+        if config.proxy.port == config.bind.port() {
+            return Err(anyhow!(
+                "proxy.port ({}) must not equal bind port ({})",
+                config.proxy.port,
+                config.bind.port()
+            ));
+        }
+
+        if config.proxy.health_check_interval_seconds == 0 {
+            return Err(anyhow!(
+                "proxy.health_check_interval_seconds must be greater than 0"
+            ));
+        }
     }
 
     Ok(config)
@@ -525,6 +575,26 @@ const fn default_download_bytes_limit() -> usize {
 
 const fn default_clean_offlines_after_days() -> u32 {
     DEFAULT_CLEAN_OFFLINES_AFTER_DAYS
+}
+
+const fn default_proxy_enabled() -> bool {
+    DEFAULT_PROXY_ENABLED
+}
+
+const fn default_proxy_port() -> u16 {
+    DEFAULT_PROXY_PORT
+}
+
+const fn default_proxy_discoverable() -> bool {
+    DEFAULT_PROXY_DISCOVERABLE
+}
+
+fn default_proxy_health_check_url() -> String {
+    DEFAULT_PROXY_HEALTH_CHECK_URL.to_string()
+}
+
+const fn default_proxy_health_check_interval() -> u64 {
+    DEFAULT_PROXY_HEALTH_CHECK_INTERVAL
 }
 
 #[cfg(test)]

@@ -37,6 +37,19 @@ sharing:
   # true auto-generates a token; a string sets your own shared secret.
   token: null
 
+#* Persistent local proxy for routing app traffic through ranked configs.
+proxy:
+  # false disables the persistent proxy (subscription endpoints still work).
+  enabled: false
+  # Port for the mixed SOCKS5/HTTP proxy (sing-box mixed inbound).
+  port: 27910
+  # true binds to 0.0.0.0 and adds a firewall rule for LAN access.
+  discoverable: false
+  # URL tested through the proxy to verify it's alive.
+  health_check_url: https://www.gstatic.com/generate_204
+  # Seconds between proxy health checks.
+  health_check_interval_seconds: 60
+
 #* Candidate validation settings.
 probe:
   # active uses sing-box for real HTTP tests; tcp is only a lightweight diagnostic.

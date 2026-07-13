@@ -45,7 +45,13 @@ fn sharing_status_from_hosts(config: &RuntimeConfig, hosts: &[String]) -> Sharin
         (false, _) => "no".to_string(),
     };
     let firewall = if config.sharing_enabled && !hosts.is_empty() {
-        format!("allowed TCP {}", config.bind.port())
+        if config.proxy_enabled && config.proxy_discoverable {
+            format!("allowed TCP {}, {}", config.bind.port(), config.proxy_port)
+        } else {
+            format!("allowed TCP {}", config.bind.port())
+        }
+    } else if config.proxy_enabled && config.proxy_discoverable {
+        format!("allowed TCP {}", config.proxy_port)
     } else {
         "not required for local-only bind".to_string()
     };
@@ -288,6 +294,9 @@ mod tests {
             download_bytes_limit: DEFAULT_DOWNLOAD_BYTES_LIMIT,
             subscription_count: 0,
             enabled_subscription_count: 0,
+            proxy_enabled: false,
+            proxy_port: 27910,
+            proxy_discoverable: false,
         }
     }
 

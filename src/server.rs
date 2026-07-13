@@ -382,6 +382,9 @@ mod tests {
             download_bytes_limit: DEFAULT_DOWNLOAD_BYTES_LIMIT,
             subscription_count: 0,
             enabled_subscription_count: 0,
+            proxy_enabled: false,
+            proxy_port: 27910,
+            proxy_discoverable: false,
         }
     }
 

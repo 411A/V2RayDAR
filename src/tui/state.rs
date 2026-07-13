@@ -16,6 +16,7 @@ pub enum MenuView {
 pub enum MainItem {
     OpenConfig,
     Sharing,
+    Proxy,
     Subscriptions,
     CleanCache,
     Configurations,
@@ -61,6 +62,11 @@ pub enum ConfigKey {
     CleanOfflineDays,
     TokenRequired,
     Token,
+    ProxyEnabled,
+    ProxyPort,
+    ProxyDiscoverable,
+    ProxyHealthCheckUrl,
+    ProxyHealthCheckInterval,
     ResetDefaults,
 }
 

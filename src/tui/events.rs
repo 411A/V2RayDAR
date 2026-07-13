@@ -322,11 +322,38 @@ fn activate_main(
                 &paths.root_dir,
                 state.editable.sharing.enabled,
                 state.editable.bind.port(),
+                crate::constants::FIREWALL_RULE_NAME,
             ) {
                 Ok(message) => message,
                 Err(error) => format!(
                     "Sharing {}; firewall not changed: {error}",
                     if state.editable.sharing.enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    }
+                ),
+            };
+        }
+        MainItem::Proxy => {
+            state.editable.proxy.discoverable = !state.editable.proxy.discoverable;
+            if state.editable.proxy.discoverable && !state.editable.proxy.enabled {
+                state.editable.proxy.enabled = true;
+            }
+            state.dirty = true;
+            super::util::save_config(&paths.config_path, &state.editable)?;
+            update_live_runtime_config(runtime_config, state);
+            state.dirty = false;
+            state.status = match super::firewall::apply(
+                &paths.root_dir,
+                state.editable.proxy.discoverable,
+                state.editable.proxy.port,
+                crate::constants::FIREWALL_PROXY_RULE_NAME,
+            ) {
+                Ok(message) => message,
+                Err(error) => format!(
+                    "Proxy discoverable {}; firewall not changed: {error}",
+                    if state.editable.proxy.discoverable {
                         "enabled"
                     } else {
                         "disabled"

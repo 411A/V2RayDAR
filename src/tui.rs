@@ -3,7 +3,7 @@ mod config_editor;
 mod config_panel;
 mod draw;
 mod events;
-mod firewall;
+pub(crate) mod firewall;
 mod footer;
 mod found_panel;
 mod input_handlers;

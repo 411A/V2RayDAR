@@ -64,7 +64,7 @@ fn parse_sing_box_version(output: &str) -> Option<(u32, u32, u32)> {
 }
 
 /// Check if the detected sing-box version is >= (major, minor, patch).
-fn sing_box_version_at_least(major: u32, minor: u32, patch: u32) -> bool {
+pub(crate) fn sing_box_version_at_least(major: u32, minor: u32, patch: u32) -> bool {
     match SING_BOX_VERSION_DETECTED.get() {
         Some(Some((maj, min, pat))) => (*maj, *min, *pat) >= (major, minor, patch),
         _ => false,
@@ -1976,7 +1976,7 @@ fn compare_ranked(left: &RankedConfig, right: &RankedConfig) -> Ordering {
         .then_with(|| left.uri.cmp(&right.uri))
 }
 
-fn sing_box_outbound_from_share_link(uri: &str) -> Result<Value> {
+pub(crate) fn sing_box_outbound_from_share_link(uri: &str) -> Result<Value> {
     let lower = uri.to_ascii_lowercase();
     if lower.starts_with("vmess://") {
         vmess_outbound(uri)

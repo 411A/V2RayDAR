@@ -27,6 +27,7 @@ struct ConfigView {
     sharing: crate::network::SharingStatus,
     show_endpoint: bool,
     discoverable: String,
+    proxy: String,
 }
 
 impl ConfigView {
@@ -51,11 +52,24 @@ impl ConfigView {
         } else {
             sharing.discoverable.clone()
         };
+        let proxy = if live_config.proxy_enabled {
+            if live_config.proxy_discoverable {
+                let lan_ip = crate::network::primary_lan_ip()
+                    .map(|ip| ip.to_string())
+                    .unwrap_or_else(|| "?".to_string());
+                format!("yes http://{lan_ip}:{}", live_config.proxy_port)
+            } else {
+                format!("yes http://127.0.0.1:{}", live_config.proxy_port)
+            }
+        } else {
+            "off".to_string()
+        };
         Self {
             live_config,
             sharing,
             show_endpoint,
             discoverable,
+            proxy,
         }
     }
 }
@@ -147,6 +161,7 @@ pub fn draw(
                 bool_text(view.live_config.require_token).to_string(),
             ),
             ("discoverable", view.discoverable),
+            ("proxy", view.proxy),
             ("firewall", view.sharing.firewall),
         ],
     );

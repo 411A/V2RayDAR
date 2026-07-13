@@ -41,6 +41,12 @@ pub const DEFAULT_TEST_URL: &str = "https://www.gstatic.com/generate_204";
 pub const DEFAULT_ACCEPTED_STATUSES: &[u16] = &[204, 200];
 pub const DEFAULT_DOWNLOAD_BYTES_LIMIT: usize = 1_048_576;
 pub const DEFAULT_CLEAN_OFFLINES_AFTER_DAYS: u32 = 7;
+pub const DEFAULT_PROXY_ENABLED: bool = false;
+pub const DEFAULT_PROXY_PORT: u16 = 27910;
+pub const DEFAULT_PROXY_DISCOVERABLE: bool = false;
+pub const DEFAULT_PROXY_HEALTH_CHECK_URL: &str = "https://www.gstatic.com/generate_204";
+pub const DEFAULT_PROXY_HEALTH_CHECK_INTERVAL: u64 = 60;
+pub const FIREWALL_PROXY_RULE_NAME: &str = "V2RayDAR Proxy";
 
 pub const MAX_TUI_LOGS: usize = 512;
 
@@ -108,9 +114,10 @@ pub const WINDOWS_CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[cfg(test)]
 pub const TEST_REALITY_PUBLIC_KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
-pub const MAIN_ITEMS: [MainItem; 6] = [
+pub const MAIN_ITEMS: [MainItem; 7] = [
     MainItem::OpenConfig,
     MainItem::Sharing,
+    MainItem::Proxy,
     MainItem::Subscriptions,
     MainItem::CleanCache,
     MainItem::Configurations,
@@ -124,7 +131,7 @@ pub const SUBSCRIPTION_ACTIONS: [SubscriptionAction; 6] = [
     SubscriptionAction::Delete,
     SubscriptionAction::Back,
 ];
-pub const CONFIG_KEYS: [ConfigKey; 28] = [
+pub const CONFIG_KEYS: [ConfigKey; 33] = [
     ConfigKey::Bind,
     ConfigKey::TopN,
     ConfigKey::RefreshSeconds,
@@ -152,6 +159,11 @@ pub const CONFIG_KEYS: [ConfigKey; 28] = [
     ConfigKey::CleanOfflineDays,
     ConfigKey::TokenRequired,
     ConfigKey::Token,
+    ConfigKey::ProxyEnabled,
+    ConfigKey::ProxyPort,
+    ConfigKey::ProxyDiscoverable,
+    ConfigKey::ProxyHealthCheckUrl,
+    ConfigKey::ProxyHealthCheckInterval,
     ConfigKey::ResetDefaults,
 ];
 

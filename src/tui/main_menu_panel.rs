@@ -50,6 +50,18 @@ fn draw_main(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) {
                         "disabled"
                     },
                 ),
+                MainItem::Proxy => (
+                    "Persistent proxy for app traffic",
+                    if state.editable.proxy.enabled {
+                        if state.editable.proxy.discoverable {
+                            "enabled (LAN)"
+                        } else {
+                            "enabled"
+                        }
+                    } else {
+                        "disabled"
+                    },
+                ),
                 MainItem::Subscriptions => ("Subscriptions", "enter to manage sources"),
                 MainItem::CleanCache => ("Clean Cache", "delete cached subscription snapshots"),
                 MainItem::Configurations => ("Configurations", "enter to edit config values"),

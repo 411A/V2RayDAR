@@ -9,6 +9,7 @@ mod network;
 mod parser;
 mod paths;
 mod probe;
+mod proxy;
 mod server;
 mod sing_box;
 mod subscription;
@@ -251,25 +252,56 @@ async fn main() -> Result<()> {
         );
     }
 
+    let proxy: Option<proxy::SharedProxy> = if config.proxy.enabled {
+        let shared = Arc::new(tokio::sync::Mutex::new(proxy::PersistentProxy::new(
+            config.proxy.clone(),
+            config.probe.sing_box_path.clone(),
+        )));
+
+        if config.proxy.discoverable
+            && let Err(err) = crate::tui::firewall::apply(
+                &paths.root_dir,
+                true,
+                config.proxy.port,
+                constants::FIREWALL_PROXY_RULE_NAME,
+            )
+        {
+            tracing::warn!(error = %err, "failed to add proxy firewall rule");
+        }
+
+        proxy::spawn_health_loop(shared.clone(), Arc::new(RwLock::new(Vec::new())));
+
+        Some(shared)
+    } else {
+        None
+    };
+
     let (config_tx, config_rx) = watch::channel(config.clone());
     spawn_refresh_loop(
         config_rx,
         database.clone(),
         state.clone(),
         runtime_config.clone(),
+        proxy.clone(),
         cli.no_tui,
         cli.no_tui && !cli.verbose,
     );
     spawn_config_watcher(paths.config_path.clone(), config.bind, config_tx);
 
-    if cli.no_tui {
+    let result = if cli.no_tui {
         serve(config.bind, state, runtime_config).await
     } else {
         tokio::select! {
             result = serve(config.bind, state.clone(), runtime_config.clone()) => result,
             result = tui::run(config, paths, state, runtime_config, database.clone()) => result,
         }
+    };
+
+    if let Some(proxy) = &proxy {
+        proxy.lock().await.shutdown().await;
     }
+
+    result
 }
 
 async fn uninstall(paths: &AppPaths, assume_yes: bool) -> Result<()> {
@@ -1112,6 +1144,10 @@ async fn refresh_once(
         fetch_errors,
         ranked,
         stable_working_counts,
+        proxy_active_config: None,
+        proxy_running: false,
+        proxy_port: None,
+        proxy_discoverable: false,
     };
 
     let failed_count = runtime
@@ -1229,6 +1265,7 @@ fn spawn_refresh_loop(
     database: Arc<Database>,
     state: Arc<RwLock<RuntimeState>>,
     runtime_config: Arc<RwLock<RuntimeConfig>>,
+    proxy: Option<proxy::SharedProxy>,
     print_terminal_summary: bool,
     print_compact_progress: bool,
 ) {
@@ -1257,6 +1294,12 @@ fn spawn_refresh_loop(
                     error!(error = %err, "initial refresh failed");
                     record_refresh_error(&state, err.to_string()).await;
                 }
+
+                if let Some(proxy) = &proxy {
+                    let ranked = state.read().await.ranked.clone();
+                    proxy.lock().await.update(&ranked).await;
+                }
+
                 continue;
             }
 
@@ -1285,6 +1328,12 @@ fn spawn_refresh_loop(
                     error!(error = %err, "refresh after config reload failed");
                     record_refresh_error(&state, err.to_string()).await;
                 }
+
+                if let Some(proxy) = &proxy {
+                    let ranked = state.read().await.ranked.clone();
+                    proxy.lock().await.update(&ranked).await;
+                }
+
                 continue;
             }
 
@@ -1299,6 +1348,11 @@ fn spawn_refresh_loop(
                     if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), print_terminal_summary, print_compact_progress).await {
                         error!(error = %err, "refresh failed");
                         record_refresh_error(&state, err.to_string()).await;
+                    }
+
+                    if let Some(proxy) = &proxy {
+                        let ranked = state.read().await.ranked.clone();
+                        proxy.lock().await.update(&ranked).await;
                     }
                 }
                 changed = config_rx.changed() => {
@@ -1316,6 +1370,11 @@ fn spawn_refresh_loop(
                     if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), print_terminal_summary, print_compact_progress).await {
                         error!(error = %err, "refresh after config reload failed");
                         record_refresh_error(&state, err.to_string()).await;
+                    }
+
+                    if let Some(proxy) = &proxy {
+                        let ranked = state.read().await.ranked.clone();
+                        proxy.lock().await.update(&ranked).await;
                     }
                 }
             }
@@ -1662,6 +1721,9 @@ impl From<&AppConfig> for RuntimeConfig {
                 .iter()
                 .filter(|source| source.enabled)
                 .count(),
+            proxy_enabled: config.proxy.enabled,
+            proxy_port: config.proxy.port,
+            proxy_discoverable: config.proxy.discoverable,
         }
     }
 }

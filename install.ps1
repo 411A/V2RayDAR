@@ -55,6 +55,94 @@ function Confirm {
     return $answer -match '^[Yy]'
 }
 
+# ─── Version Comparison ────────────────────────────────────────────────────────
+# Compare two semver strings (e.g. "0.4.0" vs "0.5.3").
+# Returns: 0 if equal, 1 if $Left > $Right, -1 if $Left < $Right
+# Uses .NET [version] for idiomatic, efficient comparison with fallback.
+function Compare-Version {
+    param([string]$Left, [string]$Right)
+
+    $l = $Left.TrimStart('v')
+    $r = $Right.TrimStart('v')
+
+    # Use .NET [version] — idiomatic, handles Major.Minor[.Build[.Revision]]
+    try {
+        return [version]$l.CompareTo([version]$r)
+    }
+    catch {
+        # Fallback for non-standard version strings
+    }
+
+    # Manual fallback
+    $lParts = $l.Split('.')
+    $rParts = $r.Split('.')
+    $max = [math]::Max($lParts.Length, $rParts.Length)
+    for ($i = 0; $i -lt $max; $i++) {
+        $lNum = if ($i -lt $lParts.Length) { [int]$lParts[$i] } else { 0 }
+        $rNum = if ($i -lt $rParts.Length) { [int]$rParts[$i] } else { 0 }
+        if ($lNum -gt $rNum) { return 1 }
+        if ($lNum -lt $rNum) { return -1 }
+    }
+    return 0
+}
+
+# ─── Installation Detection ───────────────────────────────────────────────────
+# Search common locations for an existing v2raydar binary and get its version.
+# Sets $Script:FoundPath and $Script:FoundVersion. Returns $true if found.
+function Find-Installed {
+    $Script:FoundPath = $null
+    $Script:FoundVersion = $null
+
+    $desktop = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
+    if ([string]::IsNullOrWhiteSpace($desktop)) { $desktop = Join-Path $env:USERPROFILE "Desktop" }
+
+    $localAppData = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { "$env:USERPROFILE\AppData\Local" }
+
+    $candidatePaths = @()
+    if (Test-Path $desktop) {
+        $candidatePaths += Join-Path $desktop "V2RayDAR"
+    }
+    $candidatePaths += Join-Path $env:USERPROFILE "V2RayDAR"
+    $candidatePaths += Join-Path $localAppData "V2RayDAR"
+
+    foreach ($dir in $candidatePaths) {
+        $exePath = Join-Path $dir "$AppName.exe"
+        if (Test-Path $exePath) {
+            $Script:FoundPath = $dir
+            Get-VersionFromBinary -Path $exePath | Out-Null
+            return $true
+        }
+    }
+
+    # Check PATH
+    $inPath = Get-Command $AppName -ErrorAction SilentlyContinue
+    if ($inPath -and (Test-Path $inPath.Source)) {
+        $Script:FoundPath = Split-Path $inPath.Source -Parent
+        Get-VersionFromBinary -Path $inPath.Source | Out-Null
+        return $true
+    }
+
+    return $false
+}
+
+# Extract version from a binary by running --version.
+function Get-VersionFromBinary {
+    param([string]$Path)
+
+    try {
+        $output = & $Path --version 2>&1 | Out-String
+        if ($LASTEXITCODE -eq 0 -and $output) {
+            # Output format: "v2raydar 0.5.3" or "v2raydar v0.5.3"
+            if ($output -match 'v?(\d+\.\d+\.\d+)') {
+                $Script:FoundVersion = $Matches[1]
+                return $true
+            }
+        }
+    }
+    catch {}
+    return $false
+}
+
 # ─── Platform Detection ────────────────────────────────────────────────────────
 
 function Get-Arch {
@@ -223,7 +311,7 @@ function Verify-Checksum {
     }
 }
 
-# ─── Install Modes ─────────────────────────────────────────────────────────────
+# ─── Extract ───────────────────────────────────────────────────────────────────
 
 function Extract-Archive {
     param([string]$FilePath, [string]$Dest)
@@ -396,7 +484,6 @@ function Select-InstallMode {
     Write-Host "  ========================================"
     Write-Host ""
     Write-Info "Detected: Windows $arch"
-    Write-Info "Latest version: $Version"
     Write-Host ""
 
     $desktop = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
@@ -473,6 +560,74 @@ function Main {
         $Asset = Select-Asset -Arch $arch
         Write-Info "asset: $Asset"
 
+        # ─── Check for existing installation ────────────────────────────────────
+        Write-Host ""
+        Write-Host "  ========================================"
+        Write-Host "       V2RayDAR Installer v$Version"
+        Write-Host "  ========================================"
+        Write-Host ""
+        Write-Info "Detected: Windows $arch"
+
+        $found = Find-Installed
+
+        if ($found) {
+            if ($Script:FoundVersion) {
+                $cmp = Compare-Version -Left $Script:FoundVersion -Right $Version
+
+                if ($cmp -eq 0) {
+                    # Same version — already up to date
+                    Write-Host ""
+                    Write-Host "> V2RayDAR v$($Script:FoundVersion) (latest version) is already installed." -ForegroundColor Green
+                    if ($Script:FoundPath) {
+                        Write-Info "location: $($Script:FoundPath)\$AppName.exe"
+                    }
+                    Write-Host ""
+                    return
+                }
+                elseif ($cmp -lt 0) {
+                    # Installed version is older — outdated
+                    Write-Host ""
+                    Write-Host "! V2RayDAR v$($Script:FoundVersion) is installed, but v$Version is available." -ForegroundColor Yellow
+                    if ($Script:FoundPath) {
+                        Write-Info "location: $($Script:FoundPath)\$AppName.exe"
+                    }
+                    Write-Host ""
+                    if (-not (Confirm -Prompt "update from v$($Script:FoundVersion) to v$Version?")) {
+                        Write-Info "cancelled"
+                        return
+                    }
+                }
+                else {
+                    # Installed version is newer than latest release (unusual)
+                    Write-Host ""
+                    Write-Host "> V2RayDAR v$($Script:FoundVersion) is already installed (newer than latest release v$Version)." -ForegroundColor Green
+                    if ($Script:FoundPath) {
+                        Write-Info "location: $($Script:FoundPath)\$AppName.exe"
+                    }
+                    Write-Host ""
+                    return
+                }
+            }
+            else {
+                # Found binary but couldn't determine version
+                Write-Host ""
+                Write-Warn "V2RayDAR is installed at $($Script:FoundPath)\$AppName.exe, but could not determine its version."
+                Write-Host ""
+                if (-not (Confirm -Prompt "update to latest version?")) {
+                    Write-Info "cancelled"
+                    return
+                }
+            }
+        }
+        else {
+            # Not installed
+            Write-Host ""
+            Write-Info "V2RayDAR is not installed."
+        }
+
+        # ─── Proceed with installation ──────────────────────────────────────────
+        Write-Host ""
+
         # Determine install mode
         if ($Portable) {
             $Script:InstallMode = "portable"
@@ -490,7 +645,6 @@ function Main {
             Select-InstallMode
         }
 
-        Write-Host ""
         Write-Info "will install to: $InstallDir"
 
         if (-not (Confirm -Prompt "Proceed with installation?" -Default $true)) {

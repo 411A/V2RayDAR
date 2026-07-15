@@ -63,6 +63,82 @@ confirm() {
     esac
 }
 
+# ─── Version Comparison ────────────────────────────────────────────────────────
+# Compare two semver strings (e.g. "0.4.0" vs "0.5.3").
+# Returns: 0 if equal, 1 if $1 > $2, 2 if $1 < $2
+# Uses awk for single-process, portable, efficient comparison.
+version_compare() {
+    _v1="${1#v}"
+    _v2="${2#v}"
+
+    [ "$_v1" = "$_v2" ] && return 0
+
+    awk -v v1="$_v1" -v v2="$_v2" '
+    BEGIN {
+        n1 = split(v1, a1, ".")
+        n2 = split(v2, a2, ".")
+        n = (n1 > n2) ? n1 : n2
+        for (i = 1; i <= n; i++) {
+            x = (i <= n1) ? a1[i] + 0 : 0
+            y = (i <= n2) ? a2[i] + 0 : 0
+            if (x < y) exit 2
+            if (x > y) exit 1
+        }
+        exit 0
+    }'
+}
+
+# ─── Installation Detection ───────────────────────────────────────────────────
+# Search common locations for an existing v2raydar binary and get its version.
+# Sets FOUND_PATH and FOUND_VERSION. Returns 0 if found, 1 if not.
+find_installed() {
+    FOUND_PATH=""
+    FOUND_VERSION=""
+
+    _candidate_paths=""
+    [ -d "$HOME/Desktop" ] && _candidate_paths="$_candidate_paths $HOME/Desktop/V2RayDAR"
+    _candidate_paths="$_candidate_paths $HOME/V2RayDAR $HOME/.local/bin"
+    [ "$IS_TERMUX" = "1" ] && _candidate_paths="$_candidate_paths ${PREFIX:-/usr/local}/bin"
+
+    for _dir in $_candidate_paths; do
+        _bin="$_dir/$APP_NAME"
+        [ -f "$_bin" ] || continue
+        [ -x "$_bin" ] || continue
+        FOUND_PATH="$_dir"
+        _get_version "$_bin" && return 0
+        # Binary found but couldn't get version — still counts as installed
+        return 0
+    done
+
+    # Check PATH
+    set +e
+    _which_bin="$(command -v "$APP_NAME" 2>/dev/null)"
+    set -e
+    if [ -n "$_which_bin" ] && [ -f "$_which_bin" ]; then
+        FOUND_PATH="$(dirname "$_which_bin")"
+        _get_version "$_which_bin" || true
+        return 0
+    fi
+
+    return 1
+}
+
+# Extract version from a binary by running --version.
+# Sets FOUND_VERSION if successful. Returns 0/1.
+_get_version() {
+    _bin="$1"
+    set +e
+    _ver_output="$("$_bin" --version 2>/dev/null)"
+    _ver_exit=$?
+    set -e
+    if [ "$_ver_exit" -eq 0 ] && [ -n "$_ver_output" ]; then
+        # Output format: "v2raydar 0.5.3" or "v2raydar v0.5.3"
+        FOUND_VERSION="$(echo "$_ver_output" | sed -n 's/^[^ ]* *v\{0,1\}\([0-9][0-9.]*\).*/\1/p' | head -1)"
+        [ -n "$FOUND_VERSION" ] && return 0
+    fi
+    return 1
+}
+
 # ─── Platform Detection ────────────────────────────────────────────────────────
 
 detect_os() {
@@ -455,7 +531,7 @@ interactive_install() {
     esac
 }
 
-# ─── Main ──────────────────────────────────────────────────────────────────────
+# ─── Help ──────────────────────────────────────────────────────────────────────
 
 usage() {
     cat <<EOF
@@ -474,6 +550,8 @@ Options:
     -h, --help               Show this help message
 EOF
 }
+
+# ─── Main ──────────────────────────────────────────────────────────────────────
 
 main() {
     VERSION=""
@@ -507,6 +585,88 @@ main() {
     select_asset
     info "asset: $ASSET"
 
+    # ─── Check for existing installation ────────────────────────────────────────
+    _detected_os="$OS"
+    if [ "$IS_TERMUX" = "1" ]; then _detected_os="termux"; fi
+
+    echo ""
+    echo "  ========================================"
+    echo "       V2RayDAR Installer v${VERSION}"
+    echo "  ========================================"
+    echo ""
+    info "Detected: ${_detected_os} ${ARCH}"
+
+    if find_installed; then
+        # Found an existing installation
+        if [ -n "$FOUND_VERSION" ]; then
+            # Compare versions
+            if version_compare "$FOUND_VERSION" "$VERSION"; then
+                # Same version
+                echo ""
+                printf '\033[1;32m✓\033[0m V2RayDAR v%s (latest version) is already installed.\n' "$FOUND_VERSION"
+                if [ -n "$FOUND_PATH" ]; then
+                    info "location: $FOUND_PATH/$APP_NAME"
+                fi
+                echo ""
+                return
+            fi
+
+            # Installed version is older
+            version_compare "$FOUND_VERSION" "$VERSION" && true  # dummy to avoid set -e issues
+            _cmp_exit=$?
+            if [ "$_cmp_exit" = "2" ]; then
+                # FOUND_VERSION < VERSION → outdated
+                echo ""
+                printf '\033[1;33m!\033[0m V2RayDAR v%s is installed, but v%s is available.\n' "$FOUND_VERSION" "$VERSION"
+                if [ -n "$FOUND_PATH" ]; then
+                    info "location: $FOUND_PATH/$APP_NAME"
+                fi
+                echo ""
+                if [ "${NON_INTERACTIVE:-0}" = "1" ]; then
+                    info "non-interactive mode: proceeding with update"
+                elif [ -t 0 ] || [ -t 2 ]; then
+                    if ! confirm "update from v${FOUND_VERSION} to v${VERSION}?"; then
+                        info "cancelled"
+                        return
+                    fi
+                else
+                    info "non-interactive mode detected, proceeding with update"
+                fi
+            else
+                # FOUND_VERSION > VERSION → installed is newer than latest (unusual)
+                echo ""
+                printf '\033[1;32m✓\033[0m V2RayDAR v%s is already installed (newer than latest release v%s).\n' "$FOUND_VERSION" "$VERSION"
+                if [ -n "$FOUND_PATH" ]; then
+                    info "location: $FOUND_PATH/$APP_NAME"
+                fi
+                echo ""
+                return
+            fi
+        else
+            # Found binary but couldn't determine version
+            echo ""
+            warn "V2RayDAR is installed at $FOUND_PATH/$APP_NAME, but could not determine its version."
+            echo ""
+            if [ "${NON_INTERACTIVE:-0}" = "1" ]; then
+                info "non-interactive mode: proceeding with update"
+            elif [ -t 0 ] || [ -t 2 ]; then
+                if ! confirm "update to latest version?"; then
+                    info "cancelled"
+                    return
+                fi
+            else
+                info "non-interactive mode detected, proceeding with update"
+            fi
+        fi
+    else
+        # Not installed
+        echo ""
+        info "V2RayDAR is not installed."
+    fi
+
+    # ─── Proceed with installation ──────────────────────────────────────────────
+    echo ""
+
     # Interactive install if no mode specified
     if [ -z "$INSTALL_MODE" ]; then
         interactive_install
@@ -523,7 +683,6 @@ main() {
         INSTALL_DIR="$HOME/.local/bin"
     fi
 
-    echo ""
     if [ "$INSTALL_MODE" = "portable" ]; then
         info "will install to: $INSTALL_DIR"
     fi

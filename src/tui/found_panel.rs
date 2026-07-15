@@ -5,7 +5,7 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Row, Table},
 };
 
-use super::view::RuntimeView;
+use super::{util::draw_scrollbar, view::RuntimeView};
 
 #[allow(clippy::too_many_lines)]
 pub fn draw(
@@ -130,6 +130,7 @@ pub fn draw(
         ),
         area,
     );
+    draw_scrollbar(frame, area, total_items, visible_rows, *scroll, false);
 }
 
 fn truncate(value: &str, width: usize) -> std::borrow::Cow<'_, str> {

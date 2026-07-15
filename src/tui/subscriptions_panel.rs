@@ -8,6 +8,7 @@ use ratatui::{
 use super::{
     main_menu_panel::{row_hits_with_offset, scroll_offset, visible_row_count},
     state::TuiState,
+    util::draw_scrollbar,
 };
 
 pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) {
@@ -85,4 +86,5 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) {
         ),
         area,
     );
+    draw_scrollbar(frame, area, total, visible_rows, offset, false);
 }

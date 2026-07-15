@@ -13,6 +13,7 @@ use super::{
     state::{
         ConfigKey, InputMode, MainItem, MenuView, NewSubscriptionStep, SubscriptionAction, TuiState,
     },
+    util::draw_scrollbar,
     view::RuntimeView,
 };
 
@@ -79,6 +80,7 @@ fn draw_main(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) {
         vec![Constraint::Length(34), Constraint::Fill(1)],
         rows,
     );
+    draw_scrollbar(frame, area, total, visible_rows, offset, false);
 }
 
 fn draw_logs(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState, runtime: &RuntimeView) {
@@ -106,6 +108,7 @@ fn draw_logs(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState, runtime: &
             .wrap(ratatui::widgets::Wrap { trim: true }),
         area,
     );
+    draw_scrollbar(frame, area, total, visible_rows, state.selected_log, true);
 }
 
 fn draw_subscription_actions(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
@@ -133,6 +136,7 @@ fn draw_subscription_actions(frame: &mut Frame<'_>, area: Rect, state: &TuiState
         vec![Constraint::Length(24), Constraint::Fill(1)],
         rows,
     );
+    draw_scrollbar(frame, area, total, visible_rows, offset, false);
 }
 
 fn draw_new_subscription(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
@@ -204,8 +208,9 @@ fn draw_new_subscription(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
 
 fn draw_configurations(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) {
     let visible_rows = visible_row_count(area);
-    let offset = scroll_offset(state.selected_config, CONFIG_KEYS.len(), visible_rows);
-    state.hits.config_rows = row_hits_with_offset(area, CONFIG_KEYS.len(), offset);
+    let total = CONFIG_KEYS.len();
+    let offset = scroll_offset(state.selected_config, total, visible_rows);
+    state.hits.config_rows = row_hits_with_offset(area, total, offset);
     let rows = CONFIG_KEYS
         .iter()
         .enumerate()
@@ -231,6 +236,7 @@ fn draw_configurations(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) 
         ],
         rows,
     );
+    draw_scrollbar(frame, area, total, visible_rows, offset, false);
 }
 
 fn config_value(state: &TuiState, key: ConfigKey) -> String {

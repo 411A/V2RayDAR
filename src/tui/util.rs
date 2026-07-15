@@ -779,6 +779,62 @@ pub const fn bool_text(value: bool) -> &'static str {
     if value { "on" } else { "off" }
 }
 
+/// Draw a ratatui `Scrollbar` inside the block's inner area.
+///
+/// `visible_rows` = actual content rows visible (excluding borders & headers).
+/// `invert` = true when offset=0 means newest/bottom content.
+pub fn draw_scrollbar(
+    frame: &mut ratatui::Frame<'_>,
+    area: ratatui::layout::Rect,
+    total_items: usize,
+    visible_rows: usize,
+    scroll_offset: usize,
+    invert: bool,
+) {
+    use ratatui::widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState};
+
+    if area.height < 3 || visible_rows == 0 {
+        return;
+    }
+    let inner_height = area.height.saturating_sub(2) as usize;
+    if total_items <= visible_rows || inner_height < 3 {
+        return;
+    }
+
+    // The scrollbar renders in the block's inner area (between borders).
+    // vertical margin=1 strips top/bottom borders; horizontal=0 keeps full width.
+    let inner = area.inner(ratatui::layout::Margin {
+        vertical: 1,
+        horizontal: 0,
+    });
+
+    // Map scroll_offset → position for the scrollbar.
+    // scroll_offset ranges 0..max_scroll where max_scroll = total_items - visible_rows.
+    // Ratatui maps position = content_length - 1 to the very bottom of the track.
+    let max_scroll = total_items.saturating_sub(visible_rows);
+    let last_position = total_items.saturating_sub(1);
+    let position = if max_scroll == 0 {
+        0
+    } else {
+        let raw = scroll_offset.min(max_scroll) * last_position / max_scroll;
+        if invert {
+            last_position.saturating_sub(raw)
+        } else {
+            raw
+        }
+    };
+
+    let mut state = ScrollbarState::new(total_items)
+        .position(position)
+        .viewport_content_length(inner_height);
+
+    frame.render_stateful_widget(
+        Scrollbar::new(ScrollbarOrientation::VerticalRight),
+        inner,
+        &mut state,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use std::{

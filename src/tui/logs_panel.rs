@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 
-use super::view::RuntimeView;
+use super::{util::draw_scrollbar, view::RuntimeView};
 
 pub fn draw(frame: &mut Frame<'_>, area: Rect, runtime: &RuntimeView, scroll: &mut usize) {
     if area.height < 3 || area.width < 10 {
@@ -37,4 +37,5 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, runtime: &RuntimeView, scroll: &m
             .wrap(Wrap { trim: true }),
         area,
     );
+    draw_scrollbar(frame, area, total, visible_height, *scroll, true);
 }

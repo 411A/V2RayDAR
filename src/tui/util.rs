@@ -826,10 +826,10 @@ pub fn draw_scrollbar(
 
     let mut state = ScrollbarState::new(total_items)
         .position(position)
-        .viewport_content_length(inner_height);
+        .viewport_content_length(1);
 
     frame.render_stateful_widget(
-        Scrollbar::new(ScrollbarOrientation::VerticalRight),
+        Scrollbar::new(ScrollbarOrientation::VerticalRight).thumb_symbol("▣"),
         inner,
         &mut state,
     );

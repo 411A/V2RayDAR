@@ -54,13 +54,7 @@ pub fn draw(
     } else {
         (
             Row::new([
-                "Rank",
-                "Seen",
-                "Subscription Name",
-                "Protocol",
-                "Name",
-                "Endpoint",
-                "Latency",
+                "Rank", "Seen", "Sub Name", "Protocol", "Name", "Endpoint", "Latency",
             ])
             .style(
                 Style::default()

@@ -1,6 +1,5 @@
 use std::time::Instant;
 
-use chrono::{DateTime, Utc};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -32,7 +31,6 @@ pub fn draw(
     config: &RuntimeConfig,
     app_started_at: Instant,
     instant_now: Instant,
-    utc_now: DateTime<Utc>,
 ) {
     if area.height == 0 || area.width == 0 {
         return;
@@ -42,7 +40,7 @@ pub fn draw(
     let failed = runtime
         .tested_candidates
         .saturating_sub(runtime.reachable_candidates);
-    let refresh = refresh_status(runtime, config.refresh_seconds, utc_now);
+    let refresh = refresh_status(runtime, config.refresh_seconds, instant_now);
     let speedtest = if config.speedtest_enabled {
         human_bytes(runtime.speedtest_bytes)
     } else {
@@ -198,11 +196,11 @@ fn draw_minimal_line(frame: &mut Frame<'_>, area: Rect, cells: &[(&str, String);
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-fn refresh_status(runtime: &RuntimeView, refresh_seconds: u64, now: DateTime<Utc>) -> String {
+fn refresh_status(runtime: &RuntimeView, refresh_seconds: u64, now: Instant) -> String {
     if runtime.refreshing {
-        let elapsed = runtime.refresh_started_at.map_or(0, |started_at| {
-            non_negative_seconds(now.signed_duration_since(started_at).num_seconds())
-        });
+        let elapsed = runtime
+            .refresh_started_instant
+            .map_or(0, |t| now.saturating_duration_since(t).as_secs());
         return format!("running {}", format_duration_ms(elapsed));
     }
 
@@ -210,16 +208,12 @@ fn refresh_status(runtime: &RuntimeView, refresh_seconds: u64, now: DateTime<Utc
         return "manual".to_string();
     }
 
-    let Some(finished_at) = runtime.refresh_finished_at else {
+    let Some(finished_at) = runtime.refresh_finished_instant else {
         return "pending".to_string();
     };
-    let elapsed = non_negative_seconds(now.signed_duration_since(finished_at).num_seconds());
+    let elapsed = now.saturating_duration_since(finished_at).as_secs();
     let remaining = refresh_seconds.saturating_sub(elapsed);
     format!("next {}", format_duration(u128::from(remaining) * 1000))
-}
-
-fn non_negative_seconds(seconds: i64) -> u64 {
-    u64::try_from(seconds).unwrap_or_default()
 }
 
 fn format_duration_hms(total_seconds: u64) -> String {

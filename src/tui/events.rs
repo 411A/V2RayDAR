@@ -193,6 +193,28 @@ fn scroll_up(state: &mut TuiState, x: u16, y: u16) {
         && state.view == MenuView::Logs
     {
         state.selected_log = state.selected_log.saturating_add(1);
+        return;
+    }
+
+    if state.view == MenuView::Subscriptions
+        && state
+            .hits
+            .subscription_rows
+            .iter()
+            .any(|(_, area)| contains(*area, x, y))
+    {
+        state.selected_subscription = state.selected_subscription.saturating_sub(1);
+        return;
+    }
+
+    if state.view == MenuView::Configurations
+        && state
+            .hits
+            .config_rows
+            .iter()
+            .any(|(_, area)| contains(*area, x, y))
+    {
+        state.selected_config = state.selected_config.saturating_sub(1);
     }
 }
 
@@ -216,6 +238,29 @@ fn scroll_down(state: &mut TuiState, x: u16, y: u16) {
         && state.view == MenuView::Logs
     {
         state.selected_log = state.selected_log.saturating_sub(1);
+        return;
+    }
+
+    if state.view == MenuView::Subscriptions
+        && state
+            .hits
+            .subscription_rows
+            .iter()
+            .any(|(_, area)| contains(*area, x, y))
+    {
+        state.selected_subscription =
+            (state.selected_subscription + 1).min(state.editable.subscriptions.len());
+        return;
+    }
+
+    if state.view == MenuView::Configurations
+        && state
+            .hits
+            .config_rows
+            .iter()
+            .any(|(_, area)| contains(*area, x, y))
+    {
+        state.selected_config = (state.selected_config + 1).min(CONFIG_KEYS.len() - 1);
     }
 }
 

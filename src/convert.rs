@@ -1461,10 +1461,11 @@ uuid: test
     }
 
     #[test]
+    #[allow(clippy::similar_names)]
     fn generate_clash_config_multiple_proxies() {
-        let vmess = sample_vmess_uri();
-        let vless = sample_vless_uri();
-        let config = generate_clash_config(&[&vmess, &vless]).unwrap();
+        let vmess_link = sample_vmess_uri();
+        let vless_link = sample_vless_uri();
+        let config = generate_clash_config(&[&vmess_link, &vless_link]).unwrap();
 
         // Should have two proxy entries
         assert!(config.contains("type: vmess"));
@@ -1478,7 +1479,7 @@ uuid: test
             .split("rules:")
             .next()
             .unwrap();
-        assert!(group_section.contains("-"));
+        assert!(group_section.contains('-'));
     }
 
     #[test]

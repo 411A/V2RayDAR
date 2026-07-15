@@ -611,11 +611,11 @@ mod tests {
         ));
         fs::write(
             &path,
-            r#"
+            r"
 subscriptions:
     - name: local
       url: data:,vless://uuid@example.com:443%23demo
-"#,
+",
         )
         .expect("temp config can be written");
         path
@@ -648,13 +648,13 @@ subscriptions:
         ));
         fs::write(
             &path,
-            r#"
+            r"
 probe:
     active_timeout_ms: 0
 subscriptions:
     - name: local
       url: data:,vless://uuid@example.com:443%23demo
-"#,
+",
         )
         .expect("temp config can be written");
         let error = AppConfig::load(&path).expect_err("zero timeout should fail");
@@ -671,13 +671,13 @@ subscriptions:
         ));
         fs::write(
             &path,
-            r#"
+            r"
 probe:
     batch_size: 0
 subscriptions:
     - name: local
       url: data:,vless://uuid@example.com:443%23demo
-"#,
+",
         )
         .expect("temp config can be written");
         let error = AppConfig::load(&path).expect_err("zero batch size should fail");
@@ -694,13 +694,13 @@ subscriptions:
         ));
         fs::write(
             &path,
-            r#"
+            r"
 probe:
     accepted_statuses: [99]
 subscriptions:
     - name: local
       url: data:,vless://uuid@example.com:443%23demo
-"#,
+",
         )
         .expect("temp config can be written");
         let error = AppConfig::load(&path).expect_err("invalid HTTP status should fail");
@@ -713,7 +713,7 @@ subscriptions:
     fn accepts_null_probe_and_sharing_strings() {
         let config = load_inline_config(
             "null-values",
-            r#"
+            r"
 sharing:
     token: null
 probe:
@@ -722,7 +722,7 @@ probe:
 subscriptions:
     - name: local
       url: data:,vless://uuid@example.com:443%23demo
-"#,
+",
         );
 
         assert_eq!(config.sharing.token, "");
@@ -795,13 +795,13 @@ subscriptions:
     fn token_true_generates_token_and_requests_persistence() {
         let (config, generated) = load_inline_config_with_generation_flag(
             "token-true",
-            r#"
+            r"
 sharing:
     token: true
 subscriptions:
     - name: local
       url: data:,vless://uuid@example.com:443%23demo
-"#,
+",
         );
 
         assert!(generated);
@@ -817,13 +817,13 @@ subscriptions:
     fn string_token_is_used_in_subscription_url() {
         let (config, generated) = load_inline_config_with_generation_flag(
             "token-string",
-            r#"
+            r"
 sharing:
     token: user-token
 subscriptions:
     - name: local
       url: data:,vless://uuid@example.com:443%23demo
-"#,
+",
         );
 
         assert!(!generated);
@@ -838,14 +838,14 @@ subscriptions:
     fn require_token_rejects_null_token() {
         let path = write_inline_config(
             "require-token-null",
-            r#"
+            r"
 sharing:
     require_token: true
     token: null
 subscriptions:
     - name: local
       url: data:,vless://uuid@example.com:443%23demo
-"#,
+",
         );
 
         let error = AppConfig::load(&path).expect_err("missing required token should fail");

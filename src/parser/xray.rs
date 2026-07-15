@@ -429,6 +429,7 @@ fn encode_params(params: &BTreeMap<String, String>) -> String {
 /// URL-encode a string (simple percent encoding for query params).
 /// Preserves unreserved characters: A-Z a-z 0-9 - _ . ~
 fn url_encode(s: &str) -> String {
+    use std::fmt::Write as _;
     let mut result = String::with_capacity(s.len() * 3);
     for byte in s.bytes() {
         match byte {
@@ -437,7 +438,7 @@ fn url_encode(s: &str) -> String {
             }
             _ => {
                 result.push('%');
-                result.push_str(&format!("{:02X}", byte));
+                write!(result, "{byte:02X}").unwrap();
             }
         }
     }

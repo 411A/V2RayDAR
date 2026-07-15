@@ -354,11 +354,11 @@ mod tests {
     #[test]
     fn parses_windows_ipconfig_ipv4_lines() {
         let ips = parse_ipconfig_ips(
-            r#"
+            r"
 Wireless LAN adapter Wi-Fi:
     IPv4 Address. . . . . . . . . . . : 192.168.43.1(Preferred)
     Subnet Mask . . . . . . . . . . . : 255.255.255.0
-"#,
+",
         );
 
         assert!(ips.contains(&"192.168.43.1".parse::<IpAddr>().expect("valid IP")));

@@ -554,8 +554,7 @@ pub fn spawn_health_loop(proxy: SharedProxy, ranked: Arc<RwLock<Vec<RankedConfig
                     max = PROXY_MAX_CONSECUTIVE_FAILURES,
                     "proxy: health check failed, waiting for more failures before failover"
                 );
-                let p = proxy.lock().await;
-                p.emit_log(format!(
+                proxy.lock().await.emit_log(format!(
                     "proxy: health fail {next}/{PROXY_MAX_CONSECUTIVE_FAILURES}"
                 ));
                 continue;
@@ -568,6 +567,7 @@ pub fn spawn_health_loop(proxy: SharedProxy, ranked: Arc<RwLock<Vec<RankedConfig
                 error!(error = %err, "proxy: failover failed");
                 p.emit_log(format!("proxy: failover failed: {err}"));
             }
+            drop(p);
         }
     });
 }

@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
+    time::Instant,
 };
 
 use serde::Serialize;
@@ -55,6 +56,10 @@ pub struct RuntimeState {
     pub live_logs: Vec<String>,
     pub refresh_started_at: Option<String>,
     pub refresh_finished_at: Option<String>,
+    #[serde(skip)]
+    pub refresh_started_instant: Option<Instant>,
+    #[serde(skip)]
+    pub refresh_finished_instant: Option<Instant>,
     pub refresh_duration_ms: Option<u128>,
     pub refreshing: bool,
     pub total_candidates: usize,

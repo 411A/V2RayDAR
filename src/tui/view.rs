@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use std::time::Instant;
 
 use crate::{
     constants::TUI_MAX_VISIBLE_RANKED,
@@ -8,10 +8,10 @@ use crate::{
 
 #[derive(Debug, Clone, Default)]
 pub struct RuntimeView {
-    pub refresh_started_at: Option<DateTime<Utc>>,
-    pub refresh_finished_at: Option<DateTime<Utc>>,
     pub refresh_duration_ms: Option<u128>,
     pub refreshing: bool,
+    pub refresh_started_instant: Option<Instant>,
+    pub refresh_finished_instant: Option<Instant>,
     pub total_candidates: usize,
     pub tested_candidates: usize,
     pub reachable_candidates: usize,
@@ -36,10 +36,10 @@ pub struct RankedView {
 impl RuntimeView {
     pub fn from_state(runtime: &RuntimeState, config: &RuntimeConfig) -> Self {
         Self {
-            refresh_started_at: parse_time(runtime.refresh_started_at.as_deref()),
-            refresh_finished_at: parse_time(runtime.refresh_finished_at.as_deref()),
             refresh_duration_ms: runtime.refresh_duration_ms,
             refreshing: runtime.refreshing,
+            refresh_started_instant: runtime.refresh_started_instant,
+            refresh_finished_instant: runtime.refresh_finished_instant,
             total_candidates: runtime.total_candidates,
             tested_candidates: runtime.tested_candidates,
             reachable_candidates: runtime.reachable_candidates,
@@ -68,10 +68,4 @@ impl RuntimeView {
                 .collect(),
         }
     }
-}
-
-fn parse_time(value: Option<&str>) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(value?)
-        .ok()
-        .map(|value| value.with_timezone(&Utc))
 }

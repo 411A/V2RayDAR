@@ -25,7 +25,6 @@ use std::{
 };
 
 use anyhow::Result;
-use chrono::Utc;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event},
     execute,
@@ -61,15 +60,14 @@ pub async fn run(
 
     let result: Result<()> = loop {
         let now = Instant::now();
-        let utc_now = Utc::now();
         if now >= next_frame {
             let config = runtime_config.read().await.clone();
             let runtime = {
                 let runtime = state.read().await;
                 RuntimeView::from_state(&runtime, &config)
             };
-            if let Err(err) = terminal
-                .draw(|frame| draw::draw(frame, &mut tui, &runtime, &config, &paths, now, utc_now))
+            if let Err(err) =
+                terminal.draw(|frame| draw::draw(frame, &mut tui, &runtime, &config, &paths, now))
             {
                 break Err(err.into());
             }

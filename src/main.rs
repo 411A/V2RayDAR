@@ -777,8 +777,10 @@ async fn refresh_once(
         let mut runtime = state.write().await;
         runtime.refreshing = true;
         runtime.refresh_started_at = Some(started_at.to_rfc3339());
+        runtime.refresh_started_instant = Some(std::time::Instant::now());
         runtime.last_error = None;
         runtime.refresh_finished_at = None;
+        runtime.refresh_finished_instant = None;
         runtime.refresh_duration_ms = None;
         runtime.total_candidates = 0;
         runtime.tested_candidates = 0;
@@ -1143,6 +1145,8 @@ async fn refresh_once(
         live_logs: progress_state.live_logs,
         refresh_started_at: Some(started_at.to_rfc3339()),
         refresh_finished_at: Some(finished_at.to_rfc3339()),
+        refresh_started_instant: Some(started_instant),
+        refresh_finished_instant: Some(std::time::Instant::now()),
         refresh_duration_ms: Some(started_instant.elapsed().as_millis()),
         refreshing: false,
         total_candidates: fetched_count,
@@ -1413,7 +1417,9 @@ async fn mark_refresh_pending(state: &Arc<RwLock<RuntimeState>>) {
     let mut state = state.write().await;
     state.refreshing = true;
     state.refresh_started_at = Some(Utc::now().to_rfc3339());
+    state.refresh_started_instant = Some(std::time::Instant::now());
     state.refresh_finished_at = None;
+    state.refresh_finished_instant = None;
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -1519,6 +1525,7 @@ async fn record_refresh_error(state: &Arc<RwLock<RuntimeState>>, error: String) 
     state.last_error = Some(error.clone());
     state.refreshing = false;
     state.refresh_finished_at = Some(Utc::now().to_rfc3339());
+    state.refresh_finished_instant = Some(std::time::Instant::now());
     state.total_candidates = 0;
     state.tested_candidates = 0;
     state.reachable_candidates = 0;

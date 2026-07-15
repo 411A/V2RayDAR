@@ -73,7 +73,7 @@ fn build_tls_config() -> rustls::ClientConfig {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "v2raydar")]
+#[command(name = "v2raydar", version)]
 #[command(about = "Fast V2Ray subscription reachability scanner and local top-N endpoint")]
 #[allow(clippy::struct_excessive_bools)]
 struct Cli {

@@ -1,3 +1,6 @@
+mod html;
+mod xray;
+
 use std::{
     collections::{HashSet, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
@@ -56,10 +59,36 @@ pub fn parse_subscription_document(source: &str, priority: u32, body: &[u8]) -> 
         collect_entries_from_yaml(source, priority, &yaml, &mut candidates, &mut seen_entries);
     }
 
+    // HTML panel extraction fallback (Marzban/Xray-style subscription panels).
+    // Extracts URIs from HTML attributes, base64 blocks in <textarea>/<code>/<pre>,
+    // and <script> content.
+    if candidates.is_empty()
+        && let Some(html_candidates) = html::try_extract_from_html(source, priority, body)
+    {
+        for candidate in html_candidates {
+            if seen_entries.insert(candidate.uri.clone()) {
+                candidates.push(candidate);
+            }
+        }
+    }
+
+    // Full Xray/V2Ray JSON config conversion fallback.
+    // Handles JSON arrays of complete Xray client configs with outbounds[],
+    // converting them to share-link URIs.
+    if candidates.is_empty()
+        && let Some(xray_candidates) = xray::try_parse_xray_configs(source, priority, body)
+    {
+        for candidate in xray_candidates {
+            if seen_entries.insert(candidate.uri.clone()) {
+                candidates.push(candidate);
+            }
+        }
+    }
+
     candidates
 }
 
-fn collect_entries_from_text(
+pub(crate) fn collect_entries_from_text(
     source: &str,
     priority: u32,
     text: &str,

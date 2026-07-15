@@ -813,16 +813,15 @@ pub fn draw_scrollbar(
     // Ratatui maps position = content_length - 1 to the very bottom of the track.
     let max_scroll = total_items.saturating_sub(visible_rows);
     let last_position = total_items.saturating_sub(1);
-    let position = if max_scroll == 0 {
-        0
-    } else {
-        let raw = scroll_offset.min(max_scroll) * last_position / max_scroll;
-        if invert {
-            last_position.saturating_sub(raw)
-        } else {
-            raw
-        }
-    };
+    let position = (scroll_offset.min(max_scroll) * last_position)
+        .checked_div(max_scroll)
+        .map_or(0, |raw| {
+            if invert {
+                last_position.saturating_sub(raw)
+            } else {
+                raw
+            }
+        });
 
     let mut state = ScrollbarState::new(total_items)
         .position(position)
@@ -877,7 +876,7 @@ mod tests {
     fn yaml_save_preserves_unrelated_shape_and_inline_lists() {
         let path = write_config(
             "preserve-shape",
-            r#"bind: 127.0.0.1:27141
+            r"bind: 127.0.0.1:27141
 top_n: 10
 
 # Keep this blank line and comment.
@@ -891,7 +890,7 @@ sharing:
 subscriptions:
   - name: first
     url: data:,vless://uuid@example.com:443%23demo
-"#,
+",
         );
         let mut config = AppConfig::load(&path).expect("config loads");
         config.top_n = 12;
@@ -911,7 +910,7 @@ subscriptions:
     fn yaml_save_updates_existing_subscription_item_in_place() {
         let path = write_config(
             "subscription-in-place",
-            r#"bind: 127.0.0.1:27141
+            r"bind: 127.0.0.1:27141
 top_n: 10
 
 probe:
@@ -926,7 +925,7 @@ subscriptions:
     url: data:,vless://second@example.com:443%23demo
     enabled: true
     priority: 2 # keep priority comment
-"#,
+",
         );
         let mut config = AppConfig::load(&path).expect("config loads");
         config.subscriptions[0].enabled = false;
@@ -947,7 +946,7 @@ subscriptions:
     fn yaml_save_removes_one_subscription_item_without_touching_others() {
         let path = write_config(
             "subscription-remove",
-            r#"bind: 127.0.0.1:27141
+            r"bind: 127.0.0.1:27141
 top_n: 10
 
 probe:
@@ -962,7 +961,7 @@ subscriptions:
     url: data:,vless://second@example.com:443%23demo
     enabled: true
     priority: 2
-"#,
+",
         );
         let mut config = AppConfig::load(&path).expect("config loads");
         config.subscriptions.remove(1);
@@ -980,7 +979,7 @@ subscriptions:
     fn yaml_save_inserts_one_subscription_item_without_touching_others() {
         let path = write_config(
             "subscription-insert",
-            r#"bind: 127.0.0.1:27141
+            r"bind: 127.0.0.1:27141
 top_n: 10
 
 probe:
@@ -991,7 +990,7 @@ subscriptions:
     url: data:,vless://first@example.com:443%23demo
     enabled: true # keep first comment
     priority: 1
-"#,
+",
         );
         let mut config = AppConfig::load(&path).expect("config loads");
         config.subscriptions.push(SubscriptionSource {
@@ -1015,13 +1014,13 @@ subscriptions:
     fn yaml_save_does_not_persist_auto_sing_box_path() {
         let path = write_config(
             "auto-sing-box-path",
-            r#"probe:
+            r"probe:
   sing_box_path: null
 
 subscriptions:
   - name: first
     url: data:,vless://first@example.com:443%23demo
-"#,
+",
         );
         let mut config = AppConfig::load(&path).expect("config loads");
         config.probe.sing_box_path = "/tmp/v2raydar/sing-box".to_string();
@@ -1057,7 +1056,7 @@ subscriptions:
     fn yaml_save_persists_proxy_settings() {
         let path = write_config(
             "proxy-persist",
-            r#"bind: 127.0.0.1:27141
+            r"bind: 127.0.0.1:27141
 top_n: 10
 
 proxy:
@@ -1073,7 +1072,7 @@ probe:
 subscriptions:
   - name: first
     url: data:,vless://uuid@example.com:443%23demo
-"#,
+",
         );
         let mut config = AppConfig::load(&path).expect("config loads");
         assert!(!config.proxy.enabled, "starts disabled");

@@ -55,8 +55,7 @@ impl ConfigView {
         let proxy = if live_config.proxy_enabled {
             if live_config.proxy_discoverable {
                 let lan_ip = crate::network::primary_lan_ip()
-                    .map(|ip| ip.to_string())
-                    .unwrap_or_else(|| "?".to_string());
+                    .map_or_else(|| "?".to_string(), |ip| ip.to_string());
                 format!("yes http://{lan_ip}:{}", live_config.proxy_port)
             } else {
                 format!("yes http://127.0.0.1:{}", live_config.proxy_port)

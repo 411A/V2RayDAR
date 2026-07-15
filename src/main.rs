@@ -2030,6 +2030,7 @@ mod tests {
         let state = state.read().await;
         assert_eq!(state.reachable_candidates, 5);
         assert_eq!(state.ranked.len(), 1);
+        drop(state);
     }
 
     #[tokio::test]
@@ -2056,6 +2057,7 @@ mod tests {
 
         let state = state.read().await;
         assert_eq!(state.ranked[0].stability_count, 3);
+        drop(state);
     }
 
     #[tokio::test]
@@ -2102,6 +2104,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [(1, "first"), (2, "second")]
         );
+        drop(state);
     }
 
     #[tokio::test]
@@ -2138,6 +2141,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["first", "second"]
         );
+        drop(state);
     }
 
     #[tokio::test]

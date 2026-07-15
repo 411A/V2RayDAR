@@ -88,7 +88,7 @@ pub fn parse_subscription_document(source: &str, priority: u32, body: &[u8]) -> 
     candidates
 }
 
-pub(crate) fn collect_entries_from_text(
+pub fn collect_entries_from_text(
     source: &str,
     priority: u32,
     text: &str,

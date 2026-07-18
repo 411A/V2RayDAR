@@ -70,7 +70,11 @@ pub const DEFAULT_LOG_FILTER_TUI: &str = "v2raydar=off,tower_http=warn";
 pub const CONFIG_WATCH_INTERVAL: Duration = Duration::from_secs(1);
 pub const LOCALHOST_IP: &str = "127.0.0.1";
 pub const ROUTE_PROBE_ADDR: &str = "8.8.8.8:80";
+pub const ROUTE_PROBE_ADDR_FALLBACK: &str = "1.1.1.1:80";
 pub const INTERFACE_CACHE_TTL: Duration = Duration::from_secs(5);
+pub const GATEWAY_CHECK_TTL: Duration = Duration::from_secs(60);
+pub const DHCP_CONFLICT_RANGE: u8 = 10;
+pub const DHCP_CONFLICT_CACHE_TTL: Duration = Duration::from_secs(30);
 
 pub const ACTIVE_PROBE_BATCH_MIN_SIZE: usize = 32;
 pub const ACTIVE_PROBE_BATCH_MAX_SIZE: usize = 128;

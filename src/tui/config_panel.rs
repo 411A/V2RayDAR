@@ -160,7 +160,7 @@ pub fn draw(
                 bool_text(view.live_config.require_token).to_string(),
             ),
             ("discoverable", view.discoverable),
-            ("proxy", view.proxy),
+            ("proxy (🚪)", view.proxy),
             ("firewall", view.sharing.firewall),
         ],
     );

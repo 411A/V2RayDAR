@@ -71,6 +71,7 @@ pub struct RuntimeState {
     pub ranked: Vec<RankedConfig>,
     pub stable_working_counts: HashMap<String, u32>,
     pub proxy_active_config: Option<String>,
+    pub proxy_active_uri: Option<String>,
     pub proxy_running: bool,
     pub proxy_port: Option<u16>,
     pub proxy_discoverable: bool,

@@ -31,10 +31,13 @@ pub struct RankedView {
     pub display_name: String,
     pub endpoint: String,
     pub latency_ms: Option<u128>,
+    pub is_proxy: bool,
+    pub uri: String,
 }
 
 impl RuntimeView {
     pub fn from_state(runtime: &RuntimeState, config: &RuntimeConfig) -> Self {
+        let proxy_uri = runtime.proxy_active_uri.clone();
         Self {
             refresh_duration_ms: runtime.refresh_duration_ms,
             refreshing: runtime.refreshing,
@@ -63,6 +66,8 @@ impl RuntimeView {
                         display_name,
                         endpoint: format!("{}:{}", item.endpoint.host, item.endpoint.port),
                         latency_ms: item.latency_ms,
+                        is_proxy: proxy_uri.as_ref() == Some(&item.uri),
+                        uri: item.uri.clone(),
                     }
                 })
                 .collect(),

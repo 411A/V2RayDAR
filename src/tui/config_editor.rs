@@ -41,6 +41,7 @@ pub const fn label(key: ConfigKey) -> &'static str {
         ConfigKey::ProxyEnabled => "proxy.enabled",
         ConfigKey::ProxyPort => "proxy.port",
         ConfigKey::ProxyDiscoverable => "proxy.discoverable",
+        ConfigKey::RotatingProxy => "proxy.rotating_proxy",
         ConfigKey::ProxyHealthCheckUrl => "proxy.health_check_url",
         ConfigKey::ProxyHealthCheckInterval => "proxy.health_check_interval_seconds",
         ConfigKey::ResetDefaults => "reset to defaults",
@@ -83,6 +84,7 @@ pub const fn guide(key: ConfigKey) -> &'static str {
         ConfigKey::ProxyEnabled => "true/false to enable persistent proxy",
         ConfigKey::ProxyPort => "mixed SOCKS5/HTTP proxy port",
         ConfigKey::ProxyDiscoverable => "true binds 0.0.0.0 + firewall for LAN",
+        ConfigKey::RotatingProxy => "true switches to lowest ping; false keeps current",
         ConfigKey::ProxyHealthCheckUrl => "URL tested through the proxy",
         ConfigKey::ProxyHealthCheckInterval => "seconds between health checks",
         ConfigKey::ResetDefaults => "type shown code to reset",
@@ -137,6 +139,7 @@ pub fn value(config: &crate::config::AppConfig, key: ConfigKey) -> String {
         ConfigKey::ProxyEnabled => config.proxy.enabled.to_string(),
         ConfigKey::ProxyPort => config.proxy.port.to_string(),
         ConfigKey::ProxyDiscoverable => config.proxy.discoverable.to_string(),
+        ConfigKey::RotatingProxy => config.proxy.rotating_proxy.to_string(),
         ConfigKey::ProxyHealthCheckUrl => config.proxy.health_check_url.clone(),
         ConfigKey::ProxyHealthCheckInterval => {
             config.proxy.health_check_interval_seconds.to_string()
@@ -191,6 +194,7 @@ pub fn apply(config: &mut crate::config::AppConfig, key: ConfigKey, raw: &str) -
         ConfigKey::ProxyEnabled => config.proxy.enabled = bool_value(value)?,
         ConfigKey::ProxyPort => config.proxy.port = positive(value, label(key))?,
         ConfigKey::ProxyDiscoverable => config.proxy.discoverable = bool_value(value)?,
+        ConfigKey::RotatingProxy => config.proxy.rotating_proxy = bool_value(value)?,
         ConfigKey::ProxyHealthCheckUrl => {
             config.proxy.health_check_url = required(value, label(key))?;
         }

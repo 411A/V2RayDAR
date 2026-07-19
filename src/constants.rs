@@ -44,6 +44,7 @@ pub const DEFAULT_CLEAN_OFFLINES_AFTER_DAYS: u32 = 7;
 pub const DEFAULT_PROXY_ENABLED: bool = false;
 pub const DEFAULT_PROXY_PORT: u16 = 27910;
 pub const DEFAULT_PROXY_DISCOVERABLE: bool = false;
+pub const DEFAULT_ROTATING_PROXY: bool = true;
 pub const DEFAULT_PROXY_HEALTH_CHECK_URL: &str = "https://cp.cloudflare.com";
 pub const DEFAULT_PROXY_HEALTH_CHECK_INTERVAL: u64 = 60;
 pub const PROXY_MAX_CONSECUTIVE_FAILURES: u32 = 3;
@@ -61,6 +62,7 @@ pub const PROXY_SING_BOX_TAG_DNS_DIRECT: &str = "dns-direct";
 pub const PROXY_SING_BOX_TAG_DNS_FALLBACK: &str = "dns-fallback";
 pub const PROXY_SING_BOX_TAG_DNS_PROXY: &str = "dns-proxy";
 pub const FIREWALL_PROXY_RULE_NAME: &str = "V2RayDAR Proxy";
+pub const PROXY_EMOJI: &str = "🚪";
 
 pub const MAX_TUI_LOGS: usize = 512;
 
@@ -149,7 +151,7 @@ pub const SUBSCRIPTION_ACTIONS: [SubscriptionAction; 6] = [
     SubscriptionAction::Delete,
     SubscriptionAction::Back,
 ];
-pub const CONFIG_KEYS: [ConfigKey; 33] = [
+pub const CONFIG_KEYS: [ConfigKey; 34] = [
     ConfigKey::Bind,
     ConfigKey::TopN,
     ConfigKey::RefreshSeconds,
@@ -180,6 +182,7 @@ pub const CONFIG_KEYS: [ConfigKey; 33] = [
     ConfigKey::ProxyEnabled,
     ConfigKey::ProxyPort,
     ConfigKey::ProxyDiscoverable,
+    ConfigKey::RotatingProxy,
     ConfigKey::ProxyHealthCheckUrl,
     ConfigKey::ProxyHealthCheckInterval,
     ConfigKey::ResetDefaults,

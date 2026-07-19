@@ -297,14 +297,14 @@ async fn main() -> Result<()> {
         cli.no_tui,
         cli.no_tui && !cli.verbose,
     );
-    spawn_config_watcher(paths.config_path.clone(), config.bind, config_tx);
+    spawn_config_watcher(paths.config_path.clone(), config.bind, config_tx.clone());
 
     let result = if cli.no_tui {
         serve(config.bind, state, runtime_config).await
     } else {
         tokio::select! {
             result = serve(config.bind, state.clone(), runtime_config.clone()) => result,
-            result = tui::run(config, paths, state, runtime_config, database.clone()) => result,
+            result = tui::run(config, paths, state, runtime_config, database.clone(), config_tx) => result,
         }
     };
 
@@ -1158,6 +1158,7 @@ async fn refresh_once(
         ranked,
         stable_working_counts,
         proxy_active_config: None,
+        proxy_active_uri: None,
         proxy_running: false,
         proxy_port: None,
         proxy_discoverable: false,
@@ -1409,6 +1410,7 @@ async fn update_proxy_and_ranked(
     runtime
         .proxy_active_config
         .clone_from(&snapshot.active_config);
+    runtime.proxy_active_uri = snapshot.active_uri;
     runtime.proxy_port = snapshot.port;
     runtime.proxy_discoverable = snapshot.discoverable;
 }

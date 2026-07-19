@@ -47,6 +47,10 @@ pub fn draw(
             runtime,
             runtime_config.top_n,
             &mut state.scroll.found,
+            state.selected_found.as_ref(),
+            state.proxy_pending_uri.as_deref(),
+            &mut state.hits.found_rows,
+            &mut state.found_uris,
         );
     }
     if !areas.config.is_empty() {

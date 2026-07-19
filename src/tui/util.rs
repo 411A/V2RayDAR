@@ -150,6 +150,13 @@ fn update_proxy_section(document: &mut YamlDocument, previous: &AppConfig, confi
             config.proxy.discoverable.to_string(),
         );
     }
+    if previous.proxy.rotating_proxy != config.proxy.rotating_proxy {
+        document.set_nested_scalar(
+            "proxy",
+            "rotating_proxy",
+            config.proxy.rotating_proxy.to_string(),
+        );
+    }
     if previous.proxy.health_check_url != config.proxy.health_check_url {
         document.set_nested_scalar(
             "proxy",

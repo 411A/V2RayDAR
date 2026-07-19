@@ -51,6 +51,7 @@ struct ProxyState {
     last_failover: Option<Instant>,
     failed_config_keys: Vec<String>,
     proxy_config: ProxyConfig,
+    manual_proxy_uri: Option<String>,
 }
 
 struct ManagedProcess {
@@ -76,6 +77,7 @@ impl PersistentProxy {
         sing_box_path: String,
         events: Option<tokio::sync::mpsc::UnboundedSender<ProgressEvent>>,
     ) -> Self {
+        let manual_proxy_uri = config.manual_proxy_uri.clone();
         Self {
             sing_box_path,
             state: Arc::new(RwLock::new(ProxyState {
@@ -89,6 +91,7 @@ impl PersistentProxy {
                 last_failover: None,
                 failed_config_keys: Vec::new(),
                 proxy_config: config,
+                manual_proxy_uri,
             })),
             process: Mutex::new(None),
             events,
@@ -109,6 +112,7 @@ impl PersistentProxy {
         {
             let mut state = self.state.write().await;
             state.proxy_config = config.clone();
+            state.manual_proxy_uri.clone_from(&config.manual_proxy_uri);
             // Clear recently-failed blacklist on each refresh cycle so configs
             // get a fresh chance to be tried after network conditions change.
             state.failed_config_keys.clear();
@@ -127,9 +131,39 @@ impl PersistentProxy {
             return;
         }
 
-        let Some(best) = ranked.iter().find(|c| c.reachable) else {
-            warn!("proxy: no reachable configs available");
-            self.emit_log("proxy: no reachable configs".into());
+        // Use manual proxy if set, otherwise auto-select the best reachable config.
+        let best = config.manual_proxy_uri.as_ref().map_or_else(
+            || ranked.iter().find(|c| c.reachable),
+            |manual_uri| ranked.iter().find(|c| c.reachable && c.uri == *manual_uri),
+        );
+
+        // When rotating_proxy is disabled and a config is already active, prefer
+        // keeping it if it's still reachable (even if it's no longer the best).
+        let best = if !config.rotating_proxy && config.manual_proxy_uri.is_none() {
+            let active_uri = {
+                let state = self.state.read().await;
+                state.active_config_uri.clone()
+            };
+            active_uri.as_ref().map_or(best, |uri| {
+                let still_reachable = ranked.iter().any(|c| c.reachable && c.uri == *uri);
+                if still_reachable {
+                    ranked.iter().find(|c| c.uri == *uri)
+                } else {
+                    best
+                }
+            })
+        } else {
+            best
+        };
+
+        let Some(best) = best else {
+            if config.manual_proxy_uri.is_some() {
+                info!("proxy: manual proxy config not reachable, keeping current");
+                self.emit_log("proxy: manual config not reachable".into());
+            } else {
+                warn!("proxy: no reachable configs available");
+                self.emit_log("proxy: no reachable configs".into());
+            }
             return;
         };
 
@@ -491,6 +525,7 @@ impl PersistentProxy {
         let state = self.state.read().await;
         ProxySnapshot {
             active_config: state.active_config_name.clone(),
+            active_uri: state.active_config_uri.clone(),
             running: state.running,
             port: if state.running {
                 Some(state.proxy_config.port)
@@ -576,6 +611,7 @@ pub fn spawn_health_loop(proxy: SharedProxy, ranked: Arc<RwLock<Vec<RankedConfig
 #[allow(dead_code)]
 pub struct ProxySnapshot {
     pub active_config: Option<String>,
+    pub active_uri: Option<String>,
     pub running: bool,
     pub port: Option<u16>,
     pub discoverable: bool,

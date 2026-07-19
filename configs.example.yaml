@@ -45,6 +45,9 @@ proxy:
   port: 27910
   # true binds to 0.0.0.0 and adds a firewall rule for LAN access.
   discoverable: false
+  # Recommended: true always uses the lowest-ping config after each refresh.
+  # false keeps the current proxy if it's still accessible; switches only on failure.
+  rotating_proxy: true
   # URL tested through the proxy to verify it's alive.
   health_check_url: https://cp.cloudflare.com
   # Seconds between proxy health checks.

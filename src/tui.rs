@@ -30,7 +30,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode},
 };
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, watch};
 
 use crate::{
     config::AppConfig,
@@ -51,6 +51,7 @@ pub async fn run(
     state: Arc<RwLock<RuntimeState>>,
     runtime_config: Arc<RwLock<RuntimeConfig>>,
     database: Arc<crate::db::Database>,
+    config_tx: watch::Sender<AppConfig>,
 ) -> Result<()> {
     enable_raw_mode()?;
     let mut terminal = ratatui::try_init()?;
@@ -62,10 +63,14 @@ pub async fn run(
         let now = Instant::now();
         if now >= next_frame {
             let config = runtime_config.read().await.clone();
-            let runtime = {
-                let runtime = state.read().await;
-                RuntimeView::from_state(&runtime, &config)
-            };
+            let runtime_snapshot = state.read().await.clone();
+            // Clear pending proxy URI once the proxy confirms it's running that config
+            if tui.proxy_pending_uri.as_ref() == runtime_snapshot.proxy_active_uri.as_ref()
+                && tui.proxy_pending_uri.is_some()
+            {
+                tui.proxy_pending_uri = None;
+            }
+            let runtime = RuntimeView::from_state(&runtime_snapshot, &config);
             if let Err(err) =
                 terminal.draw(|frame| draw::draw(frame, &mut tui, &runtime, &config, &paths, now))
             {
@@ -80,7 +85,7 @@ pub async fn run(
             .min(TUI_INPUT_POLL_INTERVAL);
         if event::poll(poll_timeout).unwrap_or(false)
             && matches!(
-                drain_events(&mut tui, &paths, &runtime_config, &database)?,
+                drain_events(&mut tui, &paths, &runtime_config, &database, &config_tx)?,
                 EventResult::Quit
             )
         {
@@ -97,12 +102,13 @@ fn drain_events(
     paths: &AppPaths,
     runtime_config: &Arc<RwLock<RuntimeConfig>>,
     database: &Arc<crate::db::Database>,
+    config_tx: &watch::Sender<AppConfig>,
 ) -> Result<EventResult> {
     for _ in 0..TUI_MAX_EVENTS_PER_FRAME {
         match event::read() {
             Ok(Event::Key(key)) => {
                 if matches!(
-                    handle_key(tui, key, paths, runtime_config, database)?,
+                    handle_key(tui, key, paths, runtime_config, database, config_tx)?,
                     EventResult::Quit
                 ) {
                     return Ok(EventResult::Quit);

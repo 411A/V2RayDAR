@@ -5,9 +5,10 @@ use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, watch};
 
 use crate::{
+    config::AppConfig,
     constants::{CONFIG_KEYS, MAIN_ITEMS, SUBSCRIPTION_ACTIONS},
     db::Database,
     model::RuntimeConfig,
@@ -31,6 +32,7 @@ pub fn handle_key(
     paths: &AppPaths,
     runtime_config: &Arc<RwLock<RuntimeConfig>>,
     database: &Arc<Database>,
+    config_tx: &watch::Sender<AppConfig>,
 ) -> Result<EventResult> {
     if key.kind != KeyEventKind::Press {
         return Ok(EventResult::Continue);
@@ -54,7 +56,7 @@ pub fn handle_key(
         | InputMode::ConfigValue(_)
         | InputMode::ResetConfirm => Ok(handle_input_key(state, key)),
         InputMode::CleanCacheConfirm => handle_clean_cache_key(state, key, database),
-        InputMode::None => handle_normal_key(state, key, paths, runtime_config),
+        InputMode::None => handle_normal_key(state, key, paths, runtime_config, config_tx),
     }
 }
 
@@ -63,11 +65,12 @@ fn handle_normal_key(
     key: KeyEvent,
     paths: &AppPaths,
     runtime_config: &Arc<RwLock<RuntimeConfig>>,
+    config_tx: &watch::Sender<AppConfig>,
 ) -> Result<EventResult> {
     match key.code {
         KeyCode::Char('q') => return Ok(EventResult::Quit),
         KeyCode::Esc => go_back(state),
-        KeyCode::Enter => activate(state, paths, runtime_config)?,
+        KeyCode::Enter => activate(state, paths, runtime_config, config_tx)?,
         KeyCode::Up | KeyCode::Char('k') => move_up(state),
         KeyCode::Down | KeyCode::Char('j') => move_down(state),
         KeyCode::Char('e' | 'E') => edit_selected_subscription(state),
@@ -141,6 +144,29 @@ fn cancel_command(state: &mut TuiState) {
 pub fn handle_mouse(state: &mut TuiState, mouse: MouseEvent) -> EventResult {
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => {
+            // Check found panel rows first (higher priority for selection)
+            for (index, area) in &state.hits.found_rows {
+                if contains(*area, mouse.column, mouse.row) {
+                    state.selected_found = Some(*index);
+                    state.status = format!(
+                        "Selected found config {} (Enter to set as proxy)",
+                        index + 1
+                    );
+                    return EventResult::Continue;
+                }
+            }
+
+            // Clicking on the found panel area but not on a row clears selection
+            if let Some(area) = state.hits.found_area
+                && contains(area, mouse.column, mouse.row)
+            {
+                state.selected_found = None;
+                return EventResult::Continue;
+            }
+
+            // Clear found selection when clicking elsewhere
+            state.selected_found = None;
+
             for (index, area) in &state.hits.main_rows {
                 if contains(*area, mouse.column, mouse.row) {
                     state.selected_main = *index;
@@ -303,7 +329,13 @@ fn activate(
     state: &mut TuiState,
     paths: &AppPaths,
     runtime_config: &Arc<RwLock<RuntimeConfig>>,
+    config_tx: &watch::Sender<AppConfig>,
 ) -> Result<()> {
+    // If a found panel row is selected, set it as the manual proxy
+    if let Some(found_index) = state.selected_found {
+        set_found_as_proxy(state, found_index, config_tx, runtime_config);
+        return Ok(());
+    }
     match state.view {
         MenuView::Main => activate_main(state, paths, runtime_config),
         MenuView::Subscriptions => {
@@ -341,6 +373,40 @@ fn edit_selected_subscription(state: &mut TuiState) {
     }
 
     state.view = MenuView::SubscriptionActions;
+}
+
+fn set_found_as_proxy(
+    state: &mut TuiState,
+    found_index: usize,
+    config_tx: &watch::Sender<AppConfig>,
+    runtime_config: &Arc<RwLock<RuntimeConfig>>,
+) {
+    let Some(uri) = state.found_uris.get(found_index) else {
+        state.status = "Config not found".to_string();
+        state.selected_found = None;
+        return;
+    };
+
+    let uri = uri.clone();
+
+    // Toggle: if already the manual proxy, clear it (go back to auto)
+    if state.editable.proxy.manual_proxy_uri.as_ref() == Some(&uri) {
+        state.editable.proxy.manual_proxy_uri = None;
+        state.proxy_pending_uri = None;
+    } else {
+        state.editable.proxy.manual_proxy_uri = Some(uri.clone());
+        state.proxy_pending_uri = Some(uri);
+    }
+
+    // Push the updated config to the refresh loop (in-memory, no file write)
+    let _ = config_tx.send(state.editable.clone());
+    update_live_runtime_config(runtime_config, state);
+    state.selected_found = None;
+    state.status = if state.editable.proxy.manual_proxy_uri.is_some() {
+        "Proxy set to config".to_string()
+    } else {
+        "Proxy: auto-select (manual cleared)".to_string()
+    };
 }
 
 fn activate_main(
@@ -493,6 +559,7 @@ fn activate_subscription_action(state: &mut TuiState, config_path: &Path) -> Res
 }
 
 fn go_back(state: &mut TuiState) {
+    state.selected_found = None;
     state.view = match state.view {
         MenuView::Main | MenuView::Subscriptions | MenuView::Configurations | MenuView::Logs => {
             MenuView::Main

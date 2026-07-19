@@ -13,10 +13,10 @@ use crate::constants::{
     DEFAULT_PROBE_BATCH_SIZE, DEFAULT_PROBE_CONCURRENCY, DEFAULT_PROBE_PROCESS_CONCURRENCY,
     DEFAULT_PROXY_DISCOVERABLE, DEFAULT_PROXY_ENABLED, DEFAULT_PROXY_HEALTH_CHECK_INTERVAL,
     DEFAULT_PROXY_HEALTH_CHECK_URL, DEFAULT_PROXY_PORT, DEFAULT_REFRESH_SECONDS,
-    DEFAULT_REQUIRE_TOKEN, DEFAULT_RETURN_CONFIGS_ASAP, DEFAULT_SCAN_ALL_CONFIGS,
-    DEFAULT_SHARING_ENABLED, DEFAULT_SHARING_TOKEN, DEFAULT_SING_BOX_PATH,
-    DEFAULT_STARTUP_TIMEOUT_MS, DEFAULT_SUBSCRIPTION_ENABLED, DEFAULT_SUBSCRIPTION_PRIORITY,
-    DEFAULT_TEST_URL, DEFAULT_TOP_N, DEFAULT_USE_CACHE_ONLY,
+    DEFAULT_REQUIRE_TOKEN, DEFAULT_RETURN_CONFIGS_ASAP, DEFAULT_ROTATING_PROXY,
+    DEFAULT_SCAN_ALL_CONFIGS, DEFAULT_SHARING_ENABLED, DEFAULT_SHARING_TOKEN,
+    DEFAULT_SING_BOX_PATH, DEFAULT_STARTUP_TIMEOUT_MS, DEFAULT_SUBSCRIPTION_ENABLED,
+    DEFAULT_SUBSCRIPTION_PRIORITY, DEFAULT_TEST_URL, DEFAULT_TOP_N, DEFAULT_USE_CACHE_ONLY,
 };
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -131,10 +131,14 @@ pub struct ProxyConfig {
     pub port: u16,
     #[serde(default = "default_proxy_discoverable")]
     pub discoverable: bool,
+    #[serde(default = "default_rotating_proxy")]
+    pub rotating_proxy: bool,
     #[serde(default = "default_proxy_health_check_url")]
     pub health_check_url: String,
     #[serde(default = "default_proxy_health_check_interval")]
     pub health_check_interval_seconds: u64,
+    #[serde(skip)]
+    pub manual_proxy_uri: Option<String>,
 }
 
 impl Default for ProbeConfig {
@@ -173,8 +177,10 @@ impl Default for ProxyConfig {
             enabled: default_proxy_enabled(),
             port: default_proxy_port(),
             discoverable: default_proxy_discoverable(),
+            rotating_proxy: default_rotating_proxy(),
             health_check_url: default_proxy_health_check_url(),
             health_check_interval_seconds: default_proxy_health_check_interval(),
+            manual_proxy_uri: None,
         }
     }
 }
@@ -587,6 +593,10 @@ const fn default_proxy_port() -> u16 {
 
 const fn default_proxy_discoverable() -> bool {
     DEFAULT_PROXY_DISCOVERABLE
+}
+
+const fn default_rotating_proxy() -> bool {
+    DEFAULT_ROTATING_PROXY
 }
 
 fn default_proxy_health_check_url() -> String {

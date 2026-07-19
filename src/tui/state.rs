@@ -133,6 +133,7 @@ pub struct HitMap {
 pub struct ScrollState {
     pub logs: usize,
     pub found: usize,
+    pub found_visible: usize,
 }
 
 #[derive(Debug, Clone)]

@@ -20,6 +20,7 @@ pub fn draw(
     runtime: &RuntimeView,
     top_n: usize,
     scroll: &mut usize,
+    found_visible: &mut usize,
     selected_found: Option<&usize>,
     proxy_pending_uri: Option<&str>,
     found_rows: &mut Vec<(usize, Rect)>,
@@ -87,6 +88,7 @@ pub fn draw(
     };
 
     let visible_rows = visible_row_count(area);
+    *found_visible = visible_rows;
     let total_items = runtime.ranked.iter().take(top_n).count();
     let max_offset = total_items.saturating_sub(visible_rows);
     *scroll = (*scroll).min(max_offset);

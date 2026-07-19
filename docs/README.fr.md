@@ -34,7 +34,7 @@
 ## 🖥️ Aperçu TUI Windows
 
 <p align="center">
-  <img src="../assets/Windows_TUI_v0.5.2.png" alt="Windows TUI" width="100%">
+  <img src="../assets/Windows_TUI_v0.5.5.png" alt="Windows TUI" width="100%">
 </p>
 
 ## 🤔 Pourquoi V2RayDAR

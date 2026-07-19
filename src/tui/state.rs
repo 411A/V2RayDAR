@@ -140,6 +140,9 @@ pub struct ScrollState {
 pub struct TuiState {
     pub started_at: Instant,
     pub editable: AppConfig,
+    /// Snapshot of editable at TUI startup, used to detect which fields were changed in the TUI
+    /// vs changed externally on disk.
+    pub startup_editable: AppConfig,
     pub active_bind: SocketAddr,
     pub view: MenuView,
     pub focus: FocusPanel,
@@ -166,6 +169,7 @@ impl TuiState {
         let active_bind = config.bind;
         Self {
             started_at: Instant::now(),
+            startup_editable: config.clone(),
             editable: config,
             active_bind,
             view: MenuView::Main,

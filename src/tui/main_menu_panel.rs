@@ -336,7 +336,7 @@ fn wizard_value(state: &TuiState, step: NewSubscriptionStep, committed: Option<&
 fn row_style(selected: bool, value: &str) -> Style {
     if selected {
         Style::default().fg(Color::Black).bg(Color::Cyan)
-    } else if value == "enabled" {
+    } else if value == "enabled" || value.starts_with("enabled ") {
         Style::default().fg(Color::Green)
     } else if value == "disabled" {
         Style::default().fg(Color::Red)

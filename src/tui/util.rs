@@ -21,6 +21,127 @@ pub fn save_config(path: &Path, config: &AppConfig) -> Result<()> {
     }
 }
 
+/// Load the on-disk config, merge with TUI edits, and save.
+pub fn save_merged(path: &Path, startup: &AppConfig, tui: &AppConfig) -> Result<()> {
+    let merged = AppConfig::load(path)
+        .map_or_else(|_| tui.clone(), |disk| merge_for_save(startup, tui, &disk));
+    save_config(path, &merged)
+}
+
+/// Merge in-memory (TUI) edits with on-disk values.
+///
+/// For each field: if the TUI changed it (differs from startup), keep the TUI value.
+/// Otherwise pick up the on-disk value so manual file edits are never overwritten.
+pub fn merge_for_save(startup: &AppConfig, tui: &AppConfig, disk: &AppConfig) -> AppConfig {
+    let mut merged = disk.clone();
+    merge_top_level(&mut merged, startup, tui);
+    merge_section_sharing(&mut merged, startup, tui);
+    merge_section_proxy(&mut merged, startup, tui);
+    merge_section_probe(&mut merged, startup, tui);
+    merged.subscriptions.clone_from(&tui.subscriptions);
+    merged
+}
+
+fn merge_top_level(merged: &mut AppConfig, startup: &AppConfig, tui: &AppConfig) {
+    macro_rules! pick {
+        ($field:ident) => {
+            if tui.$field != startup.$field {
+                merged.$field.clone_from(&tui.$field);
+            }
+        };
+        (copy $field:ident) => {
+            if tui.$field != startup.$field {
+                merged.$field = tui.$field;
+            }
+        };
+    }
+    pick!(copy bind);
+    pick!(copy top_n);
+    pick!(copy refresh_seconds);
+    pick!(copy encoded_subscription);
+    pick!(copy prioritize_stability);
+    pick!(copy return_configs_asap);
+    pick!(copy scan_all_configs);
+    pick!(copy fetch_timeout_ms);
+    pick!(copy fetch_concurrency);
+    pick!(copy max_subscription_bytes);
+    pick!(copy use_cache_only);
+    pick!(emergency_config);
+    pick!(copy clean_offlines_after_days);
+}
+
+fn merge_section_sharing(merged: &mut AppConfig, startup: &AppConfig, tui: &AppConfig) {
+    macro_rules! pick {
+        ($field:ident) => {
+            if tui.sharing.$field != startup.sharing.$field {
+                merged.sharing.$field.clone_from(&tui.sharing.$field);
+            }
+        };
+        (copy $field:ident) => {
+            if tui.sharing.$field != startup.sharing.$field {
+                merged.sharing.$field = tui.sharing.$field;
+            }
+        };
+    }
+    pick!(copy enabled);
+    pick!(copy require_token);
+    pick!(token);
+}
+
+fn merge_section_proxy(merged: &mut AppConfig, startup: &AppConfig, tui: &AppConfig) {
+    macro_rules! pick {
+        ($field:ident) => {
+            if tui.proxy.$field != startup.proxy.$field {
+                merged.proxy.$field.clone_from(&tui.proxy.$field);
+            }
+        };
+        (copy $field:ident) => {
+            if tui.proxy.$field != startup.proxy.$field {
+                merged.proxy.$field = tui.proxy.$field;
+            }
+        };
+    }
+    pick!(copy enabled);
+    pick!(copy port);
+    pick!(copy discoverable);
+    pick!(copy rotating_proxy);
+    pick!(health_check_url);
+    pick!(copy health_check_interval_seconds);
+}
+
+fn merge_section_probe(merged: &mut AppConfig, startup: &AppConfig, tui: &AppConfig) {
+    macro_rules! pick {
+        ($field:ident) => {
+            if tui.probe.$field != startup.probe.$field {
+                merged.probe.$field.clone_from(&tui.probe.$field);
+            }
+        };
+        (copy $field:ident) => {
+            if tui.probe.$field != startup.probe.$field {
+                merged.probe.$field = tui.probe.$field;
+            }
+        };
+    }
+    pick!(copy mode);
+    if tui.probe.sing_box_path != startup.probe.sing_box_path {
+        merged
+            .probe
+            .sing_box_path
+            .clone_from(&tui.probe.sing_box_path);
+        merged.probe.sing_box_path_auto = tui.probe.sing_box_path_auto;
+    }
+    pick!(copy connect_timeout_ms);
+    pick!(copy active_timeout_ms);
+    pick!(copy startup_timeout_ms);
+    pick!(copy concurrency);
+    pick!(copy batch_size);
+    pick!(copy process_concurrency);
+    pick!(test_url);
+    pick!(accepted_statuses);
+    pick!(download_url);
+    pick!(copy download_bytes_limit);
+}
+
 fn save_json_config(path: &Path, config: &AppConfig) -> Result<()> {
     let config = persistable_config(config);
     let content = serde_json::to_string_pretty(&config).context("unable to serialize config")?;

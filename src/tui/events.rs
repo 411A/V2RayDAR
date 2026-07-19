@@ -464,7 +464,7 @@ fn activate_main(
         MainItem::Sharing => {
             state.editable.sharing.enabled = !state.editable.sharing.enabled;
             state.dirty = true;
-            super::util::save_config(&paths.config_path, &state.editable)?;
+            super::util::save_merged(&paths.config_path, &state.startup_editable, &state.editable)?;
             update_live_runtime_config(runtime_config, state);
             state.dirty = false;
             state.status = match super::firewall::apply(
@@ -496,7 +496,7 @@ fn activate_main(
                 state.editable.proxy.discoverable = false;
             }
             state.dirty = true;
-            super::util::save_config(&paths.config_path, &state.editable)?;
+            super::util::save_merged(&paths.config_path, &state.startup_editable, &state.editable)?;
             update_live_runtime_config(runtime_config, state);
             state.dirty = false;
             state.status = match super::firewall::apply(

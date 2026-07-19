@@ -5,7 +5,7 @@ use anyhow::Result;
 use super::{
     input_handlers::{start_input, start_new_subscription},
     state::{Action, InputMode, TuiState},
-    util::save_config,
+    util::save_merged,
 };
 
 pub fn run_action(state: &mut TuiState, action: Action, config_path: &Path) -> Result<()> {
@@ -77,7 +77,7 @@ fn delete_subscription(state: &mut TuiState) {
 }
 
 fn save_now(state: &mut TuiState, config_path: &Path) -> Result<()> {
-    save_config(config_path, &state.editable)?;
+    save_merged(config_path, &state.startup_editable, &state.editable)?;
     state.dirty = false;
     state.status = format!("Saved {}", config_path.display());
     Ok(())

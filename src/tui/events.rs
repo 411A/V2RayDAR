@@ -322,7 +322,11 @@ fn move_up(state: &mut TuiState) {
             MenuView::Logs => state.selected_log = state.selected_log.saturating_add(1),
         },
         FocusPanel::Found => {
-            state.selected_found = Some(state.selected_found.unwrap_or(0).saturating_sub(1));
+            let idx = state.selected_found.unwrap_or(0).saturating_sub(1);
+            state.selected_found = Some(idx);
+            if idx < state.scroll.found {
+                state.scroll.found = idx;
+            }
         }
     }
 }
@@ -349,7 +353,12 @@ fn move_down(state: &mut TuiState) {
         },
         FocusPanel::Found => {
             let max = state.found_uris.len().saturating_sub(1);
-            state.selected_found = Some(state.selected_found.map_or(0, |i| (i + 1).min(max)));
+            let idx = state.selected_found.map_or(0, |i| (i + 1).min(max));
+            state.selected_found = Some(idx);
+            let vis = state.scroll.found_visible.max(1);
+            if idx >= state.scroll.found + vis {
+                state.scroll.found = idx + 1 - vis;
+            }
         }
     }
 }

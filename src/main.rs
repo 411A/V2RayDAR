@@ -1133,7 +1133,9 @@ async fn refresh_once(
             })
             .context("failed to clean offline configs")?;
     }
-    let reachable_count = ranked.iter().filter(|item| item.reachable).count();
+    // Use the accumulated reachable count from probing — do NOT recalculate
+    // from the final ranked list, as deduplication may reduce the count and
+    // cause the "Working" display to drop after refresh finishes.
     let fetch_bytes = progress_state.fetch_bytes;
     let speedtest_bytes = progress_state
         .speedtest_bytes
@@ -1151,7 +1153,7 @@ async fn refresh_once(
         refreshing: false,
         total_candidates: fetched_count,
         tested_candidates: ranked.len(),
-        reachable_candidates: reachable_count,
+        reachable_candidates: progress_state.reachable_candidates,
         fetch_bytes,
         speedtest_bytes,
         fetch_errors,

@@ -6,7 +6,7 @@ use crate::{model::RuntimeConfig, paths::AppPaths};
 
 use super::{
     config_panel, footer, found_panel, layout, logs_panel, main_menu_panel,
-    state::{HitMap, TuiState},
+    state::{FocusPanel, HitMap, TuiState},
     top,
     view::RuntimeView,
 };
@@ -51,12 +51,19 @@ pub fn draw(
             state.proxy_pending_uri.as_deref(),
             &mut state.hits.found_rows,
             &mut state.found_uris,
+            state.focus == FocusPanel::Found,
         );
     }
     if !areas.config.is_empty() {
         config_panel::draw(frame, areas.config, state, runtime_config, paths);
     }
 
-    main_menu_panel::draw(frame, areas.menu, state, runtime);
+    main_menu_panel::draw(
+        frame,
+        areas.menu,
+        state,
+        runtime,
+        state.focus == FocusPanel::Menu,
+    );
     footer::draw(frame, areas.footer, state);
 }

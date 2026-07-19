@@ -111,6 +111,12 @@ pub struct SubscriptionDraft {
     pub enabled: bool,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum FocusPanel {
+    Menu,
+    Found,
+}
+
 #[derive(Debug, Clone, Default)]
 #[allow(clippy::struct_field_names)]
 pub struct HitMap {
@@ -135,6 +141,7 @@ pub struct TuiState {
     pub editable: AppConfig,
     pub active_bind: SocketAddr,
     pub view: MenuView,
+    pub focus: FocusPanel,
     pub selected_main: usize,
     pub selected_subscription: usize,
     pub selected_action: usize,
@@ -161,6 +168,7 @@ impl TuiState {
             editable: config,
             active_bind,
             view: MenuView::Main,
+            focus: FocusPanel::Menu,
             selected_main: 0,
             selected_subscription: 0,
             selected_action: 0,

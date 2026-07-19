@@ -17,21 +17,29 @@ use super::{
     view::RuntimeView,
 };
 
-pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState, runtime: &RuntimeView) {
+pub fn draw(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    state: &mut TuiState,
+    runtime: &RuntimeView,
+    focused: bool,
+) {
     match state.view {
-        MenuView::Main => draw_main(frame, area, state),
-        MenuView::Subscriptions => super::subscriptions_panel::draw(frame, area, state),
-        MenuView::NewSubscription => draw_new_subscription(frame, area, state),
-        MenuView::SubscriptionActions => draw_subscription_actions(frame, area, state),
-        MenuView::Configurations => draw_configurations(frame, area, state),
+        MenuView::Main => draw_main(frame, area, state, focused),
+        MenuView::Subscriptions => super::subscriptions_panel::draw(frame, area, state, focused),
+        MenuView::NewSubscription => draw_new_subscription(frame, area, state, focused),
+        MenuView::SubscriptionActions => {
+            draw_subscription_actions(frame, area, state, focused);
+        }
+        MenuView::Configurations => draw_configurations(frame, area, state, focused),
         MenuView::Logs => {
             state.hits.live_logs_area = Some(area);
-            draw_logs(frame, area, state, runtime);
+            draw_logs(frame, area, state, runtime, focused);
         }
     }
 }
 
-fn draw_main(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) {
+fn draw_main(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState, focused: bool) {
     let visible_rows = visible_row_count(area).max(1);
     let total = MAIN_ITEMS.len();
     let offset = scroll_offset(state.selected_main, total, visible_rows);
@@ -79,11 +87,18 @@ fn draw_main(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) {
         vec!["Item", "Value"],
         vec![Constraint::Length(34), Constraint::Fill(1)],
         rows,
+        focused,
     );
     draw_scrollbar(frame, area, total, visible_rows, offset, false);
 }
 
-fn draw_logs(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState, runtime: &RuntimeView) {
+fn draw_logs(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    state: &mut TuiState,
+    runtime: &RuntimeView,
+    focused: bool,
+) {
     let visible_rows = visible_row_count(area).max(1);
     let total = runtime.live_logs.len();
     let max_offset = total.saturating_sub(visible_rows);
@@ -104,14 +119,19 @@ fn draw_logs(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState, runtime: &
     frame.render_widget(
         ratatui::widgets::Paragraph::new(lines)
             .style(Style::default().fg(Color::Gray))
-            .block(Block::default().borders(Borders::ALL).title("Live Logs"))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(border_style(focused))
+                    .title("Live Logs"),
+            )
             .wrap(ratatui::widgets::Wrap { trim: true }),
         area,
     );
     draw_scrollbar(frame, area, total, visible_rows, state.selected_log, true);
 }
 
-fn draw_subscription_actions(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
+fn draw_subscription_actions(frame: &mut Frame<'_>, area: Rect, state: &TuiState, focused: bool) {
     let selected = state.selected_subscription_ref();
     let visible_rows = visible_row_count(area).max(1);
     let total = SUBSCRIPTION_ACTIONS.len();
@@ -135,11 +155,12 @@ fn draw_subscription_actions(frame: &mut Frame<'_>, area: Rect, state: &TuiState
         vec!["Action", "Target"],
         vec![Constraint::Length(24), Constraint::Fill(1)],
         rows,
+        focused,
     );
     draw_scrollbar(frame, area, total, visible_rows, offset, false);
 }
 
-fn draw_new_subscription(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
+fn draw_new_subscription(frame: &mut Frame<'_>, area: Rect, state: &TuiState, focused: bool) {
     let draft = state.new_subscription.as_ref();
     let current = match state.input_mode {
         InputMode::NewSubscription(step) => Some(step),
@@ -203,10 +224,11 @@ fn draw_new_subscription(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
             Constraint::Fill(1),
         ],
         rows.into_iter(),
+        focused,
     );
 }
 
-fn draw_configurations(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) {
+fn draw_configurations(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState, focused: bool) {
     let visible_rows = visible_row_count(area);
     let total = CONFIG_KEYS.len();
     let offset = scroll_offset(state.selected_config, total, visible_rows);
@@ -235,6 +257,7 @@ fn draw_configurations(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) 
             Constraint::Fill(1),
         ],
         rows,
+        focused,
     );
     draw_scrollbar(frame, area, total, visible_rows, offset, false);
 }
@@ -251,6 +274,14 @@ fn config_value(state: &TuiState, key: ConfigKey) -> String {
     }
 }
 
+fn border_style(focused: bool) -> Style {
+    if focused {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    }
+}
+
 fn render_table<'a>(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -258,6 +289,7 @@ fn render_table<'a>(
     header: Vec<&'static str>,
     widths: Vec<Constraint>,
     rows: impl Iterator<Item = Row<'a>>,
+    focused: bool,
 ) {
     let header = Row::new(header).style(
         Style::default()
@@ -265,9 +297,12 @@ fn render_table<'a>(
             .add_modifier(Modifier::BOLD),
     );
     frame.render_widget(
-        Table::new(rows, widths)
-            .header(header)
-            .block(Block::default().borders(Borders::ALL).title(title)),
+        Table::new(rows, widths).header(header).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(border_style(focused))
+                .title(title),
+        ),
         area,
     );
 }

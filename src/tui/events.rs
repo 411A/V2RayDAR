@@ -18,7 +18,9 @@ use crate::{
 use super::{
     action_handlers::run_action,
     input_handlers::{handle_input_key, start_input},
-    state::{Action, ConfigKey, InputMode, MainItem, MenuView, SubscriptionAction, TuiState},
+    state::{
+        Action, ConfigKey, FocusPanel, InputMode, MainItem, MenuView, SubscriptionAction, TuiState,
+    },
 };
 
 pub enum EventResult {
@@ -70,6 +72,7 @@ fn handle_normal_key(
     match key.code {
         KeyCode::Char('q') => return Ok(EventResult::Quit),
         KeyCode::Esc => go_back(state),
+        KeyCode::Tab => cycle_focus(state),
         KeyCode::Enter => activate(state, paths, runtime_config, config_tx)?,
         KeyCode::Up | KeyCode::Char('k') => move_up(state),
         KeyCode::Down | KeyCode::Char('j') => move_down(state),
@@ -148,6 +151,7 @@ pub fn handle_mouse(state: &mut TuiState, mouse: MouseEvent) -> EventResult {
             for (index, area) in &state.hits.found_rows {
                 if contains(*area, mouse.column, mouse.row) {
                     state.selected_found = Some(*index);
+                    state.focus = FocusPanel::Found;
                     state.status = format!(
                         "Selected found config {} (Enter to set as proxy)",
                         index + 1
@@ -161,6 +165,7 @@ pub fn handle_mouse(state: &mut TuiState, mouse: MouseEvent) -> EventResult {
                 && contains(area, mouse.column, mouse.row)
             {
                 state.selected_found = None;
+                state.focus = FocusPanel::Found;
                 return EventResult::Continue;
             }
 
@@ -170,6 +175,7 @@ pub fn handle_mouse(state: &mut TuiState, mouse: MouseEvent) -> EventResult {
             for (index, area) in &state.hits.main_rows {
                 if contains(*area, mouse.column, mouse.row) {
                     state.selected_main = *index;
+                    state.focus = FocusPanel::Menu;
                     state.status = format!("Selected menu row {}", index + 1);
                     return EventResult::Continue;
                 }
@@ -178,6 +184,7 @@ pub fn handle_mouse(state: &mut TuiState, mouse: MouseEvent) -> EventResult {
             for (index, area) in &state.hits.subscription_rows {
                 if contains(*area, mouse.column, mouse.row) {
                     state.selected_subscription = *index;
+                    state.focus = FocusPanel::Menu;
                     state.status = format!("Selected row {}", index + 1);
                     return EventResult::Continue;
                 }
@@ -186,6 +193,7 @@ pub fn handle_mouse(state: &mut TuiState, mouse: MouseEvent) -> EventResult {
             for (index, area) in &state.hits.config_rows {
                 if contains(*area, mouse.column, mouse.row) {
                     state.selected_config = *index;
+                    state.focus = FocusPanel::Menu;
                     state.status = format!("Selected config row {}", index + 1);
                     return EventResult::Continue;
                 }
@@ -290,38 +298,59 @@ fn scroll_down(state: &mut TuiState, x: u16, y: u16) {
     }
 }
 
-const fn move_up(state: &mut TuiState) {
-    match state.view {
-        MenuView::Main => state.selected_main = state.selected_main.saturating_sub(1),
-        MenuView::Subscriptions => {
-            state.selected_subscription = state.selected_subscription.saturating_sub(1);
+const fn cycle_focus(state: &mut TuiState) {
+    state.focus = match state.focus {
+        FocusPanel::Menu => FocusPanel::Found,
+        FocusPanel::Found => FocusPanel::Menu,
+    };
+}
+
+fn move_up(state: &mut TuiState) {
+    match state.focus {
+        FocusPanel::Menu => match state.view {
+            MenuView::Main => state.selected_main = state.selected_main.saturating_sub(1),
+            MenuView::Subscriptions => {
+                state.selected_subscription = state.selected_subscription.saturating_sub(1);
+            }
+            MenuView::NewSubscription => {}
+            MenuView::SubscriptionActions => {
+                state.selected_action = state.selected_action.saturating_sub(1);
+            }
+            MenuView::Configurations => {
+                state.selected_config = state.selected_config.saturating_sub(1);
+            }
+            MenuView::Logs => state.selected_log = state.selected_log.saturating_add(1),
+        },
+        FocusPanel::Found => {
+            state.selected_found = Some(state.selected_found.unwrap_or(0).saturating_sub(1));
         }
-        MenuView::NewSubscription => {}
-        MenuView::SubscriptionActions => {
-            state.selected_action = state.selected_action.saturating_sub(1);
-        }
-        MenuView::Configurations => state.selected_config = state.selected_config.saturating_sub(1),
-        MenuView::Logs => state.selected_log = state.selected_log.saturating_add(1),
     }
 }
 
 fn move_down(state: &mut TuiState) {
-    match state.view {
-        MenuView::Main => {
-            state.selected_main = (state.selected_main + 1).min(MAIN_ITEMS.len() - 1);
+    match state.focus {
+        FocusPanel::Menu => match state.view {
+            MenuView::Main => {
+                state.selected_main = (state.selected_main + 1).min(MAIN_ITEMS.len() - 1);
+            }
+            MenuView::Subscriptions => {
+                state.selected_subscription =
+                    (state.selected_subscription + 1).min(state.editable.subscriptions.len());
+            }
+            MenuView::NewSubscription => {}
+            MenuView::SubscriptionActions => {
+                state.selected_action =
+                    (state.selected_action + 1).min(SUBSCRIPTION_ACTIONS.len() - 1);
+            }
+            MenuView::Configurations => {
+                state.selected_config = (state.selected_config + 1).min(CONFIG_KEYS.len() - 1);
+            }
+            MenuView::Logs => state.selected_log = state.selected_log.saturating_sub(1),
+        },
+        FocusPanel::Found => {
+            let max = state.found_uris.len().saturating_sub(1);
+            state.selected_found = Some(state.selected_found.map_or(0, |i| (i + 1).min(max)));
         }
-        MenuView::Subscriptions => {
-            state.selected_subscription =
-                (state.selected_subscription + 1).min(state.editable.subscriptions.len());
-        }
-        MenuView::NewSubscription => {}
-        MenuView::SubscriptionActions => {
-            state.selected_action = (state.selected_action + 1).min(SUBSCRIPTION_ACTIONS.len() - 1);
-        }
-        MenuView::Configurations => {
-            state.selected_config = (state.selected_config + 1).min(CONFIG_KEYS.len() - 1);
-        }
-        MenuView::Logs => state.selected_log = state.selected_log.saturating_sub(1),
     }
 }
 

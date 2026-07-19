@@ -11,7 +11,7 @@ use super::{
     util::draw_scrollbar,
 };
 
-pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) {
+pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState, focused: bool) {
     let total = state.editable.subscriptions.len() + 1;
     let visible_rows = visible_row_count(area).max(1);
     let offset = scroll_offset(state.selected_subscription, total, visible_rows);
@@ -67,6 +67,11 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) {
         .take(visible_rows);
 
     state.hits.subscription_rows = row_hits_with_offset(area, total, offset);
+    let border_color = if focused {
+        Color::Cyan
+    } else {
+        Color::DarkGray
+    };
     frame.render_widget(
         Table::new(
             rows,
@@ -82,6 +87,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
+                .border_style(Style::default().fg(border_color))
                 .title("Subscriptions"),
         ),
         area,

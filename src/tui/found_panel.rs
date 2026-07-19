@@ -24,6 +24,7 @@ pub fn draw(
     proxy_pending_uri: Option<&str>,
     found_rows: &mut Vec<(usize, Rect)>,
     found_uris: &mut Vec<String>,
+    focused: bool,
 ) {
     if area.width < 30 || area.height < 3 {
         return;
@@ -162,10 +163,16 @@ pub fn draw(
             }
         });
 
+    let border_color = if focused {
+        Color::Cyan
+    } else {
+        Color::DarkGray
+    };
     frame.render_widget(
         Table::new(rows, widths).header(header).block(
             Block::default()
                 .borders(Borders::ALL)
+                .border_style(Style::default().fg(border_color))
                 .title("Current Found Configs"),
         ),
         area,

@@ -551,6 +551,7 @@ function Main {
         if ([string]::IsNullOrWhiteSpace($Version)) {
             $Version = Get-LatestVersion
         }
+        $Version = $Version.TrimStart('v')
         Write-Info "version: $Version"
 
         # Detect arch
@@ -592,7 +593,7 @@ function Main {
                         Write-Info "location: $($Script:FoundPath)\$AppName.exe"
                     }
                     Write-Host ""
-                    if (-not (Confirm -Prompt "update from v$($Script:FoundVersion) to v$Version?")) {
+                    if (-not (Confirm -Prompt "update from v$($Script:FoundVersion) to v$($Version)?")) {
                         Write-Info "cancelled"
                         return
                     }

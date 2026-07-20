@@ -580,6 +580,7 @@ main() {
     detect_termux
 
     [ -n "$VERSION" ] || VERSION="$(get_latest_version)"
+    VERSION="${VERSION#v}"
     info "version: $VERSION"
 
     select_asset

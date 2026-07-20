@@ -1159,11 +1159,11 @@ async fn refresh_once(
         fetch_errors,
         ranked,
         stable_working_counts,
-        proxy_active_config: None,
-        proxy_active_uri: None,
-        proxy_running: false,
-        proxy_port: None,
-        proxy_discoverable: false,
+        proxy_active_config: progress_state.proxy_active_config.clone(),
+        proxy_active_uri: progress_state.proxy_active_uri.clone(),
+        proxy_running: progress_state.proxy_running,
+        proxy_port: progress_state.proxy_port,
+        proxy_discoverable: progress_state.proxy_discoverable,
     };
 
     let failed_count = runtime

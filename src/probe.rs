@@ -2205,11 +2205,19 @@ fn shadowsocks_outbound(uri: &str) -> Result<Value> {
 }
 
 fn normalize_shadowsocks_method(method: &str) -> Result<String> {
-    match method.to_ascii_lowercase().as_str() {
-        "ss" => Err(anyhow!("unsupported Shadowsocks method: ss")),
-        "chacha20-poly1305" => Ok("chacha20-ietf-poly1305".to_string()),
-        "xchacha20-poly1305" => Ok("xchacha20-ietf-poly1305".to_string()),
-        normalized => Ok(normalized.to_string()),
+    let lowered = method.to_ascii_lowercase();
+    let normalized = match lowered.as_str() {
+        "ss" => return Err(anyhow!("unsupported Shadowsocks method: ss")),
+        "chacha20-poly1305" => "chacha20-ietf-poly1305",
+        "xchacha20-poly1305" => "xchacha20-ietf-poly1305",
+        other => other,
+    };
+    if crate::constants::SUPPORTED_SS_METHODS.contains(&normalized) {
+        Ok(normalized.to_string())
+    } else {
+        Err(anyhow!(
+            "unsupported Shadowsocks cipher: {normalized} (only AEAD/2022 methods are supported)"
+        ))
     }
 }
 
@@ -2306,9 +2314,6 @@ fn tls_config_from_values(
     insecure: bool,
 ) -> Value {
     let mut tls = Map::new();
-    let reality_enabled = reality_public_key
-        .as_deref()
-        .is_some_and(|value| !value.is_empty());
     tls.insert("enabled".to_string(), json!(enabled));
     if let Some(server_name) = server_name.filter(|value| !value.is_empty()) {
         tls.insert("server_name".to_string(), json!(server_name));
@@ -2334,7 +2339,11 @@ fn tls_config_from_values(
                 "fingerprint": fingerprint
             }),
         );
-    } else if reality_enabled {
+    } else if enabled {
+        // Default to chrome fingerprint for ALL TLS configs — matches what
+        // real clients (v2rayN, Clash Verge) do. Without this, sing-box uses
+        // its native Go TLS fingerprint which is distinguishable from real
+        // browsers and may be blocked by TLS fingerprint-based firewalls.
         tls.insert(
             "utls".to_string(),
             json!({

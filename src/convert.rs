@@ -286,11 +286,19 @@ pub fn shadowsocks_fields(uri: &str) -> Result<SsFields> {
 
 #[allow(dead_code)]
 fn normalize_ss_method(method: &str) -> Result<String> {
-    match method.to_ascii_lowercase().as_str() {
-        "ss" => Err(anyhow!("unsupported Shadowsocks method: ss")),
-        "chacha20-poly1305" => Ok("chacha20-ietf-poly1305".to_string()),
-        "xchacha20-poly1305" => Ok("xchacha20-ietf-poly1305".to_string()),
-        other => Ok(other.to_string()),
+    let lowered = method.to_ascii_lowercase();
+    let normalized = match lowered.as_str() {
+        "ss" => return Err(anyhow!("unsupported Shadowsocks method: ss")),
+        "chacha20-poly1305" => "chacha20-ietf-poly1305",
+        "xchacha20-poly1305" => "xchacha20-ietf-poly1305",
+        other => other,
+    };
+    if crate::constants::SUPPORTED_SS_METHODS.contains(&normalized) {
+        Ok(normalized.to_string())
+    } else {
+        Err(anyhow!(
+            "unsupported Shadowsocks cipher: {normalized} (only AEAD/2022 methods are supported)"
+        ))
     }
 }
 

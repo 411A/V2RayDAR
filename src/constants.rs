@@ -110,6 +110,19 @@ pub const SUPPORTED_URI_SCHEMES: &[&str] = &[
     "tuic://",
 ];
 
+/// Shadowsocks cipher methods supported by sing-box (AEAD/2022 only).
+/// Legacy stream ciphers (rc4-md5, aes-*-cfb, aes-*-ctr, etc.) are rejected
+/// because sing-box crashes immediately on startup with unsupported methods.
+pub const SUPPORTED_SS_METHODS: &[&str] = &[
+    "aes-128-gcm",
+    "aes-256-gcm",
+    "chacha20-ietf-poly1305",
+    "xchacha20-ietf-poly1305",
+    "2022-blake3-aes-128-gcm",
+    "2022-blake3-aes-256-gcm",
+    "2022-blake3-chacha20-poly1305",
+];
+
 pub const TUI_FRAME_INTERVAL: Duration = Duration::from_millis(100);
 pub const TUI_INPUT_POLL_INTERVAL: Duration = Duration::from_millis(16);
 pub const TUI_MAX_EVENTS_PER_FRAME: usize = 64;

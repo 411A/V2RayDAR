@@ -474,18 +474,6 @@ add_to_path() {
 # ─── Interactive Prompts ───────────────────────────────────────────────────────
 
 interactive_install() {
-    _detected_os="$OS"
-    _detected_arch="$ARCH"
-    if [ "$IS_TERMUX" = "1" ]; then _detected_os="termux"; fi
-
-    echo ""
-    echo "  ========================================"
-    echo "       V2RayDAR Installer v${VERSION}"
-    echo "  ========================================"
-    echo ""
-    info "Detected: ${_detected_os} ${_detected_arch}"
-    echo ""
-
     # Determine default portable directory: Desktop/V2RayDAR if Desktop exists, else ~/V2RayDAR
     _portable_default="$HOME/V2RayDAR"
     if [ -d "$HOME/Desktop" ]; then

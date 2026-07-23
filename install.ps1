@@ -477,15 +477,6 @@ function Do-UserInstall {
 # ─── Interactive Prompts ───────────────────────────────────────────────────────
 
 function Select-InstallMode {
-    $arch = Get-Arch
-    Write-Host ""
-    Write-Host "  ========================================"
-    Write-Host "       V2RayDAR Installer v$Version"
-    Write-Host "  ========================================"
-    Write-Host ""
-    Write-Info "Detected: Windows $arch"
-    Write-Host ""
-
     $desktop = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
     if ([string]::IsNullOrWhiteSpace($desktop)) { $desktop = Join-Path $env:USERPROFILE "Desktop" }
     $defaultDir = if (Test-Path $desktop) { Join-Path $desktop "V2RayDAR" } else { Join-Path $env:USERPROFILE "V2RayDAR" }

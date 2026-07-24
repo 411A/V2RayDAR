@@ -1084,7 +1084,8 @@ dns:
     geoip-code: CN";
 
 fn minimal_clash_config() -> String {
-    format!("{HEADER}\n")
+    let rules_yaml = generate_clash_rules();
+    format!("{HEADER}\n\nproxies: []\n\n{rules_yaml}")
 }
 
 fn generate_proxy_groups(proxy_names: &[String]) -> String {
@@ -1495,7 +1496,7 @@ uuid: test
         let config = generate_clash_config(&[]).unwrap();
         assert!(config.contains("mixed-port: 7890"));
         assert!(config.contains("mode: rule"));
-        assert!(!config.contains("proxies:"));
+        assert!(config.contains("proxies: []"));
         assert!(!config.contains("proxy-groups:"));
     }
 

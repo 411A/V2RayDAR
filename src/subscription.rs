@@ -496,18 +496,13 @@ async fn read_limited_response(
     max_bytes: usize,
 ) -> FetchResult<Vec<u8>> {
     let content_length = response.content_length().unwrap_or(0);
-    if content_length > max_bytes as u64 {
-        warn!(
-            content_length,
-            max_bytes, "subscription body rejected by content-length"
-        );
-        return Err(FetchError::new(
-            anyhow!("subscription body is larger than max_subscription_bytes ({max_bytes})"),
-            0,
-        ));
-    }
+    let capacity = if content_length > 0 && content_length <= max_bytes as u64 {
+        usize::try_from(content_length).unwrap_or_else(|_| max_bytes.min(256 * 1024))
+    } else {
+        max_bytes.min(256 * 1024)
+    };
 
-    let mut body = Vec::with_capacity(usize::try_from(content_length).unwrap_or(max_bytes));
+    let mut body = Vec::with_capacity(capacity);
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|err| FetchError::new(err.into(), body.len() as u64))?;

@@ -260,7 +260,7 @@ fn xray_vmess_to_uri(
     vmess.insert("v".to_string(), JsonValue::Number(2.into()));
     vmess.insert("ps".to_string(), JsonValue::String(name.to_string()));
     vmess.insert("add".to_string(), JsonValue::String(address.to_string()));
-    vmess.insert("port".to_string(), JsonValue::Number(port.into()));
+    vmess.insert("port".to_string(), JsonValue::String(port.to_string()));
     vmess.insert("id".to_string(), JsonValue::String(uuid.to_string()));
     vmess.insert("aid".to_string(), JsonValue::Number(alter_id.into()));
     vmess.insert("scy".to_string(), JsonValue::String(security.to_string()));
@@ -277,7 +277,18 @@ fn xray_vmess_to_uri(
             vmess.insert("fp".to_string(), JsonValue::String(fp.to_string()));
         }
         if let Some(alpn) = tls_settings.get("alpn") {
-            vmess.insert("alpn".to_string(), alpn.clone());
+            let alpn_str = match alpn {
+                JsonValue::Array(arr) => arr
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join(","),
+                JsonValue::String(s) => s.clone(),
+                _ => String::new(),
+            };
+            if !alpn_str.is_empty() {
+                vmess.insert("alpn".to_string(), JsonValue::String(alpn_str));
+            }
         }
     }
 

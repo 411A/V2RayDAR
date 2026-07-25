@@ -237,7 +237,12 @@ impl AppConfig {
         } else {
             "subscription"
         };
-        let mut url = format!("http://{}:{}/{}", host, self.bind.port(), endpoint);
+        let url_host = if host.contains(':') && !host.starts_with('[') {
+            format!("[{host}]")
+        } else {
+            host.to_string()
+        };
+        let mut url = format!("http://{url_host}:{}/{}", self.bind.port(), endpoint);
 
         if should_include_token_in_url(&self.sharing.token) {
             url.push_str("?token=");

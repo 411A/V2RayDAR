@@ -100,7 +100,16 @@ pub fn sing_box_download_url() -> String {
 pub const HTTP_EXCHANGE_OVERHEAD_BYTES: u64 = 1024;
 pub const BITS_PER_BYTE: f64 = 8.0;
 pub const BITS_PER_MEGABIT: f64 = 1_000_000.0;
-pub const SUPPORTED_URI_SCHEMES: &[&str] = &["vmess://", "vless://", "trojan://", "ss://"];
+pub const SUPPORTED_URI_SCHEMES: &[&str] = &[
+    "vmess://",
+    "vless://",
+    "trojan://",
+    "ss://",
+    "ssr://",
+    "hysteria2://",
+    "hy2://",
+    "tuic://",
+];
 
 /// Shadowsocks cipher methods supported by sing-box (AEAD/2022 only).
 /// Legacy stream ciphers (rc4-md5, aes-*-cfb, aes-*-ctr, etc.) are rejected

@@ -318,6 +318,9 @@ pub fn clash_proxy_to_uri(proxy: &YamlValue) -> Result<String> {
         "vless" => clash_vless_to_uri(proxy, &server, port, &name),
         "trojan" => clash_trojan_to_uri(proxy, &server, port, &name),
         "ss" => clash_ss_to_uri(proxy, &server, port, &name),
+        "ssr" => clash_ssr_to_uri(proxy, &server, port, &name),
+        "hysteria2" | "hy2" => Ok(clash_hysteria2_to_uri(proxy, &server, port, &name)),
+        "tuic" => clash_tuic_to_uri(proxy, &server, port, &name),
         other => Err(anyhow!("unsupported Clash proxy type: {other}")),
     }
 }
@@ -587,6 +590,12 @@ pub fn uri_to_clash_proxy(uri: &str) -> Result<YamlValue> {
         standard_uri_to_clash(uri, "trojan")
     } else if lower.starts_with("ss://") {
         ss_uri_to_clash(uri)
+    } else if lower.starts_with("ssr://") {
+        ssr_uri_to_clash(uri)
+    } else if lower.starts_with("hysteria2://") || lower.starts_with("hy2://") {
+        hysteria2_uri_to_clash(uri)
+    } else if lower.starts_with("tuic://") {
+        tuic_uri_to_clash(uri)
     } else {
         Err(anyhow!("unsupported URI scheme for Clash conversion"))
     }
@@ -831,6 +840,353 @@ fn ss_uri_to_clash(uri: &str) -> Result<YamlValue> {
     }
 
     Ok(YamlValue::Mapping(proxy))
+}
+
+// ── SSR URI → Clash proxy ──────────────────────────────────────────────────
+
+#[allow(dead_code)]
+fn ssr_uri_to_clash(uri: &str) -> Result<YamlValue> {
+    let rest = uri
+        .strip_prefix("ssr://")
+        .ok_or_else(|| anyhow!("not an SSR URI"))?;
+    // SSR format: ssr://base64payload/?param=val
+    // The base64 payload may be followed by /?params — strip that first.
+    let (encoded, params_part) = rest
+        .find("/?")
+        .map_or((rest, ""), |pos| (&rest[..pos], &rest[pos + 1..]));
+    let decoded_bytes = decode_base64_to_string(encoded)
+        .ok_or_else(|| anyhow!("failed to base64-decode SSR payload"))?;
+    // Format: host:port:protocol:method:obfs:base64pass
+    let main_part = decoded_bytes.split('/').next().unwrap_or(&decoded_bytes);
+
+    let fields: Vec<&str> = main_part.splitn(6, ':').collect();
+    if fields.len() < 6 {
+        return Err(anyhow!("SSR URI has insufficient fields"));
+    }
+    let host = fields[0];
+    let port: u16 = fields[1]
+        .parse()
+        .map_err(|_| anyhow!("SSR URI has invalid port"))?;
+    let protocol = fields[2];
+    let method = fields[3];
+    let obfs = fields[4];
+    let password_b64 = fields[5];
+    let password = decode_base64_to_string(password_b64)
+        .ok_or_else(|| anyhow!("SSR URI has invalid password base64"))?;
+
+    // Parse query params from the remainder
+    let params = parse_query_params(params_part);
+    let name = params
+        .get("remark")
+        .cloned()
+        .unwrap_or_else(|| format!("{host}:{port}"));
+
+    let mut proxy = serde_yaml::Mapping::new();
+    proxy.insert(yaml_key("name"), YamlValue::String(name));
+    proxy.insert(yaml_key("type"), YamlValue::String("ssr".to_string()));
+    proxy.insert(yaml_key("server"), YamlValue::String(host.to_string()));
+    proxy.insert(yaml_key("port"), YamlValue::Number(port.into()));
+    proxy.insert(yaml_key("cipher"), YamlValue::String(method.to_string()));
+    proxy.insert(yaml_key("password"), YamlValue::String(password));
+    proxy.insert(
+        yaml_key("protocol"),
+        YamlValue::String(protocol.to_string()),
+    );
+    proxy.insert(yaml_key("obfs"), YamlValue::String(obfs.to_string()));
+    proxy.insert(yaml_key("udp"), YamlValue::Bool(true));
+
+    if let Some(obfs_param) = params.get("obfsparam")
+        && !obfs_param.is_empty()
+    {
+        proxy.insert(
+            yaml_key("obfs-param"),
+            YamlValue::String(obfs_param.clone()),
+        );
+    }
+    if let Some(protocol_param) = params.get("protoparam")
+        && !protocol_param.is_empty()
+    {
+        proxy.insert(
+            yaml_key("protocol-param"),
+            YamlValue::String(protocol_param.clone()),
+        );
+    }
+
+    Ok(YamlValue::Mapping(proxy))
+}
+
+// ── Hysteria2 URI → Clash proxy ────────────────────────────────────────────
+
+#[allow(dead_code)]
+fn hysteria2_uri_to_clash(uri: &str) -> Result<YamlValue> {
+    let lower = uri.to_ascii_lowercase();
+    let raw = if lower.starts_with("hysteria2://") {
+        &uri["hysteria2://".len()..]
+    } else if lower.starts_with("hy2://") {
+        &uri["hy2://".len()..]
+    } else {
+        return Err(anyhow!("not a Hysteria2 URI"));
+    };
+
+    let parsed = Url::parse(&format!("hysteria2://{raw}"))
+        .map_err(|e| anyhow!("invalid Hysteria2 URI: {e}"))?;
+
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| anyhow!("Hysteria2 URI has no host"))?;
+    let port = parsed
+        .port()
+        .ok_or_else(|| anyhow!("Hysteria2 URI has no port"))?;
+
+    // Auth is username portion (may be empty for password-only auth)
+    let password = if parsed.username().is_empty() {
+        String::new()
+    } else {
+        percent_decode_str(parsed.username())
+            .decode_utf8_lossy()
+            .into_owned()
+    };
+
+    let fragment = percent_decode_str(parsed.fragment().unwrap_or(""))
+        .decode_utf8_lossy()
+        .into_owned();
+    let name = if fragment.is_empty() {
+        format!("{host}:{port}")
+    } else {
+        fragment
+    };
+
+    let params = parse_query_params(parsed.query().unwrap_or(""));
+
+    let mut proxy = serde_yaml::Mapping::new();
+    proxy.insert(yaml_key("name"), YamlValue::String(name));
+    proxy.insert(yaml_key("type"), YamlValue::String("hysteria2".to_string()));
+    proxy.insert(yaml_key("server"), YamlValue::String(host.to_string()));
+    proxy.insert(yaml_key("port"), YamlValue::Number(port.into()));
+    proxy.insert(yaml_key("udp"), YamlValue::Bool(true));
+
+    if !password.is_empty() {
+        proxy.insert(yaml_key("password"), YamlValue::String(password));
+    }
+
+    if let Some(sni) = params.get("sni") {
+        proxy.insert(yaml_key("sni"), YamlValue::String(sni.clone()));
+    }
+    if params
+        .get("insecure")
+        .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+    {
+        proxy.insert(yaml_key("skip-cert-verify"), YamlValue::Bool(true));
+    }
+    if let Some(pinsha256) = params.get("pinsha256") {
+        proxy.insert(yaml_key("pinSHA256"), YamlValue::String(pinsha256.clone()));
+    }
+    if let Some(bw) = params.get("up") {
+        proxy.insert(yaml_key("up"), YamlValue::String(bw.clone()));
+    }
+    if let Some(bw) = params.get("down") {
+        proxy.insert(yaml_key("down"), YamlValue::String(bw.clone()));
+    }
+
+    Ok(YamlValue::Mapping(proxy))
+}
+
+// ── TUIC URI → Clash proxy ─────────────────────────────────────────────────
+
+#[allow(dead_code)]
+fn tuic_uri_to_clash(uri: &str) -> Result<YamlValue> {
+    let raw = uri
+        .strip_prefix("tuic://")
+        .ok_or_else(|| anyhow!("not a TUIC URI"))?;
+    let parsed =
+        Url::parse(&format!("tuic://{raw}")).map_err(|e| anyhow!("invalid TUIC URI: {e}"))?;
+
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| anyhow!("TUIC URI has no host"))?;
+    let port = parsed
+        .port()
+        .ok_or_else(|| anyhow!("TUIC URI has no port"))?;
+
+    let uuid = percent_decode_str(parsed.username())
+        .decode_utf8_lossy()
+        .into_owned();
+    let password = percent_decode_str(parsed.password().unwrap_or(""))
+        .decode_utf8_lossy()
+        .into_owned();
+
+    let fragment = percent_decode_str(parsed.fragment().unwrap_or(""))
+        .decode_utf8_lossy()
+        .into_owned();
+    let name = if fragment.is_empty() {
+        format!("{host}:{port}")
+    } else {
+        fragment
+    };
+
+    let params = parse_query_params(parsed.query().unwrap_or(""));
+
+    let mut proxy = serde_yaml::Mapping::new();
+    proxy.insert(yaml_key("name"), YamlValue::String(name));
+    proxy.insert(yaml_key("type"), YamlValue::String("tuic".to_string()));
+    proxy.insert(yaml_key("server"), YamlValue::String(host.to_string()));
+    proxy.insert(yaml_key("port"), YamlValue::Number(port.into()));
+    proxy.insert(yaml_key("uuid"), YamlValue::String(uuid));
+    proxy.insert(yaml_key("password"), YamlValue::String(password));
+    proxy.insert(yaml_key("udp"), YamlValue::Bool(true));
+
+    if let Some(sni) = params.get("sni") {
+        proxy.insert(yaml_key("sni"), YamlValue::String(sni.clone()));
+    }
+    if params
+        .get("insecure")
+        .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+    {
+        proxy.insert(yaml_key("skip-cert-verify"), YamlValue::Bool(true));
+    }
+    if let Some(alpn) = params.get("alpn") {
+        let alpn_vals: Vec<YamlValue> = alpn
+            .split(',')
+            .map(|s| YamlValue::String(s.trim().to_string()))
+            .collect();
+        proxy.insert(yaml_key("alpn"), YamlValue::Sequence(alpn_vals));
+    }
+    if let Some(congestion) = params.get("congestion_control") {
+        proxy.insert(
+            yaml_key("congestion-control"),
+            YamlValue::String(congestion.clone()),
+        );
+    }
+
+    Ok(YamlValue::Mapping(proxy))
+}
+
+// ── Clash SSR proxy → URI ──────────────────────────────────────────────────
+
+#[allow(dead_code)]
+fn clash_ssr_to_uri(proxy: &YamlValue, server: &str, port: u16, name: &str) -> Result<String> {
+    let password =
+        yaml_string(proxy, &["password"]).ok_or_else(|| anyhow!("SSR proxy has no password"))?;
+    let protocol = yaml_string(proxy, &["protocol"]).unwrap_or_else(|| "origin".to_string());
+    let method = yaml_string(proxy, &["cipher"]).unwrap_or_else(|| "none".to_string());
+    let obfs = yaml_string(proxy, &["obfs"]).unwrap_or_else(|| "plain".to_string());
+
+    let password_b64 = STANDARD.encode(&password);
+
+    // Build the main payload: host:port:protocol:method:obfs:base64pass
+    let main_payload = format!("{server}:{port}:{protocol}:{method}:{obfs}:{password_b64}");
+
+    let mut params = Vec::new();
+    if let Some(obfs_param) = yaml_string(proxy, &["obfs-param"]) {
+        params.push(format!("obfsparam={}", STANDARD.encode(&obfs_param)));
+    }
+    if let Some(proto_param) = yaml_string(proxy, &["protocol-param"]) {
+        params.push(format!("protoparam={}", STANDARD.encode(&proto_param)));
+    }
+    params.push(format!("remark={}", STANDARD.encode(name)));
+
+    let encoded_payload = STANDARD.encode(&main_payload);
+    let query = if params.is_empty() {
+        String::new()
+    } else {
+        format!("/?{}", params.join("&"))
+    };
+
+    Ok(format!("ssr://{encoded_payload}{query}"))
+}
+
+// ── Clash Hysteria2 proxy → URI ────────────────────────────────────────────
+
+#[allow(dead_code)]
+fn clash_hysteria2_to_uri(proxy: &YamlValue, server: &str, port: u16, name: &str) -> String {
+    let password = yaml_string(proxy, &["password"]).unwrap_or_default();
+
+    let mut params = BTreeMap::new();
+    if let Some(sni) = yaml_string(proxy, &["sni"]) {
+        params.insert("sni".to_string(), sni);
+    }
+    if yaml_bool(proxy, &["skip-cert-verify"]) {
+        params.insert("insecure".to_string(), "1".to_string());
+    }
+    if let Some(pin) = yaml_string(proxy, &["pinSHA256"]) {
+        params.insert("pinsha256".to_string(), pin);
+    }
+    if let Some(up) = yaml_string(proxy, &["up"]) {
+        params.insert("up".to_string(), up);
+    }
+    if let Some(down) = yaml_string(proxy, &["down"]) {
+        params.insert("down".to_string(), down);
+    }
+
+    let encoded_name =
+        percent_encoding::utf8_percent_encode(name, percent_encoding::NON_ALPHANUMERIC).to_string();
+
+    let auth = if password.is_empty() {
+        String::new()
+    } else {
+        let encoded_pw = percent_encoding::utf8_percent_encode(&password, URI_QUERY).to_string();
+        format!("{encoded_pw}@")
+    };
+
+    let query = encode_query(&params);
+
+    format!("hysteria2://{auth}{server}:{port}?{query}#{encoded_name}")
+}
+
+// ── Clash TUIC proxy → URI ─────────────────────────────────────────────────
+
+#[allow(dead_code)]
+fn clash_tuic_to_uri(proxy: &YamlValue, server: &str, port: u16, name: &str) -> Result<String> {
+    let uuid = yaml_string(proxy, &["uuid"]).ok_or_else(|| anyhow!("TUIC proxy has no uuid"))?;
+    let password =
+        yaml_string(proxy, &["password"]).ok_or_else(|| anyhow!("TUIC proxy has no password"))?;
+
+    let mut params = BTreeMap::new();
+    if let Some(sni) = yaml_string(proxy, &["sni"]) {
+        params.insert("sni".to_string(), sni);
+    }
+    if yaml_bool(proxy, &["skip-cert-verify"]) {
+        params.insert("insecure".to_string(), "1".to_string());
+    }
+    if let Some(alpn) = yaml_alpn(proxy) {
+        params.insert("alpn".to_string(), alpn);
+    }
+    if let Some(cc) = yaml_string(proxy, &["congestion-control"]) {
+        params.insert("congestion_control".to_string(), cc);
+    }
+
+    let encoded_name =
+        percent_encoding::utf8_percent_encode(name, percent_encoding::NON_ALPHANUMERIC).to_string();
+
+    let encoded_uuid = percent_encoding::utf8_percent_encode(&uuid, URI_QUERY).to_string();
+    let encoded_password = percent_encoding::utf8_percent_encode(&password, URI_QUERY).to_string();
+
+    let query = encode_query(&params);
+
+    Ok(format!(
+        "tuic://{encoded_uuid}:{encoded_password}@{server}:{port}?{query}#{encoded_name}"
+    ))
+}
+
+// ── Query string helpers ───────────────────────────────────────────────────
+
+fn parse_query_params(query: &str) -> BTreeMap<String, String> {
+    let mut params = BTreeMap::new();
+    if query.is_empty() {
+        return params;
+    }
+    for pair in query.split('&') {
+        let mut kv = pair.splitn(2, '=');
+        if let (Some(key), Some(val)) = (kv.next(), kv.next())
+            && !key.is_empty()
+        {
+            params.insert(
+                key.to_string(),
+                percent_decode_str(val).decode_utf8_lossy().into_owned(),
+            );
+        }
+    }
+    params
 }
 
 // ── YAML helpers ───────────────────────────────────────────────────────────
@@ -1624,5 +1980,110 @@ uuid: test
             serde_yaml::from_str("name: \"Test Node\"\ntype: vmess\nserver: example.com\n")
                 .unwrap();
         assert_eq!(yaml_string(&yaml, &["name"]).unwrap(), "Test Node");
+    }
+
+    // ── SSR tests ──────────────────────────────────────────────────────
+
+    fn sample_ssr_uri() -> String {
+        let password_b64 = STANDARD.encode("mypassword");
+        let payload = format!("example.com:443:origin:aes-256-cfb:plain:{password_b64}");
+        let encoded = STANDARD.encode(&payload);
+        format!("ssr://{encoded}/?remark=Test%20SSR")
+    }
+
+    #[test]
+    fn ssr_to_clash_fields() {
+        let uri = sample_ssr_uri();
+        let proxy = uri_to_clash_proxy(&uri).unwrap();
+
+        assert_eq!(yaml_string(&proxy, &["type"]).unwrap(), "ssr");
+        assert_eq!(yaml_string(&proxy, &["server"]).unwrap(), "example.com");
+        assert_eq!(yaml_u16(&proxy, &["port"]).unwrap(), 443);
+        assert_eq!(yaml_string(&proxy, &["cipher"]).unwrap(), "aes-256-cfb");
+        assert_eq!(yaml_string(&proxy, &["password"]).unwrap(), "mypassword");
+        assert_eq!(yaml_string(&proxy, &["protocol"]).unwrap(), "origin");
+        assert_eq!(yaml_string(&proxy, &["obfs"]).unwrap(), "plain");
+    }
+
+    #[test]
+    fn ssr_round_trip() {
+        let uri = sample_ssr_uri();
+        let proxy = uri_to_clash_proxy(&uri).unwrap();
+        let back = clash_proxy_to_uri(&proxy).unwrap();
+
+        assert!(back.starts_with("ssr://"));
+        // Decode the base64 payload (strip query string first)
+        let rest = back.strip_prefix("ssr://").unwrap();
+        let encoded = rest.find("/?").map_or(rest, |pos| &rest[..pos]);
+        let payload = STANDARD.decode(encoded).unwrap();
+        let payload_str = String::from_utf8(payload).unwrap();
+        assert!(payload_str.contains("example.com:443"));
+        assert!(payload_str.contains("aes-256-cfb"));
+        assert!(payload_str.contains("origin"));
+    }
+
+    // ── Hysteria2 tests ────────────────────────────────────────────────
+
+    #[test]
+    fn hysteria2_to_clash_fields() {
+        let uri =
+            "hysteria2://mypassword@example.com:443?sni=example.com&insecure=1#Test%20Hysteria2";
+        let proxy = uri_to_clash_proxy(uri).unwrap();
+
+        assert_eq!(yaml_string(&proxy, &["type"]).unwrap(), "hysteria2");
+        assert_eq!(yaml_string(&proxy, &["server"]).unwrap(), "example.com");
+        assert_eq!(yaml_u16(&proxy, &["port"]).unwrap(), 443);
+        assert_eq!(yaml_string(&proxy, &["password"]).unwrap(), "mypassword");
+        assert_eq!(yaml_string(&proxy, &["sni"]).unwrap(), "example.com");
+        assert!(yaml_bool(&proxy, &["skip-cert-verify"]));
+    }
+
+    #[test]
+    fn hy2_alias_parses() {
+        let uri = "hy2://mypass@example.com:8443#Hy2%20Test";
+        let proxy = uri_to_clash_proxy(uri).unwrap();
+
+        assert_eq!(yaml_string(&proxy, &["type"]).unwrap(), "hysteria2");
+        assert_eq!(yaml_string(&proxy, &["password"]).unwrap(), "mypass");
+        assert_eq!(yaml_u16(&proxy, &["port"]).unwrap(), 8443);
+    }
+
+    #[test]
+    fn hysteria2_round_trip() {
+        let uri = "hysteria2://mypassword@example.com:443?sni=example.com#Test%20H2";
+        let proxy = uri_to_clash_proxy(uri).unwrap();
+        let back = clash_hysteria2_to_uri(&proxy, "example.com", 443, "Test H2");
+
+        assert!(back.starts_with("hysteria2://"));
+        assert!(back.contains("example.com:443"));
+        assert!(back.contains("sni=example.com"));
+    }
+
+    // ── TUIC tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn tuic_to_clash_fields() {
+        let uri = "tuic://myuuid:mypassword@example.com:443?sni=example.com&alpn=h3&insecure=1#Test%20TUIC";
+        let proxy = uri_to_clash_proxy(uri).unwrap();
+
+        assert_eq!(yaml_string(&proxy, &["type"]).unwrap(), "tuic");
+        assert_eq!(yaml_string(&proxy, &["server"]).unwrap(), "example.com");
+        assert_eq!(yaml_u16(&proxy, &["port"]).unwrap(), 443);
+        assert_eq!(yaml_string(&proxy, &["uuid"]).unwrap(), "myuuid");
+        assert_eq!(yaml_string(&proxy, &["password"]).unwrap(), "mypassword");
+        assert_eq!(yaml_string(&proxy, &["sni"]).unwrap(), "example.com");
+        assert!(yaml_bool(&proxy, &["skip-cert-verify"]));
+        assert_eq!(yaml_alpn(&proxy).unwrap(), "h3");
+    }
+
+    #[test]
+    fn tuic_round_trip() {
+        let uri = "tuic://myuuid:mypassword@example.com:443?sni=example.com#TUIC%20Node";
+        let proxy = uri_to_clash_proxy(uri).unwrap();
+        let back = clash_tuic_to_uri(&proxy, "example.com", 443, "TUIC Node").unwrap();
+
+        assert!(back.starts_with("tuic://"));
+        assert!(back.contains("example.com:443"));
+        assert!(back.contains("sni=example.com"));
     }
 }

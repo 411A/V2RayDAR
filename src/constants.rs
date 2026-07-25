@@ -111,17 +111,31 @@ pub const SUPPORTED_URI_SCHEMES: &[&str] = &[
     "tuic://",
 ];
 
-/// Shadowsocks cipher methods supported by sing-box (AEAD/2022 only).
-/// Legacy stream ciphers (rc4-md5, aes-*-cfb, aes-*-ctr, etc.) are rejected
-/// because sing-box crashes immediately on startup with unsupported methods.
+/// Shadowsocks cipher methods supported by sing-box and Mihomo.
+/// Includes AEAD, 2022, and legacy stream ciphers that Mihomo supports.
 pub const SUPPORTED_SS_METHODS: &[&str] = &[
+    // AEAD
     "aes-128-gcm",
     "aes-256-gcm",
     "chacha20-ietf-poly1305",
     "xchacha20-ietf-poly1305",
+    // AEAD 2022
     "2022-blake3-aes-128-gcm",
     "2022-blake3-aes-256-gcm",
     "2022-blake3-chacha20-poly1305",
+    // Legacy stream ciphers (Mihomo/sing-box compat)
+    "aes-128-cfb",
+    "aes-128-ctr",
+    "aes-128-ofb",
+    "aes-256-cfb",
+    "aes-256-ctr",
+    "aes-256-ofb",
+    "bf-cfb",
+    "cast5-cfb",
+    "chacha20",
+    "chacha20-ietf",
+    "rc4-md5",
+    "seed-cfb",
 ];
 
 pub const TUI_FRAME_INTERVAL: Duration = Duration::from_millis(100);

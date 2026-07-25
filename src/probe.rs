@@ -2265,24 +2265,42 @@ fn tls_config(
         return Ok(None);
     }
 
-    if let Some(public_key) = reality_key.as_deref() {
-        validate_reality_public_key(public_key)?;
-    }
-    let reality_short_id = first_param(params, &["sid", "short_id"]);
-    if let Some(short_id) = reality_short_id.as_deref() {
-        validate_reality_short_id(short_id)?;
-    }
+    // Reality: explicit security=reality, OR no security specified but pbk present.
+    // When security=tls is explicit, never use Reality (server uses standard TLS).
+    let is_reality =
+        security.eq_ignore_ascii_case("reality") || (security.is_empty() && reality_key.is_some());
 
-    Ok(Some(tls_config_from_values(
-        true,
-        first_param(params, &["sni", "serverName", "peer"]).or_else(|| Some(host.to_string())),
-        first_param(params, &["alpn"]),
-        first_param(params, &["fp", "fingerprint"]),
-        reality_key,
-        reality_short_id,
-        first_param(params, &["allowInsecure", "insecure", "skip-cert-verify"])
-            .is_some_and(|value| truthy(&value)),
-    )))
+    if is_reality {
+        if let Some(public_key) = reality_key.as_deref() {
+            validate_reality_public_key(public_key)?;
+        }
+        let reality_short_id = first_param(params, &["sid", "short_id"]);
+        if let Some(short_id) = reality_short_id.as_deref() {
+            validate_reality_short_id(short_id)?;
+        }
+
+        Ok(Some(tls_config_from_values(
+            true,
+            first_param(params, &["sni", "serverName", "peer"]).or_else(|| Some(host.to_string())),
+            first_param(params, &["alpn"]),
+            first_param(params, &["fp", "fingerprint"]),
+            reality_key,
+            reality_short_id,
+            first_param(params, &["allowInsecure", "insecure", "skip-cert-verify"])
+                .is_some_and(|value| truthy(&value)),
+        )))
+    } else {
+        Ok(Some(tls_config_from_values(
+            true,
+            first_param(params, &["sni", "serverName", "peer"]).or_else(|| Some(host.to_string())),
+            first_param(params, &["alpn"]),
+            first_param(params, &["fp", "fingerprint"]),
+            None,
+            None,
+            first_param(params, &["allowInsecure", "insecure", "skip-cert-verify"])
+                .is_some_and(|value| truthy(&value)),
+        )))
+    }
 }
 
 fn validate_reality_public_key(public_key: &str) -> Result<()> {

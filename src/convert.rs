@@ -717,7 +717,11 @@ fn standard_uri_to_clash(uri: &str, protocol: &str) -> Result<YamlValue> {
     let has_reality = f.params.contains_key("pbk") || f.params.contains_key("public_key");
     let security = first_param(&f.params, &["security", "tls"]).unwrap_or_default();
 
-    if security == "reality" || has_reality {
+    // Reality mode: explicit security=reality, OR no security specified but pbk present.
+    // When security=tls is explicit, never treat pbk as Reality (server uses standard TLS).
+    let is_reality = security == "reality" || (security.is_empty() && has_reality);
+
+    if is_reality {
         proxy.insert(yaml_key("tls"), YamlValue::Bool(true));
         if let Some(sni) = first_param(&f.params, &["sni", "serverName", "peer"]) {
             proxy.insert(yaml_key("servername"), YamlValue::String(sni));
@@ -988,6 +992,19 @@ fn hysteria2_uri_to_clash(uri: &str) -> Result<YamlValue> {
         proxy.insert(yaml_key("down"), YamlValue::String(bw.clone()));
     }
 
+    // Obfuscation
+    if let Some(obfs_type) = params.get("obfs") {
+        let mut obfs_opts = serde_yaml::Mapping::new();
+        obfs_opts.insert(yaml_key("type"), YamlValue::String(obfs_type.clone()));
+        if let Some(obfs_password) = params.get("obfs-password") {
+            obfs_opts.insert(
+                yaml_key("password"),
+                YamlValue::String(obfs_password.clone()),
+            );
+        }
+        proxy.insert(yaml_key("obfs"), YamlValue::Mapping(obfs_opts));
+    }
+
     Ok(YamlValue::Mapping(proxy))
 }
 
@@ -1057,6 +1074,9 @@ fn tuic_uri_to_clash(uri: &str) -> Result<YamlValue> {
             YamlValue::String(congestion.clone()),
         );
     }
+    if let Some(mode) = params.get("udp_relay_mode") {
+        proxy.insert(yaml_key("udp-relay-mode"), YamlValue::String(mode.clone()));
+    }
 
     Ok(YamlValue::Mapping(proxy))
 }
@@ -1118,6 +1138,14 @@ fn clash_hysteria2_to_uri(proxy: &YamlValue, server: &str, port: u16, name: &str
         params.insert("down".to_string(), down);
     }
 
+    // Obfuscation
+    if let Some(obfs_type) = yaml_nested_string(proxy, "obfs.type") {
+        params.insert("obfs".to_string(), obfs_type);
+        if let Some(obfs_password) = yaml_nested_string(proxy, "obfs.password") {
+            params.insert("obfs-password".to_string(), obfs_password);
+        }
+    }
+
     let encoded_name =
         percent_encoding::utf8_percent_encode(name, percent_encoding::NON_ALPHANUMERIC).to_string();
 
@@ -1153,6 +1181,9 @@ fn clash_tuic_to_uri(proxy: &YamlValue, server: &str, port: u16, name: &str) -> 
     }
     if let Some(cc) = yaml_string(proxy, &["congestion-control"]) {
         params.insert("congestion_control".to_string(), cc);
+    }
+    if let Some(mode) = yaml_string(proxy, &["udp-relay-mode"]) {
+        params.insert("udp_relay_mode".to_string(), mode);
     }
 
     let encoded_name =
@@ -1384,10 +1415,19 @@ pub fn generate_clash_config(uris: &[&str]) -> Result<String> {
     let mut proxy_values = Vec::new();
     let mut proxy_names = Vec::new();
     let mut seen_names = std::collections::HashMap::<String, usize>::new();
+    let mut seen_endpoints = std::collections::HashSet::<String>::new();
 
     for uri in uris {
         if let Ok(mut proxy_value) = uri_to_clash_proxy(uri) {
-            // Deduplicate proxy names by appending (2), (3), etc.
+            // Deduplicate by server address (host:port) — skip proxies pointing
+            // to the same endpoint regardless of name differences.
+            let server = yaml_string(&proxy_value, &["server"]).unwrap_or_default();
+            let port = yaml_u16(&proxy_value, &["port"]).unwrap_or(0);
+            let endpoint = format!("{server}:{port}");
+            if !seen_endpoints.insert(endpoint) {
+                continue;
+            }
+
             if let Some(name) = yaml_string(&proxy_value, &["name"]) {
                 let count = seen_names.entry(name.clone()).or_insert(0);
                 *count += 1;
@@ -1432,22 +1472,18 @@ const HEADER: &str = r"mixed-port: 7890
 allow-lan: false
 mode: rule
 log-level: info
-external-controller: '127.0.0.1:9090'
 
 dns:
   enable: true
-  listen: 0.0.0.0:1053
   enhanced-mode: fake-ip
   fake-ip-range: 198.18.0.1/16
-  default-nameserver:
-    - 223.5.5.5
-    - 8.8.8.8
   nameserver:
-    - https://dns.alidns.com/dns-query
-    - https://doh.pub/dns-query
+    - https://dns.google/dns-query
+    - https://cloudflare-dns.com/dns-query
+    - https://dns.quad9.net/dns-query
   fallback:
+    - https://dns.google/dns-query
     - https://1.1.1.1/dns-query
-    - https://8.8.8.8/dns-query
   fallback-filter:
     geoip: true
     geoip-code: CN";
@@ -1933,7 +1969,6 @@ uuid: test
 
         assert!(config.contains("mixed-port: 7890"));
         assert!(config.contains("mode: rule"));
-        assert!(config.contains("external-controller:"));
         assert!(config.contains("dns:"));
         assert!(config.contains("proxies:"));
         assert!(config.contains("type: vmess"));
@@ -1947,8 +1982,9 @@ uuid: test
     #[allow(clippy::similar_names)]
     fn generate_clash_config_multiple_proxies() {
         let vmess_link = sample_vmess_uri();
-        let vless_link = sample_vless_uri();
-        let config = generate_clash_config(&[&vmess_link, &vless_link]).unwrap();
+        // Use a VLESS URI with a different server to avoid endpoint dedup
+        let vless_link = "vless://abc-123@other-server.com:443?security=tls&type=ws&path=/ws&host=other-server.com&sni=other-server.com&fp=chrome#Other%20VLESS";
+        let config = generate_clash_config(&[&vmess_link, vless_link]).unwrap();
 
         // Should have two proxy entries
         assert!(config.contains("type: vmess"));

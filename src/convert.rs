@@ -515,6 +515,22 @@ fn clash_trojan_to_uri(proxy: &YamlValue, server: &str, port: u16, name: &str) -
                 params.insert("serviceName".to_string(), sn);
             }
         }
+        "h2" | "http" => {
+            if let Some(path) = yaml_string(proxy, &["h2-opts", "path"]) {
+                params.insert("path".to_string(), path);
+            }
+            if let Some(host) = yaml_h2_host(proxy) {
+                params.insert("host".to_string(), host);
+            }
+        }
+        "httpupgrade" => {
+            if let Some(path) = yaml_string(proxy, &["httpupgrade-opts", "path"]) {
+                params.insert("path".to_string(), path);
+            }
+            if let Some(host) = yaml_string(proxy, &["httpupgrade-opts", "host"]) {
+                params.insert("host".to_string(), host);
+            }
+        }
         _ => {}
     }
 
@@ -1189,6 +1205,23 @@ fn keywords_to_regex(keywords: &[&str]) -> String {
 fn generate_clash_rules() -> String {
     String::from(
         r"rules:
+  - GEOIP,private,DIRECT,no-resolve
+  - GEOIP,cn,DIRECT,no-resolve
+  - DOMAIN-SUFFIX,google.com,🚀 Manual
+  - DOMAIN-SUFFIX,googleapis.com,🚀 Manual
+  - DOMAIN-SUFFIX,youtube.com,🚀 Manual
+  - DOMAIN-SUFFIX,facebook.com,🚀 Manual
+  - DOMAIN-SUFFIX,twitter.com,🚀 Manual
+  - DOMAIN-SUFFIX,x.com,🚀 Manual
+  - DOMAIN-SUFFIX,instagram.com,🚀 Manual
+  - DOMAIN-SUFFIX,telegram.org,🚀 Manual
+  - DOMAIN-SUFFIX,t.me,🚀 Manual
+  - DOMAIN-SUFFIX,wikipedia.org,🚀 Manual
+  - DOMAIN-SUFFIX,github.com,🚀 Manual
+  - DOMAIN-SUFFIX,githubusercontent.com,🚀 Manual
+  - DOMAIN-SUFFIX,openai.com,🚀 Manual
+  - DOMAIN-KEYWORD,google,🚀 Manual
+  - DOMAIN-KEYWORD,googleapis,🚀 Manual
   - MATCH,DIRECT",
     )
 }
@@ -1196,52 +1229,111 @@ fn generate_clash_rules() -> String {
 /// Country code → (emoji+label, match keywords)
 type CountryDef = (&'static str, &'static str, &'static [&'static str]);
 
-fn detect_countries(proxy_names: &[String]) -> Vec<CountryDef> {
-    let all_defs: Vec<CountryDef> = vec![
-        ("HK", "🇭🇰 HK", &["HK", "Hong Kong", "港"]),
-        ("JP", "🇯🇵 JP", &["JP", "Japan", "东京", "大阪", "日本"]),
-        ("SG", "🇸🇬 SG", &["SG", "Singapore", "新加坡", "狮城"]),
-        (
+const COUNTRY_DEFS: &[CountryDef] = &[
+    // East Asia
+    ("HK", "🇭🇰 HK", &["HK", "Hong Kong", "港"]),
+    ("JP", "🇯🇵 JP", &["JP", "Japan", "东京", "大阪", "日本"]),
+    ("KR", "🇰🇷 KR", &["KR", "Korea", "韩国", "首尔"]),
+    ("TW", "🇹🇼 TW", &["TW", "Taiwan", "台湾", "新北"]),
+    ("MO", "🇲🇴 MO", &["MO", "Macau", "澳门"]),
+    // Southeast Asia
+    ("SG", "🇸🇬 SG", &["SG", "Singapore", "新加坡", "狮城"]),
+    ("TH", "🇹🇭 TH", &["TH", "Thailand", "泰国", "曼谷"]),
+    ("VN", "🇻🇳 VN", &["VN", "Vietnam", "越南", "胡志明"]),
+    ("MY", "🇲🇾 MY", &["MY", "Malaysia", "马来西亚", "吉隆坡"]),
+    ("PH", "🇵🇭 PH", &["PH", "Philippines", "菲律宾", "马尼拉"]),
+    (
+        "ID",
+        "🇮🇩 ID",
+        &["ID", "Indonesia", "印尼", "印度尼西亚", "雅加达"],
+    ),
+    // South Asia
+    ("IN", "🇮🇳 IN", &["IN", "India", "印度", "孟买", "德里"]),
+    ("PK", "🇵🇰 PK", &["PK", "Pakistan", "巴基斯坦"]),
+    ("BD", "🇧🇩 BD", &["BD", "Bangladesh", "孟加拉"]),
+    // North America
+    (
+        "US",
+        "🇺🇸 US",
+        &[
             "US",
-            "🇺🇸 US",
-            &[
-                "US",
-                "USA",
-                "美国",
-                "硅谷",
-                "洛杉矶",
-                "波特兰",
-                "达拉斯",
-                "芝加哥",
-                "西雅图",
-            ],
-        ),
-        ("TW", "🇹🇼 TW", &["TW", "Taiwan", "台湾", "新北"]),
-        (
-            "DE",
-            "🇩🇪 DE",
-            &["DE", "Germany", "德国", "法兰克福", "柏林"],
-        ),
-        ("FR", "🇫🇷 FR", &["FR", "France", "法国", "巴黎"]),
-        ("GB", "🇬🇧 UK", &["GB", "UK", "英国", "伦敦"]),
-        ("KR", "🇰🇷 KR", &["KR", "Korea", "韩国", "首尔"]),
-        ("NL", "🇳🇱 NL", &["NL", "Netherlands", "荷兰", "阿姆斯特丹"]),
-        (
-            "CA",
-            "🇨🇦 CA",
-            &["CA", "Canada", "加拿大", "多伦多", "温哥华"],
-        ),
-        (
-            "AU",
-            "🇦🇺 AU",
-            &["AU", "Australia", "澳大利亚", "悉尼", "墨尔本"],
-        ),
-        ("IN", "🇮🇳 IN", &["IN", "India", "印度", "孟买", "德里"]),
-        ("IR", "🇮🇷 IR", &["IR", "Iran", "伊朗", "德黑兰"]),
-    ];
+            "USA",
+            "美国",
+            "硅谷",
+            "洛杉矶",
+            "波特兰",
+            "达拉斯",
+            "芝加哥",
+            "西雅图",
+            "纽约",
+            "华盛顿",
+            "旧金山",
+            "迈阿密",
+        ],
+    ),
+    (
+        "CA",
+        "🇨🇦 CA",
+        &["CA", "Canada", "加拿大", "多伦多", "温哥华"],
+    ),
+    ("MX", "🇲🇽 MX", &["MX", "Mexico", "墨西哥"]),
+    // Europe
+    ("GB", "🇬🇧 UK", &["GB", "UK", "英国", "伦敦"]),
+    (
+        "DE",
+        "🇩🇪 DE",
+        &["DE", "Germany", "德国", "法兰克福", "柏林"],
+    ),
+    ("FR", "🇫🇷 FR", &["FR", "France", "法国", "巴黎"]),
+    ("NL", "🇳🇱 NL", &["NL", "Netherlands", "荷兰", "阿姆斯特丹"]),
+    ("IT", "🇮🇹 IT", &["IT", "Italy", "意大利", "米兰", "罗马"]),
+    ("ES", "🇪🇸 ES", &["ES", "Spain", "西班牙", "马德里"]),
+    ("PT", "🇵🇹 PT", &["PT", "Portugal", "葡萄牙", "里斯本"]),
+    ("PL", "🇵🇱 PL", &["PL", "Poland", "波兰", "华沙"]),
+    ("SE", "🇸🇪 SE", &["SE", "Sweden", "瑞典", "斯德哥尔摩"]),
+    ("NO", "🇳🇴 NO", &["NO", "Norway", "挪威"]),
+    ("DK", "🇩🇰 DK", &["DK", "Denmark", "丹麦", "哥本哈根"]),
+    ("FI", "🇫🇮 FI", &["FI", "Finland", "芬兰", "赫尔辛基"]),
+    ("CH", "🇨🇭 CH", &["CH", "Switzerland", "瑞士", "苏黎世"]),
+    ("AT", "🇦🇹 AT", &["AT", "Austria", "奥地利", "维也纳"]),
+    ("BE", "🇧🇪 BE", &["BE", "Belgium", "比利时"]),
+    ("IE", "🇮🇪 IE", &["IE", "Ireland", "爱尔兰", "都柏林"]),
+    ("RO", "🇷🇴 RO", &["RO", "Romania", "罗马尼亚"]),
+    ("CZ", "🇨🇿 CZ", &["CZ", "Czech", "捷克", "布拉格"]),
+    ("UA", "🇺🇦 UA", &["UA", "Ukraine", "乌克兰"]),
+    ("BG", "🇧🇬 BG", &["BG", "Bulgaria", "保加利亚"]),
+    // Oceania
+    (
+        "AU",
+        "🇦🇺 AU",
+        &["AU", "Australia", "澳大利亚", "悉尼", "墨尔本"],
+    ),
+    ("NZ", "🇳🇿 NZ", &["NZ", "New Zealand", "新西兰", "奥克兰"]),
+    // Middle East
+    ("TR", "🇹🇷 TR", &["TR", "Turkey", "土耳其", "伊斯坦布尔"]),
+    ("IR", "🇮🇷 IR", &["IR", "Iran", "伊朗", "德黑兰"]),
+    ("IL", "🇮🇱 IL", &["IL", "Israel", "以色列"]),
+    ("AE", "🇦🇪 AE", &["AE", "UAE", "阿联酋", "迪拜"]),
+    // Africa
+    ("ZA", "🇿🇦 ZA", &["ZA", "South Africa", "南非"]),
+    // South America
+    ("BR", "🇧🇷 BR", &["BR", "Brazil", "巴西", "圣保罗", "里约"]),
+    (
+        "AR",
+        "🇦🇷 AR",
+        &["AR", "Argentina", "阿根廷", "布宜诺斯艾利斯"],
+    ),
+    // East Europe / CIS
+    (
+        "RU",
+        "🇷🇺 RU",
+        &["RU", "Russia", "俄罗斯", "莫斯科", "圣彼得堡"],
+    ),
+];
 
+fn detect_countries(proxy_names: &[String]) -> Vec<CountryDef> {
     let mut present = Vec::new();
-    for &(code, label, keywords) in &all_defs {
+    for &(code, label, keywords) in COUNTRY_DEFS {
         let matched = proxy_names.iter().any(|name| {
             let lower = name.to_ascii_lowercase();
             keywords

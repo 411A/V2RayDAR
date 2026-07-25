@@ -131,17 +131,18 @@ pub fn setup_guide() -> SetupGuide {
 pub fn setup_guide() -> SetupGuide {
     SetupGuide {
         platform: "Termux / Android",
-        release_asset: format!("Termux package sing-box={SING_BOX_VERSION}"),
+        release_asset: format!(
+            "sing-box-{SING_BOX_VERSION}-android-arm64.tar.gz for aarch64, or android-amd64 for x86_64"
+        ),
         executable_name: "sing-box",
         example_paths: &[
             "/data/data/com.termux/files/usr/bin/sing-box",
-            "$HOME/bin/sing-box",
+            "/usr/bin/sing-box",
             "sing-box",
         ],
         notes: vec![
-            format!("Install with: pkg install sing-box={SING_BOX_VERSION}"),
-            "Use the Termux package path first; GitHub Android archives are only a fallback."
-                .to_string(),
+            "Try: pkg install sing-box".to_string(),
+            "If unavailable, download the android binary from GitHub releases and extract to $PREFIX/bin/.".to_string(),
             "A command name is accepted only when it works from your Termux PATH.".to_string(),
         ],
     }

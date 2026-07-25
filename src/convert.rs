@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use crate::constants::{URI_PLUGIN, URI_QUERY, YAML_NEEDS_QUOTE};
 use anyhow::{Result, anyhow};
 use base64::{
     Engine as _,
@@ -543,7 +544,10 @@ fn clash_ss_to_uri(proxy: &YamlValue, server: &str, port: u16, name: &str) -> Re
         let opts = yaml_string(proxy, &["plugin-opts"])
             .map(|o| format!(";{o}"))
             .unwrap_or_default();
-        query_parts.push(format!("plugin={plugin}{opts}"));
+        let plugin_value =
+            percent_encoding::utf8_percent_encode(&format!("{plugin}{opts}"), URI_PLUGIN)
+                .to_string();
+        query_parts.push(format!("plugin={plugin_value}"));
     }
     if !query_parts.is_empty() {
         let q = query_parts.join("&");
@@ -983,14 +987,7 @@ fn yaml_key(key: &str) -> serde_yaml::Value {
 }
 
 fn encode_query(params: &BTreeMap<String, String>) -> String {
-    use percent_encoding::{AsciiSet, NON_ALPHANUMERIC};
     // Common path/query characters that v2ray clients expect unencoded
-    const URI_QUERY: &AsciiSet = &NON_ALPHANUMERIC
-        .remove(b'-')
-        .remove(b'_')
-        .remove(b'.')
-        .remove(b'~')
-        .remove(b'/');
     params
         .iter()
         .map(|(k, v)| {
@@ -1034,8 +1031,8 @@ pub fn generate_clash_config(uris: &[&str]) -> Result<String> {
                 } else {
                     proxy_names.push(name);
                 }
+                proxy_values.push(proxy_value);
             }
-            proxy_values.push(proxy_value);
         }
     }
 
@@ -1088,20 +1085,36 @@ fn minimal_clash_config() -> String {
     format!("{HEADER}\n\nproxies: []\n\n{rules_yaml}")
 }
 
-fn generate_proxy_groups(proxy_names: &[String]) -> String {
-    let all_names: Vec<&str> = proxy_names.iter().map(String::as_str).collect();
+fn yaml_quote_name(name: &str) -> String {
+    let needs_quoting = name.is_empty()
+        || name.starts_with([' ', '-', '?', '"', '\''])
+        || name.ends_with(' ')
+        || name.contains(|c: char| YAML_NEEDS_QUOTE.contains(c));
 
-    // Build the auto group with all proxies
-    let auto_proxies = all_names
+    if !needs_quoting {
+        return name.to_string();
+    }
+    let escaped = name
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t");
+    format!("\"{escaped}\"")
+}
+
+fn generate_proxy_groups(proxy_names: &[String]) -> String {
+    // Build the auto group with all proxies (quote names for YAML safety)
+    let auto_proxies = proxy_names
         .iter()
-        .map(|n| format!("      - {n}"))
+        .map(|n| format!("      - {}", yaml_quote_name(n)))
         .collect::<Vec<_>>()
         .join("\n");
 
     // Detect countries present in proxy names
     let countries = detect_countries(proxy_names);
 
-    // Build country groups with regex filter from keywords
+    // Build per-country url-test groups with regex filter
     let country_groups = countries
         .iter()
         .map(|(_code, label, keywords)| {
@@ -1113,7 +1126,7 @@ fn generate_proxy_groups(proxy_names: &[String]) -> String {
         .collect::<Vec<_>>()
         .join("\n\n");
 
-    // Country group names for the manual select list
+    // Country group names for the regions select list
     let country_refs = countries
         .iter()
         .map(|(_, label, _)| format!("      - {label}"))
@@ -1122,12 +1135,28 @@ fn generate_proxy_groups(proxy_names: &[String]) -> String {
 
     let multiple_countries = countries.len() > 1;
 
-    let country_select = if multiple_countries {
+    // Build the regions select group (only when multiple countries)
+    let regions_group = if multiple_countries {
         format!(
-            "\n  - name: 🌍 Regions\n    type: select\n    proxies:\n{country_refs}\n      - ♻️ Auto"
+            "\n\n  - name: 🌍 Regions\n    type: select\n    proxies:\n{country_refs}\n      - ♻️ Auto"
         )
     } else {
         String::new()
+    };
+
+    // Build the Manual group's proxy list
+    let mut manual_proxies = vec!["      - ♻️ Auto".to_string()];
+    if multiple_countries {
+        manual_proxies.push("      - 🌍 Regions".to_string());
+    }
+    manual_proxies.push("      - DIRECT".to_string());
+    let manual_proxies_yaml = manual_proxies.join("\n");
+
+    // Separator before country groups (if any exist)
+    let country_block = if country_groups.is_empty() {
+        String::new()
+    } else {
+        format!("\n\n{country_groups}")
     };
 
     format!(
@@ -1135,8 +1164,7 @@ fn generate_proxy_groups(proxy_names: &[String]) -> String {
   - name: 🚀 Manual
     type: select
     proxies:
-      - ♻️ Auto{country_select}
-      - DIRECT
+{manual_proxies_yaml}
 
   - name: ♻️ Auto
     type: url-test
@@ -1144,9 +1172,7 @@ fn generate_proxy_groups(proxy_names: &[String]) -> String {
     interval: 300
     tolerance: 150
     proxies:
-{auto_proxies}
-
-{country_groups}"
+{auto_proxies}{regions_group}{country_block}"
     )
 }
 

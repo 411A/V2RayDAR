@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC};
 use serde::Serialize;
 
 use crate::tui::state::{ConfigKey, MainItem, SubscriptionAction};
@@ -265,3 +266,24 @@ pub const SETTING_GUIDES: &[SettingGuide] = &[
         help: "Configs not seen online for this many days are removed from the database.",
     },
 ];
+
+// ── URI / YAML encoding sets ────────────────────────────────────────────────
+
+/// Percent-encoding set for URI query parameters (keeps `-_.~/` unencoded).
+pub const URI_QUERY: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'_')
+    .remove(b'.')
+    .remove(b'~')
+    .remove(b'/');
+
+/// Percent-encoding set for SS SIP002 plugin query values (keeps `-_.~;` unencoded).
+pub const URI_PLUGIN: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'_')
+    .remove(b'.')
+    .remove(b'~')
+    .remove(b';');
+
+/// Characters that require quoting in generated YAML proxy names.
+pub const YAML_NEEDS_QUOTE: &str = ":#{}[],&*!|><%@`\\\"\n\r\t";

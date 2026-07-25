@@ -1087,7 +1087,7 @@ async fn probe_active_batch_with_fallback(
                         ),
                     );
                     send_probe_delta(progress, failed_entry.candidate_count(), 0);
-                    ranked.extend(failed_configs(failed_entry, "active_http", error));
+                    ranked.extend(failed_configs(failed_entry, "active_http", &error));
                     if !failure.entries.is_empty() {
                         pending.push(failure.entries);
                     }
@@ -1126,7 +1126,7 @@ async fn probe_active_batch_with_fallback(
                         failure
                             .entries
                             .into_iter()
-                            .flat_map(|entry| failed_configs(entry, "active_http", error.clone())),
+                            .flat_map(|entry| failed_configs(entry, "active_http", &error)),
                     );
                 }
             }
@@ -1437,7 +1437,7 @@ fn ranked_configs_for_active_result(
         Ok(active) => vec![successful_config(entry.into_candidate(), &active)],
         Err(err) => {
             let error = err.to_string();
-            failed_configs(entry, "active_http", error)
+            failed_configs(entry, "active_http", &error)
         }
     }
 }
@@ -1590,7 +1590,7 @@ async fn enrich_top_speedtests(
 
 fn speedtest_probe_limit(reachable: usize, stop_policy: &ProbeStopPolicy) -> usize {
     if stop_policy.scan_all_configs {
-        return reachable.min(stop_policy.top_n.max(1));
+        return reachable;
     }
 
     reachable.min(stop_policy.top_n.max(1))
@@ -1950,9 +1950,16 @@ fn failed_config(candidate: Candidate, validation: &str, error: String) -> Ranke
 fn failed_configs(
     entry: PreparedActiveCandidate,
     validation: &str,
-    error: String,
+    error: &str,
 ) -> Vec<RankedConfig> {
-    vec![failed_config(entry.into_candidate(), validation, error)]
+    let err = error.to_string();
+    let mut configs: Vec<RankedConfig> = entry
+        .aliases
+        .into_iter()
+        .map(|alias| failed_config(alias, validation, err.clone()))
+        .collect();
+    configs.push(failed_config(entry.candidate, validation, err));
+    configs
 }
 
 fn compare_ranked(left: &RankedConfig, right: &RankedConfig) -> Ordering {

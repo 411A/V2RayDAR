@@ -26,6 +26,7 @@ serde_yaml = "0.9"
 tokio = { version = "1.52.3", features = ["fs", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+unicode-width = "0.2"
 url = "2.5.8"
 
 [target.'cfg(windows)'.build-dependencies]

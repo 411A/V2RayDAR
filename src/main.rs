@@ -1136,7 +1136,8 @@ async fn refresh_once(
     // Use the accumulated reachable count from probing — do NOT recalculate
     // from the final ranked list, as deduplication may reduce the count and
     // cause the "Working" display to drop after refresh finishes.
-    let fetch_bytes = progress_state.fetch_bytes;
+    let fetch_bytes = state.read().await.fetch_bytes;
+    let refresh_fetch_bytes = fetch_bytes.saturating_sub(previous_before_refresh.fetch_bytes);
     let speedtest_bytes = progress_state
         .speedtest_bytes
         .saturating_add(speedtest_bytes);
@@ -1170,13 +1171,14 @@ async fn refresh_once(
         .tested_candidates
         .saturating_sub(runtime.reachable_candidates);
     let summary = format!(
-        "{} → {} ({}) · {} fetched, {} failed, {} working",
+        "{} → {} ({}) · {} fetched, {} failed, {} working ({} used)",
         started_at.with_timezone(&Local).format("%H:%M:%S"),
         finished_at.with_timezone(&Local).format("%H:%M:%S"),
         format_duration_short(runtime.refresh_duration_ms.unwrap_or_default()),
         runtime.total_candidates,
         failed_count,
-        runtime.reachable_candidates
+        runtime.reachable_candidates,
+        format_bytes(refresh_fetch_bytes),
     );
     push_runtime_log(&mut runtime, summary);
 
@@ -1722,6 +1724,17 @@ fn format_duration_short(ms: u128) -> String {
 
 fn millis_to_seconds(ms: u128) -> u64 {
     u64::try_from(ms / 1000).unwrap_or(u64::MAX)
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn format_bytes(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if bytes < 1024 * 1024 {
+        format!("{:.2} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.2} MB", bytes as f64 / (1024.0 * 1024.0))
+    }
 }
 
 impl From<&AppConfig> for RuntimeConfig {

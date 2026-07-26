@@ -110,60 +110,62 @@ pub fn draw(
     .areas(inner);
     let [service, network] =
         Layout::horizontal([Constraint::Percentage(44), Constraint::Percentage(56)]).areas(groups);
-    draw_group(
-        frame,
-        service,
-        "Service",
-        vec![
-            ("bind", view.live_config.bind.to_string()),
-            ("top_n", view.live_config.top_n.to_string()),
-            ("refresh", format!("{}s", view.live_config.refresh_seconds)),
-            (
-                "stability",
-                bool_text(view.live_config.prioritize_stability).to_string(),
+
+    let service_rows: Vec<(&str, String)> = vec![
+        ("bind", view.live_config.bind.to_string()),
+        ("top_n", view.live_config.top_n.to_string()),
+        ("refresh", format!("{}s", view.live_config.refresh_seconds)),
+        (
+            "stability",
+            bool_text(view.live_config.prioritize_stability).to_string(),
+        ),
+        (
+            "asap",
+            bool_text(view.live_config.return_configs_asap).to_string(),
+        ),
+        (
+            "scan_all",
+            bool_text(view.live_config.scan_all_configs).to_string(),
+        ),
+        (
+            "subscriptions",
+            format!(
+                "{}/{}",
+                view.live_config.enabled_subscription_count, view.live_config.subscription_count
             ),
-            (
-                "asap",
-                bool_text(view.live_config.return_configs_asap).to_string(),
-            ),
-            (
-                "scan_all",
-                bool_text(view.live_config.scan_all_configs).to_string(),
-            ),
-            (
-                "subscriptions",
-                format!(
-                    "{}/{}",
-                    view.live_config.enabled_subscription_count,
-                    view.live_config.subscription_count
-                ),
-            ),
-            (
-                "max_sub_mb",
-                format_mb(view.live_config.max_subscription_bytes),
-            ),
-            ("probe", view.live_config.probe_mode.clone()),
-            (
-                "batch",
-                format_batch_size(view.live_config.probe_batch_size),
-            ),
-        ],
-    );
-    draw_group(
-        frame,
-        network,
-        "Network",
-        vec![
-            ("sharing", view.sharing.sharing.to_string()),
-            (
-                "token",
-                bool_text(view.live_config.require_token).to_string(),
-            ),
-            ("discoverable", view.discoverable),
-            ("proxy (🚪)", view.proxy),
-            ("firewall", view.sharing.firewall),
-        ],
-    );
+        ),
+        (
+            "max_sub_mb",
+            format_mb(view.live_config.max_subscription_bytes),
+        ),
+        ("probe", view.live_config.probe_mode.clone()),
+        (
+            "batch",
+            format_batch_size(view.live_config.probe_batch_size),
+        ),
+    ];
+
+    let network_rows: Vec<(&str, String)> = vec![
+        ("sharing", view.sharing.sharing.to_string()),
+        (
+            "token",
+            bool_text(view.live_config.require_token).to_string(),
+        ),
+        ("discoverable", view.discoverable),
+        ("proxy (🚪)", view.proxy),
+        ("firewall", view.sharing.firewall),
+    ];
+
+    let shared_key_width = service_rows
+        .iter()
+        .chain(network_rows.iter())
+        .map(|(key, _)| unicode_display_width(key))
+        .max()
+        .unwrap_or(14)
+        .max(14);
+
+    draw_group(frame, service, "Service", service_rows, shared_key_width);
+    draw_group(frame, network, "Network", network_rows, shared_key_width);
     draw_subscription_endpoint(
         frame,
         endpoint,
@@ -219,6 +221,7 @@ fn draw_group(
     area: Rect,
     title: &'static str,
     rows: Vec<(&'static str, String)>,
+    key_width: usize,
 ) {
     let mut lines = vec![Line::from(Span::styled(
         title,
@@ -228,8 +231,12 @@ fn draw_group(
     ))];
     let visible = area.height.saturating_sub(1) as usize;
     for (key, value) in rows.into_iter().take(visible) {
+        let pad = key_width.saturating_sub(unicode_display_width(key));
         lines.push(Line::from(vec![
-            Span::styled(format!("{key:<14}"), Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{key}{}", " ".repeat(pad)),
+                Style::default().fg(Color::DarkGray),
+            ),
             Span::styled(value, Style::default().fg(Color::White)),
         ]));
     }
@@ -410,6 +417,11 @@ fn split_ascii_at_width(value: &str, width: usize) -> (&str, &str) {
 
 fn is_safe_terminal_link(value: &str) -> bool {
     value.is_ascii() && !value.chars().any(char::is_control)
+}
+
+fn unicode_display_width(s: &str) -> usize {
+    use unicode_width::UnicodeWidthStr;
+    s.width()
 }
 
 #[cfg(test)]

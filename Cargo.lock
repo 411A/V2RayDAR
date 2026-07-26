@@ -2435,6 +2435,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "unicode-width",
  "url",
  "webpki-roots 0.26.11",
  "winresource",

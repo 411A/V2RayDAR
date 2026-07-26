@@ -77,11 +77,7 @@ irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
 
 **Android / Termux :**
 ```bash
-# Installez sing-box, puis lancez le script d'installation
-pkg update -y && pkg install -y curl tar sing-box=1.13.13
-curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh
-# Utilisez toujours --no-tui sur Termux (la souris ne fonctionne pas dans les terminaux Termux)
-cd V2RayDAR && ./v2raydar --no-tui
+pkg update -y && pkg install -y curl tar && curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | bash && cd V2RayDAR && ./v2raydar --no-tui
 ```
 
 **Téléchargement manuel** — téléchargez l'archive pour votre OS depuis [Releases](https://github.com/411A/V2RayDAR/releases/latest) et lancez avec `--portable`.
@@ -157,7 +153,7 @@ Les utilisateurs Windows remplacent `v2raydar` par `v2raydar.exe`. Sous macOS, o
 | `proxy.health_check_url` | `https://www.gstatic.com/generate_204` | URL testée via le proxy pour vérifier son état. |
 | `proxy.health_check_interval_seconds` | `60` | Secondes entre les vérifications de santé. Bascul automatique en cas d'échec. |
 | `probe.mode` | `active` | `active` utilise `sing-box` ; `tcp` est uniquement diagnostique. |
-| `probe.sing_box_path` | `null` | Chemin optionnel vers `sing-box`. Laissez `null` pour les builds `_with_singbox` ou le chemin du package Termux. |
+| `probe.sing_box_path` | `null` | Chemin optionnel vers `sing-box`. Laissez `null` pour les builds `_with_singbox` de bureau ou Termux avec `sing-box` intégré. |
 | `probe.connect_timeout_ms` | `5000` | Délai de connexion TCP en mode diagnostique. |
 | `probe.active_timeout_ms` | `30000` | Délai du test HTTP en mode actif. |
 | `probe.startup_timeout_ms` | `5000` | Temps d'attente du démarrage du proxy temporaire. |

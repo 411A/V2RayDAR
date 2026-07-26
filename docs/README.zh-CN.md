@@ -77,11 +77,7 @@ irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
 
 **Android / Termux：**
 ```bash
-# 先安装 sing-box，然后运行安装脚本
-pkg update -y && pkg install -y curl tar sing-box=1.13.13
-curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh
-# Termux 上请始终使用 --no-tui（Termux 终端不支持鼠标输入）
-cd V2RayDAR && ./v2raydar --no-tui
+pkg update -y && pkg install -y curl tar && curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | bash && cd V2RayDAR && ./v2raydar --no-tui
 ```
 
 **手动下载** — 从 [Releases](https://github.com/411A/V2RayDAR/releases/latest) 下载对应操作系统的压缩包，使用 `--portable` 运行。
@@ -157,7 +153,7 @@ Windows 用户将 `v2raydar` 替换为 `v2raydar.exe`。macOS 上首次打开捆
 | `proxy.health_check_url` | `https://www.gstatic.com/generate_204` | 通过代理测试的健康检查 URL。 |
 | `proxy.health_check_interval_seconds` | `60` | 代理健康检查间隔（秒）。故障时自动切换。 |
 | `probe.mode` | `active` | `active` 使用 `sing-box`；`tcp` 仅用于诊断。 |
-| `probe.sing_box_path` | `null` | 可选的 `sing-box` 路径。桌面 `_with_singbox` 构建或 Termux 包路径可设为 `null`。 |
+| `probe.sing_box_path` | `null` | 可选的 `sing-box` 路径。桌面 `_with_singbox` 构建或内置 `sing-box` 的 Termux 构建可设为 `null`。 |
 | `probe.connect_timeout_ms` | `5000` | 诊断探测的 TCP 连接超时。 |
 | `probe.active_timeout_ms` | `30000` | 活跃模式下的 HTTP 测试超时。 |
 | `probe.startup_timeout_ms` | `5000` | 等待临时代理启动的时间。 |

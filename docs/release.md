@@ -44,14 +44,10 @@ Active probing requires `sing-box`, which is downloaded separately. On first run
 
 The `_with_singbox` desktop archives include pinned `sing-box` 1.13.13 beside V2RayDAR, so `probe.sing_box_path` can remain `null`. If you use the non-embedded desktop assets, download the sing-box archive for your OS: `sing-box.exe` from the Windows archive, `sing-box` from the Linux archive, or `sing-box` from the Darwin archive for macOS. Windows users who already have v2rayN can also check the v2rayN installation folder for `sing-box.exe`.
 
-Termux packages do not embed `sing-box`. Install the pinned package before running V2RayDAR:
+For Android / Termux:
 
 ```bash
-pkg install sing-box=1.13.13
-```
-
-```text
-https://github.com/SagerNet/sing-box/releases/latest
+pkg update -y && pkg install -y curl tar && curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | bash && cd V2RayDAR && ./v2raydar --no-tui
 ```
 
 ## Trust Warnings

@@ -45,9 +45,7 @@ irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
 
 **Android / Termux:**
 ```bash
-# Same Linux binary — install sing-box, then run the installer
-pkg update -y && pkg install -y curl tar sing-box=1.13.13
-curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh
+pkg update -y && pkg install -y curl tar && curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | bash && cd V2RayDAR && ./v2raydar --no-tui
 ```
 
 **Manual download** — grab the archive for your OS from [Releases](https://github.com/411A/V2RayDAR/releases/latest) and run with `--portable`.
@@ -91,8 +89,8 @@ Required:
 
 Required for active validation:
 
-- A working `sing-box` executable. Desktop `_with_singbox` release archives include pinned `sing-box` 1.13.13 beside V2RayDAR. Termux users should install `sing-box=1.13.13` with `pkg`.
-- If you are not using a bundled desktop archive or the standard Termux package path, set `probe.sing_box_path` to the executable path or a PATH command.
+- A working `sing-box` executable. Desktop `_with_singbox` and Termux release archives include pinned `sing-box` 1.13.13 beside V2RayDAR.
+- If you are not using a bundled archive, set `probe.sing_box_path` to the executable path or a PATH command.
 
 Optional for building from source:
 
@@ -167,9 +165,9 @@ Portable mode path:
 v2raydar_data/configs.yaml
 ```
 
-If `probe.mode` is `active`, V2RayDAR first looks for a bundled `sing-box` beside the executable, then for the standard Termux package path on Android, then for `probe.sing_box_path`. If none is valid, the interactive TUI asks for the OS-specific `sing-box` executable path and verifies it with `sing-box version`.
+If `probe.mode` is `active`, V2RayDAR first looks for a bundled `sing-box` beside the executable, then for `probe.sing_box_path`. If none is valid, the interactive TUI asks for the OS-specific `sing-box` executable path and verifies it with `sing-box version`.
 
-In `--no-tui` or `--once` mode, V2RayDAR cannot run the interactive setup prompt. It prints OS-specific setup instructions and exits until a bundled, Termux-package, or configured `sing-box` executable is available.
+In `--no-tui` or `--once` mode, V2RayDAR cannot run the interactive setup prompt. It prints OS-specific setup instructions and exits until a bundled or configured `sing-box` executable is available.
 
 ## Run Modes
 
@@ -479,7 +477,7 @@ http://192.0.2.23:27141/subscription?token=GENERATED_TOKEN
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `probe.mode` | `active` or `tcp` | `active` | Validation strategy. |
-| `probe.sing_box_path` | String or null | `null` | Optional path to `sing-box`. Leave `null` for desktop `_with_singbox` builds or Termux's package path. |
+| `probe.sing_box_path` | String or null | `null` | Optional path to `sing-box`. Leave `null` for desktop `_with_singbox` or Termux builds with bundled `sing-box`. |
 | `probe.connect_timeout_ms` | Integer milliseconds | `5000` | TCP connect timeout in `tcp` mode. |
 | `probe.active_timeout_ms` | Integer milliseconds | `30000` | HTTP request timeout in active mode. |
 | `probe.startup_timeout_ms` | Integer milliseconds | `5000` | Time to wait for temporary `sing-box` proxies to start. |
@@ -1224,7 +1222,7 @@ probe:
   sing_box_path: C:\Tools\sing-box\sing-box.exe
 ```
 
-Use a working `sing-box` executable for active probing. Desktop `_with_singbox` releases include pinned `sing-box` 1.13.13 and auto-detect it from beside the V2RayDAR executable. Termux users should prefer `pkg install sing-box=1.13.13`, which installs `/data/data/com.termux/files/usr/bin/sing-box`. If you already use v2rayN on Windows, check the v2rayN installation folder for `sing-box.exe`.
+Use a working `sing-box` executable for active probing. Desktop `_with_singbox` and Termux releases include pinned `sing-box` 1.13.13 and auto-detect it from beside the V2RayDAR executable. If you already use v2rayN on Windows, check the v2rayN installation folder for `sing-box.exe`.
 
 ### Port cannot bind
 

@@ -77,8 +77,10 @@ irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
 
 **Android / Termux :**
 ```bash
-pkg update -y && pkg install -y curl tar && curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | bash && cd V2RayDAR && ./v2raydar --no-tui
+pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar && curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | bash && cd ~/V2RayDAR && ./v2raydar --no-tui
 ```
+* **Arrêt :** `Ctrl + C`
+* **Démarrage :** `cd ~/V2RayDAR && ./v2raydar --no-tui`
 
 **Téléchargement manuel** — téléchargez l'archive pour votre OS depuis [Releases](https://github.com/411A/V2RayDAR/releases/latest) et lancez avec `--portable`.
 

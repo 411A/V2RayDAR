@@ -96,10 +96,13 @@ irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
 <div dir="ltr">
 
 ```bash
-pkg update -y && pkg install -y curl tar && curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | bash && cd V2RayDAR && ./v2raydar --no-tui
+pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar && curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | bash && cd ~/V2RayDAR && ./v2raydar --no-tui
 ```
 
 </div>
+
+* **پایان اتصال:** `Ctrl + C`
+* **شروع:** `cd ~/V2RayDAR && ./v2raydar --no-tui`
 
 &#x200F;<strong>دانلود دستی</strong> — آرشیو مخصوص سیستم‌عامل خود را از <a href="https://github.com/411A/V2RayDAR/releases/latest">Releases</a> دانلود کرده و با <code>--portable</code> اجرا کنید.
 

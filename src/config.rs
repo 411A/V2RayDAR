@@ -341,6 +341,13 @@ fn validate(mut config: AppConfig) -> Result<AppConfig> {
                 subscription.name
             ));
         }
+
+        if !is_allowed_subscription_url(&subscription.url) {
+            return Err(anyhow!(
+                "subscription '{}' has an unsupported url scheme (use http(s)://, data:, or file://)",
+                subscription.name
+            ));
+        }
     }
 
     if config.sharing.require_token && config.sharing.token.is_empty() {
@@ -476,6 +483,93 @@ fn generate_token() -> String {
         chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
     );
     URL_SAFE_NO_PAD.encode(fallback)
+}
+
+/// Allowed subscription URL schemes.
+///
+/// `http(s)://` for remote feeds, `data:` for inline tests, `file://`
+/// or bare paths for local files. Anything else (e.g. `javascript:`,
+/// `ftp:`, `gopher:`) is rejected at config load with zero network cost.
+#[must_use]
+pub fn is_allowed_subscription_url(url: &str) -> bool {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.chars().any(char::is_control) {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("data:") {
+        return true;
+    }
+    if lower.starts_with("file://") {
+        return true;
+    }
+    // Bare local path without a scheme (no `://` and no `:` prefix trick).
+    if !trimmed.contains("://") && !trimmed.starts_with("javascript:") {
+        // Reject anything that looks like `scheme:` to block exotic schemes,
+        // but keep Windows paths (`C:\...`, `C:/...`) and Unix paths.
+        if let Some(prefix_end) = trimmed.find(':') {
+            let prefix = &trimmed[..prefix_end];
+            // Single-letter drive prefix is a Windows path, not a scheme.
+            if prefix.len() == 1 && prefix.chars().all(|c| c.is_ascii_alphabetic()) {
+                return true;
+            }
+            return false;
+        }
+        return true;
+    }
+    false
+}
+
+/// Redact a subscription URL for logs.
+///
+/// Keeps scheme + host + truncated path, strips query/fragment/userinfo
+/// so private `?token=` values never hit logs. Pure string ops, no DNS.
+#[must_use]
+pub fn redact_subscription_url(url: &str) -> String {
+    let trimmed = url.trim();
+    if trimmed.to_ascii_lowercase().starts_with("data:") {
+        return "data:<redacted>".to_string();
+    }
+    // Strip userinfo: `scheme://user:pass@host/...` -> `scheme://host/...`
+    let without_userinfo = if let Some(scheme_end) = trimmed.find("://") {
+        let (scheme, rest) = trimmed.split_at(scheme_end + 3);
+        if let Some(at) = rest.find('@')
+            && let Some(slash) = rest.find('/')
+        {
+            if at < slash {
+                format!("{scheme}{}", &rest[at + 1..])
+            } else {
+                trimmed.to_string()
+            }
+        } else if rest.contains('@') && !rest.contains('/') {
+            // `host` only with userinfo, no path.
+            if let Some(at) = rest.find('@') {
+                format!("{scheme}{}", &rest[at + 1..])
+            } else {
+                trimmed.to_string()
+            }
+        } else {
+            trimmed.to_string()
+        }
+    } else {
+        trimmed.to_string()
+    };
+    // Strip query and fragment.
+    let mut end = without_userinfo.len();
+    if let Some(idx) = without_userinfo.find(['?', '#']) {
+        end = idx;
+    }
+    let mut redacted = without_userinfo[..end].to_string();
+    // Truncate very long paths to keep logs readable.
+    const MAX_LEN: usize = 120;
+    if redacted.len() > MAX_LEN {
+        redacted.truncate(MAX_LEN);
+        redacted.push_str("...");
+    }
+    redacted
 }
 
 /// Restrict a config file to owner-only (0600 on Unix).
@@ -906,5 +1000,49 @@ subscriptions:
         ));
         fs::write(&path, content).expect("temp config can be written");
         path
+    }
+
+    #[test]
+    fn allows_http_https_data_file_and_bare_paths() {
+        use super::{is_allowed_subscription_url, redact_subscription_url};
+
+        assert!(is_allowed_subscription_url("https://example.com/sub.txt"));
+        assert!(is_allowed_subscription_url("http://192.168.1.10:8080/sub"));
+        assert!(is_allowed_subscription_url(
+            "data:,vless://uuid@example.com:443%23demo"
+        ));
+        assert!(is_allowed_subscription_url("file:///tmp/sub.txt"));
+        assert!(!is_allowed_subscription_url("javascript:alert(1)"));
+        assert!(!is_allowed_subscription_url("ftp://example.com/sub"));
+        assert!(!is_allowed_subscription_url("gopher://example.com/"));
+        assert!(!is_allowed_subscription_url(""));
+
+        assert_eq!(
+            redact_subscription_url("https://example.com/sub?token=secret#frag"),
+            "https://example.com/sub"
+        );
+        assert_eq!(
+            redact_subscription_url("https://user:pass@example.com/sub"),
+            "https://example.com/sub"
+        );
+        assert_eq!(
+            redact_subscription_url("data:,vless://secret"),
+            "data:<redacted>"
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_subscription_scheme() {
+        let path = write_inline_config(
+            "bad-scheme",
+            r"
+subscriptions:
+    - name: bad
+      url: javascript:alert(1)
+",
+        );
+        let error = AppConfig::load(&path).expect_err("unsupported scheme should fail");
+        fs::remove_file(&path).ok();
+        assert!(error.to_string().contains("unsupported url scheme"));
     }
 }

@@ -1595,9 +1595,14 @@ async fn push_tui_progress(
     let mut state = state.write().await;
     match event {
         ProgressEvent::LiveLog(message) => push_live_log(&mut state, timestamped_log(message)),
-        ProgressEvent::ProbeDelta { tested, working } => {
+        ProgressEvent::ProbeDelta {
+            tested,
+            working,
+            bytes,
+        } => {
             state.tested_candidates = state.tested_candidates.saturating_add(tested);
             state.reachable_candidates = state.reachable_candidates.saturating_add(working);
+            state.fetch_bytes = state.fetch_bytes.saturating_add(bytes);
         }
         ProgressEvent::RankedSnapshot(mut ranked) => {
             apply_snapshot_stability_counts(

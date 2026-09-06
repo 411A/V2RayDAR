@@ -145,7 +145,7 @@ async fn results(
     Query(query): Query<AuthQuery>,
     ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
 ) -> Response {
-    let token = query.token.as_deref().or(bearer_token(&headers));
+    let token = query.token.as_deref().or_else(|| bearer_token(&headers));
     match authorize(&state, remote_addr, token).await {
         Ok(()) => Json(state.runtime.read().await.clone()).into_response(),
         Err(response) => response,
@@ -159,7 +159,7 @@ async fn subscription(
     ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
 ) -> Response {
     let encoded = state.config.read().await.encoded_subscription;
-    let token = query.token.as_deref().or(bearer_token(&headers));
+    let token = query.token.as_deref().or_else(|| bearer_token(&headers));
     subscription_response(&state, remote_addr, token, encoded).await
 }
 
@@ -169,7 +169,7 @@ async fn subscription_txt(
     Query(query): Query<AuthQuery>,
     ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
 ) -> Response {
-    let token = query.token.as_deref().or(bearer_token(&headers));
+    let token = query.token.as_deref().or_else(|| bearer_token(&headers));
     subscription_response(&state, remote_addr, token, false).await
 }
 
@@ -179,7 +179,7 @@ async fn mihomo_yaml(
     Query(query): Query<AuthQuery>,
     ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
 ) -> Response {
-    let token = query.token.as_deref().or(bearer_token(&headers));
+    let token = query.token.as_deref().or_else(|| bearer_token(&headers));
     mihomo_response(&state, remote_addr, token).await
 }
 

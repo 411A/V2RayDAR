@@ -1885,6 +1885,7 @@ async fn write_sing_box_outbound_config(outbounds: &[Value], ports: &[u16]) -> R
 
 /// Restrict a sing-box temp config to owner-only (0600 on Unix).
 /// No-op on Windows; single syscall, no probing delay.
+#[allow(clippy::missing_const_for_fn)]
 fn restrict_file_permissions(path: &Path) {
     #[cfg(unix)]
     {

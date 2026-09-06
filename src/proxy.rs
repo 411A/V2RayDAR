@@ -684,6 +684,7 @@ async fn write_proxy_config(config: &Value) -> Result<PathBuf> {
 
 /// Restrict a sing-box temp config to owner-only (0600 on Unix).
 /// No-op on Windows; single syscall, no proxy delay.
+#[allow(clippy::missing_const_for_fn)]
 fn restrict_file_permissions(path: &Path) {
     #[cfg(unix)]
     {

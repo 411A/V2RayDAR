@@ -116,6 +116,14 @@ pub fn draw(
         ("top_n", view.live_config.top_n.to_string()),
         ("refresh", format!("{}s", view.live_config.refresh_seconds)),
         (
+            "ping",
+            if view.live_config.ping_seconds > 0 {
+                format!("{}s", view.live_config.ping_seconds)
+            } else {
+                "off".to_string()
+            },
+        ),
+        (
             "stability",
             bool_text(view.live_config.prioritize_stability).to_string(),
         ),

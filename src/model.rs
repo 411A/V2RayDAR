@@ -49,6 +49,7 @@ pub struct RankedConfig {
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct RuntimeState {
     pub last_refresh: Option<String>,
     pub last_error: Option<String>,
@@ -66,8 +67,15 @@ pub struct RuntimeState {
     /// (which drifts by proxy-switch/health-check time after `refresh_once`).
     #[serde(skip)]
     pub next_refresh_instant: Option<Instant>,
+    /// Explicit deadline for the next ping cycle (same idea, ping loop).
+    #[serde(skip)]
+    pub next_ping_instant: Option<Instant>,
+    /// Start of the current (or most recent) ping cycle.
+    #[serde(skip)]
+    pub last_ping_instant: Option<Instant>,
     pub refresh_duration_ms: Option<u128>,
     pub refreshing: bool,
+    pub pinging: bool,
     pub total_candidates: usize,
     pub tested_candidates: usize,
     pub reachable_candidates: usize,

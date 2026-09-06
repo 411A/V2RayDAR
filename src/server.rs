@@ -303,6 +303,9 @@ fn subscription_body(runtime: &RuntimeState, config: &RuntimeConfig) -> String {
     body
 }
 
+// `axum::Response` is large by framework design; this error path only runs
+// on auth failures, so boxing it would add indirection for no benefit.
+#[allow(clippy::result_large_err)]
 async fn authorize(
     state: &HttpState,
     remote_addr: SocketAddr,

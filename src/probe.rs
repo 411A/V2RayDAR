@@ -1174,6 +1174,10 @@ async fn probe_active_batch_with_fallback(
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+// `BatchProbeFailure` carries the batch entries by value so the caller can
+// split-retry them; boxing would only add pointer indirection on this cold
+// error path for no measurable gain.
+#[allow(clippy::result_large_err)]
 async fn probe_active_batch(
     batch_index: usize,
     entries: Vec<PreparedActiveCandidate>,

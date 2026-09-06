@@ -180,6 +180,7 @@ fn save_yaml_config(path: &Path, config: &AppConfig) -> Result<()> {
 
 /// Restrict a config file to owner-only (0600 on Unix).
 /// Best-effort, no-op on Windows; single syscall, no UI delay.
+#[allow(clippy::missing_const_for_fn)]
 fn restrict_file_permissions(path: &Path) {
     #[cfg(unix)]
     {

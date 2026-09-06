@@ -43,10 +43,20 @@ use crate::{
     model::{Candidate, ProbeStopPolicy, ProgressEvent, RankedConfig},
 };
 
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
-static SING_BOX_CACHE: OnceLock<Option<String>> = OnceLock::new();
-static SING_BOX_VERSION_DETECTED: OnceLock<Option<(u32, u32, u32)>> = OnceLock::new();
+#[derive(Debug, Clone)]
+struct CachedSingBox {
+    path: String,
+    available: bool,
+    version: Option<(u32, u32, u32)>,
+}
+
+static SING_BOX_CACHE: OnceLock<Mutex<Option<CachedSingBox>>> = OnceLock::new();
+
+fn sing_box_cache() -> &'static Mutex<Option<CachedSingBox>> {
+    SING_BOX_CACHE.get_or_init(|| Mutex::new(None))
+}
 
 /// Parse sing-box version string like "1.13.14" into (major, minor, patch).
 fn parse_sing_box_version(output: &str) -> Option<(u32, u32, u32)> {
@@ -64,18 +74,33 @@ fn parse_sing_box_version(output: &str) -> Option<(u32, u32, u32)> {
 }
 
 /// Check if the detected sing-box version is >= (major, minor, patch).
+///
+/// Uses the version from the last successful availability check.
+/// Returns `false` when no successful check has been cached yet.
+/// This is a cheap in-memory read with no I/O, safe for hot paths.
 pub fn sing_box_version_at_least(major: u32, minor: u32, patch: u32) -> bool {
-    match SING_BOX_VERSION_DETECTED.get() {
-        Some(Some((maj, min, pat))) => (*maj, *min, *pat) >= (major, minor, patch),
-        _ => false,
+    let version = sing_box_cache()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
+        .and_then(|cached| cached.version);
+    match version {
+        Some((maj, min, pat)) => (maj, min, pat) >= (major, minor, patch),
+        None => false,
     }
 }
 
-/// Check sing-box availability once per process lifetime.
-/// The path doesn't change mid-session, so re-checking is pure waste.
+/// Check sing-box availability, cached per path.
+///
+/// The cache key includes the path so TUI path changes take effect
+/// without a restart. Re-checks only happen when the path differs from
+/// the cached entry, so steady-state probing stays at zero extra cost.
 async fn sing_box_available(path: &str) -> bool {
-    if let Some(cached) = SING_BOX_CACHE.get() {
-        return cached.as_deref() == Some(path);
+    if let Ok(guard) = sing_box_cache().lock()
+        && let Some(cached) = guard.as_ref()
+        && cached.path == path
+    {
+        return cached.available;
     }
 
     debug!(sing_box_path = %path, "checking sing-box availability");
@@ -89,13 +114,14 @@ async fn sing_box_available(path: &str) -> bool {
         .await
         .ok();
     let available = output.as_ref().is_some_and(|o| o.status.success());
+    let mut version = None;
     if let Some(ref out) = output
-        && let Some(version) = parse_sing_box_version(&String::from_utf8_lossy(&out.stdout))
+        && let Some(detected) = parse_sing_box_version(&String::from_utf8_lossy(&out.stdout))
     {
-        let _ = SING_BOX_VERSION_DETECTED.set(Some(version));
+        version = Some(detected);
         info!(
             sing_box_path = %path,
-            version = ?version,
+            version = ?detected,
             "sing-box version detected"
         );
     }
@@ -105,11 +131,13 @@ async fn sing_box_available(path: &str) -> bool {
         duration_ms = started.elapsed().as_millis(),
         "sing-box availability check finished"
     );
-    let _ = SING_BOX_CACHE.set(if available {
-        Some(path.to_string())
-    } else {
-        None
-    });
+    if let Ok(mut guard) = sing_box_cache().lock() {
+        *guard = Some(CachedSingBox {
+            path: path.to_string(),
+            available,
+            version,
+        });
+    }
     available
 }
 

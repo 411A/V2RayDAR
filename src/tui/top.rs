@@ -15,9 +15,9 @@ use super::{util::human_bytes, view::RuntimeView};
 // Fixed widths per value prevent the Paragraph trailing-space style boundary
 // from shifting when digits change, which is what causes terminal flicker.
 // 10 chars fits `HH:MM:SS` past 100h (`100:00:00`) so long runs stay aligned.
-// 18 chars fits `running H:MM:SS` on multi-hour stuck refreshes.
+// 24 chars fits `next 15:00 · ping 05:00` for the default intervals.
 const W_RUNNING_FOR: usize = 10;
-const W_REFRESH: usize = 18;
+const W_REFRESH: usize = 24;
 const W_LAST_SCAN: usize = 6;
 const W_FETCHED: usize = 6;
 const W_FAILED: usize = 6;
@@ -42,7 +42,12 @@ pub fn draw(
     let failed = runtime
         .tested_candidates
         .saturating_sub(runtime.reachable_candidates);
-    let refresh = refresh_status(runtime, config.refresh_seconds, instant_now);
+    let refresh = refresh_status(
+        runtime,
+        config.refresh_seconds,
+        config.ping_seconds,
+        instant_now,
+    );
     let speedtest = if config.speedtest_enabled {
         human_bytes(runtime.speedtest_bytes)
     } else {
@@ -198,7 +203,12 @@ fn draw_minimal_line(frame: &mut Frame<'_>, area: Rect, cells: &[(&str, String);
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-fn refresh_status(runtime: &RuntimeView, refresh_seconds: u64, now: Instant) -> String {
+fn refresh_status(
+    runtime: &RuntimeView,
+    refresh_seconds: u64,
+    ping_seconds: u64,
+    now: Instant,
+) -> String {
     if runtime.refreshing {
         let elapsed = runtime
             .refresh_started_instant
@@ -206,8 +216,26 @@ fn refresh_status(runtime: &RuntimeView, refresh_seconds: u64, now: Instant) -> 
         return format!("running {}", format_duration_ms(elapsed));
     }
 
+    if runtime.pinging {
+        let elapsed = runtime
+            .last_ping_instant
+            .map_or(0, |t| now.saturating_duration_since(t).as_secs());
+        return format!("ping {}", format_duration_ms(elapsed));
+    }
+
+    let fetch = fetch_countdown(runtime, refresh_seconds, now);
+    let ping = ping_countdown(runtime, ping_seconds, now);
+    match (fetch, ping) {
+        (Some(fetch), Some(ping)) => format!("{fetch} · ping {ping}"),
+        (Some(fetch), None) => fetch,
+        (None, Some(ping)) => format!("ping {ping}"),
+        (None, None) => "manual".to_string(),
+    }
+}
+
+fn fetch_countdown(runtime: &RuntimeView, refresh_seconds: u64, now: Instant) -> Option<String> {
     if refresh_seconds == 0 {
-        return "manual".to_string();
+        return None;
     }
 
     // Prefer the explicit deadline set by the refresh loop when it schedules
@@ -215,15 +243,43 @@ fn refresh_status(runtime: &RuntimeView, refresh_seconds: u64, now: Instant) -> 
     // drifts by proxy-switch/health-check time after each refresh.
     if let Some(deadline) = runtime.next_refresh_instant {
         let remaining = deadline.saturating_duration_since(now).as_secs();
-        return format!("next {}", format_duration(u128::from(remaining) * 1000));
+        return Some(format!(
+            "next {}",
+            format_duration(u128::from(remaining) * 1000)
+        ));
     }
 
-    let Some(finished_at) = runtime.refresh_finished_instant else {
-        return "pending".to_string();
-    };
-    let elapsed = now.saturating_duration_since(finished_at).as_secs();
-    let remaining = refresh_seconds.saturating_sub(elapsed);
-    format!("next {}", format_duration(u128::from(remaining) * 1000))
+    runtime.refresh_finished_instant.map_or_else(
+        || Some("pending".to_string()),
+        |finished_at| {
+            let elapsed = now.saturating_duration_since(finished_at).as_secs();
+            let remaining = refresh_seconds.saturating_sub(elapsed);
+            Some(format!(
+                "next {}",
+                format_duration(u128::from(remaining) * 1000)
+            ))
+        },
+    )
+}
+
+fn ping_countdown(runtime: &RuntimeView, ping_seconds: u64, now: Instant) -> Option<String> {
+    if ping_seconds == 0 {
+        return None;
+    }
+
+    if let Some(deadline) = runtime.next_ping_instant {
+        let remaining = deadline.saturating_duration_since(now).as_secs();
+        return Some(format_duration(u128::from(remaining) * 1000));
+    }
+
+    runtime.last_ping_instant.map_or_else(
+        || Some(format_duration(u128::from(ping_seconds) * 1000)),
+        |started| {
+            let elapsed = now.saturating_duration_since(started).as_secs();
+            let remaining = ping_seconds.saturating_sub(elapsed);
+            Some(format_duration(u128::from(remaining) * 1000))
+        },
+    )
 }
 
 fn format_duration_hms(total_seconds: u64) -> String {
@@ -283,7 +339,7 @@ mod tests {
             refresh_finished_instant: Some(now),
             ..RuntimeView::default()
         };
-        assert_eq!(refresh_status(&runtime, 300, now), "next 05:00");
+        assert_eq!(refresh_status(&runtime, 300, 0, now), "next 05:00");
     }
 
     #[test]
@@ -305,7 +361,59 @@ mod tests {
             expected_remaining / 60,
             expected_remaining % 60
         );
-        assert_eq!(refresh_status(&runtime, 300, now), expected);
+        assert_eq!(refresh_status(&runtime, 300, 0, now), expected);
+    }
+
+    #[test]
+    fn countdown_combines_fetch_and_ping() {
+        let now = Instant::now();
+        let runtime = RuntimeView {
+            refreshing: false,
+            next_refresh_instant: Some(now + Duration::from_secs(900)),
+            next_ping_instant: Some(now + Duration::from_secs(300)),
+            ..RuntimeView::default()
+        };
+        assert_eq!(
+            refresh_status(&runtime, 900, 300, now),
+            "next 15:00 · ping 05:00"
+        );
+    }
+
+    #[test]
+    fn pinging_shows_ping_elapsed() {
+        let now = Instant::now();
+        let started = now.checked_sub(Duration::from_secs(65)).unwrap_or(now);
+        let elapsed = now.saturating_duration_since(started).as_secs();
+        let runtime = RuntimeView {
+            refreshing: false,
+            pinging: true,
+            last_ping_instant: Some(started),
+            ..RuntimeView::default()
+        };
+        assert_eq!(
+            refresh_status(&runtime, 900, 300, now),
+            format!("ping {}", format_duration_ms(elapsed))
+        );
+    }
+
+    #[test]
+    fn manual_fetch_still_shows_ping_countdown() {
+        let now = Instant::now();
+        let runtime = RuntimeView {
+            refreshing: false,
+            next_ping_instant: Some(now + Duration::from_secs(300)),
+            ..RuntimeView::default()
+        };
+        assert_eq!(refresh_status(&runtime, 0, 300, now), "ping 05:00");
+    }
+
+    #[test]
+    fn both_timers_off_shows_manual() {
+        let runtime = RuntimeView::default();
+        assert_eq!(
+            refresh_status(&runtime, 0, 0, Instant::now()),
+            "manual".to_string()
+        );
     }
 
     #[test]
@@ -321,11 +429,11 @@ mod tests {
             ..RuntimeView::default()
         };
         assert_eq!(
-            refresh_status(&runtime, 300, now),
+            refresh_status(&runtime, 300, 0, now),
             format!("running {}", format_duration_ms(elapsed))
         );
         if elapsed >= 90 {
-            assert_eq!(refresh_status(&runtime, 300, now), "running 01:30");
+            assert_eq!(refresh_status(&runtime, 300, 0, now), "running 01:30");
         }
     }
 }

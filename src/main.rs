@@ -33,7 +33,7 @@ use tokio::{
     sync::{RwLock, mpsc, watch},
     time,
 };
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{
     config::{AppConfig, ProbeMode},
@@ -208,11 +208,13 @@ async fn main() -> Result<()> {
 
     if cli.once {
         print_startup(&config, &paths, cli.verbose);
+        let cycle = Arc::new(tokio::sync::Mutex::new(()));
         refresh_once(
             &config,
             database.clone(),
             state.clone(),
             runtime_config.clone(),
+            cycle,
             true,
             !cli.verbose,
         )
@@ -287,14 +289,27 @@ async fn main() -> Result<()> {
     let proxy = shared;
 
     let (config_tx, config_rx) = watch::channel(config.clone());
+    // Serializes fetch and ping cycles so ranked/counter writes never interleave.
+    let cycle = Arc::new(tokio::sync::Mutex::new(()));
     spawn_refresh_loop(
+        config_rx.clone(),
+        database.clone(),
+        state.clone(),
+        runtime_config.clone(),
+        proxy.clone(),
+        shared_ranked.clone(),
+        cycle.clone(),
+        cli.no_tui,
+        cli.no_tui && !cli.verbose,
+    );
+    spawn_ping_loop(
         config_rx,
         database.clone(),
         state.clone(),
         runtime_config.clone(),
         proxy.clone(),
         shared_ranked,
-        cli.no_tui,
+        cycle,
         cli.no_tui && !cli.verbose,
     );
     spawn_config_watcher(paths.config_path.clone(), config.bind, config_tx.clone());
@@ -722,15 +737,74 @@ fn load_config_and_persist_generated_token(path: &Path) -> Result<AppConfig> {
     Ok(config)
 }
 
-#[allow(clippy::significant_drop_tightening, clippy::too_many_lines)]
+/// Persist probed configs and stable top-N keys; optionally clean offline rows.
+/// Shared by the fetch cycle (cleanup on) and the ping cycle (cleanup off,
+/// since the fetch cycle already handles it on its own cadence).
+async fn persist_ranked_configs(
+    database: &Arc<Database>,
+    ranked: &[RankedConfig],
+    top_n: usize,
+    clean_offlines_after_days: u32,
+    clean_offlines: bool,
+) -> Result<()> {
+    {
+        let db = database.clone();
+        let configs = ranked.to_vec();
+        tokio::task::spawn_blocking(move || {
+            db.upsert_configs(&configs)?;
+            if configs.is_empty() {
+                db.delete_stable_top_keys()?;
+            } else {
+                let keys: Vec<String> = configs
+                    .iter()
+                    .filter(|c| c.reachable)
+                    .take(top_n)
+                    .map(|c| c.dedup_key.clone())
+                    .collect();
+                if keys.is_empty() {
+                    db.delete_stable_top_keys()?;
+                } else {
+                    db.save_stable_top_keys(&keys)?;
+                }
+            }
+            Ok::<(), anyhow::Error>(())
+        })
+        .await
+        .map_err(|e| anyhow!("{e}"))?
+        .context("failed to persist configs to database")?;
+    }
+
+    if clean_offlines {
+        let db = database.clone();
+        tokio::task::spawn_blocking(move || db.clean_offline_configs(clean_offlines_after_days))
+            .await
+            .map_err(|e| anyhow!("{e}"))?
+            .map(|deleted| {
+                if deleted > 0 {
+                    info!(deleted, "cleaned offline configs from database");
+                }
+            })
+            .context("failed to clean offline configs")?;
+    }
+    Ok(())
+}
+
+#[allow(
+    clippy::significant_drop_tightening,
+    clippy::too_many_lines,
+    clippy::too_many_arguments
+)]
 async fn refresh_once(
     config: &AppConfig,
     database: Arc<Database>,
     state: Arc<RwLock<RuntimeState>>,
     runtime_config: Arc<RwLock<RuntimeConfig>>,
+    cycle: Arc<tokio::sync::Mutex<()>>,
     print_terminal_summary: bool,
     print_compact_progress: bool,
 ) -> Result<()> {
+    // Serialize with ping cycles so ranked/counter writes never interleave.
+    let _cycle_guard = cycle.lock().await;
     info!(
         enabled_subscriptions = config
             .subscriptions
@@ -1091,49 +1165,14 @@ async fn refresh_once(
         config.prioritize_stability,
     );
 
-    // Persist configs to database
-    {
-        let db = database.clone();
-        let configs = ranked.clone();
-        let top_n = config.top_n;
-        tokio::task::spawn_blocking(move || {
-            db.upsert_configs(&configs)?;
-            if configs.is_empty() {
-                db.delete_stable_top_keys()?;
-            } else {
-                let keys: Vec<String> = configs
-                    .iter()
-                    .filter(|c| c.reachable)
-                    .take(top_n)
-                    .map(|c| c.dedup_key.clone())
-                    .collect();
-                if keys.is_empty() {
-                    db.delete_stable_top_keys()?;
-                } else {
-                    db.save_stable_top_keys(&keys)?;
-                }
-            }
-            Ok::<(), anyhow::Error>(())
-        })
-        .await
-        .map_err(|e| anyhow!("{e}"))?
-        .context("failed to persist configs to database")?;
-    }
-
-    // Async cleanup of offline configs
-    {
-        let db = database.clone();
-        let days = config.clean_offlines_after_days;
-        tokio::task::spawn_blocking(move || db.clean_offline_configs(days))
-            .await
-            .map_err(|e| anyhow!("{e}"))?
-            .map(|deleted| {
-                if deleted > 0 {
-                    info!(deleted, "cleaned offline configs from database");
-                }
-            })
-            .context("failed to clean offline configs")?;
-    }
+    persist_ranked_configs(
+        &database,
+        &ranked,
+        config.top_n,
+        config.clean_offlines_after_days,
+        true,
+    )
+    .await?;
     // Use the accumulated reachable count from probing — do NOT recalculate
     // from the final ranked list, as deduplication may reduce the count and
     // cause the "Working" display to drop after refresh finishes.
@@ -1154,6 +1193,9 @@ async fn refresh_once(
         next_refresh_instant: None,
         refresh_duration_ms: Some(started_instant.elapsed().as_millis()),
         refreshing: false,
+        pinging: progress_state.pinging,
+        next_ping_instant: progress_state.next_ping_instant,
+        last_ping_instant: progress_state.last_ping_instant,
         total_candidates: fetched_count,
         tested_candidates: ranked.len(),
         reachable_candidates: progress_state.reachable_candidates,
@@ -1280,6 +1322,189 @@ fn compare_stability_ranked(left: &RankedConfig, right: &RankedConfig) -> Orderi
         .then_with(|| left.uri.cmp(&right.uri))
 }
 
+/// Re-probe cached configs without re-fetching subscriptions.
+///
+/// Runs on the independent `ping_seconds` timer. Skips silently when there
+/// is nothing cached yet, or when a fetch cycle holds the cycle lock.
+/// Counters mirror a refresh (reset, then accumulate) so the top bar always
+/// describes the last cycle; fetch errors and totals from the last fetch
+/// are preserved, and only a live log line is emitted (no persistent log).
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+async fn ping_once(
+    config: &AppConfig,
+    database: Arc<Database>,
+    state: Arc<RwLock<RuntimeState>>,
+    runtime_config: Arc<RwLock<RuntimeConfig>>,
+    cycle: Arc<tokio::sync::Mutex<()>>,
+    print_compact_progress: bool,
+) -> Result<()> {
+    let Ok(_cycle_guard) = cycle.try_lock() else {
+        debug!("ping skipped: fetch cycle is running");
+        return Ok(());
+    };
+
+    let cached: Vec<Candidate> = state
+        .read()
+        .await
+        .ranked
+        .iter()
+        .map(|item| Candidate {
+            id: item.id.clone(),
+            dedup_key: item.dedup_key.clone(),
+            source: item.source.clone(),
+            priority: item.priority,
+            protocol: item.protocol.clone(),
+            name: item.name.clone(),
+            endpoint: item.endpoint.clone(),
+            uri: item.uri.clone(),
+        })
+        .collect();
+    if cached.is_empty() {
+        debug!("ping skipped: no cached configs yet");
+        return Ok(());
+    }
+
+    let started_instant = std::time::Instant::now();
+    let previous_top_n = if config.prioritize_stability {
+        let db = database.clone();
+        tokio::task::spawn_blocking(move || db.load_stable_top_keys())
+            .await
+            .map_err(|e| anyhow!("{e}"))?
+            .unwrap_or_default()
+    } else {
+        HashSet::new()
+    };
+    let (progress_tx, progress_task) = spawn_tui_progress_forwarder(
+        state.clone(),
+        previous_top_n.clone(),
+        print_compact_progress,
+    );
+    *runtime_config.write().await = RuntimeConfig::from(config);
+    {
+        let mut runtime = state.write().await;
+        runtime.pinging = true;
+        runtime.last_ping_instant = Some(started_instant);
+        runtime.tested_candidates = 0;
+        runtime.reachable_candidates = 0;
+        runtime.total_candidates = cached.len();
+    }
+
+    let mut ranked = probe_refresh_candidates(
+        cached,
+        config,
+        &previous_top_n,
+        &state,
+        &progress_tx,
+        print_compact_progress,
+        "Ping",
+    )
+    .await;
+    drop(progress_tx);
+    let _ = progress_task.await;
+
+    let progress_state = state.read().await.clone();
+    let mut stable_working_counts = state.read().await.stable_working_counts.clone();
+    deduplicate_ranked_configs(&mut ranked);
+    apply_stability_ranking(
+        &mut ranked,
+        &mut stable_working_counts,
+        &previous_top_n,
+        config.prioritize_stability,
+    );
+    persist_ranked_configs(&database, &ranked, config.top_n, 0, false).await?;
+
+    let working = progress_state.reachable_candidates;
+    {
+        let mut runtime = state.write().await;
+        runtime.ranked = ranked;
+        runtime.stable_working_counts = stable_working_counts;
+        runtime.tested_candidates = progress_state.tested_candidates;
+        runtime.reachable_candidates = working;
+        runtime.pinging = false;
+        runtime.last_error = None;
+    }
+
+    let summary = format!(
+        "Ping finished: {working} working of {} cached configs in {}",
+        progress_state.tested_candidates,
+        format_duration_short(started_instant.elapsed().as_millis())
+    );
+    info!(summary = %summary, "ping finished");
+    if print_compact_progress {
+        print_log(&summary);
+    }
+    push_tui_progress(&state, ProgressEvent::LiveLog(summary), &HashSet::new()).await;
+    Ok(())
+}
+
+async fn set_next_ping_deadline(state: &Arc<RwLock<RuntimeState>>, ping_seconds: u64) {
+    let mut state = state.write().await;
+    if ping_seconds == 0 || state.pinging {
+        state.next_ping_instant = None;
+    } else {
+        state.next_ping_instant =
+            Some(std::time::Instant::now() + Duration::from_secs(ping_seconds));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_ping_loop(
+    mut config_rx: watch::Receiver<AppConfig>,
+    database: Arc<Database>,
+    state: Arc<RwLock<RuntimeState>>,
+    runtime_config: Arc<RwLock<RuntimeConfig>>,
+    proxy: proxy::SharedProxy,
+    shared_ranked: Arc<RwLock<Vec<RankedConfig>>>,
+    cycle: Arc<tokio::sync::Mutex<()>>,
+    print_compact_progress: bool,
+) {
+    tokio::spawn(async move {
+        loop {
+            let ping_seconds = config_rx.borrow().ping_seconds;
+            if ping_seconds == 0 {
+                set_next_ping_deadline(&state, 0).await;
+                if config_rx.changed().await.is_err() {
+                    return;
+                }
+                let config = config_rx.borrow().clone();
+                *runtime_config.write().await = RuntimeConfig::from(&config);
+                continue;
+            }
+
+            set_next_ping_deadline(&state, ping_seconds).await;
+            let sleep = time::sleep(Duration::from_secs(ping_seconds));
+            tokio::pin!(sleep);
+
+            tokio::select! {
+                () = &mut sleep => {
+                    let config = config_rx.borrow().clone();
+                    if let Err(err) = ping_once(
+                        &config,
+                        database.clone(),
+                        state.clone(),
+                        runtime_config.clone(),
+                        cycle.clone(),
+                        print_compact_progress,
+                    )
+                    .await
+                    {
+                        error!(error = %err, "ping failed");
+                    }
+
+                    update_proxy_and_ranked(&proxy, &shared_ranked, &state, &config).await;
+                }
+                changed = config_rx.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                    let config = config_rx.borrow().clone();
+                    *runtime_config.write().await = RuntimeConfig::from(&config);
+                }
+            }
+        }
+    });
+}
+
 #[allow(clippy::too_many_arguments)]
 fn spawn_refresh_loop(
     mut config_rx: watch::Receiver<AppConfig>,
@@ -1288,6 +1513,7 @@ fn spawn_refresh_loop(
     runtime_config: Arc<RwLock<RuntimeConfig>>,
     proxy: proxy::SharedProxy,
     shared_ranked: Arc<RwLock<Vec<RankedConfig>>>,
+    cycle: Arc<tokio::sync::Mutex<()>>,
     print_terminal_summary: bool,
     print_compact_progress: bool,
 ) {
@@ -1308,6 +1534,7 @@ fn spawn_refresh_loop(
                     database.clone(),
                     state.clone(),
                     runtime_config.clone(),
+                    cycle.clone(),
                     print_terminal_summary,
                     print_compact_progress,
                 )
@@ -1338,6 +1565,7 @@ fn spawn_refresh_loop(
                         database.clone(),
                         state.clone(),
                         runtime_config.clone(),
+                        cycle.clone(),
                         print_terminal_summary,
                         print_compact_progress,
                     )
@@ -1364,7 +1592,7 @@ fn spawn_refresh_loop(
                     let config = config_rx.borrow().clone();
                     last_refresh_fingerprint = Some(RefreshFingerprint::from(&config));
                     mark_refresh_pending(&state).await;
-                    if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), print_terminal_summary, print_compact_progress).await {
+                        if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), cycle.clone(), print_terminal_summary, print_compact_progress).await {
                         error!(error = %err, "refresh failed");
                         record_refresh_error(&state, err.to_string()).await;
                     }
@@ -1381,7 +1609,7 @@ fn spawn_refresh_loop(
                     let fingerprint = RefreshFingerprint::from(&config);
                     if last_refresh_fingerprint.as_ref() != Some(&fingerprint) {
                         last_refresh_fingerprint = Some(fingerprint);
-                        if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), print_terminal_summary, print_compact_progress).await {
+                    if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), cycle.clone(), print_terminal_summary, print_compact_progress).await {
                             error!(error = %err, "refresh after config reload failed");
                             record_refresh_error(&state, err.to_string()).await;
                         }

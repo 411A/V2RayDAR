@@ -262,6 +262,22 @@ fn update_top_level_scalars(document: &mut YamlDocument, previous: &AppConfig, c
                 .map_or_else(|| "null".to_string(), yaml_scalar),
         );
     }
+    if previous.clean_offlines_after_days != config.clean_offlines_after_days {
+        document.set_top_level_scalar(
+            "clean_offlines_after_days",
+            config.clean_offlines_after_days.to_string(),
+        );
+    }
+    if previous.geoip_db_path != config.geoip_db_path {
+        document.set_top_level_scalar(
+            "geoip_db_path",
+            config
+                .geoip_db_path
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .map_or_else(|| "null".to_string(), yaml_scalar),
+        );
+    }
 }
 
 fn update_sharing_section(document: &mut YamlDocument, previous: &AppConfig, config: &AppConfig) {
@@ -401,6 +417,238 @@ fn update_probe_section(document: &mut YamlDocument, previous: &AppConfig, confi
             config.probe.download_bytes_limit.to_string(),
         );
     }
+}
+
+/// Backfill settings missing from an older `configs.yaml` with current defaults.
+///
+/// Runs once at startup (never from the file watcher): only *adds* absent
+/// keys, never modifies existing values, comments, ordering, or the
+/// `subscriptions` list. Returns the number of added keys and writes the
+/// file only when something was added, so mtime stays stable otherwise
+/// (no watcher reload loop). YAML only — JSON configs already round-trip
+/// every field on save. Unparseable input is an error (the caller logs it
+/// and continues with in-memory defaults).
+pub fn backfill_missing_defaults(path: &Path) -> Result<usize> {
+    if path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .eq_ignore_ascii_case("json")
+    {
+        return Ok(0);
+    }
+
+    let original = fs::read_to_string(path)
+        .with_context(|| format!("unable to read existing config {}", path.display()))?;
+    let parsed: serde_yaml::Value = serde_yaml::from_str(&original)
+        .with_context(|| format!("unable to parse existing config {}", path.display()))?;
+    let defaults = AppConfig::default_for_first_run();
+
+    let mut document = YamlDocument::new(&original);
+    let mut added = 0;
+    let mut ensure = |section: Option<&str>, key: &str, value: String| {
+        if !mapping_has_key(&parsed, section, key) {
+            match section {
+                None => document.set_top_level_scalar(key, value),
+                Some(section) => document.set_nested_scalar(section, key, value),
+            }
+            added += 1;
+        }
+    };
+
+    ensure(None, "bind", defaults.bind.to_string());
+    ensure(None, "top_n", defaults.top_n.to_string());
+    ensure(
+        None,
+        "refresh_seconds",
+        defaults.refresh_seconds.to_string(),
+    );
+    ensure(None, "ping_seconds", defaults.ping_seconds.to_string());
+    ensure(
+        None,
+        "encoded_subscription",
+        defaults.encoded_subscription.to_string(),
+    );
+    ensure(
+        None,
+        "prioritize_stability",
+        defaults.prioritize_stability.to_string(),
+    );
+    ensure(
+        None,
+        "return_configs_asap",
+        defaults.return_configs_asap.to_string(),
+    );
+    ensure(
+        None,
+        "scan_all_configs",
+        defaults.scan_all_configs.to_string(),
+    );
+    ensure(
+        None,
+        "fetch_timeout_ms",
+        defaults.fetch_timeout_ms.to_string(),
+    );
+    ensure(
+        None,
+        "fetch_concurrency",
+        defaults.fetch_concurrency.to_string(),
+    );
+    ensure(
+        None,
+        "max_subscription_bytes",
+        defaults.max_subscription_bytes.to_string(),
+    );
+    ensure(None, "use_cache_only", defaults.use_cache_only.to_string());
+    ensure(
+        None,
+        "emergency_config",
+        defaults
+            .emergency_config
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map_or_else(|| "null".to_string(), yaml_scalar),
+    );
+    ensure(
+        None,
+        "geoip_db_path",
+        defaults
+            .geoip_db_path
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map_or_else(|| "null".to_string(), yaml_scalar),
+    );
+    ensure(
+        None,
+        "clean_offlines_after_days",
+        defaults.clean_offlines_after_days.to_string(),
+    );
+
+    ensure(
+        Some("sharing"),
+        "enabled",
+        defaults.sharing.enabled.to_string(),
+    );
+    ensure(
+        Some("sharing"),
+        "require_token",
+        defaults.sharing.require_token.to_string(),
+    );
+    ensure(
+        Some("sharing"),
+        "token",
+        nullable_string(&defaults.sharing.token),
+    );
+    ensure(Some("proxy"), "enabled", defaults.proxy.enabled.to_string());
+    ensure(Some("proxy"), "port", defaults.proxy.port.to_string());
+    ensure(
+        Some("proxy"),
+        "discoverable",
+        defaults.proxy.discoverable.to_string(),
+    );
+    ensure(
+        Some("proxy"),
+        "rotating_proxy",
+        defaults.proxy.rotating_proxy.to_string(),
+    );
+    ensure(
+        Some("proxy"),
+        "health_check_url",
+        yaml_scalar(&defaults.proxy.health_check_url),
+    );
+    ensure(
+        Some("proxy"),
+        "health_check_interval_seconds",
+        defaults.proxy.health_check_interval_seconds.to_string(),
+    );
+    ensure(Some("probe"), "mode", probe_mode(defaults.probe.mode));
+    ensure(
+        Some("probe"),
+        "sing_box_path",
+        nullable_string(&defaults.probe.sing_box_path),
+    );
+    ensure(
+        Some("probe"),
+        "connect_timeout_ms",
+        defaults.probe.connect_timeout_ms.to_string(),
+    );
+    ensure(
+        Some("probe"),
+        "active_timeout_ms",
+        defaults.probe.active_timeout_ms.to_string(),
+    );
+    ensure(
+        Some("probe"),
+        "startup_timeout_ms",
+        defaults.probe.startup_timeout_ms.to_string(),
+    );
+    ensure(
+        Some("probe"),
+        "concurrency",
+        defaults.probe.concurrency.to_string(),
+    );
+    ensure(
+        Some("probe"),
+        "batch_size",
+        defaults
+            .probe
+            .batch_size
+            .map_or_else(|| "null".to_string(), |value| value.to_string()),
+    );
+    ensure(
+        Some("probe"),
+        "process_concurrency",
+        defaults
+            .probe
+            .process_concurrency
+            .map_or_else(|| "null".to_string(), |value| value.to_string()),
+    );
+    ensure(
+        Some("probe"),
+        "test_url",
+        yaml_scalar(&defaults.probe.test_url),
+    );
+    ensure(
+        Some("probe"),
+        "accepted_statuses",
+        format_inline_u16_list(&defaults.probe.accepted_statuses),
+    );
+    ensure(
+        Some("probe"),
+        "download_url",
+        defaults
+            .probe
+            .download_url
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map_or_else(|| "null".to_string(), yaml_scalar),
+    );
+    ensure(
+        Some("probe"),
+        "download_bytes_limit",
+        defaults.probe.download_bytes_limit.to_string(),
+    );
+
+    if added == 0 {
+        return Ok(0);
+    }
+    fs::write(path, document.finish())
+        .with_context(|| format!("unable to write config to {}", path.display()))?;
+    restrict_file_permissions(path);
+    Ok(added)
+}
+
+fn mapping_has_key(document: &serde_yaml::Value, section: Option<&str>, key: &str) -> bool {
+    let target = match section {
+        None => document,
+        Some(section) => match document.get(serde_yaml::Value::String(section.to_string())) {
+            Some(nested) => nested,
+            None => return false,
+        },
+    };
+    target
+        .as_mapping()
+        .is_some_and(|mapping| mapping.contains_key(serde_yaml::Value::String(key.to_string())))
 }
 
 struct YamlDocument {
@@ -1242,5 +1490,93 @@ subscriptions:
         assert!(reloaded.proxy.enabled);
         assert!(reloaded.proxy.discoverable);
         assert_eq!(reloaded.proxy.port, 10808);
+    }
+
+    #[test]
+    fn backfill_adds_missing_keys_and_preserves_user_values() {
+        let path = write_config(
+            "backfill-old",
+            r"bind: 127.0.0.1:27141
+top_n: 10
+# Keep this comment and the custom refresh below.
+refresh_seconds: 300
+
+sharing:
+  enabled: true
+
+probe:
+  mode: tcp
+
+subscriptions:
+  - name: first
+    url: data:,vless://uuid@example.com:443%23demo
+",
+        );
+        let added = backfill_missing_defaults(&path).expect("backfill runs");
+        assert!(added > 0);
+        let saved = fs::read_to_string(&path).expect("config can be read");
+        fs::remove_file(&path).ok();
+
+        // New keys appear with defaults …
+        assert!(saved.contains("ping_seconds: 300"));
+        assert!(saved.contains("geoip_db_path: null"));
+        assert!(saved.contains("clean_offlines_after_days: 7"));
+        // … while user values, comments, and subscriptions stay intact.
+        assert!(saved.contains("refresh_seconds: 300"));
+        assert!(saved.contains("# Keep this comment and the custom refresh below."));
+        assert!(saved.contains("enabled: true"));
+        assert!(saved.contains("  - name: first"));
+        assert!(!saved.contains("refresh_seconds: 900"));
+    }
+
+    #[test]
+    fn backfill_is_noop_on_complete_config() {
+        let path = temp_config_path("backfill-complete");
+        AppConfig::write_default(&path).expect("default config writes");
+        let before = fs::read_to_string(&path).expect("config can be read");
+
+        assert_eq!(backfill_missing_defaults(&path).expect("backfill runs"), 0);
+        let after = fs::read_to_string(&path).expect("config can be read");
+        fs::remove_file(&path).ok();
+
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn backfill_rejects_invalid_yaml_without_touching_it() {
+        let path = write_config("backfill-invalid", "not: valid: yaml: [[[[\n");
+        let before = fs::read_to_string(&path).expect("config can be read");
+
+        assert!(backfill_missing_defaults(&path).is_err());
+        assert_eq!(
+            fs::read_to_string(&path).expect("config can be read"),
+            before
+        );
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn yaml_save_persists_clean_offline_days() {
+        let path = write_config(
+            "clean-offline-persist",
+            r"bind: 127.0.0.1:27141
+top_n: 10
+clean_offlines_after_days: 7
+
+subscriptions:
+  - name: first
+    url: data:,vless://uuid@example.com:443%23demo
+",
+        );
+        let mut config = AppConfig::load(&path).expect("config loads");
+        config.clean_offlines_after_days = 30;
+
+        save_config(&path, &config).expect("config saves");
+        let saved = fs::read_to_string(&path).expect("config can be read");
+        let reloaded = AppConfig::load(&path).expect("saved config reloads");
+        fs::remove_file(&path).ok();
+
+        assert!(saved.contains("clean_offlines_after_days: 30"));
+        assert_eq!(reloaded.clean_offlines_after_days, 30);
     }
 }

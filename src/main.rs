@@ -177,6 +177,22 @@ async fn main() -> Result<()> {
     let mut config = load_config_and_persist_generated_token(&paths.config_path)
         .with_context(|| format!("failed to load config from {}", paths.config_path.display()))?;
 
+    // Backfill settings added by newer versions into older configs.yaml files.
+    // Add-only and skipped when nothing is missing, so the watcher never loops.
+    match tui::util::backfill_missing_defaults(&paths.config_path) {
+        Ok(0) => {}
+        Ok(added) => info!(
+            added,
+            path = %paths.config_path.display(),
+            "backfilled missing config defaults"
+        ),
+        Err(err) => warn!(
+            error = %err,
+            path = %paths.config_path.display(),
+            "config backfill skipped; in-memory defaults still apply"
+        ),
+    }
+
     // Initialize GeoIP database — embedded is primary, file is fallback
     let geoip_path = config
         .geoip_db_path

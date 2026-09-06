@@ -1761,6 +1761,7 @@ impl From<&AppConfig> for RuntimeConfig {
             bind: config.bind,
             top_n: config.top_n,
             refresh_seconds: config.refresh_seconds,
+            ping_seconds: config.ping_seconds,
             encoded_subscription: config.encoded_subscription,
             prioritize_stability: config.prioritize_stability,
             return_configs_asap: config.return_configs_asap,

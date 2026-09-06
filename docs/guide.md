@@ -397,7 +397,8 @@ String-like null values such as `null`, `"null"`, empty strings, `"none"`, and `
 | --- | --- | --- | --- |
 | `bind` | Socket address | `127.0.0.1:27141` | Primary HTTP bind address. |
 | `top_n` | Integer | `10` | Number of reachable configs published to clients. |
-| `refresh_seconds` | Integer seconds | `300` | Automatic refresh interval. `0` disables timer refreshes but config changes can still trigger refreshes. |
+| `refresh_seconds` | Integer seconds | `900` | Automatic refresh interval. `0` disables timer refreshes but config changes can still trigger refreshes. |
+| `ping_seconds` | Integer seconds | `300` | Re-ping interval for cached configs without re-fetching subscriptions. `0` disables. Fetch and ping traffic both count toward Sub Usage. |
 | `encoded_subscription` | Boolean | `true` | Makes `/subscription` return base64 text. `/subscription.txt` is always raw text. |
 | `prioritize_stability` | Boolean | `true` | Re-pings the previous run's saved top-N first and keeps them ahead of newly discovered low-ping configs. When `false`, the ranking simply prefers any working low-ping config. The saved top-N is held in the cache folder and wiped on every fresh run and on quit. |
 | `return_configs_asap` | Boolean | `false` | When `true`, publishes each working config to `/subscription`, `/subscription.txt`, `/results`, and the TUI `Current Found Configs` box as soon as it is found, until `top_n` working configs are available. Early configs may not have the lowest ping or best stability. |
@@ -729,7 +730,8 @@ The app runs one refresh immediately after startup.
 
 After that:
 
-- `refresh_seconds: 300` refreshes every five minutes.
+- `refresh_seconds: 900` refreshes every fifteen minutes.
+- `ping_seconds: 300` re-pings cached configs every five minutes without re-fetching.
 - `refresh_seconds: 0` disables timer refreshes.
 - Relevant config-file changes can still trigger refreshes even when `refresh_seconds` is `0`.
 
@@ -1319,7 +1321,8 @@ Run at least one successful online refresh first so the database has configs to 
 ```yaml
 bind: 127.0.0.1:27141
 top_n: 10
-refresh_seconds: 300
+refresh_seconds: 900
+ping_seconds: 300
 encoded_subscription: true
 prioritize_stability: true
 return_configs_asap: false

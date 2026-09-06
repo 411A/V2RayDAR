@@ -58,6 +58,7 @@ fn merge_top_level(merged: &mut AppConfig, startup: &AppConfig, tui: &AppConfig)
     pick!(copy bind);
     pick!(copy top_n);
     pick!(copy refresh_seconds);
+    pick!(copy ping_seconds);
     pick!(copy encoded_subscription);
     pick!(copy prioritize_stability);
     pick!(copy return_configs_asap);
@@ -211,6 +212,9 @@ fn update_top_level_scalars(document: &mut YamlDocument, previous: &AppConfig, c
     }
     if previous.refresh_seconds != config.refresh_seconds {
         document.set_top_level_scalar("refresh_seconds", config.refresh_seconds.to_string());
+    }
+    if previous.ping_seconds != config.ping_seconds {
+        document.set_top_level_scalar("ping_seconds", config.ping_seconds.to_string());
     }
     if previous.encoded_subscription != config.encoded_subscription {
         document.set_top_level_scalar(

@@ -9,14 +9,15 @@ use crate::constants::{
     DEFAULT_ACCEPTED_STATUSES, DEFAULT_ACTIVE_TIMEOUT_MS, DEFAULT_BIND,
     DEFAULT_CLEAN_OFFLINES_AFTER_DAYS, DEFAULT_CONFIG_TEMPLATE, DEFAULT_CONNECT_TIMEOUT_MS,
     DEFAULT_DOWNLOAD_BYTES_LIMIT, DEFAULT_ENCODED_SUBSCRIPTION, DEFAULT_FETCH_CONCURRENCY,
-    DEFAULT_FETCH_TIMEOUT_MS, DEFAULT_MAX_SUBSCRIPTION_BYTES, DEFAULT_PRIORITIZE_STABILITY,
-    DEFAULT_PROBE_BATCH_SIZE, DEFAULT_PROBE_CONCURRENCY, DEFAULT_PROBE_PROCESS_CONCURRENCY,
-    DEFAULT_PROXY_DISCOVERABLE, DEFAULT_PROXY_ENABLED, DEFAULT_PROXY_HEALTH_CHECK_INTERVAL,
-    DEFAULT_PROXY_HEALTH_CHECK_URL, DEFAULT_PROXY_PORT, DEFAULT_REFRESH_SECONDS,
-    DEFAULT_REQUIRE_TOKEN, DEFAULT_RETURN_CONFIGS_ASAP, DEFAULT_ROTATING_PROXY,
-    DEFAULT_SCAN_ALL_CONFIGS, DEFAULT_SHARING_ENABLED, DEFAULT_SHARING_TOKEN,
-    DEFAULT_SING_BOX_PATH, DEFAULT_STARTUP_TIMEOUT_MS, DEFAULT_SUBSCRIPTION_ENABLED,
-    DEFAULT_SUBSCRIPTION_PRIORITY, DEFAULT_TEST_URL, DEFAULT_TOP_N, DEFAULT_USE_CACHE_ONLY,
+    DEFAULT_FETCH_TIMEOUT_MS, DEFAULT_MAX_SUBSCRIPTION_BYTES, DEFAULT_PING_SECONDS,
+    DEFAULT_PRIORITIZE_STABILITY, DEFAULT_PROBE_BATCH_SIZE, DEFAULT_PROBE_CONCURRENCY,
+    DEFAULT_PROBE_PROCESS_CONCURRENCY, DEFAULT_PROXY_DISCOVERABLE, DEFAULT_PROXY_ENABLED,
+    DEFAULT_PROXY_HEALTH_CHECK_INTERVAL, DEFAULT_PROXY_HEALTH_CHECK_URL, DEFAULT_PROXY_PORT,
+    DEFAULT_REFRESH_SECONDS, DEFAULT_REQUIRE_TOKEN, DEFAULT_RETURN_CONFIGS_ASAP,
+    DEFAULT_ROTATING_PROXY, DEFAULT_SCAN_ALL_CONFIGS, DEFAULT_SHARING_ENABLED,
+    DEFAULT_SHARING_TOKEN, DEFAULT_SING_BOX_PATH, DEFAULT_STARTUP_TIMEOUT_MS,
+    DEFAULT_SUBSCRIPTION_ENABLED, DEFAULT_SUBSCRIPTION_PRIORITY, DEFAULT_TEST_URL, DEFAULT_TOP_N,
+    DEFAULT_USE_CACHE_ONLY,
 };
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -28,6 +29,8 @@ pub struct AppConfig {
     pub top_n: usize,
     #[serde(default = "default_refresh_seconds")]
     pub refresh_seconds: u64,
+    #[serde(default = "default_ping_seconds")]
+    pub ping_seconds: u64,
     #[serde(default = "default_encoded_subscription")]
     pub encoded_subscription: bool,
     #[serde(default = "default_prioritize_stability")]
@@ -599,6 +602,10 @@ const fn default_refresh_seconds() -> u64 {
     DEFAULT_REFRESH_SECONDS
 }
 
+const fn default_ping_seconds() -> u64 {
+    DEFAULT_PING_SECONDS
+}
+
 const fn default_encoded_subscription() -> bool {
     DEFAULT_ENCODED_SUBSCRIPTION
 }
@@ -978,6 +985,29 @@ subscriptions:
         fs::remove_file(&path).ok();
 
         assert!(error.to_string().contains("sharing.token"));
+    }
+
+    #[test]
+    fn default_intervals_fetch_fifteen_minutes_ping_five() {
+        let config = AppConfig::default_for_first_run();
+
+        assert_eq!(config.refresh_seconds, 900);
+        assert_eq!(config.ping_seconds, 300);
+    }
+
+    #[test]
+    fn ping_interval_zero_disables_and_parses() {
+        let config = load_inline_config(
+            "ping-zero",
+            r"
+ping_seconds: 0
+subscriptions:
+    - name: local
+      url: data:,vless://uuid@example.com:443%23demo
+",
+        );
+
+        assert_eq!(config.ping_seconds, 0);
     }
 
     fn load_inline_config(name: &str, content: &str) -> AppConfig {

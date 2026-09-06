@@ -113,6 +113,7 @@ pub struct RuntimeConfig {
     pub bind: SocketAddr,
     pub top_n: usize,
     pub refresh_seconds: u64,
+    pub ping_seconds: u64,
     pub encoded_subscription: bool,
     pub prioritize_stability: bool,
     pub return_configs_asap: bool,

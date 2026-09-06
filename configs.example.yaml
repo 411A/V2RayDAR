@@ -3,7 +3,9 @@ bind: 127.0.0.1:27141
 # Number of best working configs published to subscription endpoints.
 top_n: 10
 # Auto-refresh interval in seconds; 0 disables timer refreshes.
-refresh_seconds: 300
+refresh_seconds: 900
+# Re-ping interval in seconds for cached configs without re-fetching; 0 disables.
+ping_seconds: 300
 # true returns /subscription as base64 for v2rayN/v2rayNG compatibility.
 encoded_subscription: true
 # true re-pings the last saved top-N first and keeps stable configs ahead.

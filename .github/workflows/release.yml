@@ -7,7 +7,11 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   SING_BOX_VERSION: "1.13.13"
@@ -15,6 +19,8 @@ env:
 jobs:
   build:
     name: Build ${{ matrix.asset }}
+    permissions:
+      contents: read
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -44,6 +50,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Cache Cargo build state
         uses: actions/cache@v4
@@ -127,7 +135,13 @@ jobs:
           if (-not $singBox) {
             throw "sing-box executable was not found after extracting $($asset.name)"
           }
-          & $singBox.FullName version
+          if ($singBox.Length -lt 1MB) {
+            throw "sing-box binary looks corrupt (size $($singBox.Length) bytes)"
+          }
+          $versionOutput = & $singBox.FullName version 2>&1 | Out-String
+          if ($versionOutput -notmatch [regex]::Escape($version)) {
+            Write-Warning "sing-box version output does not contain expected $version : $versionOutput"
+          }
 
           $packageRoot = Join-Path "dist" "package-${{ matrix.embedded_asset }}"
           New-Item -ItemType Directory -Force $packageRoot | Out-Null
@@ -153,10 +167,14 @@ jobs:
 
   build-macos:
     name: Build v2raydar-macos-universal.app.zip
+    permissions:
+      contents: read
     runs-on: macos-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Cache Cargo build state
         uses: actions/cache@v4
@@ -339,7 +357,11 @@ jobs:
 
           lipo -create -output "dist/V2RayDAR.app/Contents/MacOS/sing-box" "$amd64_bin" "$arm64_bin"
           chmod +x "dist/V2RayDAR.app/Contents/MacOS/sing-box"
-          "dist/V2RayDAR.app/Contents/MacOS/sing-box" version
+          _sb_version_output="$(./dist/V2RayDAR.app/Contents/MacOS/sing-box version 2>&1 || true)"
+          case "$_sb_version_output" in
+            *"$SING_BOX_VERSION"*) echo "sing-box $SING_BOX_VERSION verified" ;;
+            *) echo "::warning::sing-box version output does not contain $SING_BOX_VERSION: $_sb_version_output" ;;
+          esac
 
           ditto -c -k --sequesterRsrc --keepParent "dist/V2RayDAR.app" "dist/$embedded_asset"
 
@@ -352,6 +374,8 @@ jobs:
 
   build-termux:
     name: Build ${{ matrix.asset }}
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -370,6 +394,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Cache Cargo build state
         uses: actions/cache@v4
@@ -435,15 +461,25 @@ jobs:
           esac
           _sb_url="https://github.com/SagerNet/sing-box/releases/download/v${SING_BOX_VERSION}/sing-box-${SING_BOX_VERSION}-android-${_sb_arch}.tar.gz"
           if curl -fSL --progress-bar "$_sb_url" -o /tmp/sing-box-termux.tar.gz; then
-            _sb_tmp="$(mktemp -d)"
-            tar xzf /tmp/sing-box-termux.tar.gz -C "$_sb_tmp" --strip-components=1
-            _sb_bin="$(find "$_sb_tmp" -name sing-box -type f | head -1)"
-            if [ -n "$_sb_bin" ]; then
-              cp "$_sb_bin" "$package/sing-box"
-              chmod +x "$package/sing-box"
-              echo "bundled sing-box ${SING_BOX_VERSION} for android-${_sb_arch}"
+            _sb_size="$(wc -c < /tmp/sing-box-termux.tar.gz | tr -d ' ')"
+            if [ "${_sb_size:-0}" -lt 1000000 ]; then
+              echo "::warning::sing-box android download looks too small (${_sb_size} bytes), skipping bundle"
+            else
+              _sb_tmp="$(mktemp -d)"
+              tar tzf /tmp/sing-box-termux.tar.gz | grep -q "sing-box" || echo "::warning::sing-box not listed in android archive"
+              tar xzf /tmp/sing-box-termux.tar.gz -C "$_sb_tmp" --strip-components=1
+              _sb_bin="$(find "$_sb_tmp" -name sing-box -type f | head -1)"
+              if [ -n "$_sb_bin" ] && [ -s "$_sb_bin" ]; then
+                cp "$_sb_bin" "$package/sing-box"
+                chmod +x "$package/sing-box"
+                echo "bundled sing-box ${SING_BOX_VERSION} for android-${_sb_arch}"
+              else
+                echo "::warning::sing-box binary missing or empty in android archive"
+              fi
+              rm -rf "$_sb_tmp"
             fi
-            rm -rf "$_sb_tmp"
+          else
+            echo "::warning::sing-box android download failed, Termux installer will fall back to pkg"
           fi
           rm -f /tmp/sing-box-termux.tar.gz
 
@@ -548,10 +584,14 @@ jobs:
 
   test:
     name: Test
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Cache Cargo test state
         uses: actions/cache@v4
@@ -579,8 +619,32 @@ jobs:
       - name: Tests
         run: cargo test --locked
 
+      - name: Strict lints (nursery and pedantic, advisory)
+        continue-on-error: true
+        run: cargo clippy --locked --all-targets --all-features -- -W clippy::nursery -W clippy::pedantic
+
+  audit:
+    name: Audit (advisory)
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install cargo-audit
+        shell: bash
+        run: cargo install cargo-audit --locked || true
+      - name: Audit dependencies
+        shell: bash
+        run: cargo audit || echo "::warning::cargo audit found issues or is unavailable"
+
   publish:
     name: Publish GitHub release
+    permissions:
+      contents: write
     needs: [build, build-macos, build-termux, test]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
@@ -591,6 +655,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Download executable artifacts
         uses: actions/download-artifact@v4

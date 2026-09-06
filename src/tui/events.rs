@@ -44,6 +44,20 @@ pub fn handle_key(
         return Ok(EventResult::Quit);
     }
 
+    // Manual cycle triggers. Match both cases explicitly: terminals differ in
+    // what they report for Ctrl+letter (crossterm/kitty distinguish `r`/`R`,
+    // legacy conhost/Termux report lowercase), and Shift state must not matter.
+    // Control-only check (no Alt/Super gate) keeps this working on Windows
+    // (conhost, Windows Terminal), macOS (Terminal.app, iTerm2, WezTerm),
+    // Linux, and Termux (VolumeDown+letter sends Ctrl).
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Char('r' | 'R') => return trigger_refresh(state),
+            KeyCode::Char('p' | 'P') => return trigger_ping(state),
+            _ => {}
+        }
+    }
+
     if is_back_shortcut(key) {
         go_back(state);
         return Ok(EventResult::Continue);
@@ -131,6 +145,8 @@ fn run_command(state: &mut TuiState, config_path: &Path) -> Result<EventResult> 
         "t" | "toggle" => run_action(state, Action::Toggle, config_path)?,
         "d" | "delete" => run_action(state, Action::Delete, config_path)?,
         "w" | "save" => run_action(state, Action::Save, config_path)?,
+        "r" | "refresh" => return trigger_refresh(state),
+        "ping" => return trigger_ping(state),
         "" => state.status = "Command cancelled".to_string(),
         _ => state.status = format!("Unknown command: :{command}"),
     }
@@ -413,6 +429,41 @@ fn edit_selected_subscription(state: &mut TuiState) {
     state.view = MenuView::SubscriptionActions;
 }
 
+/// Queue one manual refresh (re-fetch subscriptions). Refused while a
+/// refresh is already running; the loops coalesce any duplicate queued
+/// while the first is still being picked up, so holding the chord fires once.
+fn trigger_refresh(state: &mut TuiState) -> Result<EventResult> {
+    if state.refresh_busy {
+        state.status = "Refresh already running".to_string();
+        return Ok(EventResult::Continue);
+    }
+    match state.refresh_trigger.as_ref() {
+        Some(tx) => {
+            let _ = tx.send(());
+            state.status = "Manual refresh started".to_string();
+        }
+        None => state.status = "Manual refresh unavailable".to_string(),
+    }
+    Ok(EventResult::Continue)
+}
+
+/// Queue one manual re-ping of the cached configs. Refused while any cycle
+/// (fetch or ping) is running so results can't be overwritten mid-flight.
+fn trigger_ping(state: &mut TuiState) -> Result<EventResult> {
+    if state.refresh_busy || state.ping_busy {
+        state.status = "A cycle is already running".to_string();
+        return Ok(EventResult::Continue);
+    }
+    match state.ping_trigger.as_ref() {
+        Some(tx) => {
+            let _ = tx.send(());
+            state.status = "Manual ping started".to_string();
+        }
+        None => state.status = "Manual ping unavailable".to_string(),
+    }
+    Ok(EventResult::Continue)
+}
+
 fn set_found_as_proxy(
     state: &mut TuiState,
     found_index: usize,
@@ -672,6 +723,56 @@ mod tests {
             Some(PROXY_URI)
         );
         assert_eq!(state.proxy_pending_uri.as_deref(), Some(PROXY_URI));
+    }
+
+    #[test]
+    fn manual_refresh_refused_while_busy() {
+        let (mut state, _tx, _runtime) = state_with_found(PROXY_URI);
+        state.refresh_busy = true;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        state.refresh_trigger = Some(tx);
+
+        super::trigger_refresh(&mut state).expect("handler runs");
+        assert_eq!(state.status, "Refresh already running");
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn manual_refresh_sends_once_when_idle() {
+        let (mut state, _tx, _runtime) = state_with_found(PROXY_URI);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        state.refresh_trigger = Some(tx);
+
+        super::trigger_refresh(&mut state).expect("handler runs");
+        assert_eq!(state.status, "Manual refresh started");
+        assert!(rx.try_recv().is_ok());
+    }
+
+    #[test]
+    fn manual_ping_refused_while_any_cycle_runs() {
+        let (mut state, _tx, _runtime) = state_with_found(PROXY_URI);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        state.ping_trigger = Some(tx);
+
+        state.ping_busy = true;
+        super::trigger_ping(&mut state).expect("handler runs");
+        assert_eq!(state.status, "A cycle is already running");
+        assert!(rx.try_recv().is_err());
+
+        state.ping_busy = false;
+        state.refresh_busy = true;
+        super::trigger_ping(&mut state).expect("handler runs");
+        assert_eq!(state.status, "A cycle is already running");
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn manual_triggers_report_when_unavailable() {
+        let (mut state, _tx, _runtime) = state_with_found(PROXY_URI);
+        super::trigger_refresh(&mut state).expect("handler runs");
+        assert_eq!(state.status, "Manual refresh unavailable");
+        super::trigger_ping(&mut state).expect("handler runs");
+        assert_eq!(state.status, "Manual ping unavailable");
     }
 
     #[test]

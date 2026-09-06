@@ -1,5 +1,7 @@
 use std::{net::SocketAddr, time::Instant};
 
+use tokio::sync::mpsc;
+
 use crate::config::AppConfig;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -155,6 +157,15 @@ pub struct TuiState {
     pub selected_found: Option<usize>,
     pub found_uris: Vec<String>,
     pub proxy_pending_uri: Option<String>,
+    /// Manual cycle triggers (Ctrl+R / Ctrl+P, `:refresh`, `:ping`).
+    /// `None` outside the live TUI (e.g. unit tests); sending is fire-and-forget,
+    /// the loops coalesce queued duplicates.
+    pub refresh_trigger: Option<mpsc::UnboundedSender<()>>,
+    pub ping_trigger: Option<mpsc::UnboundedSender<()>>,
+    /// Last-frame snapshot of the background cycle flags, so the sync key
+    /// handler can refuse a manual trigger while a cycle is running.
+    pub refresh_busy: bool,
+    pub ping_busy: bool,
     pub input_mode: InputMode,
     pub input: String,
     pub new_subscription: Option<SubscriptionDraft>,
@@ -183,6 +194,10 @@ impl TuiState {
             selected_found: None,
             found_uris: Vec::new(),
             proxy_pending_uri: None,
+            refresh_trigger: None,
+            ping_trigger: None,
+            refresh_busy: false,
+            ping_busy: false,
             input_mode: InputMode::None,
             input: String::new(),
             new_subscription: None,

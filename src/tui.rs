@@ -45,6 +45,7 @@ use self::{
     view::RuntimeView,
 };
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     initial_config: AppConfig,
     paths: AppPaths,
@@ -52,6 +53,8 @@ pub async fn run(
     runtime_config: Arc<RwLock<RuntimeConfig>>,
     database: Arc<crate::db::Database>,
     config_tx: watch::Sender<AppConfig>,
+    refresh_trigger: tokio::sync::mpsc::UnboundedSender<()>,
+    ping_trigger: tokio::sync::mpsc::UnboundedSender<()>,
 ) -> Result<()> {
     // Restore the terminal even on panic. Otherwise a crash on a long run
     // leaves raw mode / mouse capture stuck and the shell looks frozen.
@@ -65,6 +68,8 @@ pub async fn run(
     let mut terminal = ratatui::try_init()?;
     execute!(std::io::stdout(), EnableMouseCapture)?;
     let mut tui = TuiState::new(initial_config);
+    tui.refresh_trigger = Some(refresh_trigger);
+    tui.ping_trigger = Some(ping_trigger);
     let mut next_frame = Instant::now();
 
     let result: Result<()> = loop {
@@ -78,6 +83,9 @@ pub async fn run(
             {
                 tui.proxy_pending_uri = None;
             }
+            // Snapshot cycle flags for the sync key handler (manual triggers).
+            tui.refresh_busy = runtime_snapshot.refreshing;
+            tui.ping_busy = runtime_snapshot.pinging;
             let runtime = RuntimeView::from_state(&runtime_snapshot, &config);
             if let Err(err) =
                 terminal.draw(|frame| draw::draw(frame, &mut tui, &runtime, &config, &paths, now))

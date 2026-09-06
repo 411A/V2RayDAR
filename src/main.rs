@@ -291,6 +291,9 @@ async fn main() -> Result<()> {
     let (config_tx, config_rx) = watch::channel(config.clone());
     // Serializes fetch and ping cycles so ranked/counter writes never interleave.
     let cycle = Arc::new(tokio::sync::Mutex::new(()));
+    // Manual cycle triggers (TUI Ctrl+R / Ctrl+P, `:refresh`, `:ping`).
+    let (refresh_trigger_tx, refresh_trigger_rx) = mpsc::unbounded_channel::<()>();
+    let (ping_trigger_tx, ping_trigger_rx) = mpsc::unbounded_channel::<()>();
     spawn_refresh_loop(
         config_rx.clone(),
         database.clone(),
@@ -299,6 +302,7 @@ async fn main() -> Result<()> {
         proxy.clone(),
         shared_ranked.clone(),
         cycle.clone(),
+        refresh_trigger_rx,
         cli.no_tui,
         cli.no_tui && !cli.verbose,
     );
@@ -310,16 +314,19 @@ async fn main() -> Result<()> {
         proxy.clone(),
         shared_ranked,
         cycle,
+        ping_trigger_rx,
         cli.no_tui && !cli.verbose,
     );
     spawn_config_watcher(paths.config_path.clone(), config.bind, config_tx.clone());
 
     let result = if cli.no_tui {
+        // No TUI owns the senders headless; hold them so trigger channels stay open.
+        let _manual_triggers = (refresh_trigger_tx, ping_trigger_tx);
         serve(config.bind, state, runtime_config).await
     } else {
         tokio::select! {
             result = serve(config.bind, state.clone(), runtime_config.clone()) => result,
-            result = tui::run(config, paths, state, runtime_config, database.clone(), config_tx) => result,
+            result = tui::run(config, paths, state, runtime_config, database.clone(), config_tx, refresh_trigger_tx, ping_trigger_tx) => result,
         }
     };
 
@@ -1446,7 +1453,6 @@ async fn set_next_ping_deadline(state: &Arc<RwLock<RuntimeState>>, ping_seconds:
             Some(std::time::Instant::now() + Duration::from_secs(ping_seconds));
     }
 }
-
 #[allow(clippy::too_many_arguments)]
 fn spawn_ping_loop(
     mut config_rx: watch::Receiver<AppConfig>,
@@ -1456,18 +1462,50 @@ fn spawn_ping_loop(
     proxy: proxy::SharedProxy,
     shared_ranked: Arc<RwLock<Vec<RankedConfig>>>,
     cycle: Arc<tokio::sync::Mutex<()>>,
+    mut trigger_rx: mpsc::UnboundedReceiver<()>,
     print_compact_progress: bool,
 ) {
     tokio::spawn(async move {
         loop {
             let ping_seconds = config_rx.borrow().ping_seconds;
+
             if ping_seconds == 0 {
                 set_next_ping_deadline(&state, 0).await;
-                if config_rx.changed().await.is_err() {
-                    return;
+                tokio::select! {
+                    trigger = trigger_rx.recv() => {
+                        if trigger.is_none() {
+                            return;
+                        }
+                        drain_triggers(&mut trigger_rx);
+                        if cycle_busy(&state).await {
+                            continue;
+                        }
+                        let config = config_rx.borrow().clone();
+                        *runtime_config.write().await = RuntimeConfig::from(&config);
+                        if let Err(err) = ping_once(
+                            &config,
+                            database.clone(),
+                            state.clone(),
+                            runtime_config.clone(),
+                            cycle.clone(),
+                            print_compact_progress,
+                        )
+                        .await
+                        {
+                            error!(error = %err, "manual ping failed");
+                        }
+
+                        update_proxy_and_ranked(&proxy, &shared_ranked, &state, &config).await;
+                        drain_triggers(&mut trigger_rx);
+                    }
+                    changed = config_rx.changed() => {
+                        if changed.is_err() {
+                            return;
+                        }
+                        let config = config_rx.borrow().clone();
+                        *runtime_config.write().await = RuntimeConfig::from(&config);
+                    }
                 }
-                let config = config_rx.borrow().clone();
-                *runtime_config.write().await = RuntimeConfig::from(&config);
                 continue;
             }
 
@@ -1477,6 +1515,7 @@ fn spawn_ping_loop(
 
             tokio::select! {
                 () = &mut sleep => {
+                    drain_triggers(&mut trigger_rx);
                     let config = config_rx.borrow().clone();
                     if let Err(err) = ping_once(
                         &config,
@@ -1493,6 +1532,31 @@ fn spawn_ping_loop(
 
                     update_proxy_and_ranked(&proxy, &shared_ranked, &state, &config).await;
                 }
+                trigger = trigger_rx.recv() => {
+                    if trigger.is_none() {
+                        return;
+                    }
+                    drain_triggers(&mut trigger_rx);
+                    if cycle_busy(&state).await {
+                        continue;
+                    }
+                    let config = config_rx.borrow().clone();
+                    if let Err(err) = ping_once(
+                        &config,
+                        database.clone(),
+                        state.clone(),
+                        runtime_config.clone(),
+                        cycle.clone(),
+                        print_compact_progress,
+                    )
+                    .await
+                    {
+                        error!(error = %err, "manual ping failed");
+                    }
+
+                    update_proxy_and_ranked(&proxy, &shared_ranked, &state, &config).await;
+                    drain_triggers(&mut trigger_rx);
+                }
                 changed = config_rx.changed() => {
                     if changed.is_err() {
                         return;
@@ -1505,6 +1569,19 @@ fn spawn_ping_loop(
     });
 }
 
+/// True while a fetch or ping cycle is running.
+async fn cycle_busy(state: &Arc<RwLock<RuntimeState>>) -> bool {
+    let runtime = state.read().await;
+    runtime.refreshing || runtime.pinging
+}
+
+/// Drop queued manual triggers; the TUI refuses new ones while busy, so any
+/// leftovers are stale duplicates (double-press) or races with the timer
+/// that the just-finished cycle already satisfied. One chord, one cycle.
+fn drain_triggers(rx: &mut mpsc::UnboundedReceiver<()>) {
+    while rx.try_recv().is_ok() {}
+}
+
 #[allow(clippy::too_many_arguments)]
 fn spawn_refresh_loop(
     mut config_rx: watch::Receiver<AppConfig>,
@@ -1514,6 +1591,7 @@ fn spawn_refresh_loop(
     proxy: proxy::SharedProxy,
     shared_ranked: Arc<RwLock<Vec<RankedConfig>>>,
     cycle: Arc<tokio::sync::Mutex<()>>,
+    mut trigger_rx: mpsc::UnboundedReceiver<()>,
     print_terminal_summary: bool,
     print_compact_progress: bool,
 ) {
@@ -1552,8 +1630,33 @@ fn spawn_refresh_loop(
             if refresh_seconds == 0 {
                 set_next_refresh_deadline(&state, 0).await;
                 warn!("automatic refresh is disabled because refresh_seconds is 0");
-                if config_rx.changed().await.is_err() {
-                    return;
+                tokio::select! {
+                    trigger = trigger_rx.recv() => {
+                        if trigger.is_none() {
+                            return;
+                        }
+                        drain_triggers(&mut trigger_rx);
+                        if cycle_busy(&state).await {
+                            continue;
+                        }
+                        let config = config_rx.borrow().clone();
+                        *runtime_config.write().await = RuntimeConfig::from(&config);
+                        last_refresh_fingerprint = Some(RefreshFingerprint::from(&config));
+                        mark_refresh_pending(&state).await;
+                        if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), cycle.clone(), print_terminal_summary, print_compact_progress).await {
+                            error!(error = %err, "manual refresh failed");
+                            record_refresh_error(&state, err.to_string()).await;
+                        }
+
+                        update_proxy_and_ranked(&proxy, &shared_ranked, &state, &config).await;
+                        drain_triggers(&mut trigger_rx);
+                        continue;
+                    }
+                    changed = config_rx.changed() => {
+                        if changed.is_err() {
+                            return;
+                        }
+                    }
                 }
                 let config = config_rx.borrow().clone();
                 *runtime_config.write().await = RuntimeConfig::from(&config);
@@ -1589,15 +1692,35 @@ fn spawn_refresh_loop(
 
             tokio::select! {
                 () = &mut sleep => {
+                    drain_triggers(&mut trigger_rx);
                     let config = config_rx.borrow().clone();
                     last_refresh_fingerprint = Some(RefreshFingerprint::from(&config));
                     mark_refresh_pending(&state).await;
-                        if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), cycle.clone(), print_terminal_summary, print_compact_progress).await {
+                    if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), cycle.clone(), print_terminal_summary, print_compact_progress).await {
                         error!(error = %err, "refresh failed");
                         record_refresh_error(&state, err.to_string()).await;
                     }
 
                     update_proxy_and_ranked(&proxy, &shared_ranked, &state, &config).await;
+                }
+                trigger = trigger_rx.recv() => {
+                    if trigger.is_none() {
+                        return;
+                    }
+                    drain_triggers(&mut trigger_rx);
+                    if cycle_busy(&state).await {
+                        continue;
+                    }
+                    let config = config_rx.borrow().clone();
+                    last_refresh_fingerprint = Some(RefreshFingerprint::from(&config));
+                    mark_refresh_pending(&state).await;
+                    if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), cycle.clone(), print_terminal_summary, print_compact_progress).await {
+                        error!(error = %err, "manual refresh failed");
+                        record_refresh_error(&state, err.to_string()).await;
+                    }
+
+                    update_proxy_and_ranked(&proxy, &shared_ranked, &state, &config).await;
+                    drain_triggers(&mut trigger_rx);
                 }
                 changed = config_rx.changed() => {
                     if changed.is_err() {
@@ -2694,5 +2817,214 @@ mod tests {
         assert_eq!(counts["vless://fast@example.com:443"], 6);
         assert_eq!(final_ranked[0].stability_count, 6);
         assert_eq!(final_ranked[1].stability_count, 6);
+    }
+
+    fn manual_trigger_test_config() -> crate::config::AppConfig {
+        let mut config = crate::config::AppConfig::default_for_first_run();
+        config.refresh_seconds = 3600;
+        config.ping_seconds = 3600;
+        config.top_n = 2;
+        config.probe.mode = crate::config::ProbeMode::Tcp;
+        config.subscriptions = vec![crate::config::SubscriptionSource {
+            name: "local".to_string(),
+            url: "data:,vless://00000000-0000-0000-0000-000000000000@127.0.0.1:9%23e2e".to_string(),
+            enabled: true,
+            priority: 1,
+        }];
+        config
+    }
+
+    fn manual_trigger_test_database() -> Arc<crate::db::Database> {
+        let dir = std::env::temp_dir().join(format!(
+            "v2raydar-trigger-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir can be created");
+        Arc::new(crate::db::Database::open(&dir.join("data.db")).expect("db opens"))
+    }
+
+    fn manual_trigger_test_proxy() -> proxy::SharedProxy {
+        Arc::new(tokio::sync::Mutex::new(crate::proxy::PersistentProxy::new(
+            crate::config::ProxyConfig {
+                enabled: false,
+                ..Default::default()
+            },
+            String::new(),
+            None,
+        )))
+    }
+
+    async fn wait_for_condition(message: &str, mut done: impl FnMut() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(25);
+        loop {
+            if done() {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting: {message}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
+    async fn live_log_count(state: &Arc<tokio::sync::RwLock<RuntimeState>>, needle: &str) -> usize {
+        state
+            .read()
+            .await
+            .live_logs
+            .iter()
+            .filter(|line| line.contains(needle))
+            .count()
+    }
+
+    async fn summary_count(state: &Arc<tokio::sync::RwLock<RuntimeState>>) -> usize {
+        state
+            .read()
+            .await
+            .logs
+            .iter()
+            .filter(|line| line.contains("fetched,"))
+            .count()
+    }
+
+    #[tokio::test]
+    async fn manual_refresh_trigger_runs_exactly_one_extra_cycle() {
+        let config = manual_trigger_test_config();
+        let database = manual_trigger_test_database();
+        let state = Arc::new(tokio::sync::RwLock::new(RuntimeState::default()));
+        let runtime_config = Arc::new(tokio::sync::RwLock::new(RuntimeConfig::from(&config)));
+        let proxy = manual_trigger_test_proxy();
+        let shared_ranked = Arc::new(tokio::sync::RwLock::new(Vec::new()));
+        let cycle = Arc::new(tokio::sync::Mutex::new(()));
+        let (config_tx, config_rx) = tokio::sync::watch::channel(config.clone());
+        let _config_tx = config_tx;
+        let (trigger_tx, trigger_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+
+        spawn_refresh_loop(
+            config_rx,
+            database,
+            state.clone(),
+            runtime_config,
+            proxy,
+            shared_ranked,
+            cycle,
+            trigger_rx,
+            false,
+            false,
+        );
+
+        wait_for_condition("initial refresh", || {
+            state
+                .try_read()
+                .is_ok_and(|runtime| !runtime.refreshing && runtime.last_refresh.is_some())
+        })
+        .await;
+        // Double chord press while idle must coalesce into a single cycle.
+        // NOTE: counted via persistent `logs` summaries, not `live_logs` —
+        // every refresh clears live logs at start, so live entries can't
+        // accumulate across cycles.
+        let baseline = summary_count(&state).await;
+        assert!(baseline >= 1);
+        trigger_tx.send(()).expect("trigger sends");
+        trigger_tx.send(()).expect("trigger sends");
+        wait_for_condition("manual refresh", || {
+            state.try_read().is_ok_and(|runtime| {
+                !runtime.refreshing
+                    && runtime
+                        .logs
+                        .iter()
+                        .filter(|line| line.contains("fetched,"))
+                        .count()
+                        > baseline
+            })
+        })
+        .await;
+        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+        assert_eq!(summary_count(&state).await, baseline + 1);
+    }
+
+    #[tokio::test]
+    async fn manual_ping_trigger_repings_cache_without_refetch() {
+        let config = manual_trigger_test_config();
+        let database = manual_trigger_test_database();
+        let state = Arc::new(tokio::sync::RwLock::new(RuntimeState::default()));
+        let runtime_config = Arc::new(tokio::sync::RwLock::new(RuntimeConfig::from(&config)));
+        let proxy = manual_trigger_test_proxy();
+        let shared_ranked = Arc::new(tokio::sync::RwLock::new(Vec::new()));
+        let cycle = Arc::new(tokio::sync::Mutex::new(()));
+        let (config_tx, config_rx) = tokio::sync::watch::channel(config.clone());
+        let _config_tx = config_tx;
+        let (refresh_trigger_tx, refresh_trigger_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let _refresh_trigger_tx = refresh_trigger_tx;
+        let (ping_trigger_tx, ping_trigger_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+
+        spawn_refresh_loop(
+            config_rx.clone(),
+            database.clone(),
+            state.clone(),
+            runtime_config.clone(),
+            proxy.clone(),
+            shared_ranked.clone(),
+            cycle.clone(),
+            refresh_trigger_rx,
+            false,
+            false,
+        );
+        spawn_ping_loop(
+            config_rx,
+            database,
+            state.clone(),
+            runtime_config,
+            proxy,
+            shared_ranked,
+            cycle,
+            ping_trigger_rx,
+            false,
+        );
+
+        wait_for_condition("initial refresh populates cache", || {
+            state.try_read().is_ok_and(|runtime| {
+                !runtime.refreshing && runtime.last_refresh.is_some() && !runtime.ranked.is_empty()
+            })
+        })
+        .await;
+        let fetch_mark = live_log_count(&state, "Subscription loading finished").await;
+        assert!(fetch_mark >= 1);
+
+        ping_trigger_tx.send(()).expect("trigger sends");
+        ping_trigger_tx.send(()).expect("trigger sends");
+        wait_for_condition("manual ping", || {
+            state.try_read().is_ok_and(|runtime| {
+                !runtime.pinging
+                    && runtime
+                        .live_logs
+                        .iter()
+                        .any(|line| line.contains("Ping finished"))
+            })
+        })
+        .await;
+        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+        assert_eq!(live_log_count(&state, "Ping finished").await, 1);
+        // No re-fetch happened for the ping cycle.
+        assert_eq!(
+            live_log_count(&state, "Subscription loading finished").await,
+            fetch_mark
+        );
+    }
+
+    #[test]
+    fn drain_triggers_drops_queued_duplicates() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        tx.send(()).expect("send works");
+        tx.send(()).expect("send works");
+        drain_triggers(&mut rx);
+        assert!(rx.try_recv().is_err());
+        tx.send(()).expect("channel still usable");
+        assert!(rx.try_recv().is_ok());
     }
 }

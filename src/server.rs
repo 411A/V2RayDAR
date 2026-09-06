@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use axum::{
     Json, Router,
     extract::{ConnectInfo, Query, State},
-    http::{StatusCode, header},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
 };
@@ -141,10 +141,12 @@ struct AuthQuery {
 
 async fn results(
     State(state): State<HttpState>,
+    headers: HeaderMap,
     Query(query): Query<AuthQuery>,
     ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
 ) -> Response {
-    match authorize(&state, remote_addr, query.token.as_deref()).await {
+    let token = query.token.as_deref().or(bearer_token(&headers));
+    match authorize(&state, remote_addr, token).await {
         Ok(()) => Json(state.runtime.read().await.clone()).into_response(),
         Err(response) => response,
     }
@@ -152,27 +154,44 @@ async fn results(
 
 async fn subscription(
     State(state): State<HttpState>,
+    headers: HeaderMap,
     Query(query): Query<AuthQuery>,
     ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
 ) -> Response {
     let encoded = state.config.read().await.encoded_subscription;
-    subscription_response(&state, remote_addr, query.token.as_deref(), encoded).await
+    let token = query.token.as_deref().or(bearer_token(&headers));
+    subscription_response(&state, remote_addr, token, encoded).await
 }
 
 async fn subscription_txt(
     State(state): State<HttpState>,
+    headers: HeaderMap,
     Query(query): Query<AuthQuery>,
     ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
 ) -> Response {
-    subscription_response(&state, remote_addr, query.token.as_deref(), false).await
+    let token = query.token.as_deref().or(bearer_token(&headers));
+    subscription_response(&state, remote_addr, token, false).await
 }
 
 async fn mihomo_yaml(
     State(state): State<HttpState>,
+    headers: HeaderMap,
     Query(query): Query<AuthQuery>,
     ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
 ) -> Response {
-    mihomo_response(&state, remote_addr, query.token.as_deref()).await
+    let token = query.token.as_deref().or(bearer_token(&headers));
+    mihomo_response(&state, remote_addr, token).await
+}
+
+/// Extract `Authorization: Bearer <token>` without extra I/O.
+/// Accepts `Bearer`/`bearer`; returns the trimmed token or `None`.
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    let token = value
+        .strip_prefix("Bearer ")
+        .or_else(|| value.strip_prefix("bearer "))?;
+    let token = token.trim();
+    if token.is_empty() { None } else { Some(token) }
 }
 
 async fn mihomo_response(
@@ -310,6 +329,23 @@ impl AuthFailure {
     }
 }
 
+/// Constant-time token comparison (no early return on content).
+/// Length check first; content compared with XOR accumulation.
+/// Cheap string ops only, no extra latency on the LAN hot path.
+fn tokens_equal(expected: &str, provided: Option<&str>) -> bool {
+    let Some(provided) = provided else {
+        return false;
+    };
+    if expected.len() != provided.len() {
+        return false;
+    }
+    let mut diff: u8 = 0;
+    for (a, b) in expected.bytes().zip(provided.bytes()) {
+        diff |= a ^ b;
+    }
+    diff == 0
+}
+
 fn authorize_request(
     config: &RuntimeConfig,
     remote_addr: SocketAddr,
@@ -325,7 +361,7 @@ fn authorize_request(
             });
         }
 
-        if config.require_token && token != Some(config.token.as_str()) {
+        if config.require_token && !tokens_equal(&config.token, token) {
             return Err(AuthFailure {
                 status: StatusCode::UNAUTHORIZED,
                 message: "missing or invalid token\n",
@@ -343,7 +379,10 @@ mod tests {
     use axum::body::to_bytes;
     use tokio::sync::RwLock;
 
-    use super::{HttpState, authorize_request, bind_error_context, subscription_response};
+    use super::{
+        HttpState, authorize_request, bearer_token, bind_error_context, subscription_response,
+        tokens_equal,
+    };
     use crate::{
         constants::{
             DEFAULT_ACCEPTED_STATUSES, DEFAULT_ACTIVE_TIMEOUT_MS, DEFAULT_BIND,
@@ -447,6 +486,36 @@ mod tests {
 
         assert!(authorize_request(&config, addr("192.168.1.50:50000"), Some("wrong")).is_err());
         assert!(authorize_request(&config, addr("192.168.1.50:50000"), Some("secret")).is_ok());
+    }
+
+    #[test]
+    fn tokens_equal_matches_exact_only() {
+        assert!(tokens_equal("secret", Some("secret")));
+        assert!(!tokens_equal("secret", Some("wrong")));
+        assert!(!tokens_equal("secret", Some("secre")));
+        assert!(!tokens_equal("secret", Some("secret ")));
+        assert!(!tokens_equal("secret", None));
+        assert!(!tokens_equal("", Some("secret")));
+    }
+
+    #[test]
+    fn bearer_token_parses_authorization_header() {
+        use axum::http::{HeaderMap, HeaderValue};
+
+        let mut headers = HeaderMap::new();
+        assert!(bearer_token(&headers).is_none());
+
+        headers.insert("authorization", HeaderValue::from_static("Bearer secret"));
+        assert_eq!(bearer_token(&headers), Some("secret"));
+
+        headers.insert("authorization", HeaderValue::from_static("bearer secret"));
+        assert_eq!(bearer_token(&headers), Some("secret"));
+
+        headers.insert("authorization", HeaderValue::from_static("Bearer "));
+        assert!(bearer_token(&headers).is_none());
+
+        headers.insert("authorization", HeaderValue::from_static("Basic c2VjcmV0"));
+        assert!(bearer_token(&headers).is_none());
     }
 
     #[test]

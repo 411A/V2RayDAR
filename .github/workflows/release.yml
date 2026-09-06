@@ -5,6 +5,11 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      prerelease:
+        description: "Upload this run as a dev pre-release (floating 'dev-build' tag)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -647,7 +652,7 @@ jobs:
       contents: write
     needs: [build, build-macos, build-termux, test]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.prerelease)
     env:
       GH_TOKEN: ${{ github.token }}
       TAG_NAME: ${{ github.ref_name }}
@@ -676,6 +681,7 @@ jobs:
           $lines | Set-Content -LiteralPath "dist/checksums.txt" -Encoding ascii
 
       - name: Create or update release
+        if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         run: |
           git log -1 --format=%b > release-notes.txt
@@ -688,3 +694,23 @@ jobs:
               --title "V2RayDAR $TAG_NAME" \
               --notes-file release-notes.txt
           fi
+
+      - name: Publish dev pre-release
+        if: github.event_name == 'workflow_dispatch' && inputs.prerelease
+        shell: bash
+        run: |
+          DEV_TAG="dev-build"
+          {
+            echo "Dev pre-release built from ${GITHUB_SHA} on ref ${GITHUB_REF_NAME}."
+            echo ""
+            git log -1 --format=%B
+          } > release-notes.txt
+          if gh release view "$DEV_TAG" --repo "$REPOSITORY" >/dev/null 2>&1; then
+            gh release delete "$DEV_TAG" --cleanup-tag --yes --repo "$REPOSITORY"
+          fi
+          gh release create "$DEV_TAG" dist/* \
+            --repo "$REPOSITORY" \
+            --title "V2RayDAR dev build" \
+            --notes-file release-notes.txt \
+            --prerelease \
+            --target "${GITHUB_REF_NAME}"

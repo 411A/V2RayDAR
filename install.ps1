@@ -10,6 +10,7 @@ param(
     [switch]$Portable,
     [switch]$User,
     [switch]$Yes,
+    [switch]$Pre,
     [switch]$Help
 )
 
@@ -178,6 +179,20 @@ function Get-LatestVersion {
     }
 }
 
+function Get-DevVersion {
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/tags/dev-build" -UseBasicParsing
+        if ($release.tag_name -ne "dev-build") {
+            Write-Err "unexpected dev release tag: $($release.tag_name)"
+        }
+        return "dev-build"
+    }
+    catch {
+        Write-Err "no dev-build pre-release found (run the Release workflow on dev with prerelease first): $_"
+    }
+}
+
 function Download-File {
     param([string]$Url, [string]$Dest)
 
@@ -288,7 +303,7 @@ function Verify-Checksum {
 
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        $checksumsUrl = "$GitHubDownload/v$Version/checksums.txt"
+        $checksumsUrl = "$GitHubDownload/$Tag/checksums.txt"
         $checksums = (Invoke-WebRequest -Uri $checksumsUrl -UseBasicParsing).Content
         $fileName = Split-Path $FilePath -Leaf
         $expected = ($checksums -split "`n" | Where-Object { $_ -match $fileName } | Select-Object -First 1) -split '\s+' | Select-Object -First 1
@@ -344,7 +359,7 @@ function Do-PortableInstall {
             $archive = Join-Path $tmpDir $Asset
 
             Write-Info "downloading ${Asset}..."
-            $downloadUrl = "$GitHubDownload/v$Version/$Asset"
+            $downloadUrl = "$GitHubDownload/$Tag/$Asset"
             Download-File -Url $downloadUrl -Dest $archive
             Verify-Checksum -FilePath $archive
 
@@ -378,7 +393,7 @@ function Do-PortableInstall {
         $archive = Join-Path $tmpDir $Asset
 
         Write-Info "downloading ${Asset}..."
-        $downloadUrl = "$GitHubDownload/v$Version/$Asset"
+        $downloadUrl = "$GitHubDownload/$Tag/$Asset"
         Download-File -Url $downloadUrl -Dest $archive
         Verify-Checksum -FilePath $archive
 
@@ -409,7 +424,7 @@ function Do-UserInstall {
             $archive = Join-Path $tmpDir $Asset
 
             Write-Info "downloading ${Asset}..."
-            $downloadUrl = "$GitHubDownload/v$Version/$Asset"
+            $downloadUrl = "$GitHubDownload/$Tag/$Asset"
             Download-File -Url $downloadUrl -Dest $archive
             Verify-Checksum -FilePath $archive
 
@@ -447,7 +462,7 @@ function Do-UserInstall {
         $archive = Join-Path $tmpDir $Asset
 
         Write-Info "downloading ${Asset}..."
-        $downloadUrl = "$GitHubDownload/v$Version/$Asset"
+        $downloadUrl = "$GitHubDownload/$Tag/$Asset"
         Download-File -Url $downloadUrl -Dest $archive
         Verify-Checksum -FilePath $archive
 
@@ -528,6 +543,7 @@ Options:
     -Portable           Install in portable mode (everything in one folder)
     -User               Install in user mode (binary to AppData)
     -Yes                Skip all confirmation prompts
+    -Pre                Install the dev-build pre-release (developer testing)
     -Help               Show this help message
 "@
 }
@@ -538,11 +554,19 @@ function Main {
     try {
         if ($Help) { Show-Help; return }
 
-        # Get version
-        if ([string]::IsNullOrWhiteSpace($Version)) {
+        # Get version (dev-build pre-release for developer testing via -Pre
+        # or -Version dev|dev-build|pre; same replace-binaries flow as latest)
+        $DevBuild = $false
+        if ($Pre -or ($Version -match '^(?i)(dev|dev-build|pre)$')) { $DevBuild = $true }
+        $Version = $Version.TrimStart('v')
+        if ($DevBuild) {
+            $Version = Get-DevVersion
+        }
+        elseif ([string]::IsNullOrWhiteSpace($Version)) {
             $Version = Get-LatestVersion
         }
         $Version = $Version.TrimStart('v')
+        if ($DevBuild) { $Tag = "dev-build" } else { $Tag = "v$Version" }
         Write-Info "version: $Version"
 
         # Detect arch
@@ -562,7 +586,24 @@ function Main {
 
         $found = Find-Installed
 
-        if ($found) {
+        if ($found -and $DevBuild) {
+            # Developer pre-release: skip semver comparison and offer a
+            # straight binary replacement.
+            Write-Host ""
+            if ($Script:FoundVersion) {
+                Write-Warn "V2RayDAR v$($Script:FoundVersion) is installed at $($Script:FoundPath)\$AppName.exe."
+            }
+            else {
+                Write-Warn "V2RayDAR is installed at $($Script:FoundPath)\$AppName.exe (version unknown)."
+            }
+            Write-Info "dev-build requested: binaries will be replaced, user data preserved."
+            Write-Host ""
+            if (-not (Confirm -Prompt "install dev-build ($Tag)?")) {
+                Write-Info "cancelled"
+                return
+            }
+        }
+        elseif ($found) {
             if ($Script:FoundVersion) {
                 $cmp = Compare-Version -Left $Script:FoundVersion -Right $Version
 

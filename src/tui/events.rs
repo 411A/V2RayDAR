@@ -427,8 +427,14 @@ fn set_found_as_proxy(
 
     let uri = uri.clone();
 
-    // Toggle: if already the manual proxy, clear it (go back to auto)
-    if state.editable.proxy.manual_proxy_uri.as_ref() == Some(&uri) {
+    // Toggle: clear only when the selection is already confirmed active
+    // (`pending` cleared by `tui::run` once `proxy_active_uri` catches up).
+    // A repeat Enter while still pending re-affirms instead of clearing —
+    // otherwise retrying a slow proxy switch turns the door off and the
+    // user perceives "select again won't appear".
+    if state.editable.proxy.manual_proxy_uri.as_ref() == Some(&uri)
+        && state.proxy_pending_uri.as_deref() != Some(uri.as_str())
+    {
         state.editable.proxy.manual_proxy_uri = None;
         state.proxy_pending_uri = None;
     } else {
@@ -619,4 +625,63 @@ fn reset_code() -> String {
 
 const fn contains(area: ratatui::layout::Rect, x: u16, y: u16) -> bool {
     x >= area.x && x < area.x + area.width && y >= area.y && y < area.y + area.height
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use tokio::sync::{RwLock, watch};
+
+    use crate::{config::AppConfig, model::RuntimeConfig};
+
+    use super::set_found_as_proxy;
+    use crate::tui::state::TuiState;
+
+    const PROXY_URI: &str = "vless://uuid@example.com:443?security=tls#Node";
+
+    fn state_with_found(
+        uri: &str,
+    ) -> (
+        TuiState,
+        watch::Sender<AppConfig>,
+        Arc<RwLock<RuntimeConfig>>,
+    ) {
+        let config = AppConfig::default_for_first_run();
+        let mut state = TuiState::new(config.clone());
+        state.found_uris = vec![uri.to_string()];
+        let (tx, _rx) = watch::channel(config.clone());
+        let runtime = Arc::new(RwLock::new(RuntimeConfig::from(&config)));
+        (state, tx, runtime)
+    }
+
+    #[test]
+    fn reselect_while_pending_reaffirms_instead_of_clearing() {
+        let (mut state, tx, runtime) = state_with_found(PROXY_URI);
+        set_found_as_proxy(&mut state, 0, &tx, &runtime);
+        assert_eq!(
+            state.editable.proxy.manual_proxy_uri.as_deref(),
+            Some(PROXY_URI)
+        );
+        assert_eq!(state.proxy_pending_uri.as_deref(), Some(PROXY_URI));
+
+        // Second Enter before the proxy confirms must retry, not toggle off.
+        set_found_as_proxy(&mut state, 0, &tx, &runtime);
+        assert_eq!(
+            state.editable.proxy.manual_proxy_uri.as_deref(),
+            Some(PROXY_URI)
+        );
+        assert_eq!(state.proxy_pending_uri.as_deref(), Some(PROXY_URI));
+    }
+
+    #[test]
+    fn toggle_off_only_after_confirmed() {
+        let (mut state, tx, runtime) = state_with_found(PROXY_URI);
+        set_found_as_proxy(&mut state, 0, &tx, &runtime);
+        // Proxy confirms: pending cleared by `tui::run`, manual stays.
+        state.proxy_pending_uri = None;
+        set_found_as_proxy(&mut state, 0, &tx, &runtime);
+        assert!(state.editable.proxy.manual_proxy_uri.is_none());
+        assert!(state.proxy_pending_uri.is_none());
+    }
 }

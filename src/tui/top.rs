@@ -14,8 +14,10 @@ use super::{util::human_bytes, view::RuntimeView};
 
 // Fixed widths per value prevent the Paragraph trailing-space style boundary
 // from shifting when digits change, which is what causes terminal flicker.
-const W_RUNNING_FOR: usize = 8;
-const W_REFRESH: usize = 14;
+// 10 chars fits `HH:MM:SS` past 100h (`100:00:00`) so long runs stay aligned.
+// 18 chars fits `running H:MM:SS` on multi-hour stuck refreshes.
+const W_RUNNING_FOR: usize = 10;
+const W_REFRESH: usize = 18;
 const W_LAST_SCAN: usize = 6;
 const W_FETCHED: usize = 6;
 const W_FAILED: usize = 6;
@@ -208,6 +210,14 @@ fn refresh_status(runtime: &RuntimeView, refresh_seconds: u64, now: Instant) -> 
         return "manual".to_string();
     }
 
+    // Prefer the explicit deadline set by the refresh loop when it schedules
+    // its sleep. It matches the actual timer; recomputing from `finished_at`
+    // drifts by proxy-switch/health-check time after each refresh.
+    if let Some(deadline) = runtime.next_refresh_instant {
+        let remaining = deadline.saturating_duration_since(now).as_secs();
+        return format!("next {}", format_duration(u128::from(remaining) * 1000));
+    }
+
     let Some(finished_at) = runtime.refresh_finished_instant else {
         return "pending".to_string();
     };
@@ -224,6 +234,12 @@ fn format_duration_hms(total_seconds: u64) -> String {
 }
 
 fn format_duration_ms(total_seconds: u64) -> String {
+    // Past one hour (e.g. a refresh stalled for hours on a 30h+ run),
+    // switch to `H:MM:SS` so it stays comparable with `Running For`
+    // instead of growing an unbounded `MM:SS` minute count.
+    if total_seconds >= 3600 {
+        return format_duration_hms(total_seconds);
+    }
     let minutes = total_seconds / 60;
     let seconds = total_seconds % 60;
     format!("{minutes:02}:{seconds:02}")
@@ -242,4 +258,65 @@ fn format_duration(ms: u128) -> String {
 
 fn millis_to_seconds(ms: u128) -> u64 {
     u64::try_from(ms / 1000).unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::{format_duration_ms, refresh_status};
+    use crate::tui::view::RuntimeView;
+
+    #[test]
+    fn running_refresh_uses_hms_past_one_hour() {
+        assert_eq!(format_duration_ms(90), "01:30");
+        assert_eq!(format_duration_ms(3600), "01:00:00");
+        assert_eq!(format_duration_ms(30 * 3600 + 65), "30:01:05");
+    }
+
+    #[test]
+    fn countdown_prefers_explicit_deadline() {
+        let now = Instant::now();
+        let runtime = RuntimeView {
+            refreshing: false,
+            next_refresh_instant: Some(now + Duration::from_secs(300)),
+            refresh_finished_instant: Some(now),
+            ..RuntimeView::default()
+        };
+        assert_eq!(refresh_status(&runtime, 300, now), "next 05:00");
+    }
+
+    #[test]
+    fn countdown_falls_back_to_finished_instant() {
+        let now = Instant::now();
+        // `checked_sub`: bare `Instant - Duration` panics when the machine
+        // uptime is shorter than the span (fresh CI runners, Windows sleep).
+        let finished = now.checked_sub(Duration::from_secs(60)).unwrap_or(now);
+        let runtime = RuntimeView {
+            refreshing: false,
+            next_refresh_instant: None,
+            refresh_finished_instant: Some(finished),
+            ..RuntimeView::default()
+        };
+        let expected_remaining =
+            300u64.saturating_sub(now.saturating_duration_since(finished).as_secs());
+        let expected = format!(
+            "next {:02}:{:02}",
+            expected_remaining / 60,
+            expected_remaining % 60
+        );
+        assert_eq!(refresh_status(&runtime, 300, now), expected);
+    }
+
+    #[test]
+    fn running_refresh_stays_mm_ss_under_one_hour() {
+        let now = Instant::now();
+        let started = now.checked_sub(Duration::from_secs(90)).unwrap_or(now);
+        let runtime = RuntimeView {
+            refreshing: true,
+            refresh_started_instant: Some(started),
+            ..RuntimeView::default()
+        };
+        assert_eq!(refresh_status(&runtime, 300, now), "running 01:30");
+    }
 }

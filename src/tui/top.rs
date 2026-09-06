@@ -15,9 +15,10 @@ use super::{util::human_bytes, view::RuntimeView};
 // Fixed widths per value prevent the Paragraph trailing-space style boundary
 // from shifting when digits change, which is what causes terminal flicker.
 // 10 chars fits `HH:MM:SS` past 100h (`100:00:00`) so long runs stay aligned.
-// 24 chars fits `next 15:00 · ping 05:00` for the default intervals.
+// 18 chars fits `running H:MM:SS` on multi-hour stuck refreshes; the ping
+// countdown lives on the box's next line, never beside the fetch value.
 const W_RUNNING_FOR: usize = 10;
-const W_REFRESH: usize = 24;
+const W_REFRESH: usize = 18;
 const W_LAST_SCAN: usize = 6;
 const W_FETCHED: usize = 6;
 const W_FAILED: usize = 6;
@@ -42,12 +43,8 @@ pub fn draw(
     let failed = runtime
         .tested_candidates
         .saturating_sub(runtime.reachable_candidates);
-    let refresh = refresh_status(
-        runtime,
-        config.refresh_seconds,
-        config.ping_seconds,
-        instant_now,
-    );
+    let refresh = refresh_status(runtime, config.refresh_seconds, instant_now);
+    let refresh_extra = ping_status(runtime, config.ping_seconds, instant_now);
     let speedtest = if config.speedtest_enabled {
         human_bytes(runtime.speedtest_bytes)
     } else {
@@ -93,7 +90,7 @@ pub fn draw(
     ];
 
     if area.height >= 5 {
-        draw_full_grid(frame, area, &cells);
+        draw_full_grid(frame, area, &cells, refresh_extra.as_deref());
     } else if area.height >= 3 {
         draw_dense_grid(frame, area, &cells);
     } else {
@@ -101,22 +98,35 @@ pub fn draw(
     }
 }
 
-fn draw_full_grid(frame: &mut Frame<'_>, area: Rect, cells: &[(&str, String); 8]) {
+/// `refresh_extra` is the ping countdown shown on the Refresh box's next
+/// line (`None` hides the line when ping is disabled). The box is exactly
+/// tall enough (borders + label + two values = 5 rows), so the ping text
+/// always stays inside the border instead of overflowing the cell.
+fn draw_full_grid(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    cells: &[(&str, String); 8],
+    refresh_extra: Option<&str>,
+) {
     let chunks = Layout::horizontal([Constraint::Ratio(1, 4); 4]).split(area);
     for (row, chunk) in chunks.iter().enumerate() {
         let inner = Layout::horizontal([Constraint::Ratio(1, 2); 2]).split(*chunk);
         for (column, cell_area) in inner.iter().enumerate() {
             let index = row * 2 + column;
             let (label, value) = &cells[index];
-            let text = vec![
+            let value_style = Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD);
+            let mut text = vec![
                 Line::from(Span::styled(*label, Style::default().fg(Color::DarkGray))),
-                Line::from(Span::styled(
-                    value.clone(),
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                )),
+                Line::from(Span::styled(value.clone(), value_style)),
             ];
+            // Index 1 is the Refresh cell; its extra line is the ping countdown.
+            if index == 1
+                && let Some(extra) = refresh_extra
+            {
+                text.push(Line::from(Span::styled(extra.to_string(), value_style)));
+            }
             frame.render_widget(
                 Paragraph::new(text).block(Block::default().borders(Borders::ALL)),
                 *cell_area,
@@ -203,12 +213,10 @@ fn draw_minimal_line(frame: &mut Frame<'_>, area: Rect, cells: &[(&str, String);
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-fn refresh_status(
-    runtime: &RuntimeView,
-    refresh_seconds: u64,
-    ping_seconds: u64,
-    now: Instant,
-) -> String {
+/// First line of the Refresh box: fetch state, or the running cycle.
+/// Single line by design — the full grid is 15 cells wide, so the ping
+/// countdown lives on the box's next line instead of beside it.
+fn refresh_status(runtime: &RuntimeView, refresh_seconds: u64, now: Instant) -> String {
     if runtime.refreshing {
         let elapsed = runtime
             .refresh_started_instant
@@ -223,14 +231,13 @@ fn refresh_status(
         return format!("ping {}", format_duration_ms(elapsed));
     }
 
-    let fetch = fetch_countdown(runtime, refresh_seconds, now);
-    let ping = ping_countdown(runtime, ping_seconds, now);
-    match (fetch, ping) {
-        (Some(fetch), Some(ping)) => format!("{fetch} · ping {ping}"),
-        (Some(fetch), None) => fetch,
-        (None, Some(ping)) => format!("ping {ping}"),
-        (None, None) => "manual".to_string(),
-    }
+    fetch_countdown(runtime, refresh_seconds, now).unwrap_or_else(|| "manual".to_string())
+}
+
+/// Second line of the Refresh box (`None` hides the line when disabled).
+fn ping_status(runtime: &RuntimeView, ping_seconds: u64, now: Instant) -> Option<String> {
+    let remaining = ping_remaining(runtime, ping_seconds, now)?;
+    Some(format!("ping {}", format_duration(remaining)))
 }
 
 fn fetch_countdown(runtime: &RuntimeView, refresh_seconds: u64, now: Instant) -> Option<String> {
@@ -262,22 +269,23 @@ fn fetch_countdown(runtime: &RuntimeView, refresh_seconds: u64, now: Instant) ->
     )
 }
 
-fn ping_countdown(runtime: &RuntimeView, ping_seconds: u64, now: Instant) -> Option<String> {
+/// Remaining ping interval in milliseconds (`None` when ping is disabled).
+fn ping_remaining(runtime: &RuntimeView, ping_seconds: u64, now: Instant) -> Option<u128> {
     if ping_seconds == 0 {
         return None;
     }
 
     if let Some(deadline) = runtime.next_ping_instant {
         let remaining = deadline.saturating_duration_since(now).as_secs();
-        return Some(format_duration(u128::from(remaining) * 1000));
+        return Some(u128::from(remaining) * 1000);
     }
 
     runtime.last_ping_instant.map_or_else(
-        || Some(format_duration(u128::from(ping_seconds) * 1000)),
+        || Some(u128::from(ping_seconds) * 1000),
         |started| {
             let elapsed = now.saturating_duration_since(started).as_secs();
             let remaining = ping_seconds.saturating_sub(elapsed);
-            Some(format_duration(u128::from(remaining) * 1000))
+            Some(u128::from(remaining) * 1000)
         },
     )
 }
@@ -320,7 +328,7 @@ fn millis_to_seconds(ms: u128) -> u64 {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use super::{format_duration_ms, refresh_status};
+    use super::{format_duration_ms, ping_status, refresh_status};
     use crate::tui::view::RuntimeView;
 
     #[test]
@@ -339,7 +347,7 @@ mod tests {
             refresh_finished_instant: Some(now),
             ..RuntimeView::default()
         };
-        assert_eq!(refresh_status(&runtime, 300, 0, now), "next 05:00");
+        assert_eq!(refresh_status(&runtime, 300, now), "next 05:00");
     }
 
     #[test]
@@ -361,11 +369,11 @@ mod tests {
             expected_remaining / 60,
             expected_remaining % 60
         );
-        assert_eq!(refresh_status(&runtime, 300, 0, now), expected);
+        assert_eq!(refresh_status(&runtime, 300, now), expected);
     }
 
     #[test]
-    fn countdown_combines_fetch_and_ping() {
+    fn fetch_and_ping_lines_are_separate() {
         let now = Instant::now();
         let runtime = RuntimeView {
             refreshing: false,
@@ -373,9 +381,10 @@ mod tests {
             next_ping_instant: Some(now + Duration::from_secs(300)),
             ..RuntimeView::default()
         };
+        assert_eq!(refresh_status(&runtime, 900, now), "next 15:00");
         assert_eq!(
-            refresh_status(&runtime, 900, 300, now),
-            "next 15:00 · ping 05:00"
+            ping_status(&runtime, 300, now),
+            Some("ping 05:00".to_string())
         );
     }
 
@@ -391,29 +400,86 @@ mod tests {
             ..RuntimeView::default()
         };
         assert_eq!(
-            refresh_status(&runtime, 900, 300, now),
+            refresh_status(&runtime, 900, now),
             format!("ping {}", format_duration_ms(elapsed))
         );
     }
 
     #[test]
-    fn manual_fetch_still_shows_ping_countdown() {
+    fn manual_fetch_leaves_ping_line_intact() {
         let now = Instant::now();
         let runtime = RuntimeView {
             refreshing: false,
             next_ping_instant: Some(now + Duration::from_secs(300)),
             ..RuntimeView::default()
         };
-        assert_eq!(refresh_status(&runtime, 0, 300, now), "ping 05:00");
+        assert_eq!(refresh_status(&runtime, 0, now), "manual".to_string());
+        assert_eq!(
+            ping_status(&runtime, 300, now),
+            Some("ping 05:00".to_string())
+        );
+    }
+
+    #[test]
+    fn ping_line_hidden_when_disabled() {
+        let runtime = RuntimeView::default();
+        assert_eq!(ping_status(&runtime, 0, Instant::now()), None);
     }
 
     #[test]
     fn both_timers_off_shows_manual() {
         let runtime = RuntimeView::default();
         assert_eq!(
-            refresh_status(&runtime, 0, 0, Instant::now()),
+            refresh_status(&runtime, 0, Instant::now()),
             "manual".to_string()
         );
+    }
+
+    #[test]
+    fn refresh_box_shows_ping_on_its_own_line_inside_border() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let backend = TestBackend::new(120, 5);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let now = Instant::now();
+        let runtime = RuntimeView {
+            refreshing: false,
+            next_refresh_instant: Some(now + Duration::from_secs(900)),
+            next_ping_instant: Some(now + Duration::from_secs(300)),
+            ..RuntimeView::default()
+        };
+        let app_config = crate::config::AppConfig::default_for_first_run();
+        let config = crate::model::RuntimeConfig::from(&app_config);
+        terminal
+            .draw(|frame| {
+                super::draw(frame, frame.area(), &runtime, &config, now, now);
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        let mut saw_fetch = false;
+        let mut saw_ping_inside = false;
+        for y in 0..5 {
+            let mut line = String::new();
+            for x in 0..120 {
+                line.push_str(buffer[(x, y)].symbol());
+            }
+            if line.contains("next 15:00") {
+                saw_fetch = true;
+            }
+            if let Some(start) = line.find("ping 05:00") {
+                // The ping countdown must sit inside the Refresh cell:
+                // a cell border must precede it on the same visual row.
+                assert!(
+                    line[..start].contains(['│', '┃', '|']),
+                    "ping line escaped its box: {line}"
+                );
+                saw_ping_inside = true;
+            }
+            assert!(
+                !line.contains("· ping"),
+                "ping must not share the fetch line: {line}"
+            );
+        }
+        assert!(saw_fetch && saw_ping_inside);
     }
 
     #[test]
@@ -429,11 +495,11 @@ mod tests {
             ..RuntimeView::default()
         };
         assert_eq!(
-            refresh_status(&runtime, 300, 0, now),
+            refresh_status(&runtime, 300, now),
             format!("running {}", format_duration_ms(elapsed))
         );
         if elapsed >= 90 {
-            assert_eq!(refresh_status(&runtime, 300, 0, now), "running 01:30");
+            assert_eq!(refresh_status(&runtime, 300, now), "running 01:30");
         }
     }
 }

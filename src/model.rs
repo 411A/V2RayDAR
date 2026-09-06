@@ -60,6 +60,12 @@ pub struct RuntimeState {
     pub refresh_started_instant: Option<Instant>,
     #[serde(skip)]
     pub refresh_finished_instant: Option<Instant>,
+    /// Explicit deadline for the next automatic refresh.
+    /// Set when the refresh loop schedules its sleep, so the TUI countdown
+    /// matches the actual timer instead of recomputing from `finished_at`
+    /// (which drifts by proxy-switch/health-check time after `refresh_once`).
+    #[serde(skip)]
+    pub next_refresh_instant: Option<Instant>,
     pub refresh_duration_ms: Option<u128>,
     pub refreshing: bool,
     pub total_candidates: usize,

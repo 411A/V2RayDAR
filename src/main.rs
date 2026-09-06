@@ -781,6 +781,7 @@ async fn refresh_once(
         runtime.last_error = None;
         runtime.refresh_finished_at = None;
         runtime.refresh_finished_instant = None;
+        runtime.next_refresh_instant = None;
         runtime.refresh_duration_ms = None;
         runtime.total_candidates = 0;
         runtime.tested_candidates = 0;
@@ -1150,6 +1151,7 @@ async fn refresh_once(
         refresh_finished_at: Some(finished_at.to_rfc3339()),
         refresh_started_instant: Some(started_instant),
         refresh_finished_instant: Some(std::time::Instant::now()),
+        next_refresh_instant: None,
         refresh_duration_ms: Some(started_instant.elapsed().as_millis()),
         refreshing: false,
         total_candidates: fetched_count,
@@ -1321,6 +1323,7 @@ fn spawn_refresh_loop(
             }
 
             if refresh_seconds == 0 {
+                set_next_refresh_deadline(&state, 0).await;
                 warn!("automatic refresh is disabled because refresh_seconds is 0");
                 if config_rx.changed().await.is_err() {
                     return;
@@ -1352,6 +1355,7 @@ fn spawn_refresh_loop(
                 continue;
             }
 
+            set_next_refresh_deadline(&state, refresh_seconds).await;
             let sleep = time::sleep(Duration::from_secs(refresh_seconds));
             tokio::pin!(sleep);
 
@@ -1426,6 +1430,20 @@ async fn mark_refresh_pending(state: &Arc<RwLock<RuntimeState>>) {
     state.refresh_started_instant = Some(std::time::Instant::now());
     state.refresh_finished_at = None;
     state.refresh_finished_instant = None;
+    state.next_refresh_instant = None;
+}
+
+/// Record the exact deadline the refresh loop is sleeping until, so the TUI
+/// `Refresh` countdown matches the real timer instead of drifting by the
+/// proxy-switch gap after each refresh. One write per cycle; zero hot-path cost.
+async fn set_next_refresh_deadline(state: &Arc<RwLock<RuntimeState>>, refresh_seconds: u64) {
+    let mut state = state.write().await;
+    if refresh_seconds == 0 || state.refreshing {
+        state.next_refresh_instant = None;
+    } else {
+        state.next_refresh_instant =
+            Some(std::time::Instant::now() + Duration::from_secs(refresh_seconds));
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]

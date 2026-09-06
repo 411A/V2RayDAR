@@ -53,6 +53,14 @@ pub async fn run(
     database: Arc<crate::db::Database>,
     config_tx: watch::Sender<AppConfig>,
 ) -> Result<()> {
+    // Restore the terminal even on panic. Otherwise a crash on a long run
+    // leaves raw mode / mouse capture stuck and the shell looks frozen.
+    // Panic-only path: zero cost during normal frames.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = restore_terminal();
+        default_hook(info);
+    }));
     enable_raw_mode()?;
     let mut terminal = ratatui::try_init()?;
     execute!(std::io::stdout(), EnableMouseCapture)?;

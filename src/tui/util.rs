@@ -146,7 +146,9 @@ fn save_json_config(path: &Path, config: &AppConfig) -> Result<()> {
     let config = persistable_config(config);
     let content = serde_json::to_string_pretty(&config).context("unable to serialize config")?;
     fs::write(path, format!("{content}\n"))
-        .with_context(|| format!("unable to write config to {}", path.display()))
+        .with_context(|| format!("unable to write config to {}", path.display()))?;
+    restrict_file_permissions(path);
+    Ok(())
 }
 
 fn save_yaml_config(path: &Path, config: &AppConfig) -> Result<()> {
@@ -171,7 +173,23 @@ fn save_yaml_config(path: &Path, config: &AppConfig) -> Result<()> {
     }
 
     fs::write(path, document.finish())
-        .with_context(|| format!("unable to write config to {}", path.display()))
+        .with_context(|| format!("unable to write config to {}", path.display()))?;
+    restrict_file_permissions(path);
+    Ok(())
+}
+
+/// Restrict a config file to owner-only (0600 on Unix).
+/// Best-effort, no-op on Windows; single syscall, no UI delay.
+fn restrict_file_permissions(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
 }
 
 fn persistable_config(config: &AppConfig) -> AppConfig {

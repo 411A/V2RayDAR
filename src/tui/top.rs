@@ -311,12 +311,21 @@ mod tests {
     #[test]
     fn running_refresh_stays_mm_ss_under_one_hour() {
         let now = Instant::now();
+        // Deterministic on any uptime: derive the expectation from the
+        // actual elapsed instead of assuming 90s of machine uptime.
         let started = now.checked_sub(Duration::from_secs(90)).unwrap_or(now);
+        let elapsed = now.saturating_duration_since(started).as_secs();
         let runtime = RuntimeView {
             refreshing: true,
             refresh_started_instant: Some(started),
             ..RuntimeView::default()
         };
-        assert_eq!(refresh_status(&runtime, 300, now), "running 01:30");
+        assert_eq!(
+            refresh_status(&runtime, 300, now),
+            format!("running {}", format_duration_ms(elapsed))
+        );
+        if elapsed >= 90 {
+            assert_eq!(refresh_status(&runtime, 300, now), "running 01:30");
+        }
     }
 }

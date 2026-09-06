@@ -215,6 +215,20 @@ get_latest_version() {
     echo "$_version"
 }
 
+get_dev_version() {
+    need curl
+    set +e
+    _response="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/tags/dev-build" 2>/dev/null)"
+    _curl_exit=$?
+    set -e
+    if [ "$_curl_exit" -ne 0 ] || [ -z "$_response" ]; then
+        err "no dev-build pre-release found (trigger the Release workflow on dev with prerelease first)"
+    fi
+    _version="$(echo "$_response" | sed -n 's/.*"tag_name": *"\(dev-build\)".*/\1/p' | head -1)"
+    [ -n "$_version" ] || err "no dev-build pre-release found (trigger the Release workflow on dev with prerelease first)"
+    echo "$_version"
+}
+
 download_file() {
     _url="$1"
     _dest="$2"
@@ -254,7 +268,7 @@ download_file() {
 
 verify_checksum() {
     _file="$1"
-    _checksums_url="${GITHUB_DOWNLOAD}/v${VERSION}/checksums.txt"
+    _checksums_url="${GITHUB_DOWNLOAD}/${TAG}/checksums.txt"
     set +e
     _checksums="$(curl -fsSL "$_checksums_url" 2>/dev/null)"
     _curl_exit=$?
@@ -327,7 +341,7 @@ do_portable_install() {
             _archive="$_tmpdir/$ASSET"
 
             info "downloading ${ASSET}..."
-            download_file "${GITHUB_DOWNLOAD}/v${VERSION}/${ASSET}" "$_archive"
+            download_file "${GITHUB_DOWNLOAD}/${TAG}/${ASSET}" "$_archive"
             verify_checksum "$_archive"
 
             info "updating..."
@@ -355,7 +369,7 @@ do_portable_install() {
         _archive="$_tmpdir/$ASSET"
 
         info "downloading ${ASSET}..."
-        download_file "${GITHUB_DOWNLOAD}/v${VERSION}/${ASSET}" "$_archive"
+        download_file "${GITHUB_DOWNLOAD}/${TAG}/${ASSET}" "$_archive"
         verify_checksum "$_archive"
 
         info "installing..."
@@ -387,7 +401,7 @@ do_user_install() {
             _archive="$_tmpdir/$ASSET"
 
             info "downloading ${ASSET}..."
-            download_file "${GITHUB_DOWNLOAD}/v${VERSION}/${ASSET}" "$_archive"
+            download_file "${GITHUB_DOWNLOAD}/${TAG}/${ASSET}" "$_archive"
             verify_checksum "$_archive"
 
             _extract_dir="$_tmpdir/extract"
@@ -411,7 +425,7 @@ do_user_install() {
         _archive="$_tmpdir/$ASSET"
 
         info "downloading ${ASSET}..."
-        download_file "${GITHUB_DOWNLOAD}/v${VERSION}/${ASSET}" "$_archive"
+        download_file "${GITHUB_DOWNLOAD}/${TAG}/${ASSET}" "$_archive"
         verify_checksum "$_archive"
 
         _extract_dir="$_tmpdir/extract"
@@ -531,6 +545,7 @@ Usage:
 
 Options:
     -v, --version VERSION    Install a specific version (default: latest)
+        --pre                Install the dev-build pre-release (developer testing)
     -d, --dir DIR            Install to a specific directory (portable mode)
     -p, --portable           Install in portable mode (everything in one directory)
     -u, --user               Install in user mode (binary to ~/.local/bin)
@@ -546,6 +561,7 @@ main() {
     INSTALL_DIR=""
     INSTALL_MODE=""
     NON_INTERACTIVE=0
+    DEV_BUILD=0
 
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -554,6 +570,7 @@ main() {
             -p|--portable) INSTALL_MODE="portable"; shift ;;
             -u|--user)     INSTALL_MODE="user"; shift ;;
             -y|--yes)      NON_INTERACTIVE=1; shift ;;
+            --pre)         DEV_BUILD=1; shift ;;
             -h|--help)     usage; exit 0 ;;
             *)             err "unknown option: $1 (use --help)" ;;
         esac
@@ -567,8 +584,16 @@ main() {
     detect_arch
     detect_termux
 
-    [ -n "$VERSION" ] || VERSION="$(get_latest_version)"
     VERSION="${VERSION#v}"
+    case "$(printf '%s' "${VERSION:-}" | tr '[:upper:]' '[:lower:]')" in
+        dev|dev-build|pre) DEV_BUILD=1 ;;
+    esac
+    if [ "$DEV_BUILD" = "1" ]; then
+        VERSION="$(get_dev_version)"
+    elif [ -z "$VERSION" ]; then
+        VERSION="$(get_latest_version)"
+    fi
+    if [ "$DEV_BUILD" = "1" ]; then TAG="dev-build"; else TAG="v$VERSION"; fi
     info "version: $VERSION"
 
     select_asset
@@ -587,7 +612,25 @@ main() {
 
     if find_installed; then
         # Found an existing installation
-        if [ -n "$FOUND_VERSION" ]; then
+        if [ "$DEV_BUILD" = "1" ]; then
+            # Developer pre-release: skip semver comparison (dev-build is not
+            # a version number) and offer a straight binary replacement.
+            echo ""
+            if [ -n "$FOUND_VERSION" ]; then
+                warn "V2RayDAR v${FOUND_VERSION} is installed at $FOUND_PATH/$APP_NAME."
+            else
+                warn "V2RayDAR is installed at $FOUND_PATH/$APP_NAME (version unknown)."
+            fi
+            info "dev-build requested: binaries will be replaced, user data preserved."
+            echo ""
+            if [ "${NON_INTERACTIVE:-0}" = "1" ]; then
+                info "non-interactive mode: proceeding with dev-build install"
+            elif [ -t 0 ] || [ -t 2 ]; then
+                confirm "install dev-build (${TAG})?" || { info "cancelled"; return; }
+            else
+                info "non-interactive mode detected, proceeding with dev-build install"
+            fi
+        elif [ -n "$FOUND_VERSION" ]; then
             # Compare versions
             if version_compare "$FOUND_VERSION" "$VERSION"; then
                 # Same version

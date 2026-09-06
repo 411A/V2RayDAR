@@ -1,5 +1,5 @@
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -678,7 +678,22 @@ async fn write_proxy_config(config: &Value) -> Result<PathBuf> {
         std::process::id()
     ));
     fs::write(&path, serde_json::to_vec_pretty(config)?).await?;
+    restrict_file_permissions(&path);
     Ok(path)
+}
+
+/// Restrict a sing-box temp config to owner-only (0600 on Unix).
+/// No-op on Windows; single syscall, no proxy delay.
+fn restrict_file_permissions(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
 }
 
 fn build_sing_box_config(outbound: &Value, port: u16, listen: &str) -> Value {

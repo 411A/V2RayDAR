@@ -2,7 +2,7 @@ use std::{
     cmp::Ordering,
     collections::{HashMap, VecDeque},
     future::Future,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Stdio,
     sync::{
         Arc,
@@ -1879,7 +1879,22 @@ async fn write_sing_box_outbound_config(outbounds: &[Value], ports: &[u16]) -> R
     };
 
     fs::write(&path, serde_json::to_vec_pretty(&config)?).await?;
+    restrict_file_permissions(&path);
     Ok(path)
+}
+
+/// Restrict a sing-box temp config to owner-only (0600 on Unix).
+/// No-op on Windows; single syscall, no probing delay.
+fn restrict_file_permissions(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
 }
 
 async fn cleanup_sing_box_child(mut child: tokio::process::Child, config_path: PathBuf) -> String {

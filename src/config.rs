@@ -228,7 +228,9 @@ impl AppConfig {
         let config = Self::default_for_first_run();
         validate(config).context("default config template failed validation")?;
         fs::write(path, DEFAULT_CONFIG_TEMPLATE)
-            .with_context(|| format!("unable to write default config to {}", path.display()))
+            .with_context(|| format!("unable to write default config to {}", path.display()))?;
+        restrict_file_permissions(path);
+        Ok(())
     }
 
     pub fn subscription_url(&self, host: &str, raw: bool) -> String {
@@ -474,6 +476,20 @@ fn generate_token() -> String {
         chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
     );
     URL_SAFE_NO_PAD.encode(fallback)
+}
+
+/// Restrict a config file to owner-only (0600 on Unix).
+/// Best-effort, no-op on Windows; single syscall, no refresh delay.
+fn restrict_file_permissions(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
 }
 
 fn default_bind() -> SocketAddr {

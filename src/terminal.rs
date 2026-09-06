@@ -126,7 +126,11 @@ impl PlainProgressReporter {
     pub fn on_event(&mut self, event: &ProgressEvent) {
         match event {
             ProgressEvent::LiveLog(message) => Self::on_log(message),
-            ProgressEvent::ProbeDelta { tested, working } => self.on_probe_delta(*tested, *working),
+            ProgressEvent::ProbeDelta {
+                tested,
+                working,
+                bytes: _,
+            } => self.on_probe_delta(*tested, *working),
             ProgressEvent::RankedSnapshot(ranked) => {
                 print_log(format!(
                     "Early results ready: {} configs published.",

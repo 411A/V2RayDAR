@@ -89,6 +89,8 @@ pub enum ProgressEvent {
     ProbeDelta {
         tested: usize,
         working: usize,
+        /// Observed HTTP exchange bytes (Sub Usage accounting).
+        bytes: u64,
     },
     RankedSnapshot(Vec<RankedConfig>),
     WorkingConfigsFound {

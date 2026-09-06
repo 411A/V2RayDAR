@@ -32,9 +32,9 @@ use crate::{
         ACTIVE_PROBE_BATCH_CONCURRENCY_MULTIPLIER, ACTIVE_PROBE_BATCH_MAX_SIZE,
         ACTIVE_PROBE_BATCH_MIN_SIZE, ACTIVE_PROBE_HTTP_MAX_CONCURRENCY,
         ACTIVE_PROBE_PROCESS_MAX_CONCURRENCY, BITS_PER_BYTE, BITS_PER_MEGABIT,
-        LOCAL_PROXY_CONNECT_TIMEOUT, LOCAL_PROXY_WAIT_INTERVAL, LOCALHOST_IP,
-        SING_BOX_CLEANUP_TIMEOUT, SING_BOX_CONFIG_FILE_PREFIX, SING_BOX_INBOUND_TAG_PREFIX,
-        SING_BOX_OUTBOUND_TAG_PREFIX,
+        HTTP_EXCHANGE_OVERHEAD_BYTES, LOCAL_PROXY_CONNECT_TIMEOUT, LOCAL_PROXY_WAIT_INTERVAL,
+        LOCALHOST_IP, SING_BOX_CLEANUP_TIMEOUT, SING_BOX_CONFIG_FILE_PREFIX,
+        SING_BOX_INBOUND_TAG_PREFIX, SING_BOX_OUTBOUND_TAG_PREFIX,
     },
     convert::{
         decode_base64_bytes, decode_base64_to_string, first_param, json_string, json_u16, json_u64,
@@ -176,7 +176,7 @@ pub async fn probe_candidates(
                 config.sing_box_path
             ),
         );
-        send_probe_delta(progress.as_ref(), failed, 0);
+        send_probe_delta(progress.as_ref(), failed, 0, 0);
         return rank_configs(
             candidates
                 .into_iter()
@@ -211,7 +211,7 @@ pub async fn probe_candidates(
             .buffer_unordered(config.concurrency);
             let mut ranked = Vec::new();
             while let Some(result) = results.next().await {
-                send_probe_delta(progress.as_ref(), 1, usize::from(result.reachable));
+                send_probe_delta(progress.as_ref(), 1, usize::from(result.reachable), 0);
                 ranked.push(result);
                 send_asap_configs(progress.as_ref(), &ranked, stop_policy);
             }
@@ -403,6 +403,8 @@ struct ActiveProbeSuccess {
     http_status: u16,
     download_mbps: Option<f64>,
     download_bytes: Option<usize>,
+    /// Observed request + response-header bytes (no body read, no extra I/O).
+    bytes: u64,
 }
 
 struct ActivePreparation {
@@ -521,7 +523,7 @@ async fn probe_active_batched(
         ),
     );
     if !ranked.is_empty() {
-        send_probe_delta(progress.as_ref(), ranked.len(), 0);
+        send_probe_delta(progress.as_ref(), ranked.len(), 0, 0);
     }
     let mut stop_state = ProbeStopState::new(&prepared, stop_policy);
     let cancel = Arc::new(AtomicBool::new(false));
@@ -1114,7 +1116,7 @@ async fn probe_active_batch_with_fallback(
                             failure.entries.len()
                         ),
                     );
-                    send_probe_delta(progress, failed_entry.candidate_count(), 0);
+                    send_probe_delta(progress, failed_entry.candidate_count(), 0, 0);
                     ranked.extend(failed_configs(failed_entry, "active_http", &error));
                     if !failure.entries.is_empty() {
                         pending.push(failure.entries);
@@ -1149,7 +1151,7 @@ async fn probe_active_batch_with_fallback(
                     );
                     let failed_count = candidate_count(&failure.entries);
                     stats.failed_candidates = stats.failed_candidates.saturating_add(failed_count);
-                    send_probe_delta(progress, failed_count, 0);
+                    send_probe_delta(progress, failed_count, 0, 0);
                     ranked.extend(
                         failure
                             .entries
@@ -1321,13 +1323,14 @@ async fn probe_active_batch(
     let mut probe_results = stream::iter(entries.into_iter().zip(ports).map(
         |(entry, port)| async move {
             let result = probe_active_target_inner(port, config).await;
-            ranked_configs_for_active_result(entry, result)
+            let bytes = result.as_ref().map(|ok| ok.bytes).unwrap_or(0);
+            (ranked_configs_for_active_result(entry, result), bytes)
         },
     ))
     .buffer_unordered(http_concurrency);
     let mut ranked = Vec::with_capacity(total_candidates);
     let mut completed = 0;
-    while let Some(mut results) = probe_results.next().await {
+    while let Some((mut results, bytes)) = probe_results.next().await {
         if cancel.load(AtomicOrdering::Relaxed) {
             break;
         }
@@ -1335,7 +1338,7 @@ async fn probe_active_batch(
         let tested_delta = results.len();
         let working_delta = results.iter().filter(|item| item.reachable).count();
         ranked.append(&mut results);
-        send_probe_delta(progress, tested_delta, working_delta);
+        send_probe_delta(progress, tested_delta, working_delta, bytes);
         send_asap_configs(progress, &ranked, stop_policy);
         if completed == total_entries || completed % progress_interval == 0 {
             info!(
@@ -1534,6 +1537,7 @@ async fn probe_active_target_inner(port: u16, config: &ProbeConfig) -> Result<Ac
     let response = client.get(&config.test_url).send().await?;
     let latency_ms = started.elapsed().as_millis();
     let status = response.status().as_u16();
+    let bytes = exchange_bytes(&config.test_url, &response);
     debug!(
         port,
         status, latency_ms, "active HTTP probe response received"
@@ -1551,7 +1555,22 @@ async fn probe_active_target_inner(port: u16, config: &ProbeConfig) -> Result<Ac
         http_status: status,
         download_mbps: None,
         download_bytes: None,
+        bytes,
     })
+}
+
+/// Observed exchange size for Sub Usage accounting: request estimate plus
+/// actual response header bytes. The body is never read for this, so no
+/// extra traffic or latency is added by counting.
+fn exchange_bytes(test_url: &str, response: &reqwest::Response) -> u64 {
+    let request = HTTP_EXCHANGE_OVERHEAD_BYTES.saturating_add(test_url.len() as u64);
+    let headers = response
+        .headers()
+        .iter()
+        .map(|(name, value)| name.as_str().len() as u64 + value.as_bytes().len() as u64 + 4)
+        .sum::<u64>()
+        .saturating_add(64);
+    request.saturating_add(headers)
 }
 
 async fn enrich_top_speedtests(
@@ -1937,11 +1956,16 @@ fn send_probe_delta(
     progress: Option<&UnboundedSender<ProgressEvent>>,
     tested: usize,
     working: usize,
+    bytes: u64,
 ) {
     if let Some(progress) = progress
         && tested > 0
     {
-        let _ = progress.send(ProgressEvent::ProbeDelta { tested, working });
+        let _ = progress.send(ProgressEvent::ProbeDelta {
+            tested,
+            working,
+            bytes,
+        });
     }
 }
 

@@ -38,6 +38,7 @@ pub enum ConfigKey {
     Bind,
     TopN,
     RefreshSeconds,
+    PingSeconds,
     EncodedSubscription,
     PrioritizeStability,
     ReturnConfigsAsap,

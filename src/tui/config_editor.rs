@@ -14,6 +14,7 @@ pub const fn label(key: ConfigKey) -> &'static str {
         ConfigKey::Bind => "bind",
         ConfigKey::TopN => "top_n",
         ConfigKey::RefreshSeconds => "refresh_seconds",
+        ConfigKey::PingSeconds => "ping_seconds",
         ConfigKey::EncodedSubscription => "encoded_subscription",
         ConfigKey::PrioritizeStability => "prioritize_stability",
         ConfigKey::ReturnConfigsAsap => "return_configs_asap",
@@ -53,6 +54,7 @@ pub const fn guide(key: ConfigKey) -> &'static str {
         ConfigKey::Bind => "host:port, e.g. 0.0.0.0:27141",
         ConfigKey::TopN => "positive number, e.g. 10",
         ConfigKey::RefreshSeconds => "seconds between refreshes",
+        ConfigKey::PingSeconds => "seconds between re-pings; 0 disables",
         ConfigKey::EncodedSubscription => "true/false for base64 feed",
         ConfigKey::PrioritizeStability => {
             "true favors repeat working configs; false favors short wins"
@@ -96,6 +98,7 @@ pub fn value(config: &crate::config::AppConfig, key: ConfigKey) -> String {
         ConfigKey::Bind => config.bind.to_string(),
         ConfigKey::TopN => config.top_n.to_string(),
         ConfigKey::RefreshSeconds => config.refresh_seconds.to_string(),
+        ConfigKey::PingSeconds => config.ping_seconds.to_string(),
         ConfigKey::EncodedSubscription => config.encoded_subscription.to_string(),
         ConfigKey::PrioritizeStability => config.prioritize_stability.to_string(),
         ConfigKey::ReturnConfigsAsap => config.return_configs_asap.to_string(),
@@ -154,6 +157,7 @@ pub fn apply(config: &mut crate::config::AppConfig, key: ConfigKey, raw: &str) -
         ConfigKey::Bind => config.bind = value.parse::<SocketAddr>()?,
         ConfigKey::TopN => config.top_n = positive(value, "top_n")?,
         ConfigKey::RefreshSeconds => config.refresh_seconds = value.parse()?,
+        ConfigKey::PingSeconds => config.ping_seconds = value.parse()?,
         ConfigKey::EncodedSubscription => config.encoded_subscription = bool_value(value)?,
         ConfigKey::PrioritizeStability => config.prioritize_stability = bool_value(value)?,
         ConfigKey::ReturnConfigsAsap => config.return_configs_asap = bool_value(value)?,

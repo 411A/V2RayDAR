@@ -17,7 +17,8 @@ pub const DEFAULT_CONFIG_TEMPLATE: &str = include_str!("../configs.example.yaml"
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:27141";
 pub const DEFAULT_TOP_N: usize = 10;
-pub const DEFAULT_REFRESH_SECONDS: u64 = 300;
+pub const DEFAULT_REFRESH_SECONDS: u64 = 900;
+pub const DEFAULT_PING_SECONDS: u64 = 300;
 pub const DEFAULT_ENCODED_SUBSCRIPTION: bool = true;
 pub const DEFAULT_PRIORITIZE_STABILITY: bool = true;
 pub const DEFAULT_RETURN_CONFIGS_ASAP: bool = false;
@@ -179,10 +180,11 @@ pub const SUBSCRIPTION_ACTIONS: [SubscriptionAction; 6] = [
     SubscriptionAction::Delete,
     SubscriptionAction::Back,
 ];
-pub const CONFIG_KEYS: [ConfigKey; 34] = [
+pub const CONFIG_KEYS: [ConfigKey; 35] = [
     ConfigKey::Bind,
     ConfigKey::TopN,
     ConfigKey::RefreshSeconds,
+    ConfigKey::PingSeconds,
     ConfigKey::EncodedSubscription,
     ConfigKey::PrioritizeStability,
     ConfigKey::ReturnConfigsAsap,

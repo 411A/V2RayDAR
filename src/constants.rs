@@ -9,6 +9,7 @@ pub const APP_NAME: &str = "V2RayDAR";
 pub const APP_DATA_DIR_NAME: &str = "v2raydar_data";
 pub const DB_FILE_NAME: &str = "data.db";
 pub const CACHE_DIR_NAME: &str = "cache";
+pub const GEOIP_DIR_NAME: &str = "geoip";
 pub const CONFIG_FILE_NAME: &str = "configs.yaml";
 pub const FIREWALL_STATE_FILE_NAME: &str = ".v2raydar-firewall.json";
 pub const LEGACY_APP_MARKER_FILE_NAME: &str = ".v2raydar";

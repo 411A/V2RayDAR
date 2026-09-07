@@ -326,6 +326,161 @@ function Verify-Checksum {
     }
 }
 
+# ─── Country IP Database (GeoIP) ─────────────────────────────────────────────
+# Keyless ipdeny zone files, refreshed independently of app releases into
+# <data-root>/geoip (v4 zones plus an ipv6/ subdir). The app loads them at
+# startup (see src/geoip.rs) and runs fine without them. Refreshes are
+# stamp-gated (7 days) to respect the provider's usage limits, and failures
+# never fail the install — functions return $false and callers warn.
+
+$GeoipV4Url = "https://www.ipdeny.com/ipblocks/data/countries/all-zones.tar.gz"
+$GeoipV4Md5Url = "https://www.ipdeny.com/ipblocks/data/countries/MD5SUM"
+$GeoipV6Url = "https://www.ipdeny.com/ipv6/ipaddresses/blocks/ipv6-all-zones.tar.gz"
+$GeoipV6Md5Url = "https://www.ipdeny.com/ipv6/ipaddresses/blocks/MD5SUM"
+$GeoipRefreshSeconds = 604800
+$GeoipStampFile = ".geoip_stamp"
+
+# Data dir for an existing install. On Windows both portable and user-mode
+# installs keep the data root next to the install dir (<dir>/v2raydar_data).
+function Get-GeoipDirForFound {
+    return Join-Path $Script:FoundPath "v2raydar_data/geoip"
+}
+
+# Remove databases from the retired GeoLite2 era (replaced by zone files).
+function Remove-LegacyMmdb {
+    param([string[]]$Roots)
+    foreach ($root in $Roots) {
+        if ([string]::IsNullOrWhiteSpace($root)) { continue }
+        foreach ($candidate in @(
+            (Join-Path $root "GeoLite2-Country.mmdb"),
+            (Join-Path $root "v2raydar_data/GeoLite2-Country.mmdb")
+        )) {
+            if (Test-Path $candidate) {
+                Remove-Item -Path $candidate -Force -ErrorAction SilentlyContinue
+                Write-Info "removed legacy GeoLite2 database: $candidate"
+            }
+        }
+    }
+}
+
+# Verify every .zone file in a directory against an MD5SUM listing.
+function Test-ZoneTree {
+    param([string]$Dir, [string]$Md5Data)
+
+    $checked = 0
+    foreach ($line in ($Md5Data -split "`n")) {
+        $parts = ($line.Trim() -split '\s+')
+        if ($parts.Length -lt 2) { continue }
+        $hash, $file = $parts[0], $parts[1]
+        if (-not $file.EndsWith(".zone")) { continue }
+        $path = Join-Path $Dir $file
+        if (-not (Test-Path $path)) {
+            Write-Warn "GeoIP archive is missing $file"
+            return $false
+        }
+        try {
+            $actual = (Get-FileHash -Path $path -Algorithm MD5).Hash
+        }
+        catch {
+            Write-Warn "could not hash $file : $_"
+            return $false
+        }
+        if ($actual.ToLower() -ne $hash.ToLower()) {
+            Write-Warn "GeoIP checksum mismatch for $file"
+            return $false
+        }
+        $checked++
+    }
+
+    $files = @(Get-ChildItem -Path $Dir -Filter "*.zone" -File | Where-Object { $_.DirectoryName -eq $Dir }).Count
+    if ($checked -eq 0 -or $checked -ne $files) {
+        Write-Warn "GeoIP file count mismatch (verified $checked of $files)"
+        return $false
+    }
+    return $true
+}
+
+# Download, verify, and atomically install fresh zone files into a geoip dir.
+function Update-GeoipData {
+    param([string]$GeoipDir)
+
+    $stampPath = Join-Path $GeoipDir $GeoipStampFile
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    if (Test-Path $stampPath) {
+        try { $stamped = [long](Get-Content $stampPath -Raw) } catch { $stamped = 0 }
+        if (($now - $stamped) -lt $GeoipRefreshSeconds) {
+            Write-Info "country IP database is fresh, skipping update"
+            return $true
+        }
+    }
+
+    Write-Info "updating country IP database..."
+    if (-not (Get-Command tar -ErrorAction SilentlyContinue)) {
+        Write-Warn "tar not found, keeping existing GeoIP data"
+        return $false
+    }
+    $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
+    New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
+    $Script:TempPaths += $tmpDir
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        try {
+            $v4md5 = (Invoke-WebRequest -Uri $GeoipV4Md5Url -UseBasicParsing).Content
+            $v6md5 = (Invoke-WebRequest -Uri $GeoipV6Md5Url -UseBasicParsing).Content
+            # file:// and charset-less responses arrive as bytes, not text.
+            if ($v4md5 -is [byte[]]) { $v4md5 = [System.Text.Encoding]::UTF8.GetString($v4md5) }
+            if ($v6md5 -is [byte[]]) { $v6md5 = [System.Text.Encoding]::UTF8.GetString($v6md5) }
+        }
+        catch {
+            Write-Warn "could not fetch GeoIP checksums, keeping existing data"
+            return $false
+        }
+        if ([string]::IsNullOrWhiteSpace($v4md5) -or [string]::IsNullOrWhiteSpace($v6md5)) {
+            Write-Warn "could not fetch GeoIP checksums, keeping existing data"
+            return $false
+        }
+
+        Download-File -Url $GeoipV4Url -Dest (Join-Path $tmpDir "v4.tar.gz")
+        Download-File -Url $GeoipV6Url -Dest (Join-Path $tmpDir "v6.tar.gz")
+
+        $stage = Join-Path $tmpDir "stage"
+        $stageV6 = Join-Path $stage "ipv6"
+        New-Item -ItemType Directory -Path $stageV6 -Force | Out-Null
+        & tar xzf (Join-Path $tmpDir "v4.tar.gz") -C $stage
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warn "could not extract GeoIP v4 archive, keeping existing data"
+            return $false
+        }
+        & tar xzf (Join-Path $tmpDir "v6.tar.gz") -C $stageV6
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warn "could not extract GeoIP v6 archive, keeping existing data"
+            return $false
+        }
+        if (-not (Test-ZoneTree -Dir $stage -Md5Data $v4md5)) {
+            Write-Warn "GeoIP v4 verification failed, keeping existing data"
+            return $false
+        }
+        if (-not (Test-ZoneTree -Dir $stageV6 -Md5Data $v6md5)) {
+            Write-Warn "GeoIP v6 verification failed, keeping existing data"
+            return $false
+        }
+
+        if (-not (Test-Path $GeoipDir)) {
+            New-Item -ItemType Directory -Path $GeoipDir -Force | Out-Null
+        }
+        $newDir = Join-Path $tmpDir "new"
+        Move-Item -Path $stage -Destination $newDir -Force
+        Remove-Item -Path $GeoipDir -Recurse -Force
+        Move-Item -Path $newDir -Destination $GeoipDir -Force
+        Set-Content -Path $stampPath -Value "$now" -NoNewline
+        Write-Info "country IP database updated"
+        return $true
+    }
+    finally {
+        Remove-Item -Path $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # ─── Extract ───────────────────────────────────────────────────────────────────
 
 function Extract-Archive {
@@ -624,6 +779,12 @@ function Main {
                         Write-Info "location: $($Script:FoundPath)\$AppName.exe"
                     }
                     Write-Host ""
+                    # No new app version: still refresh the country IP database.
+                    Remove-LegacyMmdb -Roots @($Script:FoundPath)
+                    if (-not (Update-GeoipData -GeoipDir (Get-GeoipDirForFound))) {
+                        Write-Warn "country IP database update failed, keeping existing data"
+                    }
+                    Write-Host ""
                     return
                 }
                 elseif ($cmp -lt 0) {
@@ -645,6 +806,11 @@ function Main {
                     Write-Host "> V2RayDAR v$($Script:FoundVersion) is already installed (newer than latest release v$Version)." -ForegroundColor Green
                     if ($Script:FoundPath) {
                         Write-Info "location: $($Script:FoundPath)\$AppName.exe"
+                    }
+                    Write-Host ""
+                    Remove-LegacyMmdb -Roots @($Script:FoundPath)
+                    if (-not (Update-GeoipData -GeoipDir (Get-GeoipDirForFound))) {
+                        Write-Warn "country IP database update failed, keeping existing data"
                     }
                     Write-Host ""
                     return
@@ -713,6 +879,13 @@ function Main {
         switch ($InstallMode) {
             "portable" { Do-PortableInstall -Target $InstallDir }
             "user"     { Do-UserInstall -BinDir $InstallDir }
+        }
+
+        # Fresh country IP database next to the new install.
+        $geoipDir = Join-Path $InstallDir "v2raydar_data/geoip"
+        Remove-LegacyMmdb -Roots @($Script:FoundPath, $InstallDir)
+        if (-not (Update-GeoipData -GeoipDir $geoipDir)) {
+            Write-Warn "country IP database update failed, keeping existing data"
         }
 
         Write-Host ""

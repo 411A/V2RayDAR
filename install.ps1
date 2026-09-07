@@ -329,16 +329,14 @@ function Verify-Checksum {
 # ─── Country IP Database (GeoIP) ─────────────────────────────────────────────
 # Keyless ipdeny zone files, refreshed independently of app releases into
 # <data-root>/geoip (v4 zones plus an ipv6/ subdir). The app loads them at
-# startup (see src/geoip.rs) and runs fine without them. Refreshes are
-# stamp-gated (7 days) to respect the provider's usage limits, and failures
-# never fail the install — functions return $false and callers warn.
+# startup (see src/geoip.rs) and runs fine without them. Every installer run
+# refreshes unconditionally; failures never fail the install — functions
+# return $false and callers warn.
 
 $GeoipV4Url = "https://www.ipdeny.com/ipblocks/data/countries/all-zones.tar.gz"
 $GeoipV4Md5Url = "https://www.ipdeny.com/ipblocks/data/countries/MD5SUM"
 $GeoipV6Url = "https://www.ipdeny.com/ipv6/ipaddresses/blocks/ipv6-all-zones.tar.gz"
 $GeoipV6Md5Url = "https://www.ipdeny.com/ipv6/ipaddresses/blocks/MD5SUM"
-$GeoipRefreshSeconds = 604800
-$GeoipStampFile = ".geoip_stamp"
 
 # Data dir for an existing install. On Windows both portable and user-mode
 # installs keep the data root next to the install dir (<dir>/v2raydar_data).
@@ -404,16 +402,6 @@ function Test-ZoneTree {
 function Update-GeoipData {
     param([string]$GeoipDir)
 
-    $stampPath = Join-Path $GeoipDir $GeoipStampFile
-    $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-    if (Test-Path $stampPath) {
-        try { $stamped = [long](Get-Content $stampPath -Raw) } catch { $stamped = 0 }
-        if (($now - $stamped) -lt $GeoipRefreshSeconds) {
-            Write-Info "country IP database is fresh, skipping update"
-            return $true
-        }
-    }
-
     Write-Info "updating country IP database..."
     if (-not (Get-Command tar -ErrorAction SilentlyContinue)) {
         Write-Warn "tar not found, keeping existing GeoIP data"
@@ -472,7 +460,6 @@ function Update-GeoipData {
         Move-Item -Path $stage -Destination $newDir -Force
         Remove-Item -Path $GeoipDir -Recurse -Force
         Move-Item -Path $newDir -Destination $GeoipDir -Force
-        Set-Content -Path $stampPath -Value "$now" -NoNewline
         Write-Info "country IP database updated"
         return $true
     }

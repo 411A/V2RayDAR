@@ -204,7 +204,7 @@ v2raydar --uninstall    # حذف داده‌های برنامه و قوانین 
 | <code>probe.accepted_statuses</code> | <code>[204, 200]</code> | &#x200F;کدهای وضعیت موفق |
 | <code>probe.download_url</code> | <code>null</code> | &#x200F;URL تست پهنای باند |
 | <code>probe.download_bytes_limit</code> | <code>1048576</code> | &#x200F;حداکثر بایت تست سرعت |
-| <code>geoip_db_path</code> | <code>null</code> | &#x200F;مسیر اختیاری پوشه zoneهای کشورها (فایل‌های <code>&lt;cc&gt;.zone</code> مثل ipdeny). اگر <code>null</code> باشد از <code>&lt;data-root&gt;/geoip</code> استفاده می‌شود که نصب‌کننده به‌روزش می‌کند |
+| <code>geoip_db_path</code> | <code>null</code> | &#x200F;مسیر اختیاری فایل <code>GeoLite2-Country.mmdb</code> یا پوشه zoneهای کشورها. اگر <code>null</code> باشد از <code>&lt;data-root&gt;/geoip</code> استفاده می‌شود (اول پایگاه MaxMind بعد zoneها؛ هر دو توسط نصب‌کننده به‌روز می‌شوند). Country data: GeoLite2 by MaxMind (CC BY-SA 4.0); fallback zones by ipdeny |
 | <code>subscriptions</code> | <em>منابع پیش‌انتخاب</em> | &#x200F;فهرست منابع اشتراک |
 
 </div>

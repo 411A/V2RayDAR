@@ -166,7 +166,7 @@ Windows 用户将 `v2raydar` 替换为 `v2raydar.exe`。macOS 上首次打开捆
 | `probe.accepted_statuses` | `[204, 200]` | 视为成功的 HTTP 状态码。 |
 | `probe.download_url` | `null` | 可选的吞吐量测试目标。 |
 | `probe.download_bytes_limit` | `1048576` | 每次速度测试的读取上限。 |
-| `geoip_db_path` | `null` | 可选的国家 IP 区目录路径（`<cc>.zone` 文件，例如来自 ipdeny）。为 `null` 时使用 `<data-root>/geoip`，由安装程序更新。 |
+| `geoip_db_path` | `null` | 可选的 `GeoLite2-Country.mmdb` 文件或国家 IP 区目录（`<cc>.zone` 文件）路径。为 `null` 时使用 `<data-root>/geoip`（优先 MaxMind 数据库，zone 兜底；两者均由安装程序更新）。Country data: GeoLite2 by MaxMind (CC BY-SA 4.0); fallback zones by ipdeny. |
 | `subscriptions` | _（预选源）_ | `{ name, url, enabled, priority }` 源列表。建议添加自己的源以获得更好的覆盖。 |
 
 </details>

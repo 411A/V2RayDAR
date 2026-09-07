@@ -1,20 +1,24 @@
 use std::{collections::HashMap, net::IpAddr, path::Path, sync::OnceLock};
 
 use anyhow::{Context, Result};
-use tracing::{debug, info};
+use maxminddb::Reader;
+use tracing::{debug, info, warn};
 
-// Country IP database: per-country CIDR zone files (`<cc>.zone`, one
-// `address/prefix` per line), refreshed independently of app releases.
+// Country IP database, two tiers, both refreshed by the installer
+// independently of app releases (this module never downloads anything,
+// keeping offline use working):
 //
-// Source is ipdeny country blocks (free, keyless, redistribution allowed),
-// IPv4 `all-zones.tar.gz` plus the IPv6 archive. The installer downloads
-// these into `<data-root>/geoip/` (with an `ipv6/` subdir for the v6 files)
-// and refreshes them whenever it runs. This module only reads them: it
-// never downloads anything, keeping offline use working.
+// 1. MaxMind `GeoLite2-Country.mmdb` (most accurate), republished keyless by
+//    P3TERX/GeoLite.mmdb at
+//    `https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-Country.mmdb`
+// 2. Fallback: per-country CIDR zone files (`<cc>.zone`, one
+//    `address/prefix` per line) from ipdeny country blocks (free, keyless):
+//    IPv4 `all-zones.tar.gz` plus the IPv6 archive, extracted into
+//    `<data-root>/geoip/` with an `ipv6/` subdir for the v6 files.
 //
-// This replaced the old embedded `GeoLite2-Country.mmdb`, which needed a
-// MaxMind license key for updates, baked ~9MB of stale data into every
-// release binary, and required the `maxminddb` dependency.
+// A lookup consults the mmdb first and falls back to the zones on miss or
+// error, so a stale or missing tier never blanks country detection while
+// the other has data.
 
 /// Maximum prefix length for IPv4 / IPv6 lookups.
 const V4_BITS: u32 = 32;
@@ -262,44 +266,80 @@ fn ingest_dir(
     Ok(skipped)
 }
 
-static GEOIP_DB: OnceLock<Option<ZoneDb>> = OnceLock::new();
+/// Loaded country data: at most one of each tier; either may be absent.
+struct GeoIp {
+    mmdb: Option<Reader<Vec<u8>>>,
+    zones: Option<ZoneDb>,
+}
+
+static GEOIP: OnceLock<GeoIp> = OnceLock::new();
 
 /// Look up the country ISO code for an IP address.
 ///
 /// Returns the 2-letter ISO 3166-1 alpha-2 code (e.g., "US", "JP", "DE")
-/// or `None` if the database is not loaded or the IP is not found.
+/// or `None` if no tier has data or the IP is not found. The `mmdb` tier is
+/// consulted first; the zone files cover its misses.
 pub fn lookup_country(ip: IpAddr) -> Option<String> {
-    GEOIP_DB
-        .get()
-        .and_then(|db| db.as_ref())
-        .and_then(|db| db.lookup(ip))
+    let geo = GEOIP.get()?;
+    if let Some(country) = geo.mmdb.as_ref().and_then(|reader| lookup_mmdb(reader, ip)) {
+        return Some(country);
+    }
+    geo.zones
+        .as_ref()
+        .and_then(|zones| zones.lookup(ip))
         .map(ToString::to_string)
 }
 
-/// Initialize the `GeoIP` database from a zone directory (see [`load_dir`]).
+/// Single mmdb lookup; `None` on miss or corrupt entry (caller falls back).
+fn lookup_mmdb(reader: &Reader<Vec<u8>>, ip: IpAddr) -> Option<String> {
+    let result = reader.lookup(ip).ok()?;
+    let country = result.decode::<maxminddb::geoip2::Country>().ok()??;
+    country.country.iso_code.map(ToString::to_string)
+}
+
+/// Initialize `GeoIP` from an mmdb file and/or a zone directory.
 ///
-/// A missing directory, an empty one, or an unreadable one disables country
-/// detection with an informational log — the app keeps working without flags.
-pub fn init(dir: Option<&Path>) {
-    let Some(dir) = dir else {
-        info!("GeoIP disabled; country detection unavailable");
-        let _ = GEOIP_DB.set(None);
-        return;
-    };
-    match load_dir(dir) {
+/// Each tier loads independently: a corrupt mmdb falls back to zones, and
+/// vice versa. With neither, country detection is disabled with an
+/// informational log — the app keeps working without flags.
+pub fn init(mmdb_path: Option<&Path>, zone_dir: Option<&Path>) {
+    let mmdb = mmdb_path.filter(|path| path.is_file()).and_then(|path| {
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                warn!(path = %path.display(), error = %err, "failed to read GeoIP mmdb");
+                return None;
+            }
+        };
+        match Reader::from_source(bytes) {
+            Ok(reader) => {
+                info!(path = %path.display(), "GeoIP database loaded (MaxMind)");
+                Some(reader)
+            }
+            Err(err) => {
+                warn!(path = %path.display(), error = %err, "failed to open GeoIP mmdb");
+                None
+            }
+        }
+    });
+    let zones = zone_dir.and_then(|dir| match load_dir(dir) {
         Ok(db) => {
             info!(
                 prefixes = db.prefix_count(),
                 dir = %dir.display(),
                 "GeoIP database loaded (country zones)"
             );
-            let _ = GEOIP_DB.set(Some(db));
+            Some(db)
         }
         Err(err) => {
-            tracing::warn!(dir = %dir.display(), error = %err, "failed to load GeoIP zones");
-            let _ = GEOIP_DB.set(None);
+            warn!(dir = %dir.display(), error = %err, "failed to load GeoIP zones");
+            None
         }
+    });
+    if mmdb.is_none() && zones.is_none() {
+        info!("GeoIP disabled; country detection unavailable");
     }
+    let _ = GEOIP.set(GeoIp { mmdb, zones });
 }
 
 /// Country code to flag emoji conversion.
@@ -817,6 +857,28 @@ mod tests {
     #[test]
     fn extract_any_flag_none_when_no_emoji() {
         assert!(extract_any_flag("plain text").is_none());
+    }
+
+    /// End-to-end fallback: a corrupt mmdb must not take down zones.
+    /// NOTE: the only test that calls `init` (`OnceLock` is process-once).
+    #[test]
+    fn init_falls_back_to_zones_when_mmdb_is_corrupt() {
+        let dir = std::env::temp_dir().join(format!(
+            "v2raydar-geoip-corrupt-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let corrupt = dir.join("GeoLite2-Country.mmdb");
+        std::fs::write(&corrupt, b"not a maxmind database").expect("write");
+        std::fs::write(dir.join("us.zone"), "1.0.0.0/24\n").expect("write");
+        init(Some(&corrupt), Some(&dir));
+        let addr: IpAddr = "1.0.0.7".parse().expect("ip parses");
+        assert_eq!(lookup_country(addr).as_deref(), Some("US"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -408,7 +408,7 @@ String-like null values such as `null`, `"null"`, empty strings, `"none"`, and `
 | `emergency_config` | String or null | `null` | Optional working share link used as a bridge proxy when HTTP subscription fetches fail. |
 | `sharing` | Object | See below | LAN sharing and URL token settings. |
 | `probe` | Object | See below | Validation mode, timeouts, concurrency, and active-test settings. |
-| `geoip_db_path` | String or null | `null` | Optional path to a country-zone directory (`<cc>.zone` files, e.g. from ipdeny). If `null`, uses `<data-root>/geoip`, refreshed by the installer. |
+| `geoip_db_path` | String or null | `null` | Optional path to a `GeoLite2-Country.mmdb` file or a country-zone directory (`<cc>.zone` files). If `null`, uses `<data-root>/geoip` (MaxMind database first, zone fallback; both refreshed by the installer). Country data: GeoLite2 by MaxMind (CC BY-SA 4.0); fallback zones by ipdeny. |
 | `subscriptions` | Array | Pre-selected sources | Sources to fetch and scan. Add your own for better results. |
 
 ## Sharing Settings

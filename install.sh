@@ -339,6 +339,12 @@ GEOIP_V4_URL="https://www.ipdeny.com/ipblocks/data/countries/all-zones.tar.gz"
 GEOIP_V4_MD5_URL="https://www.ipdeny.com/ipblocks/data/countries/MD5SUM"
 GEOIP_V6_URL="https://www.ipdeny.com/ipv6/ipaddresses/blocks/ipv6-all-zones.tar.gz"
 GEOIP_V6_MD5_URL="https://www.ipdeny.com/ipv6/ipaddresses/blocks/MD5SUM"
+GEOIP_MMDB_URL="https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-Country.mmdb"
+GEOIP_MMDB_FILE="GeoLite2-Country.mmdb"
+# Sanity floor for the mmdb (real file is ~8MB; the publisher ships no
+# checksum, so TLS + this size check + structural validation on open in the
+# app are the integrity layers).
+GEOIP_MMDB_MIN_BYTES=1000000
 
 # Data dir for an existing install: user-mode binaries live in a bin dir, so
 # their data follows the XDG-style app root; portable installs keep data
@@ -410,6 +416,28 @@ verify_zone_tree() {
         warn "no GeoIP zone files verified"
         return 1
     fi
+    return 0
+}
+
+# Download and atomically install the MaxMind country database (primary
+# tier). No published checksum exists, so failures and undersized files keep
+# the previous database.
+refresh_geoip_mmdb() {
+    _geoip_dir="$1"
+    info "updating GeoIP country database..."
+    _tmpdir="$(mktemp_d)"
+    download_file "$GEOIP_MMDB_URL" "$_tmpdir/$GEOIP_MMDB_FILE"
+    _bytes="$(wc -c < "$_tmpdir/$GEOIP_MMDB_FILE" | tr -d ' ')"
+    case "$_bytes" in ''|*[!0-9]*) _bytes=0 ;; esac
+    if [ "$_bytes" -lt "$GEOIP_MMDB_MIN_BYTES" ]; then
+        warn "GeoIP database download looks truncated ($_bytes bytes), keeping existing data"
+        rm -rf "$_tmpdir"
+        return 1
+    fi
+    mkdir -p "$_geoip_dir"
+    mv "$_tmpdir/$GEOIP_MMDB_FILE" "$_geoip_dir/$GEOIP_MMDB_FILE" || { rm -rf "$_tmpdir"; return 1; }
+    rm -rf "$_tmpdir"
+    info "GeoIP country database updated"
     return 0
 }
 
@@ -817,8 +845,11 @@ main() {
                     info "location: $FOUND_PATH/$APP_NAME"
                 fi
                 echo ""
-                # No new app version: still refresh the country IP database.
+                # No new app version: still refresh country data (MaxMind
+                # database first, zone files as its fallback).
                 cleanup_legacy_mmdb
+                ( refresh_geoip_mmdb "$(geoip_data_dir_for_found)" ) \
+                    || warn "GeoIP database update failed, keeping existing data"
                 ( refresh_geoip_data "$(geoip_data_dir_for_found)" ) \
                     || warn "country IP database update failed, keeping existing data"
                 echo ""
@@ -855,6 +886,8 @@ main() {
                 fi
                 echo ""
                 cleanup_legacy_mmdb
+                ( refresh_geoip_mmdb "$(geoip_data_dir_for_found)" ) \
+                    || warn "GeoIP database update failed, keeping existing data"
                 ( refresh_geoip_data "$(geoip_data_dir_for_found)" ) \
                     || warn "country IP database update failed, keeping existing data"
                 echo ""
@@ -935,14 +968,16 @@ main() {
         rm -f "$INSTALL_DIR/$ASSET" && info "removed stale archive: $ASSET"
     fi
 
-    # Fresh country IP database next to the new install (user-mode binaries
-    # live in a bin dir, so their data follows the XDG-style app root).
+    # Fresh country data next to the new install (user-mode binaries live
+    # in a bin dir, so their data follows the XDG-style app root).
     if [ "$INSTALL_MODE" = "user" ]; then
         _geoip_dir="${XDG_DATA_HOME:-$HOME/.local/share}/V2RayDAR/v2raydar_data/geoip"
     else
         _geoip_dir="$INSTALL_DIR/v2raydar_data/geoip"
     fi
     cleanup_legacy_mmdb
+    ( refresh_geoip_mmdb "$_geoip_dir" ) \
+        || warn "GeoIP database update failed, keeping existing data"
     ( refresh_geoip_data "$_geoip_dir" ) \
         || warn "country IP database update failed, keeping existing data"
 

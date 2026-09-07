@@ -194,7 +194,10 @@ function Get-DevVersion {
 }
 
 function Download-File {
-    param([string]$Url, [string]$Dest)
+    # With -AllowFail the final failure throws (catchable) instead of
+    # exiting, for optional downloads like GeoIP data. The main asset keeps
+    # the default exit behavior.
+    param([string]$Url, [string]$Dest, [switch]$AllowFail)
 
     $maxRetries = 5
     $retryDelay = 3
@@ -292,6 +295,7 @@ function Download-File {
             }
             else {
                 Write-Host ""
+                if ($AllowFail) { throw "failed to download $Url after $maxRetries attempts : $_" }
                 Write-Err "failed to download $Url after $maxRetries attempts : $_"
             }
         }
@@ -339,6 +343,12 @@ $GeoipV4Url = "https://www.ipdeny.com/ipblocks/data/countries/all-zones.tar.gz"
 $GeoipV4Md5Url = "https://www.ipdeny.com/ipblocks/data/countries/MD5SUM"
 $GeoipV6Url = "https://www.ipdeny.com/ipv6/ipaddresses/blocks/ipv6-all-zones.tar.gz"
 $GeoipV6Md5Url = "https://www.ipdeny.com/ipv6/ipaddresses/blocks/MD5SUM"
+$GeoipMmdbUrl = "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-Country.mmdb"
+$GeoipMmdbFile = "GeoLite2-Country.mmdb"
+# Sanity floor for the mmdb (real file is ~8MB; the publisher ships no
+# checksum, so TLS + this size check + structural validation on open in the
+# app are the integrity layers).
+$GeoipMmdbMinBytes = 1000000
 
 # Data dir for an existing install. On Windows both portable and user-mode
 # installs keep the data root next to the install dir (<dir>/v2raydar_data).
@@ -416,6 +426,42 @@ function Test-ZoneTree {
     return $true
 }
 
+# Download and atomically install the MaxMind country database (primary
+# tier). No published checksum exists, so failures and undersized files keep
+# the previous database.
+function Update-GeoipMmdb {
+    param([string]$GeoipDir)
+
+    Write-Info "updating GeoIP country database..."
+    $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
+    New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
+    $Script:TempPaths += $tmpDir
+    try {
+        $dest = Join-Path $tmpDir $GeoipMmdbFile
+        try {
+            Download-File -Url $GeoipMmdbUrl -Dest $dest -AllowFail
+        }
+        catch {
+            Write-Warn "GeoIP database download failed, keeping existing data"
+            return $false
+        }
+        $bytes = (Get-Item $dest).Length
+        if ($bytes -lt $GeoipMmdbMinBytes) {
+            Write-Warn "GeoIP database download looks truncated ($bytes bytes), keeping existing data"
+            return $false
+        }
+        if (-not (Test-Path $GeoipDir)) {
+            New-Item -ItemType Directory -Path $GeoipDir -Force | Out-Null
+        }
+        Move-Item -Path $dest -Destination (Join-Path $GeoipDir $GeoipMmdbFile) -Force
+        Write-Info "GeoIP country database updated"
+        return $true
+    }
+    finally {
+        Remove-Item -Path $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # Download, verify, and atomically install fresh zone files into a geoip dir.
 function Update-GeoipData {
     param([string]$GeoipDir)
@@ -446,8 +492,14 @@ function Update-GeoipData {
             return $false
         }
 
-        Download-File -Url $GeoipV4Url -Dest (Join-Path $tmpDir "v4.tar.gz")
-        Download-File -Url $GeoipV6Url -Dest (Join-Path $tmpDir "v6.tar.gz")
+        try {
+            Download-File -Url $GeoipV4Url -Dest (Join-Path $tmpDir "v4.tar.gz") -AllowFail
+            Download-File -Url $GeoipV6Url -Dest (Join-Path $tmpDir "v6.tar.gz") -AllowFail
+        }
+        catch {
+            Write-Warn "GeoIP zone download failed, keeping existing data"
+            return $false
+        }
 
         $stage = Join-Path $tmpDir "stage"
         $stageV6 = Join-Path $stage "ipv6"
@@ -787,8 +839,12 @@ function Main {
                         Write-Info "location: $($Script:FoundPath)\$AppName.exe"
                     }
                     Write-Host ""
-                    # No new app version: still refresh the country IP database.
+                    # No new app version: still refresh country data (MaxMind
+                    # database first, zone files as its fallback).
                     Remove-LegacyMmdb -Roots @($Script:FoundPath)
+                    if (-not (Update-GeoipMmdb -GeoipDir (Get-GeoipDirForFound))) {
+                        Write-Warn "GeoIP database update failed, keeping existing data"
+                    }
                     if (-not (Update-GeoipData -GeoipDir (Get-GeoipDirForFound))) {
                         Write-Warn "country IP database update failed, keeping existing data"
                     }
@@ -817,6 +873,9 @@ function Main {
                     }
                     Write-Host ""
                     Remove-LegacyMmdb -Roots @($Script:FoundPath)
+                    if (-not (Update-GeoipMmdb -GeoipDir (Get-GeoipDirForFound))) {
+                        Write-Warn "GeoIP database update failed, keeping existing data"
+                    }
                     if (-not (Update-GeoipData -GeoipDir (Get-GeoipDirForFound))) {
                         Write-Warn "country IP database update failed, keeping existing data"
                     }
@@ -889,9 +948,12 @@ function Main {
             "user"     { Do-UserInstall -BinDir $InstallDir }
         }
 
-        # Fresh country IP database next to the new install.
+        # Fresh country data next to the new install.
         $geoipDir = Join-Path $InstallDir "v2raydar_data/geoip"
         Remove-LegacyMmdb -Roots @($Script:FoundPath, $InstallDir)
+        if (-not (Update-GeoipMmdb -GeoipDir $geoipDir)) {
+            Write-Warn "GeoIP database update failed, keeping existing data"
+        }
         # Remove a stale release archive from older installers (binaries only).
         $staleArchive = Join-Path $InstallDir $Asset
         if (Test-Path $staleArchive) {

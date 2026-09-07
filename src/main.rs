@@ -1697,36 +1697,107 @@ async fn ping_once(
     );
     // Same stability fallback as the fetch cycle: a ping that verifies
     // nothing working must not blank a live working set (or wipe memory).
-    // Shrink guard: a ping that verifies fewer working configs than served
-    // before must not shrink the live set either — the retest only saw a
-    // degraded moment, and the next fetch rediscovers from the full pool.
+    // Stability top-up: previously served working configs that still verify
+    // keep their seats in previous order (even when slower than newcomers);
+    // the shortfall to top_n fills from newly verified working configs by
+    // latency. When the retest cannot even match the served count, the whole
+    // previous set is kept instead — a degraded moment, and the next fetch
+    // rediscovers from the full pool.
     let previous_working = progress_state
         .ranked
         .iter()
         .filter(|item| item.reachable)
         .count();
     let verified_working = ranked.iter().filter(|item| item.reachable).count();
-    let shrank =
-        config.prioritize_stability && verified_working > 0 && verified_working < previous_working;
     let fell_back =
         keep_previous_working_set(config.prioritize_stability, &ranked, &progress_state.ranked);
+    // (still_count, fill_count) when the top-up below publishes a mix.
+    let mut topped_up: Option<(usize, usize)> = None;
+    // True when the degraded-moment guard keeps the previous set whole.
+    let mut kept_previous = fell_back;
     if fell_back {
         warn!(
             previous_working,
             "ping verified no working configs; keeping previous working set"
         );
-    } else if shrank {
-        warn!(
-            previous_working,
-            verified_working, "ping verified fewer working configs; keeping previous working set"
-        );
-    }
-    let working = if fell_back || shrank {
         ranked.clone_from(&progress_state.ranked);
         stable_working_counts.clone_from(&progress_state.stable_working_counts);
-        previous_working
+    } else if config.prioritize_stability {
+        let mut fresh_working: HashMap<String, RankedConfig> = ranked
+            .iter()
+            .filter(|item| item.reachable)
+            .map(|item| (item.dedup_key.clone(), item.clone()))
+            .collect();
+        let mut published: Vec<RankedConfig> = progress_state
+            .ranked
+            .iter()
+            .filter(|item| item.reachable)
+            .filter_map(|item| fresh_working.remove(&item.dedup_key))
+            .collect();
+        let still_count = published.len();
+        let fill_target = if config.top_n == 0 {
+            usize::MAX
+        } else {
+            config.top_n
+        };
+        let mut fill: Vec<RankedConfig> = fresh_working.into_values().collect();
+        fill.sort_by(|left, right| {
+            left.latency_ms
+                .unwrap_or(u128::MAX)
+                .cmp(&right.latency_ms.unwrap_or(u128::MAX))
+                .then_with(|| left.name.cmp(&right.name))
+                .then_with(|| left.uri.cmp(&right.uri))
+        });
+        fill.truncate(fill_target.saturating_sub(still_count));
+        let fill_count = fill.len();
+        published.extend(fill);
+        if !published.is_empty() && published.len() < previous_working {
+            warn!(
+                previous_working,
+                verified_working,
+                "ping verified fewer working configs; keeping previous working set"
+            );
+            ranked.clone_from(&progress_state.ranked);
+            stable_working_counts.clone_from(&progress_state.stable_working_counts);
+            kept_previous = true;
+        } else {
+            // Unverified entries trail for record-keeping (DB offline memory,
+            // Failed counters); the served head is still-working then new.
+            published.extend(ranked.iter().filter(|item| !item.reachable).cloned());
+            let published_keys: HashSet<String> = published
+                .iter()
+                .map(|item| item.dedup_key.clone())
+                .collect();
+            stable_working_counts.retain(|key, _| published_keys.contains(key));
+            for item in published.iter_mut() {
+                if item.reachable {
+                    let count = stable_working_counts
+                        .entry(item.dedup_key.clone())
+                        .or_default();
+                    *count = count.saturating_add(1);
+                    item.stability_count = *count;
+                } else {
+                    item.stability_count = stable_working_counts
+                        .get(&item.dedup_key)
+                        .copied()
+                        .unwrap_or(0);
+                }
+            }
+            for (index, item) in published.iter_mut().enumerate() {
+                item.rank = index + 1;
+            }
+            ranked = published;
+            persist_ranked_configs(&database, &ranked, config.top_n, 0, false).await?;
+            if fill_count > 0 && still_count > 0 {
+                topped_up = Some((still_count, fill_count));
+            }
+        }
     } else {
         persist_ranked_configs(&database, &ranked, config.top_n, 0, false).await?;
+    }
+    let working = if kept_previous {
+        previous_working
+    } else {
         progress_state.reachable_candidates
     };
     {
@@ -1739,9 +1810,15 @@ async fn ping_once(
         runtime.last_error = None;
     }
 
-    let summary = if shrank {
+    let summary = if kept_previous && !fell_back {
         format!(
             "{actor} Ping finished: verified {verified_working} working of {} cached configs in {}; kept previous {previous_working} working configs",
+            progress_state.tested_candidates,
+            format_duration_short(started_instant.elapsed().as_millis())
+        )
+    } else if let Some((still_count, fill_count)) = topped_up {
+        format!(
+            "{actor} Ping finished: kept {still_count} previous + {fill_count} new working of {} cached configs in {}",
             progress_state.tested_candidates,
             format_duration_short(started_instant.elapsed().as_millis())
         )
@@ -3916,6 +3993,92 @@ mod tests {
         );
         drop(runtime);
         drop(listener);
+    }
+
+    #[tokio::test]
+    async fn ping_tops_up_previous_working_with_new_configs() {
+        // Previously working configs that still verify keep their seats in
+        // previous order (even if slower); the shortfall to top_n fills from
+        // newly verified working configs by latency.
+        let first = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback binds");
+        let second = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback binds");
+        let newcomer = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback binds");
+        let port_of =
+            |listener: &std::net::TcpListener| listener.local_addr().expect("listener addr").port();
+        let mut config = manual_trigger_test_config();
+        config.prioritize_stability = true;
+        config.top_n = 3;
+        let database = manual_trigger_test_database();
+        let mut slow_old = ranked(
+            "slow-old",
+            "vless://00000000-0000-0000-0000-000000000011@127.0.0.1#slow-old",
+            true,
+            Some(9_000),
+        );
+        slow_old.endpoint = crate::model::Endpoint {
+            host: "127.0.0.1".to_string(),
+            port: port_of(&first),
+        };
+        let mut fast_old = ranked(
+            "fast-old",
+            "vless://00000000-0000-0000-0000-000000000012@127.0.0.1#fast-old",
+            true,
+            Some(100),
+        );
+        fast_old.endpoint = crate::model::Endpoint {
+            host: "127.0.0.1".to_string(),
+            port: port_of(&second),
+        };
+        let mut revived = ranked(
+            "revived",
+            "vless://00000000-0000-0000-0000-000000000013@127.0.0.1#revived",
+            false,
+            None,
+        );
+        revived.endpoint = crate::model::Endpoint {
+            host: "127.0.0.1".to_string(),
+            port: port_of(&newcomer),
+        };
+        let state = Arc::new(tokio::sync::RwLock::new(RuntimeState {
+            ranked: vec![slow_old, fast_old, revived],
+            ..Default::default()
+        }));
+        let runtime_config = Arc::new(tokio::sync::RwLock::new(RuntimeConfig::from(&config)));
+        let cycle = Arc::new(tokio::sync::Mutex::new(()));
+
+        let preempted = ping_once(
+            &config,
+            database,
+            state.clone(),
+            runtime_config,
+            cycle,
+            false,
+            Arc::new(AtomicBool::new(false)),
+            true,
+        )
+        .await
+        .expect("ping succeeds");
+        assert!(!preempted);
+
+        let runtime = state.read().await;
+        assert_eq!(runtime.reachable_candidates, 3);
+        // Previous order kept (slow-old ahead of fast-old despite latency),
+        // newcomer fills the shortfall last.
+        let head: Vec<&str> = runtime
+            .ranked
+            .iter()
+            .filter(|item| item.reachable)
+            .map(|item| item.name.as_str())
+            .collect();
+        assert_eq!(head, vec!["slow-old", "fast-old", "revived"]);
+        assert!(
+            runtime
+                .logs
+                .iter()
+                .any(|line| line.contains("kept 2 previous + 1 new working"))
+        );
+        drop(runtime);
+        drop((first, second, newcomer));
     }
 
     #[tokio::test]

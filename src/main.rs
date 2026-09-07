@@ -1697,23 +1697,34 @@ async fn ping_once(
     );
     // Same stability fallback as the fetch cycle: a ping that verifies
     // nothing working must not blank a live working set (or wipe memory).
-    let working = if keep_previous_working_set(
-        config.prioritize_stability,
-        &ranked,
-        &progress_state.ranked,
-    ) {
-        let kept = progress_state
-            .ranked
-            .iter()
-            .filter(|item| item.reachable)
-            .count();
+    // Shrink guard: a ping that verifies fewer working configs than served
+    // before must not shrink the live set either — the retest only saw a
+    // degraded moment, and the next fetch rediscovers from the full pool.
+    let previous_working = progress_state
+        .ranked
+        .iter()
+        .filter(|item| item.reachable)
+        .count();
+    let verified_working = ranked.iter().filter(|item| item.reachable).count();
+    let shrank =
+        config.prioritize_stability && verified_working > 0 && verified_working < previous_working;
+    let fell_back =
+        keep_previous_working_set(config.prioritize_stability, &ranked, &progress_state.ranked);
+    if fell_back {
         warn!(
-            previous_working = kept,
+            previous_working,
             "ping verified no working configs; keeping previous working set"
         );
+    } else if shrank {
+        warn!(
+            previous_working,
+            verified_working, "ping verified fewer working configs; keeping previous working set"
+        );
+    }
+    let working = if fell_back || shrank {
         ranked.clone_from(&progress_state.ranked);
         stable_working_counts.clone_from(&progress_state.stable_working_counts);
-        kept
+        previous_working
     } else {
         persist_ranked_configs(&database, &ranked, config.top_n, 0, false).await?;
         progress_state.reachable_candidates
@@ -1728,11 +1739,19 @@ async fn ping_once(
         runtime.last_error = None;
     }
 
-    let summary = format!(
-        "{actor} Ping finished: {working} working of {} cached configs in {}",
-        progress_state.tested_candidates,
-        format_duration_short(started_instant.elapsed().as_millis())
-    );
+    let summary = if shrank {
+        format!(
+            "{actor} Ping finished: verified {verified_working} working of {} cached configs in {}; kept previous {previous_working} working configs",
+            progress_state.tested_candidates,
+            format_duration_short(started_instant.elapsed().as_millis())
+        )
+    } else {
+        format!(
+            "{actor} Ping finished: {working} working of {} cached configs in {}",
+            progress_state.tested_candidates,
+            format_duration_short(started_instant.elapsed().as_millis())
+        )
+    };
     info!(summary = %summary, "ping finished");
     if print_compact_progress {
         print_log(&summary);
@@ -3833,6 +3852,70 @@ mod tests {
                 .any(|line| line.contains("Ping started"))
         );
         drop(runtime);
+    }
+
+    #[tokio::test]
+    async fn ping_keeps_previous_working_set_when_verifying_fewer() {
+        // A degraded ping must not shrink the live set: two previously
+        // working configs, one now failing — the ping keeps serving both
+        // ("as perfect as previous") and says so in Recent Logs.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback binds");
+        let open_port = listener.local_addr().expect("listener addr").port();
+        let mut config = manual_trigger_test_config();
+        config.prioritize_stability = true;
+        let database = manual_trigger_test_database();
+        let mut alive = ranked(
+            "alive",
+            "vless://00000000-0000-0000-0000-000000000001@127.0.0.1#alive",
+            true,
+            Some(5),
+        );
+        alive.endpoint = crate::model::Endpoint {
+            host: "127.0.0.1".to_string(),
+            port: open_port,
+        };
+        let mut dead = ranked(
+            "dead",
+            "vless://00000000-0000-0000-0000-000000000002@127.0.0.1#dead",
+            true,
+            Some(7),
+        );
+        dead.endpoint = crate::model::Endpoint {
+            host: "127.0.0.1".to_string(),
+            port: 9,
+        };
+        let state = Arc::new(tokio::sync::RwLock::new(RuntimeState {
+            ranked: vec![alive, dead],
+            ..Default::default()
+        }));
+        let runtime_config = Arc::new(tokio::sync::RwLock::new(RuntimeConfig::from(&config)));
+        let cycle = Arc::new(tokio::sync::Mutex::new(()));
+
+        let preempted = ping_once(
+            &config,
+            database,
+            state.clone(),
+            runtime_config,
+            cycle,
+            false,
+            Arc::new(AtomicBool::new(false)),
+            true,
+        )
+        .await
+        .expect("ping succeeds");
+        assert!(!preempted);
+
+        let runtime = state.read().await;
+        assert_eq!(runtime.reachable_candidates, 2);
+        assert!(runtime.ranked.iter().all(|item| item.reachable));
+        assert!(
+            runtime
+                .logs
+                .iter()
+                .any(|line| line.contains("kept previous 2 working configs"))
+        );
+        drop(runtime);
+        drop(listener);
     }
 
     #[tokio::test]

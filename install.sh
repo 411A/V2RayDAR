@@ -329,11 +329,13 @@ verify_checksum() {
 }
 
 # ─── Country IP Database (GeoIP) ─────────────────────────────────────────────
-# Keyless ipdeny zone files, refreshed independently of app releases into
-# <data-root>/geoip (v4 zones plus an ipv6/ subdir). The app loads them at
-# startup (see src/geoip.rs) and runs fine without them. Every installer run
-# refreshes unconditionally; failures never fail the install — callers run
-# this in a subshell and warn on error.
+# Keyless ipdeny zone blocks, refreshed independently of app releases into
+# <data-root>/geoip/zones.txt (one "<cc> <cidr>" per line, v4 and v6 mixed;
+# the app prefers it over loose files). The MaxMind mmdb beside it stays the
+# primary tier and is never touched by the zone refresh. The app loads both
+# at startup (see src/geoip.rs) and runs fine without them. Every installer
+# run refreshes unconditionally; failures never fail the install — callers
+# run this in a subshell and warn on error.
 
 GEOIP_V4_URL="https://www.ipdeny.com/ipblocks/data/countries/all-zones.tar.gz"
 GEOIP_V4_MD5_URL="https://www.ipdeny.com/ipblocks/data/countries/MD5SUM"
@@ -441,7 +443,34 @@ refresh_geoip_mmdb() {
     return 0
 }
 
-# Download, verify, and atomically install fresh zone files into a geoip dir.
+# Consolidate verified zone files into one "<cc> <cidr>" file (v4 + v6).
+# Blank lines and publisher comments never reach the output.
+consolidate_zone_tree() {
+    _staged="$1"
+    _out="$2"
+    _stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date)"
+    {
+        printf '# V2RayDAR consolidated country zones (<cc> <cidr>), generated %s\n' "$_stamp"
+        for _path in "$_staged"/*.zone "$_staged"/ipv6/*.zone; do
+            [ -f "$_path" ] || continue
+            _file="$(basename "$_path")"
+            _stem="${_file%.zone}"
+            case "$_stem" in
+                [A-Za-z][A-Za-z]) ;;
+                *) continue ;;
+            esac
+            while IFS= read -r _line || [ -n "$_line" ]; do
+                case "$_line" in ''|'#'*) continue ;; esac
+                printf '%s %s\n' "$_stem" "$_line"
+            done < "$_path"
+        done
+    } > "$_out"
+}
+
+# Download, verify, and install fresh zones as one zones.txt into a geoip
+# dir. Only zones.txt and stale loose files are touched: the MaxMind mmdb
+# beside them (primary tier) is preserved, and legacy <cc>.zone files plus
+# the ipv6/ subdir are removed once the single file lands.
 refresh_geoip_data() {
     _geoip_dir="$1"
     info "updating country IP database..."
@@ -480,13 +509,20 @@ refresh_geoip_data() {
         return 1
     fi
 
+    consolidate_zone_tree "$_tmpdir/stage" "$_tmpdir/zones.txt"
+    _prefixes="$(grep -c -v '^#' "$_tmpdir/zones.txt" 2>/dev/null || echo 0)"
+    case "$_prefixes" in ''|*[!0-9]*|0) _prefixes=0 ;; esac
+    if [ "$_prefixes" -eq 0 ]; then
+        warn "GeoIP consolidation produced no prefixes, keeping existing data"
+        rm -rf "$_tmpdir"
+        return 1
+    fi
     mkdir -p "$_geoip_dir"
-    mv "$_tmpdir/stage" "$_tmpdir/new" || { rm -rf "$_tmpdir"; return 1; }
-    rm -rf "$_geoip_dir" || { rm -rf "$_tmpdir"; return 1; }
-    mv "$_tmpdir/new" "$_geoip_dir" || { rm -rf "$_tmpdir"; return 1; }
+    mv "$_tmpdir/zones.txt" "$_geoip_dir/zones.txt" || { rm -rf "$_tmpdir"; return 1; }
+    rm -f "$_geoip_dir"/*.zone
+    rm -rf "$_geoip_dir/ipv6"
     rm -rf "$_tmpdir"
-    _zones="$(find "$_geoip_dir" -name '*.zone' | wc -l | tr -d ' ')"
-    info "country IP database updated ($_zones zones)"
+    info "country IP database updated ($_prefixes prefixes in zones.txt)"
 }
 
 # ─── Extract ───────────────────────────────────────────────────────────────────
@@ -846,7 +882,7 @@ main() {
                 fi
                 echo ""
                 # No new app version: still refresh country data (MaxMind
-                # database first, zone files as its fallback).
+                # database first, zones.txt as its fallback).
                 cleanup_legacy_mmdb
                 ( refresh_geoip_mmdb "$(geoip_data_dir_for_found)" ) \
                     || warn "GeoIP database update failed, keeping existing data"

@@ -11,10 +11,11 @@ use tracing::{debug, info, warn};
 // 1. MaxMind `GeoLite2-Country.mmdb` (most accurate), republished keyless by
 //    P3TERX/GeoLite.mmdb at
 //    `https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-Country.mmdb`
-// 2. Fallback: per-country CIDR zone files (`<cc>.zone`, one
-//    `address/prefix` per line) from ipdeny country blocks (free, keyless):
-//    IPv4 `all-zones.tar.gz` plus the IPv6 archive, extracted into
-//    `<data-root>/geoip/` with an `ipv6/` subdir for the v6 files.
+// 2. Fallback: one consolidated `zones.txt` (`<cc> <address/prefix>` per
+//    line, v4 and v6 mixed) built by the installer from the ipdeny country
+//    blocks (free, keyless). The pre-consolidation layout of loose
+//    `<cc>.zone` files plus an `ipv6/` subdir is still read when no
+//    `zones.txt` is present (e.g. an install the new installer never touched).
 //
 // A lookup consults the mmdb first and falls back to the zones on miss or
 // error, so a stale or missing tier never blanks country detection while
@@ -162,13 +163,29 @@ fn parse_cidr_v6(line: &str) -> Option<(u128, u128, u8)> {
     Some((start, start | !mask, len))
 }
 
-/// Load every `<cc>.zone` file in `dir` plus `dir/ipv6/*.zone` into a [`ZoneDb`].
+/// Consolidated fallback file the installer builds from the ipdeny archives
+/// (one `<cc> <address/prefix>` per line, v4 and v6 mixed).
+pub const CONSOLIDATED_ZONES_FILE_NAME: &str = "zones.txt";
+
+/// Load the zone fallback tier from `dir` into a [`ZoneDb`].
+///
+/// A `zones.txt` single file wins when present (what the current installer
+/// writes); otherwise the legacy loose layout is scanned. Blank and `#`
+/// lines are skipped; malformed lines are skipped with a debug count so one
+/// bad line can never take down the whole database. An empty source yields
+/// an empty (but valid) database.
+pub fn load_dir(dir: &Path) -> Result<ZoneDb> {
+    let single = dir.join(CONSOLIDATED_ZONES_FILE_NAME);
+    if single.is_file() {
+        return load_consolidated(&single);
+    }
+    load_legacy_dir(dir)
+}
+
+/// Load every `<cc>.zone` file in `dir` plus `dir/ipv6/*.zone`.
 ///
 /// The country code is the lowercase 2-letter file stem (`us.zone` → `US`).
-/// Blank lines are skipped; malformed lines are skipped with a debug count so
-/// one bad line can never take down the whole database. An empty directory
-/// yields an empty (but valid) database.
-pub fn load_dir(dir: &Path) -> Result<ZoneDb> {
+fn load_legacy_dir(dir: &Path) -> Result<ZoneDb> {
     let mut db = ZoneDb::default();
     let mut pool: HashMap<String, u16> = HashMap::new();
     let mut skipped = ingest_dir(dir, false, &mut db, &mut pool)?;
@@ -176,9 +193,76 @@ pub fn load_dir(dir: &Path) -> Result<ZoneDb> {
     if v6_dir.is_dir() {
         skipped += ingest_dir(&v6_dir, true, &mut db, &mut pool)?;
     }
+    sort_ranges(&mut db);
+    if skipped > 0 {
+        debug!(skipped, dir = %dir.display(), "skipped malformed zone lines");
+    }
+    Ok(db)
+}
 
-    // Sort by start so the lookup walk works; longest-first on ties so the
-    // best match is found (and the walk stops) as early as possible.
+/// Load a consolidated `zones.txt` (`<cc> <address/prefix>` per line).
+///
+/// v4 and v6 blocks share the file; each line is routed by parseability.
+/// Country codes are case-insensitive (`us` and `US` both work).
+pub fn load_consolidated(path: &Path) -> Result<ZoneDb> {
+    let mut db = ZoneDb::default();
+    let mut pool: HashMap<String, u16> = HashMap::new();
+    let mut skipped = 0usize;
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("unable to read {}", path.display()))?;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut parts = line.split_whitespace();
+        match (parts.next(), parts.next(), parts.next()) {
+            (Some(code), Some(cidr), None)
+                if code.len() == 2 && code.bytes().all(|b| b.is_ascii_alphabetic()) =>
+            {
+                let country = intern_country(&mut db, &mut pool, &code.to_ascii_uppercase());
+                if !push_cidr(&mut db, country, cidr) {
+                    skipped += 1;
+                }
+            }
+            _ => skipped += 1,
+        }
+    }
+    sort_ranges(&mut db);
+    if skipped > 0 {
+        debug!(skipped, path = %path.display(), "skipped malformed zone lines");
+    }
+    Ok(db)
+}
+
+/// Push one `address/prefix` line as v4 (or v6 when it parses as v6).
+/// `false` when the line is not a valid CIDR of either family.
+fn push_cidr(db: &mut ZoneDb, country: u16, cidr: &str) -> bool {
+    let cidr = cidr.trim();
+    if let Some((start, end, len)) = parse_cidr_v4(cidr) {
+        db.v4.push(V4Range {
+            start,
+            end,
+            len,
+            country,
+        });
+        return true;
+    }
+    if let Some((start, end, len)) = parse_cidr_v6(cidr) {
+        db.v6.push(V6Range {
+            start,
+            end,
+            len,
+            country,
+        });
+        return true;
+    }
+    false
+}
+
+/// Sort by start so the lookup walk works; longest-first on ties so the best
+/// match is found (and the walk stops) as early as possible.
+fn sort_ranges(db: &mut ZoneDb) {
     db.v4.sort_by(|a, b| {
         a.start
             .cmp(&b.start)
@@ -191,10 +275,6 @@ pub fn load_dir(dir: &Path) -> Result<ZoneDb> {
             .then_with(|| b.len.cmp(&a.len))
             .then_with(|| a.country.cmp(&b.country))
     });
-    if skipped > 0 {
-        debug!(skipped, dir = %dir.display(), "skipped malformed zone lines");
-    }
-    Ok(db)
 }
 
 /// Intern a country code into the pool, returning its index.
@@ -685,6 +765,57 @@ mod tests {
             ))),
             Some("US")
         );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn load_consolidated_reads_mixed_v4_v6_lines() {
+        let dir = std::env::temp_dir().join(format!(
+            "v2raydar-geoip-single-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("zones.txt");
+        std::fs::write(
+            &path,
+            "# generated\nus 1.0.0.0/24\nnl 3.0.0.0/24\nDE 2001:db8::/32\n\nbogus\nus no-slash\nxx 1.2.3.0/33\ntoo many parts here\n",
+        )
+        .expect("write");
+
+        let db = load_consolidated(&path).expect("loads");
+        assert_eq!(db.lookup(v4([1, 0, 0, 7])), Some("US"));
+        assert_eq!(db.lookup(v4([3, 0, 0, 1])), Some("NL"));
+        assert_eq!(db.lookup(v4([9, 9, 9, 9])), None);
+        assert_eq!(
+            db.lookup(IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1))),
+            Some("DE")
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn load_dir_prefers_single_file_over_legacy_zones() {
+        let dir = std::env::temp_dir().join(format!(
+            "v2raydar-geoip-prefer-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        // Stale legacy file disagrees: the single file must win.
+        std::fs::write(dir.join("us.zone"), "1.0.0.0/24\n").expect("write");
+        std::fs::write(dir.join("zones.txt"), "nl 1.0.0.0/24\n").expect("write");
+
+        let db = load_dir(&dir).expect("loads");
+        assert_eq!(db.lookup(v4([1, 0, 0, 7])), Some("NL"));
 
         std::fs::remove_dir_all(&dir).ok();
     }

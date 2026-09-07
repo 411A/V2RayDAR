@@ -51,14 +51,11 @@
 
 ## 📦 Installation rapide
 
-Copiez la commande correspondant à votre OS dans un terminal. Le script d'installation détecte votre plateforme, télécharge la dernière version avec `sing-box` et configure tout. Le mode portable s'installe dans `Desktop/V2RayDAR` (si le dossier Bureau existe), sinon dans `~/V2RayDAR`. Le mode utilisateur installe le binaire dans `~/.local/bin`.
+Collez la ligne de votre OS dans un terminal et appuyez sur Entrée — puis encore Entrée (réponse par défaut Oui) et l'installateur termine automatiquement avec les réglages par défaut (mise à jour sur place si déjà installé). Répondez Non pour les invites étape par étape. Le script d'installation détecte votre plateforme, télécharge la dernière version avec `sing-box` et configure tout. Le mode portable s'installe dans `Desktop/V2RayDAR` (si le dossier Bureau existe), sinon dans `~/V2RayDAR`. Le mode utilisateur installe le binaire dans `~/.local/bin`.
 
 **Mode portable** (recommandé) — tout dans un dossier, lancement avec `--portable` :
 ```bash
-# Linux
-curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh
-
-# macOS
+# Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh
 
 # Windows

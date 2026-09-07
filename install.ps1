@@ -1,4 +1,4 @@
-# V2RayDAR Installer for Windows
+﻿# V2RayDAR Installer for Windows
 # Usage:
 #   irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
 #   .\install.ps1 -Version 0.4.0 -Portable
@@ -584,6 +584,15 @@ function Main {
         Write-Host ""
         Write-Info "Detected: Windows $arch"
 
+        # One-question auto mode: a single Enter (default Y) installs/updates
+        # with defaults and asks nothing else; N keeps the step-by-step prompts.
+        if (-not $Yes -and [Environment]::UserInteractive -and (-not [Console]::IsInputRedirected)) {
+            Write-Host ""
+            if (Confirm -Prompt "automatic install/update to v$Version (no more questions)?" -Default $true) {
+                $Yes = $true
+            }
+        }
+
         $found = Find-Installed
 
         if ($found -and $DevBuild) {
@@ -661,6 +670,22 @@ function Main {
         # ─── Proceed with installation ──────────────────────────────────────────
         Write-Host ""
 
+        # Auto mode with an existing install: update in place instead of
+        # dropping a second copy at the portable default (explicit -Portable/
+        # -User/-Dir flags still win).
+        if ($Yes -and [string]::IsNullOrWhiteSpace($Dir) -and (-not $Portable) -and (-not $User) -and [string]::IsNullOrWhiteSpace($Script:InstallMode) -and $found -and $Script:FoundPath -and (Test-Path $Script:FoundPath)) {
+            $localAppData = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { "$env:USERPROFILE\AppData\Local" }
+            $defaultUserDir = Join-Path $localAppData "V2RayDAR"
+            if ($Script:FoundPath -eq $defaultUserDir) {
+                $Script:InstallMode = "user"
+            }
+            else {
+                $Script:InstallMode = "portable"
+            }
+            $Script:InstallDir = $Script:FoundPath
+            Write-Info "auto mode: updating in place at $($Script:InstallDir)"
+        }
+
         # Determine install mode
         if ($Portable) {
             $Script:InstallMode = "portable"
@@ -674,7 +699,7 @@ function Main {
             $localAppData = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { "$env:USERPROFILE\AppData\Local" }
             $Script:InstallDir = Join-Path $localAppData "V2RayDAR"
         }
-        else {
+        elseif ([string]::IsNullOrWhiteSpace($Script:InstallMode)) {
             Select-InstallMode
         }
 

@@ -136,14 +136,16 @@ pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar &&
 | <code>Esc</code> / <code>Ctrl+H</code> | &#x200F;بازگشت |
 | <code>Space</code> | &#x200F;فعال/غیرفعال کردن اشتراک |
 | <code>e</code> | &#x200F;ویرایش اشتراک انتخاب‌شده |
+| <code>Ctrl+R</code> | &#x200F;بروزرسانی دستی (دریافت دوباره، فقط وقتی اجرا نمی‌شود) |
+| <code>Ctrl+P</code> | &#x200F;پینگ دستی پیکربندی‌های ذخیره‌شده (وقتی چرخه‌ای در حال اجراست نه) |
 | <code>q</code> | &#x200F;خروج |
 | <code>:</code> | &#x200F;ورود به حالت فرمان |
 
 </div>
 
-&#x200F;فرمان‌های حالت <code>:</code>: <code>:q</code> خروج، <code>:w</code> ذخیره، <code>:a</code> افزودن، <code>:d</code> حذف، <code>:n</code> تغییر نام، <code>:u</code> تغییر URL، <code>:p</code> تغییر اولویت.
+&#x200F;فرمان‌های حالت <code>:</code>: <code>:q</code> خروج، <code>:w</code> ذخیره، <code>:a</code> افزودن، <code>:d</code> حذف، <code>:n</code> تغییر نام، <code>:u</code> تغییر URL، <code>:p</code> تغییر اولویت، <code>:r</code> بروزرسانی، <code>:ping</code> پینگ.
 
-4. &#x200F;<strong>تغییر تنظیمات</strong> &#x200F;از منوی اصلی TUI (<code>Configurations</code>) یا ویرایش مستقیم <code>configs.yaml</code> — تغییرات در بروزرسانی بعدی اعمال می‌شوند. تنظیمات کلیدی: <code>top_n</code>، <code>refresh_seconds</code>، <code>sharing.enabled</code>، <code>probe.mode</code>.
+4. &#x200F;<strong>تغییر تنظیمات</strong> &#x200F;از منوی اصلی TUI (<code>Configurations</code>) یا ویرایش مستقیم <code>configs.yaml</code> — تغییرات در بروزرسانی بعدی اعمال می‌شوند. تنظیمات کلیدی: <code>top_n</code>، <code>refresh_seconds</code>، <code>ping_seconds</code>، <code>sharing.enabled</code>، <code>probe.mode</code>. تنظیمات جدید نسخه‌های تازه‌تر در اجرا با مقدار پیش‌فرض به پرونده شما افزوده می‌شوند؛ مقادیر شما دست‌نخورده می‌مانند.
 5. &#x200F;<strong>خروج</strong> &#x200F;با <code>q</code> یا <code>:q</code>. با خروج، اندپوینت متوقف می‌شود.
 
 ### &#x200F;حالت‌های اجرا
@@ -173,7 +175,8 @@ v2raydar --uninstall    # حذف داده‌های برنامه و قوانین 
 | --- | --- | --- |
 | <code>bind</code> | <code>127.0.0.1:27141</code> | &#x200F;آدرس محلی HTTP |
 | <code>top_n</code> | <code>10</code> | &#x200F;تعداد کانفیگ‌های کارآمد منتشر شده |
-| <code>refresh_seconds</code> | <code>300</code> | &#x200F;فاصله بروزرسانی خودکار (ثانیه) |
+| <code>refresh_seconds</code> | <code>900</code> | &#x200F;فاصله بروزرسانی خودکار (ثانیه) |
+| <code>ping_seconds</code> | <code>300</code> | &#x200F;فاصله پینگ دوباره پیکربندی‌های ذخیره‌شده بدون دریافت دوباره (ثانیه)؛ 0 غیرفعال می‌کند |
 | <code>encoded_subscription</code> | <code>true</code> | &#x200F;برگرداندن base64 برای <code>/subscription</code> |
 | <code>prioritize_stability</code> | <code>true</code> | &#x200F;اولویت با کانفیگ‌های پایدار قبلی |
 | <code>return_configs_asap</code> | <code>false</code> | &#x200F;انتشار سریع کانفیگ‌های کارآمد |

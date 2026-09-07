@@ -108,10 +108,12 @@ Après l'installation avec le script ci-dessus, lancez `v2raydar` (ou `v2raydar.
 | `Esc` / `Ctrl+H` | Retour |
 | `Space` | Activer/désactiver l'abonnement |
 | `e` | Modifier l'abonnement sélectionné |
+| `Ctrl+R` | Actualisation manuelle (re-télécharge une fois, sauf si en cours) |
+| `Ctrl+P` | Re-test manuel des configs en cache (sauf si un cycle est en cours) |
 | `q` | Quitter |
-| `:` | Mode commande — `:q` quitter, `:w` sauvegarder, `:a` ajouter, `:d` supprimer, `:n` renommer, `:u` URL, `:p` priorité |
+| `:` | Mode commande — `:q` quitter, `:w` sauvegarder, `:a` ajouter, `:d` supprimer, `:n` renommer, `:u` URL, `:p` priorité, `:r` actualiser, `:ping` re-tester |
 
-4. **Modifier les paramètres** depuis le menu principal TUI (Configurations) ou en éditant directement `configs.yaml` — les changements prennent effet au prochain rafraîchissement. Paramètres clés : `top_n`, `refresh_seconds`, `sharing.enabled`, `probe.mode`.
+4. **Modifier les paramètres** depuis le menu principal TUI (Configurations) ou en éditant directement `configs.yaml` — les changements prennent effet au prochain rafraîchissement. Paramètres clés : `top_n`, `refresh_seconds`, `ping_seconds`, `sharing.enabled`, `probe.mode`. Les nouveaux réglages sont ajoutés avec leurs valeurs par défaut à votre fichier au démarrage ; vos valeurs sont conservées.
 5. **Quitter** avec `q` ou `:q`. L'endpoint s'arrête à la fermeture.
 
 ### Modes d'exécution
@@ -135,7 +137,8 @@ Les utilisateurs Windows remplacent `v2raydar` par `v2raydar.exe`. Sous macOS, o
 | --- | --- | --- |
 | `bind` | `127.0.0.1:27141` | Adresse HTTP locale pour `/subscription`, `/subscription.txt`, `/results` et `/health`. |
 | `top_n` | `10` | Nombre de configs fonctionnelles publiées aux clients. |
-| `refresh_seconds` | `300` | Intervalle de rafraîchissement automatique (secondes) ; `0` désactive le timer. |
+| `refresh_seconds` | `900` | Intervalle de rafraîchissement automatique (secondes) ; `0` désactive le timer. |
+| `ping_seconds` | `300` | Intervalle de re-test des configs en cache sans re-téléchargement (secondes) ; `0` désactive. |
 | `encoded_subscription` | `true` | `/subscription` renvoie du base64 (compatible v2rayN / v2rayNG). |
 | `prioritize_stability` | `true` | Re-vérifie le Top-N sauvegardé de la session précédente et les garde en tête, même si de nouvelles configs avec latence plus basse apparaissent. Avec `false`, préfère toute config fonctionnelle à faible latence. |
 | `return_configs_asap` | `false` | Avec `true`, publie les configs fonctionnelles dès leur découverte (max `top_n`) ; les premières configs peuvent ne pas avoir la meilleure latence ou stabilité. |

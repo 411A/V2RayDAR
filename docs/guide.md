@@ -732,8 +732,11 @@ After that:
 
 - `refresh_seconds: 900` refreshes every fifteen minutes.
 - `ping_seconds: 300` re-pings cached configs every five minutes without re-fetching.
+- `Ctrl+R` triggers one manual refresh (re-fetch); refused while a refresh is running.
+- `Ctrl+P` triggers one manual re-ping; refused while any cycle is running.
 - `refresh_seconds: 0` disables timer refreshes.
 - Relevant config-file changes can still trigger refreshes even when `refresh_seconds` is `0`.
+- When a newer version adds settings, the missing keys are appended to your existing `configs.yaml` with defaults on startup; your values, comments, and subscriptions are left untouched.
 
 Headless mode prints compact progress by default and a detailed trace with `--verbose`.
 
@@ -777,6 +780,8 @@ Global controls:
 | `s` | Save editable config state. |
 | Space | Toggle the selected subscription where applicable. |
 | `e` | Open actions for the selected subscription. |
+| `Ctrl+R` | Run one manual refresh (re-fetch); refused while a refresh is running. |
+| `Ctrl+P` | Re-ping cached configs once; refused while any cycle is running. |
 | `:` | Enter command mode. |
 
 Command mode accepts:
@@ -791,6 +796,8 @@ Command mode accepts:
 | `:t`, `:toggle` | Enable or disable selected subscription. |
 | `:d`, `:delete` | Delete selected subscription. |
 | `:w`, `:save` | Save config changes. |
+| `:r`, `:refresh` | Run one manual refresh (same rules as `Ctrl+R`). |
+| `:ping` | Re-ping cached configs once (same rules as `Ctrl+P`). |
 
 Adding a subscription is a four-step flow:
 

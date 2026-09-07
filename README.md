@@ -110,10 +110,12 @@ After installing with the script above, run `v2raydar` (or `v2raydar.exe` on Win
 | `Esc` / `Ctrl+H` | Go back |
 | `Space` | Toggle subscription on/off |
 | `e` | Edit selected subscription |
+| `Ctrl+R` | Manual refresh — re-fetch once, unless a refresh is running |
+| `Ctrl+P` | Manual re-ping of cached configs, unless any cycle is running |
 | `q` | Quit |
-| `:` | Command mode — `:q` quit, `:w` save, `:a` add, `:d` delete, `:n` rename, `:u` URL, `:p` priority |
+| `:` | Command mode — `:q` quit, `:w` save, `:a` add, `:d` delete, `:n` rename, `:u` URL, `:p` priority, `:r` refresh, `:ping` |
 
-4. **Change settings** from the TUI main menu (Configurations) or edit `configs.yaml` directly — changes take effect on the next refresh. Key settings: `top_n`, `refresh_seconds`, `sharing.enabled`, `probe.mode`.
+4. **Change settings** from the TUI main menu (Configurations) or edit `configs.yaml` directly — changes take effect on the next refresh. Key settings: `top_n`, `refresh_seconds`, `ping_seconds`, `sharing.enabled`, `probe.mode`. Settings added by newer versions are appended to older files with defaults on startup; your values are never overwritten.
 5. **Exit** with `q` or `:q`. The endpoint stops when the app exits.
 
 ### Run modes

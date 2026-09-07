@@ -108,10 +108,12 @@ pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar &&
 | `Esc` / `Ctrl+H` | 返回 |
 | `Space` | 切换订阅开关 |
 | `e` | 编辑选中的订阅 |
+| `Ctrl+R` | 手动刷新（重新获取一次，刷新运行时不可用） |
+| `Ctrl+P` | 手动重测已缓存的配置（有任务运行时不可用） |
 | `q` | 退出 |
-| `:` | 命令模式 — `:q` 退出，`:w` 保存，`:a` 添加，`:d` 删除，`:n` 重命名，`:u` 修改 URL，`:p` 修改优先级 |
+| `:` | 命令模式 — `:q` 退出，`:w` 保存，`:a` 添加，`:d` 删除，`:n` 重命名，`:u` 修改 URL，`:p` 修改优先级，`:r` 刷新，`:ping` 重测 |
 
-4. **更改设置** — 从 TUI 主菜单（Configurations）或直接编辑 `configs.yaml`，更改将在下次刷新时生效。关键设置：`top_n`、`refresh_seconds`、`sharing.enabled`、`probe.mode`。
+4. **更改设置** — 从 TUI 主菜单（Configurations）或直接编辑 `configs.yaml`，更改将在下次刷新时生效。关键设置：`top_n`、`refresh_seconds`、`ping_seconds`、`sharing.enabled`、`probe.mode`。新版本新增的设置项会在启动时以默认值追加到旧配置文件，你已有的值不会被改动。
 5. **退出** — 按 `q` 或 `:q`。退出后端点停止服务。
 
 ### 运行模式
@@ -135,7 +137,8 @@ Windows 用户将 `v2raydar` 替换为 `v2raydar.exe`。macOS 上首次打开捆
 | --- | --- | --- |
 | `bind` | `127.0.0.1:27141` | 本地 HTTP 绑定地址，用于 `/subscription`、`/subscription.txt`、`/results` 和 `/health`。 |
 | `top_n` | `10` | 发布给客户端的可用配置数量。 |
-| `refresh_seconds` | `300` | 自动刷新间隔（秒）；`0` 禁用定时刷新。 |
+| `refresh_seconds` | `900` | 自动刷新间隔（秒）；`0` 禁用定时刷新。 |
+| `ping_seconds` | `300` | 已缓存配置的重测间隔（秒），不重新获取订阅；`0` 禁用。 |
 | `encoded_subscription` | `true` | `/subscription` 返回 base64 编码（兼容 v2rayN / v2rayNG）。 |
 | `prioritize_stability` | `true` | 优先重新探测上一轮保存的 Top-N，即使新发现的配置延迟更低也保持其靠前。设为 `false` 则优先选择低延迟的可用配置。 |
 | `return_configs_asap` | `false` | 设为 `true` 时，找到可用配置后立即发布到端点，最多 `top_n` 个；早期配置可能不是延迟最低或最稳定的。 |

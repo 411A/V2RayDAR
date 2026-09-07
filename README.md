@@ -168,7 +168,7 @@ Windows users replace `v2raydar` with `v2raydar.exe`. On macOS open the bundled 
 | `probe.accepted_statuses` | `[204, 200]` | HTTP statuses counted as success. |
 | `probe.download_url` | `null` | Optional throughput-test target. |
 | `probe.download_bytes_limit` | `1048576` | Upper bound for the optional download test. |
-| `geoip_db_path` | `null` | Optional path to a `GeoLite2-Country.mmdb` file. If `null`, uses the embedded database for country detection. |
+| `geoip_db_path` | `null` | Optional path to a country-zone directory (`<cc>.zone` files, e.g. from ipdeny). If `null`, uses `<data-root>/geoip`, refreshed by the installer. |
 | `subscriptions` | _(pre-selected sources)_ | List of `{ name, url, enabled, priority }` sources. Add your own for better results. |
 
 </details>

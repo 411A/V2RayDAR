@@ -166,7 +166,7 @@ Les utilisateurs Windows remplacent `v2raydar` par `v2raydar.exe`. Sous macOS, o
 | `probe.accepted_statuses` | `[204, 200]` | Codes HTTP considérés comme succès. |
 | `probe.download_url` | `null` | Cible optionnelle de test de débit. |
 | `probe.download_bytes_limit` | `1048576` | Nombre maximal d'octets lus par test de vitesse. |
-| `geoip_db_path` | `null` | Chemin optionnel vers un fichier `GeoLite2-Country.mmdb`. Si `null`, utilise la base intégrée pour la détection de pays. |
+| `geoip_db_path` | `null` | Chemin optionnel vers un répertoire de zones pays (fichiers `<cc>.zone`, p. ex. d'ipdeny). Si `null`, utilise `<data-root>/geoip`, mis à jour par l'installateur. |
 | `subscriptions` | _(sources pré-sélectionnées)_ | Liste de sources `{ name, url, enabled, priority }`. Ajoutez les vôtres pour une meilleure couverture. |
 
 </details>

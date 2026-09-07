@@ -12,7 +12,6 @@ clap = { version = "4.6.1", features = ["derive"] }
 crossterm = "0.29.0"
 futures-util = { version = "0.3.32", default-features = false, features = ["alloc"] }
 getrandom = "0.4.3"
-maxminddb = "0.29.0"
 percent-encoding = "2.3.2"
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm", "layout-cache"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "stream"] }

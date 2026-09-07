@@ -40,8 +40,8 @@ use crate::{
     constants::{
         APP_DATA_DIR_NAME, APP_NAME, CACHE_DIR_NAME, CONFIG_FILE_NAME, CONFIG_WATCH_INTERVAL,
         DB_FILE_NAME, DEFAULT_LOG_FILTER_PLAIN, DEFAULT_LOG_FILTER_TUI, DEFAULT_LOG_FILTER_VERBOSE,
-        FIREWALL_STATE_FILE_NAME, LEGACY_APP_MARKER_FILE_NAME, LEGACY_CACHE_MARKER_FILE_NAME,
-        LOCALHOST_IP, MAX_TUI_LOGS, sing_box_download_url,
+        FIREWALL_STATE_FILE_NAME, GEOIP_DIR_NAME, LEGACY_APP_MARKER_FILE_NAME,
+        LEGACY_CACHE_MARKER_FILE_NAME, LOCALHOST_IP, MAX_TUI_LOGS, sing_box_download_url,
     },
     db::Database,
     model::{Candidate, ProbeStopPolicy, ProgressEvent, RankedConfig, RuntimeConfig, RuntimeState},
@@ -193,16 +193,32 @@ async fn main() -> Result<()> {
         ),
     }
 
-    // Initialize GeoIP database — embedded is primary, file is fallback
-    let geoip_path = config
+    // Initialize GeoIP country zones (ipdeny `<cc>.zone` files, refreshed by
+    // the installer independently of app releases). Explicit `geoip_db_path`
+    // directory wins, otherwise `<root_dir>/geoip`. Legacy `.mmdb` paths are
+    // ignored with a warning — the GeoLite2 format is retired.
+    let geoip_dir = config
         .geoip_db_path
         .as_ref()
         .map(std::path::PathBuf::from)
+        .filter(|path| {
+            if path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("mmdb"))
+            {
+                warn!(
+                    path = %path.display(),
+                    "GeoLite2 .mmdb databases are no longer supported; using zone directory instead"
+                );
+                return false;
+            }
+            true
+        })
         .or_else(|| {
-            let p = paths.root_dir.join("GeoLite2-Country.mmdb");
-            if p.exists() { Some(p) } else { None }
+            let dir = paths.root_dir.join(GEOIP_DIR_NAME);
+            if dir.is_dir() { Some(dir) } else { None }
         });
-    crate::geoip::init(geoip_path.as_deref());
+    crate::geoip::init(geoip_dir.as_deref());
 
     if active_probe_needs_setup(&config, &paths).await {
         if cli.no_tui || cli.once {
@@ -501,6 +517,7 @@ async fn is_known_app_root_entry(entry: &fs::DirEntry) -> Result<bool> {
         | LEGACY_APP_MARKER_FILE_NAME
         | DB_FILE_NAME => Ok(file_type.is_file()),
         CACHE_DIR_NAME => Ok(file_type.is_dir() && is_known_cache_dir(&entry.path()).await?),
+        GEOIP_DIR_NAME => Ok(file_type.is_dir()),
         _ => Ok(false),
     }
 }
@@ -1214,8 +1231,8 @@ async fn refresh_once(
             previous_working = fallback_working,
             "refresh verified no working configs; keeping previous working set"
         );
-        ranked = previous_before_refresh.ranked.clone();
-        stable_working_counts = previous_before_refresh.stable_working_counts.clone();
+        ranked.clone_from(&previous_before_refresh.ranked);
+        stable_working_counts.clone_from(&previous_before_refresh.stable_working_counts);
     } else {
         persist_ranked_configs(
             &database,
@@ -1505,8 +1522,8 @@ async fn ping_once(
             previous_working = kept,
             "ping verified no working configs; keeping previous working set"
         );
-        ranked = progress_state.ranked.clone();
-        stable_working_counts = progress_state.stable_working_counts.clone();
+        ranked.clone_from(&progress_state.ranked);
+        stable_working_counts.clone_from(&progress_state.stable_working_counts);
         kept
     } else {
         persist_ranked_configs(&database, &ranked, config.top_n, 0, false).await?;
@@ -3057,6 +3074,7 @@ mod tests {
 
         let runtime = state.read().await;
         assert!(!runtime.ranked.iter().any(|item| item.reachable));
+        drop(runtime);
     }
 
     #[tokio::test]
@@ -3090,6 +3108,7 @@ mod tests {
         assert_eq!(runtime.ranked.len(), 1);
         assert_eq!(runtime.ranked[0].uri, "vless://prev@example.com:443");
         assert!(runtime.ranked[0].reachable);
+        drop(runtime);
     }
 
     fn manual_trigger_test_config() -> crate::config::AppConfig {

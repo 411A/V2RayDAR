@@ -166,7 +166,7 @@ Windows-пользователи заменяют `v2raydar` на `v2raydar.exe`
 | `probe.accepted_statuses` | `[204, 200]` | HTTP-коды, считающиеся успешными. |
 | `probe.download_url` | `null` | Необязательная цель теста пропускной способности. |
 | `probe.download_bytes_limit` | `1048576` | Максимум байт за тест скорости. |
-| `geoip_db_path` | `null` | Необязательный путь к файлу `GeoLite2-Country.mmdb`. При `null` используется встроенная база для определения страны. |
+| `geoip_db_path` | `null` | Необязательный путь к каталогу country-зон (`<cc>.zone`, например с ipdeny). При `null` используется `<data-root>/geoip`, обновляемый установщиком. |
 | `subscriptions` | _(предвыбранные источники)_ | Список источников `{ name, url, enabled, priority }`. Добавьте свои для лучшего покрытия. |
 
 </details>

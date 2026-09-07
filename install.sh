@@ -328,6 +328,144 @@ verify_checksum() {
     fi
 }
 
+# ─── Country IP Database (GeoIP) ─────────────────────────────────────────────
+# Keyless ipdeny zone files, refreshed independently of app releases into
+# <data-root>/geoip (v4 zones plus an ipv6/ subdir). The app loads them at
+# startup (see src/geoip.rs) and runs fine without them. Refreshes are
+# stamp-gated (7 days) to respect the provider's usage limits, and failures
+# never fail the install — callers run this in a subshell and warn on error.
+
+GEOIP_V4_URL="https://www.ipdeny.com/ipblocks/data/countries/all-zones.tar.gz"
+GEOIP_V4_MD5_URL="https://www.ipdeny.com/ipblocks/data/countries/MD5SUM"
+GEOIP_V6_URL="https://www.ipdeny.com/ipv6/ipaddresses/blocks/ipv6-all-zones.tar.gz"
+GEOIP_V6_MD5_URL="https://www.ipdeny.com/ipv6/ipaddresses/blocks/MD5SUM"
+GEOIP_REFRESH_SECONDS=604800
+GEOIP_STAMP_FILE=".geoip_stamp"
+
+# Data dir for an existing install: user-mode binaries live in a bin dir, so
+# their data follows the XDG-style app root; portable installs keep data
+# next to the binary.
+geoip_data_dir_for_found() {
+    case "$FOUND_PATH" in
+        "$HOME/.local/bin"|"${PREFIX:-/usr/local}/bin")
+            printf '%s' "${XDG_DATA_HOME:-$HOME/.local/share}/V2RayDAR/v2raydar_data/geoip" ;;
+        *)
+            printf '%s' "$FOUND_PATH/v2raydar_data/geoip" ;;
+    esac
+}
+
+# Remove databases from the retired GeoLite2 era (replaced by zone files).
+cleanup_legacy_mmdb() {
+    for _mmdb in \
+        "$FOUND_PATH/GeoLite2-Country.mmdb" \
+        "$FOUND_PATH/v2raydar_data/GeoLite2-Country.mmdb" \
+        "${XDG_DATA_HOME:-$HOME/.local/share}/V2RayDAR/v2raydar_data/GeoLite2-Country.mmdb" \
+        "$HOME/V2RayDAR/v2raydar_data/GeoLite2-Country.mmdb" \
+    ; do
+        if [ -n "$_mmdb" ] && [ -f "$_mmdb" ]; then
+            rm -f "$_mmdb" && info "removed legacy GeoLite2 database: $_mmdb"
+        fi
+    done
+}
+
+# Verify every .zone file in a directory against an MD5SUM listing.
+verify_zone_tree() {
+    _vdir="$1"
+    _md5data="$2"
+    if command -v md5sum >/dev/null 2>&1; then
+        _hasher="md5sum"
+    elif command -v md5 >/dev/null 2>&1; then
+        _hasher="md5 -r"
+    else
+        warn "no md5 tool found, skipping GeoIP verification"
+        return 0
+    fi
+
+    _checked=0
+    while read -r _hash _file; do
+        case "$_file" in *.zone) ;; *) continue ;; esac
+        if [ ! -f "$_vdir/$_file" ]; then
+            warn "GeoIP archive is missing $_file"
+            return 1
+        fi
+        # shellcheck disable=SC2086
+        _actual="$($_hasher "$_vdir/$_file" | awk '{print $1}')"
+        if [ "$_actual" != "$_hash" ]; then
+            warn "GeoIP checksum mismatch for $_file"
+            return 1
+        fi
+        _checked=$((_checked + 1))
+    done <<CHECKSUMS
+$_md5data
+CHECKSUMS
+
+    _files="$(find "$_vdir" -maxdepth 1 -name '*.zone' | wc -l | tr -d ' ')"
+    if [ "$_checked" -eq 0 ] || [ "$_checked" -ne "$_files" ]; then
+        warn "GeoIP file count mismatch (verified $_checked of $_files)"
+        return 1
+    fi
+    return 0
+}
+
+# Download, verify, and atomically install fresh zone files into a geoip dir.
+refresh_geoip_data() {
+    _geoip_dir="$1"
+    _stamp="$_geoip_dir/$GEOIP_STAMP_FILE"
+    _now="$(date +%s)"
+    if [ -f "$_stamp" ]; then
+        _stamped="$(cat "$_stamp" 2>/dev/null || echo 0)"
+        case "$_stamped" in ''|*[!0-9]*) _stamped=0 ;; esac
+        if [ $((_now - _stamped)) -lt $GEOIP_REFRESH_SECONDS ]; then
+            info "country IP database is fresh, skipping update"
+            return 0
+        fi
+    fi
+
+    info "updating country IP database..."
+    _tmpdir="$(mktemp_d)"
+    set +e
+    _v4md5="$(curl -fsSL "$GEOIP_V4_MD5_URL" 2>/dev/null)"
+    _v6md5="$(curl -fsSL "$GEOIP_V6_MD5_URL" 2>/dev/null)"
+    set -e
+    if [ -z "${_v4md5:-}" ] || [ -z "${_v6md5:-}" ]; then
+        warn "could not fetch GeoIP checksums, keeping existing data"
+        rm -rf "$_tmpdir"
+        return 1
+    fi
+    download_file "$GEOIP_V4_URL" "$_tmpdir/v4.tar.gz"
+    download_file "$GEOIP_V6_URL" "$_tmpdir/v6.tar.gz"
+
+    mkdir -p "$_tmpdir/stage" "$_tmpdir/stage/ipv6"
+    if ! tar xzf "$_tmpdir/v4.tar.gz" -C "$_tmpdir/stage"; then
+        warn "could not extract GeoIP v4 archive, keeping existing data"
+        rm -rf "$_tmpdir"
+        return 1
+    fi
+    if ! tar xzf "$_tmpdir/v6.tar.gz" -C "$_tmpdir/stage/ipv6"; then
+        warn "could not extract GeoIP v6 archive, keeping existing data"
+        rm -rf "$_tmpdir"
+        return 1
+    fi
+    if ! verify_zone_tree "$_tmpdir/stage" "$_v4md5"; then
+        warn "GeoIP v4 verification failed, keeping existing data"
+        rm -rf "$_tmpdir"
+        return 1
+    fi
+    if ! verify_zone_tree "$_tmpdir/stage/ipv6" "$_v6md5"; then
+        warn "GeoIP v6 verification failed, keeping existing data"
+        rm -rf "$_tmpdir"
+        return 1
+    fi
+
+    mkdir -p "$_geoip_dir"
+    mv "$_tmpdir/stage" "$_tmpdir/new" || { rm -rf "$_tmpdir"; return 1; }
+    rm -rf "$_geoip_dir" || { rm -rf "$_tmpdir"; return 1; }
+    mv "$_tmpdir/new" "$_geoip_dir" || { rm -rf "$_tmpdir"; return 1; }
+    printf '%s' "$_now" > "$_geoip_dir/$GEOIP_STAMP_FILE"
+    rm -rf "$_tmpdir"
+    info "country IP database updated"
+}
+
 # ─── Extract ───────────────────────────────────────────────────────────────────
 
 extract_archive() {
@@ -683,6 +821,11 @@ main() {
                     info "location: $FOUND_PATH/$APP_NAME"
                 fi
                 echo ""
+                # No new app version: still refresh the country IP database.
+                cleanup_legacy_mmdb
+                ( refresh_geoip_data "$(geoip_data_dir_for_found)" ) \
+                    || warn "country IP database update failed, keeping existing data"
+                echo ""
                 return
             fi
 
@@ -714,6 +857,10 @@ main() {
                 if [ -n "$FOUND_PATH" ]; then
                     info "location: $FOUND_PATH/$APP_NAME"
                 fi
+                echo ""
+                cleanup_legacy_mmdb
+                ( refresh_geoip_data "$(geoip_data_dir_for_found)" ) \
+                    || warn "country IP database update failed, keeping existing data"
                 echo ""
                 return
             fi
@@ -786,6 +933,17 @@ main() {
         user)       do_user_install "$INSTALL_DIR"
                     add_to_path "$INSTALL_DIR" ;;
     esac
+
+    # Fresh country IP database next to the new install (user-mode binaries
+    # live in a bin dir, so their data follows the XDG-style app root).
+    if [ "$INSTALL_MODE" = "user" ]; then
+        _geoip_dir="${XDG_DATA_HOME:-$HOME/.local/share}/V2RayDAR/v2raydar_data/geoip"
+    else
+        _geoip_dir="$INSTALL_DIR/v2raydar_data/geoip"
+    fi
+    cleanup_legacy_mmdb
+    ( refresh_geoip_data "$_geoip_dir" ) \
+        || warn "country IP database update failed, keeping existing data"
 
     echo ""
     info "done!"

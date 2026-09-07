@@ -310,6 +310,10 @@ async fn main() -> Result<()> {
     // Manual cycle triggers (TUI Ctrl+R / Ctrl+P, `:refresh`, `:ping`).
     let (refresh_trigger_tx, refresh_trigger_rx) = mpsc::unbounded_channel::<()>();
     let (ping_trigger_tx, ping_trigger_rx) = mpsc::unbounded_channel::<()>();
+    // Tells the ping loop to restart its sleep after every successful fetch:
+    // the refresh just revalidated everything, so the ping countdown restarts
+    // full instead of resuming a stale partial interval.
+    let (ping_restart_tx, ping_restart_rx) = mpsc::unbounded_channel::<()>();
     spawn_refresh_loop(
         config_rx.clone(),
         database.clone(),
@@ -319,6 +323,7 @@ async fn main() -> Result<()> {
         shared_ranked.clone(),
         cycle.clone(),
         refresh_trigger_rx,
+        ping_restart_tx,
         cli.no_tui,
         cli.no_tui && !cli.verbose,
     );
@@ -331,6 +336,7 @@ async fn main() -> Result<()> {
         shared_ranked,
         cycle,
         ping_trigger_rx,
+        ping_restart_rx,
         cli.no_tui && !cli.verbose,
     );
     spawn_config_watcher(paths.config_path.clone(), config.bind, config_tx.clone());
@@ -1469,7 +1475,7 @@ async fn set_next_ping_deadline(state: &Arc<RwLock<RuntimeState>>, ping_seconds:
             Some(std::time::Instant::now() + Duration::from_secs(ping_seconds));
     }
 }
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn spawn_ping_loop(
     mut config_rx: watch::Receiver<AppConfig>,
     database: Arc<Database>,
@@ -1479,6 +1485,7 @@ fn spawn_ping_loop(
     shared_ranked: Arc<RwLock<Vec<RankedConfig>>>,
     cycle: Arc<tokio::sync::Mutex<()>>,
     mut trigger_rx: mpsc::UnboundedReceiver<()>,
+    mut restart_rx: mpsc::UnboundedReceiver<()>,
     print_compact_progress: bool,
 ) {
     tokio::spawn(async move {
@@ -1520,6 +1527,14 @@ fn spawn_ping_loop(
                         }
                         let config = config_rx.borrow().clone();
                         *runtime_config.write().await = RuntimeConfig::from(&config);
+                    }
+                    restart = restart_rx.recv() => {
+                        // A fetch just revalidated everything: drop the stale
+                        // sleep and restart the countdown full from here.
+                        if restart.is_none() {
+                            return;
+                        }
+                        drain_triggers(&mut restart_rx);
                     }
                 }
                 continue;
@@ -1580,6 +1595,14 @@ fn spawn_ping_loop(
                     let config = config_rx.borrow().clone();
                     *runtime_config.write().await = RuntimeConfig::from(&config);
                 }
+                restart = restart_rx.recv() => {
+                    // A fetch just revalidated everything: drop the stale
+                    // sleep and restart the countdown full from here.
+                    if restart.is_none() {
+                        return;
+                    }
+                    drain_triggers(&mut restart_rx);
+                }
             }
         }
     });
@@ -1608,6 +1631,7 @@ fn spawn_refresh_loop(
     shared_ranked: Arc<RwLock<Vec<RankedConfig>>>,
     cycle: Arc<tokio::sync::Mutex<()>>,
     mut trigger_rx: mpsc::UnboundedReceiver<()>,
+    ping_restart_tx: mpsc::UnboundedSender<()>,
     print_terminal_summary: bool,
     print_compact_progress: bool,
 ) {
@@ -1636,6 +1660,10 @@ fn spawn_refresh_loop(
                 {
                     error!(error = %err, "initial refresh failed");
                     record_refresh_error(&state, err.to_string()).await;
+                } else {
+                    // The fetch just revalidated everything: restart the ping
+                    // countdown full instead of resuming a stale partial one.
+                    let _ = ping_restart_tx.send(());
                 }
 
                 update_proxy_and_ranked(&proxy, &shared_ranked, &state, &config).await;
@@ -1662,6 +1690,10 @@ fn spawn_refresh_loop(
                         if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), cycle.clone(), print_terminal_summary, print_compact_progress).await {
                             error!(error = %err, "manual refresh failed");
                             record_refresh_error(&state, err.to_string()).await;
+                        } else {
+                            // The fetch just revalidated everything: restart the ping
+                            // countdown full instead of resuming a stale partial one.
+                            let _ = ping_restart_tx.send(());
                         }
 
                         update_proxy_and_ranked(&proxy, &shared_ranked, &state, &config).await;
@@ -1692,6 +1724,10 @@ fn spawn_refresh_loop(
                     {
                         error!(error = %err, "refresh after config reload failed");
                         record_refresh_error(&state, err.to_string()).await;
+                    } else {
+                        // The fetch just revalidated everything: restart the ping
+                        // countdown full instead of resuming a stale partial one.
+                        let _ = ping_restart_tx.send(());
                     }
                 }
 
@@ -1715,6 +1751,10 @@ fn spawn_refresh_loop(
                     if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), cycle.clone(), print_terminal_summary, print_compact_progress).await {
                         error!(error = %err, "refresh failed");
                         record_refresh_error(&state, err.to_string()).await;
+                    } else {
+                        // The fetch just revalidated everything: restart the ping
+                        // countdown full instead of resuming a stale partial one.
+                        let _ = ping_restart_tx.send(());
                     }
 
                     update_proxy_and_ranked(&proxy, &shared_ranked, &state, &config).await;
@@ -1748,9 +1788,13 @@ fn spawn_refresh_loop(
                     let fingerprint = RefreshFingerprint::from(&config);
                     if last_refresh_fingerprint.as_ref() != Some(&fingerprint) {
                         last_refresh_fingerprint = Some(fingerprint);
-                    if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), cycle.clone(), print_terminal_summary, print_compact_progress).await {
+                        if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), cycle.clone(), print_terminal_summary, print_compact_progress).await {
                             error!(error = %err, "refresh after config reload failed");
                             record_refresh_error(&state, err.to_string()).await;
+                        } else {
+                            // The fetch just revalidated everything: restart the ping
+                            // countdown full instead of resuming a stale partial one.
+                            let _ = ping_restart_tx.send(());
                         }
                     }
 
@@ -2920,6 +2964,7 @@ mod tests {
         let (config_tx, config_rx) = tokio::sync::watch::channel(config.clone());
         let _config_tx = config_tx;
         let (trigger_tx, trigger_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let (restart_tx, _restart_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
 
         spawn_refresh_loop(
             config_rx,
@@ -2930,6 +2975,7 @@ mod tests {
             shared_ranked,
             cycle,
             trigger_rx,
+            restart_tx,
             false,
             false,
         );
@@ -2978,6 +3024,7 @@ mod tests {
         let (refresh_trigger_tx, refresh_trigger_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
         let _refresh_trigger_tx = refresh_trigger_tx;
         let (ping_trigger_tx, ping_trigger_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let (restart_tx, restart_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
 
         spawn_refresh_loop(
             config_rx.clone(),
@@ -2988,6 +3035,7 @@ mod tests {
             shared_ranked.clone(),
             cycle.clone(),
             refresh_trigger_rx,
+            restart_tx,
             false,
             false,
         );
@@ -3000,6 +3048,7 @@ mod tests {
             shared_ranked,
             cycle,
             ping_trigger_rx,
+            restart_rx,
             false,
         );
 
@@ -3031,6 +3080,62 @@ mod tests {
             live_log_count(&state, "Subscription loading finished").await,
             fetch_mark
         );
+    }
+
+    #[tokio::test]
+    async fn ping_restart_resets_stale_countdown_without_cycling() {
+        let config = manual_trigger_test_config();
+        let database = manual_trigger_test_database();
+        let state = Arc::new(tokio::sync::RwLock::new(RuntimeState::default()));
+        let runtime_config = Arc::new(tokio::sync::RwLock::new(RuntimeConfig::from(&config)));
+        let proxy = manual_trigger_test_proxy();
+        let shared_ranked = Arc::new(tokio::sync::RwLock::new(Vec::new()));
+        let cycle = Arc::new(tokio::sync::Mutex::new(()));
+        let (config_tx, config_rx) = tokio::sync::watch::channel(config.clone());
+        let _config_tx = config_tx;
+        let (trigger_tx, trigger_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let _trigger_tx = trigger_tx;
+        let (restart_tx, restart_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+
+        spawn_ping_loop(
+            config_rx,
+            database,
+            state.clone(),
+            runtime_config,
+            proxy,
+            shared_ranked,
+            cycle,
+            trigger_rx,
+            restart_rx,
+            false,
+        );
+
+        // Wait until the loop scheduled its sleep, then fake the stale partial
+        // countdown a long refresh leaves behind.
+        wait_for_condition("ping sleep scheduled", || {
+            state
+                .try_read()
+                .is_ok_and(|runtime| runtime.next_ping_instant.is_some())
+        })
+        .await;
+        let old_deadline = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(60))
+            .unwrap_or_else(std::time::Instant::now);
+        state.write().await.next_ping_instant = Some(old_deadline);
+
+        restart_tx.send(()).expect("restart sends");
+        wait_for_condition("countdown restarted full", || {
+            state.try_read().is_ok_and(|runtime| {
+                runtime.next_ping_instant.is_some_and(|deadline| {
+                    deadline.saturating_duration_since(std::time::Instant::now())
+                        > std::time::Duration::from_secs(3590)
+                })
+            })
+        })
+        .await;
+        // A restart reschedules; it must not run a cycle.
+        assert_eq!(live_log_count(&state, "Ping finished").await, 0);
+        assert_eq!(live_log_count(&state, "Ping started").await, 0);
     }
 
     #[test]

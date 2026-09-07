@@ -480,6 +480,55 @@ impl ProbeStopState {
     }
 }
 
+/// Results plus stop-search state shared by every batch of one
+/// `probe_active_batched` run.
+///
+/// Previously each batch evaluated early-stop against only its own results,
+/// so N concurrent batches each probed toward `top_n` on their own — and the
+/// wave loop kept whichever batch outcome arrived first, which could even be
+/// an empty loser that discarded a sibling's real results. Sharing fixes both
+/// without touching concurrency at all (same waves, batches, processes):
+///
+/// - every completed probe appends here first, so finished work is never lost
+///   no matter which batch outcome arrives first;
+/// - the stop condition sees everything found so far across all batches, so
+///   every batch quits within ~one probe of the global target.
+struct SharedProbeState {
+    ranked: Vec<RankedConfig>,
+    stop: ProbeStopState,
+    stop_announced: bool,
+}
+
+type SharedProbe = std::sync::Arc<std::sync::Mutex<SharedProbeState>>;
+
+fn lock_shared(shared: &SharedProbe) -> std::sync::MutexGuard<'_, SharedProbeState> {
+    shared
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Evaluate the shared stop condition; announces the reason once.
+/// Pure decision wrapper around [`probe_stop_reason`] — messaging behavior
+/// (half snapshot, reason text) is unchanged, it just fires globally now.
+fn eval_shared_stop(
+    shared: &SharedProbe,
+    policy: &ProbeStopPolicy,
+    progress: Option<&UnboundedSender<ProgressEvent>>,
+) -> Option<String> {
+    let mut shared = lock_shared(shared);
+    if shared.stop_announced {
+        return None;
+    }
+    let reason = {
+        let SharedProbeState { ranked, stop, .. } = &mut *shared;
+        probe_stop_reason(ranked, policy, stop, progress)
+    };
+    if reason.is_some() {
+        shared.stop_announced = true;
+    }
+    reason
+}
+
 #[allow(clippy::too_many_lines)]
 async fn probe_active_batched(
     candidates: Vec<Candidate>,
@@ -493,13 +542,14 @@ async fn probe_active_batched(
     let stop_policy_clone = stop_policy.clone();
     let ActivePreparation {
         mut prepared,
-        mut ranked,
+        ranked: prepared_ranked,
         prepared_candidates,
     } = tokio::task::spawn_blocking(move || {
         prepare_active_candidates(candidates, &stop_policy_clone)
     })
     .await
     .expect("prepare_active_candidates panicked");
+    let prepared_failed = prepared_ranked.len();
 
     let process_concurrency = active_probe_process_concurrency(config.process_concurrency);
     let mut batch_sizer = ActiveBatchSizer::new(config.concurrency, config.batch_size);
@@ -507,7 +557,7 @@ async fn probe_active_batched(
         input = input_count,
         prepared = prepared_candidates,
         test_definitions = prepared.len(),
-        parse_failed = ranked.len(),
+        parse_failed = prepared_failed,
         batch_size = batch_sizer.current,
         max_batch_size = batch_sizer.max,
         process_concurrency,
@@ -519,17 +569,21 @@ async fn probe_active_batched(
             "Prepared active test: {} sing-box definitions represent {} loaded configs; {} unsupported configs skipped",
             prepared.len(),
             prepared_candidates,
-            ranked.len()
+            prepared_failed
         ),
     );
-    if !ranked.is_empty() {
-        send_probe_delta(progress.as_ref(), ranked.len(), 0, 0);
+    if prepared_failed > 0 {
+        send_probe_delta(progress.as_ref(), prepared_failed, 0, 0);
     }
-    let mut stop_state = ProbeStopState::new(&prepared, stop_policy);
+    let shared: SharedProbe = Arc::new(Mutex::new(SharedProbeState {
+        ranked: prepared_ranked,
+        stop: ProbeStopState::new(&prepared, stop_policy),
+        stop_announced: false,
+    }));
     let cancel = Arc::new(AtomicBool::new(false));
     let mut batch_index = 0_usize;
     while !prepared.is_empty() && !cancel.load(AtomicOrdering::Relaxed) {
-        let before = ranked.len();
+        let before = lock_shared(&shared).ranked.len();
         let mut wave = Vec::new();
         let mut wave_previous_working = 0_usize;
         for _ in 0..process_concurrency {
@@ -564,18 +618,17 @@ async fn probe_active_batched(
         let mut outcomes = stream::iter(wave.into_iter().map(|(batch_index, batch)| {
             let progress = progress.clone();
             let cancel = cancel.clone();
+            let shared = shared.clone();
             async move {
                 let batch_started = Instant::now();
                 let batch_stop_policy = stop_policy.clone();
-                let mut batch_stop_state = ProbeStopState::new(&batch, &batch_stop_policy);
                 let outcome = probe_active_batch_with_fallback(
                     batch_index,
                     batch,
                     config,
                     progress.as_ref(),
                     &batch_stop_policy,
-                    &mut batch_stop_state,
-                    &[],
+                    &shared,
                     cancel,
                 )
                 .await;
@@ -584,32 +637,33 @@ async fn probe_active_batched(
         }))
         .buffer_unordered(process_concurrency);
 
-        while let Some((finished_batch_index, batch_duration, batch_outcome)) =
-            outcomes.next().await
+        // Results already live in the shared list the moment each probe
+        // completes, so a batch outcome arriving first can neither strand
+        // real results nor require re-evaluation here: per-probe evaluation
+        // inside the batches is complete (any threshold crossing coincides
+        // with a probe completion). Late outcomes only carry sizing stats.
+        while let Some((finished_batch_index, batch_duration, batch_stats)) = outcomes.next().await
         {
-            batch_sizer.observe(&batch_outcome.stats);
-            ranked.extend(batch_outcome.ranked);
+            batch_sizer.observe(&batch_stats);
             info!(
                 batch_index = finished_batch_index,
-                produced = ranked.len().saturating_sub(before),
                 next_batch_size = batch_sizer.current,
                 duration_ms = batch_duration.as_millis(),
                 "active probe batch finished"
             );
-            if !cancel.load(AtomicOrdering::Relaxed)
-                && let Some(reason) =
-                    probe_stop_reason(&ranked, stop_policy, &mut stop_state, progress.as_ref())
-            {
-                cancel.store(true, AtomicOrdering::Relaxed);
-                send_progress(progress.as_ref(), reason);
-                break;
-            }
             if cancel.load(AtomicOrdering::Relaxed) {
                 break;
             }
         }
-        update_stability_search_after_batch(wave_previous_working, stop_policy, &mut stop_state);
-        let after = ranked.len();
+        {
+            let mut shared = lock_shared(&shared);
+            update_stability_search_after_batch(
+                wave_previous_working,
+                stop_policy,
+                &mut shared.stop,
+            );
+        }
+        let after = lock_shared(&shared).ranked.len();
         send_progress(
             progress.as_ref(),
             format!(
@@ -618,21 +672,9 @@ async fn probe_active_batched(
                 format_duration_short(wave_started.elapsed())
             ),
         );
-        if let Some(reason) =
-            probe_stop_reason(&ranked, stop_policy, &mut stop_state, progress.as_ref())
-        {
-            cancel.store(true, AtomicOrdering::Relaxed);
-            info!(
-                batch_index,
-                ranked = ranked.len(),
-                reachable = ranked.iter().filter(|item| item.reachable).count(),
-                "active probe early stop reached"
-            );
-            send_progress(progress.as_ref(), reason);
-            break;
-        }
     }
 
+    let mut ranked = std::mem::take(&mut lock_shared(&shared).ranked);
     info!(
         ranked = ranked.len(),
         duration_ms = started.elapsed().as_millis(),
@@ -882,27 +924,6 @@ fn probe_stop_reason(
     None
 }
 
-fn probe_stop_reason_with_batch(
-    previous_ranked: &[RankedConfig],
-    current_batch_ranked: &[RankedConfig],
-    ranked: &[RankedConfig],
-    policy: &ProbeStopPolicy,
-    state: &mut ProbeStopState,
-    progress: Option<&UnboundedSender<ProgressEvent>>,
-) -> Option<String> {
-    if policy.scan_all_configs {
-        return None;
-    }
-
-    let combined = previous_ranked
-        .iter()
-        .chain(current_batch_ranked.iter())
-        .chain(ranked.iter())
-        .cloned()
-        .collect::<Vec<_>>();
-    probe_stop_reason(&combined, policy, state, progress)
-}
-
 fn stable_reachable_count(ranked: &[RankedConfig], policy: &ProbeStopPolicy) -> usize {
     ranked
         .iter()
@@ -1054,11 +1075,6 @@ fn active_probe_process_concurrency(configured: Option<usize>) -> usize {
         .clamp(1, ACTIVE_PROBE_PROCESS_MAX_CONCURRENCY)
 }
 
-struct BatchProbeOutcome {
-    ranked: Vec<RankedConfig>,
-    stats: BatchProbeStats,
-}
-
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 async fn probe_active_batch_with_fallback(
     batch_index: usize,
@@ -1066,12 +1082,10 @@ async fn probe_active_batch_with_fallback(
     config: &ProbeConfig,
     progress: Option<&UnboundedSender<ProgressEvent>>,
     stop_policy: &ProbeStopPolicy,
-    stop_state: &mut ProbeStopState,
-    previous_ranked: &[RankedConfig],
+    shared: &SharedProbe,
     cancel: Arc<AtomicBool>,
-) -> BatchProbeOutcome {
+) -> BatchProbeStats {
     let mut pending = vec![batch];
-    let mut ranked = Vec::new();
     let mut stats = BatchProbeStats::default();
 
     while let Some(batch) = pending.pop() {
@@ -1085,17 +1099,14 @@ async fn probe_active_batch_with_fallback(
             config,
             progress,
             stop_policy,
-            stop_state,
-            previous_ranked,
-            &ranked,
+            shared,
             cancel.clone(),
         )
         .await
         {
-            Ok(mut batch_ranked) => {
+            Ok(produced) => {
                 stats.started_cleanly = true;
-                stats.produced = stats.produced.saturating_add(batch_ranked.len());
-                ranked.append(&mut batch_ranked);
+                stats.produced = stats.produced.saturating_add(produced);
             }
             Err(mut failure) => {
                 let error = failure.error.to_string();
@@ -1117,7 +1128,11 @@ async fn probe_active_batch_with_fallback(
                         ),
                     );
                     send_probe_delta(progress, failed_entry.candidate_count(), 0, 0);
-                    ranked.extend(failed_configs(failed_entry, "active_http", &error));
+                    lock_shared(shared).ranked.extend(failed_configs(
+                        failed_entry,
+                        "active_http",
+                        &error,
+                    ));
                     if !failure.entries.is_empty() {
                         pending.push(failure.entries);
                     }
@@ -1152,7 +1167,7 @@ async fn probe_active_batch_with_fallback(
                     let failed_count = candidate_count(&failure.entries);
                     stats.failed_candidates = stats.failed_candidates.saturating_add(failed_count);
                     send_probe_delta(progress, failed_count, 0, 0);
-                    ranked.extend(
+                    lock_shared(shared).ranked.extend(
                         failure
                             .entries
                             .into_iter()
@@ -1161,18 +1176,9 @@ async fn probe_active_batch_with_fallback(
                 }
             }
         }
-        let combined = previous_ranked
-            .iter()
-            .chain(ranked.iter())
-            .cloned()
-            .collect::<Vec<_>>();
-        if probe_stop_reason(&combined, stop_policy, stop_state, progress).is_some() {
-            cancel.store(true, AtomicOrdering::Relaxed);
-            break;
-        }
     }
 
-    BatchProbeOutcome { ranked, stats }
+    stats
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -1186,16 +1192,14 @@ async fn probe_active_batch(
     config: &ProbeConfig,
     progress: Option<&UnboundedSender<ProgressEvent>>,
     stop_policy: &ProbeStopPolicy,
-    stop_state: &mut ProbeStopState,
-    previous_ranked: &[RankedConfig],
-    current_batch_ranked: &[RankedConfig],
+    shared: &SharedProbe,
     cancel: Arc<AtomicBool>,
-) -> std::result::Result<Vec<RankedConfig>, BatchProbeFailure> {
+) -> std::result::Result<usize, BatchProbeFailure> {
     if entries.is_empty() {
-        return Ok(Vec::new());
+        return Ok(0);
     }
     if cancel.load(AtomicOrdering::Relaxed) {
-        return Ok(Vec::new());
+        return Ok(0);
     }
 
     let started = Instant::now();
@@ -1309,7 +1313,7 @@ async fn probe_active_batch(
         if !stderr.is_empty() {
             debug!(stderr = %stderr, "sing-box batch stderr after cancellation");
         }
-        return Ok(Vec::new());
+        return Ok(0);
     }
     debug!(
         entries = entries.len(),
@@ -1328,7 +1332,8 @@ async fn probe_active_batch(
         },
     ))
     .buffer_unordered(http_concurrency);
-    let mut ranked = Vec::with_capacity(total_candidates);
+    let mut produced = 0usize;
+    let mut working = 0usize;
     let mut completed = 0;
     while let Some((mut results, bytes)) = probe_results.next().await {
         if cancel.load(AtomicOrdering::Relaxed) {
@@ -1337,43 +1342,44 @@ async fn probe_active_batch(
         completed += 1;
         let tested_delta = results.len();
         let working_delta = results.iter().filter(|item| item.reachable).count();
-        ranked.append(&mut results);
+        working = working.saturating_add(working_delta);
+        produced = produced.saturating_add(tested_delta);
+        // Publish to the shared list first: every finished probe counts toward
+        // the global stop decision, so all batches quit within ~one probe of
+        // the target instead of each batch probing toward `top_n` on its own.
+        // Finished work is never lost, no matter which batch outcome the wave
+        // loop observes first.
+        lock_shared(shared).ranked.append(&mut results);
+        let stop_reason = eval_shared_stop(shared, stop_policy, progress);
         send_probe_delta(progress, tested_delta, working_delta, bytes);
-        send_asap_configs(progress, &ranked, stop_policy);
+        if stop_policy.return_configs_asap {
+            let snapshot = lock_shared(shared).ranked.clone();
+            send_asap_configs(progress, &snapshot, stop_policy);
+        }
         if completed == total_entries || completed % progress_interval == 0 {
             info!(
                 completed_probes = completed,
                 total_probes = total_entries,
-                ranked_candidates = ranked.len(),
+                ranked_candidates = produced,
                 total_candidates,
-                reachable = ranked.iter().filter(|item| item.reachable).count(),
+                reachable = working,
                 duration_ms = started.elapsed().as_millis(),
                 "active probe batch progress"
             );
             send_progress(
                 progress,
                 format!(
-                    "Batch {batch_index}: {}/{} configs checked, {} working",
-                    ranked.len(),
-                    total_candidates,
-                    ranked.iter().filter(|item| item.reachable).count()
+                    "Batch {batch_index}: {produced}/{total_candidates} configs checked, {working} working"
                 ),
             );
         }
-        if let Some(reason) = probe_stop_reason_with_batch(
-            previous_ranked,
-            current_batch_ranked,
-            &ranked,
-            stop_policy,
-            stop_state,
-            progress,
-        ) {
+        if let Some(reason) = stop_reason {
             info!(
                 completed_probes = completed,
                 total_probes = total_entries,
-                ranked_candidates = ranked.len(),
+                ranked_candidates = produced,
                 total_candidates,
-                reachable = ranked.iter().filter(|item| item.reachable).count(),
+                reachable = working,
                 "active probe batch stopped early"
             );
             send_progress(progress, reason);
@@ -1387,11 +1393,11 @@ async fn probe_active_batch(
         debug!(stderr = %stderr, "sing-box batch stderr");
     }
     debug!(
-        ranked = ranked.len(),
+        ranked = produced,
         duration_ms = started.elapsed().as_millis(),
         "active probe batch process finished"
     );
-    Ok(ranked)
+    Ok(produced)
 }
 
 pub async fn run_with_sing_box_proxy<F, Fut, T>(
@@ -3073,5 +3079,292 @@ mod tests {
             config["route"]["rules"][1]["inbound"][0],
             format!("{SING_BOX_INBOUND_TAG_PREFIX}-1")
         );
+    }
+
+    const FAKE_SING_BOX_SOURCE: &str = include_str!("../tests/helpers/fake_singbox.rs");
+
+    /// Serializes the live-stub end-to-end tests: each reserves ~80 ephemeral
+    /// ports, releases them, and rebinds them from a child process. Two such
+    /// tests racing can hand each other's just-released ports to the other
+    /// test's reservations, so the stub fails to bind and every probe fails.
+    fn stub_e2e_lock() -> &'static tokio::sync::Mutex<()> {
+        static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+    }
+
+    fn healthy_candidate(base: usize, port: u16, remark: &str) -> Candidate {
+        let uri = format!(
+            "vless://u{base}@127.0.0.1:{port}?security=tls&sni=example.com&type=ws&path=/ws#{remark}"
+        );
+        Candidate {
+            id: uri.clone(),
+            dedup_key: format!("vless|127.0.0.1|{port}|ws|tls|u{base}"),
+            source: "test".to_string(),
+            priority: 1,
+            protocol: "vless".to_string(),
+            name: remark.to_string(),
+            endpoint: crate::model::Endpoint {
+                host: "127.0.0.1".to_string(),
+                port,
+            },
+            uri,
+        }
+    }
+
+    fn compile_fake_sing_box() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "v2raydar-fake-singbox-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir can be created");
+        let source = dir.join("fake_singbox.rs");
+        std::fs::write(&source, FAKE_SING_BOX_SOURCE).expect("stub source can be written");
+        let binary = dir.join(format!("fake-singbox{}", std::env::consts::EXE_SUFFIX));
+        let output = std::process::Command::new("rustc")
+            .arg("--edition=2021")
+            .arg("-O")
+            .arg(&source)
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .expect("rustc runs (required for hermetic probe tests)");
+        assert!(
+            output.status.success(),
+            "stub compiles: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        binary
+    }
+
+    fn active_probe_test_config(sing_box_path: &std::path::Path) -> ProbeConfig {
+        ProbeConfig {
+            mode: ProbeMode::Active,
+            sing_box_path: sing_box_path.to_string_lossy().to_string(),
+            connect_timeout_ms: 2000,
+            active_timeout_ms: 5000,
+            startup_timeout_ms: 10_000,
+            concurrency: 16,
+            batch_size: Some(20),
+            process_concurrency: Some(4),
+            test_url: "http://probe.test/".to_string(),
+            accepted_statuses: vec![204],
+            download_url: None,
+            download_bytes_limit: 1_048_576,
+            sing_box_path_auto: false,
+        }
+    }
+
+    /// 200 unique healthy outbounds against the fake sing-box.
+    fn two_hundred_healthy_candidates() -> Vec<Candidate> {
+        let mut candidates = Vec::with_capacity(200);
+        for i in 0..200u16 {
+            candidates.push(healthy_candidate(
+                usize::from(i),
+                20_000 + i,
+                &format!("node-{i}"),
+            ));
+        }
+        assert_eq!(candidates.len(), 200);
+        candidates
+    }
+
+    fn working_count(ranked: &[RankedConfig]) -> usize {
+        ranked.iter().filter(|item| item.reachable).count()
+    }
+
+    /// End-to-end early stop against a live fake sing-box: four concurrent
+    /// batches race, and the run must land on the target instead of each
+    /// batch probing toward `top_n` on its own (or dropping results).
+    /// The bound is deliberately loose against CI timing variance; exactness
+    /// is pinned by the deterministic `shared_stop_*` unit tests below.
+    #[tokio::test]
+    async fn active_probe_stops_near_top_n_under_full_concurrency() {
+        let _e2e_guard = stub_e2e_lock().lock().await;
+        let stub = compile_fake_sing_box();
+        let dir = stub.parent().expect("stub has a parent").to_path_buf();
+        let config = active_probe_test_config(&stub);
+
+        let policy = stop_policy(20, false, std::collections::HashSet::new());
+        let ranked =
+            probe_candidates(two_hundred_healthy_candidates(), &config, None, &policy).await;
+        assert!(
+            working_count(&ranked) >= 20,
+            "must find top_n working, got {}",
+            working_count(&ranked)
+        );
+        assert!(
+            ranked.len() <= 40,
+            "tested {} configs for top_n=20",
+            ranked.len()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn active_probe_stops_near_top_n_with_stability() {
+        let _e2e_guard = stub_e2e_lock().lock().await;
+        let stub = compile_fake_sing_box();
+        let dir = stub.parent().expect("stub has a parent").to_path_buf();
+        let config = active_probe_test_config(&stub);
+
+        let candidates = two_hundred_healthy_candidates();
+        let previous: std::collections::HashSet<String> = candidates
+            .iter()
+            .take(20)
+            .map(|item| item.dedup_key.clone())
+            .collect();
+        let policy = stop_policy(20, true, previous);
+        let ranked = probe_candidates(candidates, &config, None, &policy).await;
+        assert!(
+            working_count(&ranked) >= 20,
+            "must find top_n working, got {}",
+            working_count(&ranked)
+        );
+        // Looser than the simple run: confirming the required previous-run
+        // configs can lag one wave behind when batches complete in lockstep,
+        // so more fresh configs get probed meanwhile by design.
+        assert!(
+            ranked.len() <= 60,
+            "tested {} configs for top_n=20",
+            ranked.len()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn shared_probe(
+        top_n: usize,
+        prioritize_stability: bool,
+        previous: std::collections::HashSet<String>,
+    ) -> (SharedProbe, ProbeStopPolicy) {
+        let policy = stop_policy(top_n, prioritize_stability, previous);
+        let shared: SharedProbe = Arc::new(Mutex::new(SharedProbeState {
+            ranked: Vec::new(),
+            stop: ProbeStopState {
+                half_snapshot_sent: true,
+                stability_search_exhausted: false,
+                remaining_previous_working: 0,
+            },
+            stop_announced: false,
+        }));
+        (shared, policy)
+    }
+
+    /// Append one working result and evaluate; returns the stop reason.
+    fn record_working(shared: &SharedProbe, policy: &ProbeStopPolicy, key: &str) -> Option<String> {
+        lock_shared(shared)
+            .ranked
+            .push(ranked(key, key, true, Some(10)));
+        eval_shared_stop(shared, policy, None)
+    }
+
+    #[test]
+    fn shared_stop_fires_exactly_at_top_n_working() {
+        let (shared, policy) = shared_probe(3, false, std::collections::HashSet::new());
+
+        assert!(record_working(&shared, &policy, "a").is_none());
+        assert!(record_working(&shared, &policy, "b").is_none());
+        let reason = record_working(&shared, &policy, "c");
+        assert!(
+            reason
+                .as_deref()
+                .is_some_and(|message| message.contains("3/3")),
+            "stop must fire at top_n, got {reason:?}"
+        );
+        // Announced once: further results never re-fire.
+        assert!(record_working(&shared, &policy, "d").is_none());
+
+        // Unreachable results never advance the stop condition.
+        let (idle, idle_policy) = shared_probe(1, false, std::collections::HashSet::new());
+        lock_shared(&idle)
+            .ranked
+            .push(ranked("x", "x", false, None));
+        assert!(eval_shared_stop(&idle, &idle_policy, None).is_none());
+    }
+
+    #[test]
+    fn shared_stop_never_fires_when_scanning_all() {
+        let mut policy = stop_policy(2, false, std::collections::HashSet::new());
+        policy.scan_all_configs = true;
+        let shared: SharedProbe = Arc::new(Mutex::new(SharedProbeState {
+            ranked: vec![
+                ranked("a", "a", true, Some(10)),
+                ranked("b", "b", true, Some(10)),
+                ranked("c", "c", true, Some(10)),
+            ],
+            stop: ProbeStopState {
+                half_snapshot_sent: true,
+                stability_search_exhausted: false,
+                remaining_previous_working: 0,
+            },
+            stop_announced: false,
+        }));
+
+        assert!(eval_shared_stop(&shared, &policy, None).is_none());
+    }
+
+    #[test]
+    fn shared_stop_requires_previous_working_under_stability() {
+        let previous: std::collections::HashSet<String> =
+            ["old-1", "old-2"].into_iter().map(str::to_string).collect();
+        let (shared, policy) = shared_probe(4, true, previous);
+
+        for key in ["new-1", "new-2", "new-3", "new-4"] {
+            assert!(
+                record_working(&shared, &policy, key).is_none(),
+                "must wait for previous-run configs"
+            );
+        }
+        assert!(record_working(&shared, &policy, "old-1").is_none());
+        assert!(record_working(&shared, &policy, "old-2").is_some());
+    }
+
+    #[test]
+    fn shared_stop_fires_on_exhausted_previous_search() {
+        let previous: std::collections::HashSet<String> =
+            std::iter::once("gone").map(str::to_string).collect();
+        let (shared, policy) = shared_probe(2, true, previous);
+        lock_shared(&shared).stop.stability_search_exhausted = true;
+
+        assert!(record_working(&shared, &policy, "new-1").is_none());
+        assert!(record_working(&shared, &policy, "new-2").is_some());
+    }
+
+    #[test]
+    fn shared_stop_sends_half_snapshot_once() {
+        // Snapshot path lives in stability mode; empty previous keys keep the
+        // stop rule itself equivalent to a plain count.
+        let (shared, policy) = shared_probe(4, true, std::collections::HashSet::new());
+        // Re-enable the snapshot path (other tests bypass it).
+        lock_shared(&shared).stop.half_snapshot_sent = false;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        for key in ["a", "b"] {
+            lock_shared(&shared)
+                .ranked
+                .push(ranked(key, key, true, Some(10)));
+        }
+        let progress = Some(&tx);
+        assert!(eval_shared_stop(&shared, &policy, progress).is_none());
+        assert!(
+            matches!(rx.try_recv(), Ok(ProgressEvent::RankedSnapshot(_))),
+            "half snapshot must publish once new configs reach top_n/2"
+        );
+
+        for key in ["c", "d", "e"] {
+            lock_shared(&shared)
+                .ranked
+                .push(ranked(key, key, true, Some(10)));
+        }
+        // Stop fires here (4/4); no second snapshot may follow (the live
+        // log line the half path also emits is expected and drained here).
+        assert!(eval_shared_stop(&shared, &policy, progress).is_some());
+        assert!(matches!(rx.try_recv(), Ok(ProgressEvent::LiveLog(_))));
+        assert!(rx.try_recv().is_err());
     }
 }

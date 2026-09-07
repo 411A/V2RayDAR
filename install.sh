@@ -331,16 +331,14 @@ verify_checksum() {
 # ─── Country IP Database (GeoIP) ─────────────────────────────────────────────
 # Keyless ipdeny zone files, refreshed independently of app releases into
 # <data-root>/geoip (v4 zones plus an ipv6/ subdir). The app loads them at
-# startup (see src/geoip.rs) and runs fine without them. Refreshes are
-# stamp-gated (7 days) to respect the provider's usage limits, and failures
-# never fail the install — callers run this in a subshell and warn on error.
+# startup (see src/geoip.rs) and runs fine without them. Every installer run
+# refreshes unconditionally; failures never fail the install — callers run
+# this in a subshell and warn on error.
 
 GEOIP_V4_URL="https://www.ipdeny.com/ipblocks/data/countries/all-zones.tar.gz"
 GEOIP_V4_MD5_URL="https://www.ipdeny.com/ipblocks/data/countries/MD5SUM"
 GEOIP_V6_URL="https://www.ipdeny.com/ipv6/ipaddresses/blocks/ipv6-all-zones.tar.gz"
 GEOIP_V6_MD5_URL="https://www.ipdeny.com/ipv6/ipaddresses/blocks/MD5SUM"
-GEOIP_REFRESH_SECONDS=604800
-GEOIP_STAMP_FILE=".geoip_stamp"
 
 # Data dir for an existing install: user-mode binaries live in a bin dir, so
 # their data follows the XDG-style app root; portable installs keep data
@@ -410,17 +408,6 @@ CHECKSUMS
 # Download, verify, and atomically install fresh zone files into a geoip dir.
 refresh_geoip_data() {
     _geoip_dir="$1"
-    _stamp="$_geoip_dir/$GEOIP_STAMP_FILE"
-    _now="$(date +%s)"
-    if [ -f "$_stamp" ]; then
-        _stamped="$(cat "$_stamp" 2>/dev/null || echo 0)"
-        case "$_stamped" in ''|*[!0-9]*) _stamped=0 ;; esac
-        if [ $((_now - _stamped)) -lt $GEOIP_REFRESH_SECONDS ]; then
-            info "country IP database is fresh, skipping update"
-            return 0
-        fi
-    fi
-
     info "updating country IP database..."
     _tmpdir="$(mktemp_d)"
     set +e
@@ -461,7 +448,6 @@ refresh_geoip_data() {
     mv "$_tmpdir/stage" "$_tmpdir/new" || { rm -rf "$_tmpdir"; return 1; }
     rm -rf "$_geoip_dir" || { rm -rf "$_tmpdir"; return 1; }
     mv "$_tmpdir/new" "$_geoip_dir" || { rm -rf "$_tmpdir"; return 1; }
-    printf '%s' "$_now" > "$_geoip_dir/$GEOIP_STAMP_FILE"
     rm -rf "$_tmpdir"
     info "country IP database updated"
 }

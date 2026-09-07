@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ratatui::{
     Frame,
@@ -39,12 +39,21 @@ pub fn draw(
         return;
     }
 
-    let elapsed = instant_now.saturating_duration_since(app_started_at);
+    // Single quantized clock for every ticking display in this frame.
+    // Running For flips on whole seconds since app start, but the refresh
+    // and ping countdowns flip on whole seconds since their own sleep-schedule
+    // instants — different sub-second phases, rescheduled every cycle. Without
+    // a common phase the digits visibly update one-after-another (up to a
+    // second apart, alternating order), even though one draw call renders all
+    // of them. Rounding frame time down to the app-start second grid makes all
+    // three flip in the same frame; values stay truthful within a second.
+    let frame_now = frame_tick(instant_now, app_started_at);
+    let elapsed = frame_now.saturating_duration_since(app_started_at);
     let failed = runtime
         .tested_candidates
         .saturating_sub(runtime.reachable_candidates);
-    let refresh = refresh_status(runtime, config.refresh_seconds, instant_now);
-    let refresh_extra = ping_status(runtime, config.ping_seconds, instant_now);
+    let refresh = refresh_status(runtime, config.refresh_seconds, frame_now);
+    let refresh_extra = ping_status(runtime, config.ping_seconds, frame_now);
     let speedtest = if config.speedtest_enabled {
         human_bytes(runtime.speedtest_bytes)
     } else {
@@ -211,6 +220,14 @@ fn draw_minimal_line(frame: &mut Frame<'_>, area: Rect, cells: &[(&str, String);
     }
 
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// Frame time rounded down to whole seconds since app start: the shared
+/// phase grid every ticking display in one frame must use (see `draw`).
+/// Never in the future, monotonic with `instant_now`.
+fn frame_tick(instant_now: Instant, app_started_at: Instant) -> Instant {
+    let tick = instant_now.saturating_duration_since(app_started_at);
+    app_started_at + Duration::from_secs(tick.as_secs())
 }
 
 /// First line of the Refresh box: fetch state, or the running cycle.
@@ -480,6 +497,73 @@ mod tests {
             );
         }
         assert!(saw_fetch && saw_ping_inside);
+    }
+
+    #[test]
+    fn frame_tick_never_runs_ahead_and_keeps_whole_seconds() {
+        let started = Instant::now();
+        let now = started + Duration::from_millis(1500);
+        let ticked = super::frame_tick(now, started);
+        assert!(ticked <= now);
+        assert_eq!(ticked.saturating_duration_since(started).as_secs(), 1);
+        assert_eq!(super::frame_tick(started, started), started);
+    }
+
+    #[test]
+    fn all_timers_flip_on_the_same_frame() {
+        use super::{format_duration_hms, ping_status, refresh_status};
+
+        let started = Instant::now();
+        // Deliberately off-phase deadlines, like real sleep-schedule instants:
+        // sub-second parts differ from each other and from app start.
+        let runtime = RuntimeView {
+            refreshing: false,
+            next_refresh_instant: Some(started + Duration::from_millis(900_350)),
+            next_ping_instant: Some(started + Duration::from_millis(200_700)),
+            ..RuntimeView::default()
+        };
+        // Sample every 10ms across 3s, like (denser) frames.
+        let mut elapsed_flips = Vec::new();
+        let mut refresh_flips = Vec::new();
+        let mut ping_flips = Vec::new();
+        let (mut prev_e, mut prev_r, mut prev_p) = (String::new(), String::new(), String::new());
+        let mut t_ms = 100_000u64;
+        while t_ms < 103_000 {
+            let now = started + Duration::from_millis(t_ms);
+            // Mirror `draw`: one quantized clock feeds every display.
+            let frame_now = super::frame_tick(now, started);
+            let shown_elapsed =
+                format_duration_hms(frame_now.saturating_duration_since(started).as_secs());
+            let shown_refresh = refresh_status(&runtime, 900, frame_now);
+            let shown_ping = ping_status(&runtime, 300, frame_now).unwrap_or_default();
+            if shown_elapsed != prev_e {
+                elapsed_flips.push(t_ms);
+            }
+            if shown_refresh != prev_r {
+                refresh_flips.push(t_ms);
+            }
+            if shown_ping != prev_p {
+                ping_flips.push(t_ms);
+            }
+            prev_e = shown_elapsed;
+            prev_r = shown_refresh;
+            prev_p = shown_ping;
+            t_ms += 10;
+        }
+        for flips in [&elapsed_flips, &refresh_flips, &ping_flips] {
+            assert!(
+                flips.len() >= 3,
+                "each timer must tick several times in 3s: {flips:?}"
+            );
+        }
+        assert_eq!(
+            elapsed_flips, refresh_flips,
+            "Running For and Refresh must flip together"
+        );
+        assert_eq!(
+            elapsed_flips, ping_flips,
+            "Running For and ping must flip together"
+        );
     }
 
     #[test]

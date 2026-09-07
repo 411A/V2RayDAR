@@ -15,8 +15,8 @@ use super::{util::human_bytes, view::RuntimeView};
 // Fixed widths per value prevent the Paragraph trailing-space style boundary
 // from shifting when digits change, which is what causes terminal flicker.
 // 10 chars fits `HH:MM:SS` past 100h (`100:00:00`) so long runs stay aligned.
-// 18 chars fits `running H:MM:SS` on multi-hour stuck refreshes; the ping
-// countdown lives on the box's next line, never beside the fetch value.
+// 18 chars fits `fetching H:MM:SS` on multi-hour stuck refreshes; the ping
+// countdown/elapsed lives on the box's next line, never beside the fetch value.
 const W_RUNNING_FOR: usize = 10;
 const W_REFRESH: usize = 18;
 const W_LAST_SCAN: usize = 6;
@@ -53,7 +53,12 @@ pub fn draw(
         .tested_candidates
         .saturating_sub(runtime.reachable_candidates);
     let refresh = refresh_status(runtime, config.refresh_seconds, frame_now);
-    let refresh_extra = ping_status(runtime, config.ping_seconds, frame_now);
+    let refresh_extra = ping_status(
+        runtime,
+        config.ping_seconds,
+        config.refresh_seconds,
+        frame_now,
+    );
     let speedtest = if config.speedtest_enabled {
         human_bytes(runtime.speedtest_bytes)
     } else {
@@ -230,22 +235,17 @@ fn frame_tick(instant_now: Instant, app_started_at: Instant) -> Instant {
     app_started_at + Duration::from_secs(tick.as_secs())
 }
 
-/// First line of the Refresh box: fetch state, or the running cycle.
+/// First line of the Refresh box: the fetch countdown, or the fetching cycle.
 /// Single line by design — the full grid is 15 cells wide, so the ping
-/// countdown lives on the box's next line instead of beside it.
+/// countdown/elapsed lives on the box's next line instead of beside it.
+/// Ping state never appears here: while pinging, the fetch countdown stays
+/// so both timers remain visible at once.
 fn refresh_status(runtime: &RuntimeView, refresh_seconds: u64, now: Instant) -> String {
     if runtime.refreshing {
         let elapsed = runtime
             .refresh_started_instant
             .map_or(0, |t| now.saturating_duration_since(t).as_secs());
-        return format!("running {}", format_duration_ms(elapsed));
-    }
-
-    if runtime.pinging {
-        let elapsed = runtime
-            .last_ping_instant
-            .map_or(0, |t| now.saturating_duration_since(t).as_secs());
-        return format!("ping {}", format_duration_ms(elapsed));
+        return format!("fetching {}", format_duration_ms(elapsed));
     }
 
     fetch_countdown(runtime, refresh_seconds, now).unwrap_or_else(|| "manual".to_string())
@@ -253,13 +253,29 @@ fn refresh_status(runtime: &RuntimeView, refresh_seconds: u64, now: Instant) -> 
 
 /// Second line of the Refresh box.
 ///
-/// Hidden while any cycle runs (a refresh already probes, and a ping run
-/// announces itself on the first line), and while ping is disabled — the
-/// countdown only appears on an idle TUI. At zero remaining the cycle is
-/// imminent, so it reads `pinging` instead of `ping 0s`.
-fn ping_status(runtime: &RuntimeView, ping_seconds: u64, now: Instant) -> Option<String> {
-    if runtime.refreshing || runtime.pinging {
+/// Hidden while fetching (a fetch already probes everything, so there is no
+/// ping countdown to show), while ping is disabled, and when ping shares the
+/// refresh cadence (a fetch on the same timer revalidates everything, so a
+/// separate ping line would only duplicate it — and the two deadlines would
+/// drift a second apart). While pinging it reads `pinging MM:SS`; idle it
+/// counts down, reading `pinging` at zero remaining when the cycle is imminent.
+fn ping_status(
+    runtime: &RuntimeView,
+    ping_seconds: u64,
+    refresh_seconds: u64,
+    now: Instant,
+) -> Option<String> {
+    if runtime.refreshing {
         return None;
+    }
+    if ping_seconds == 0 || ping_seconds == refresh_seconds {
+        return None;
+    }
+    if runtime.pinging {
+        let elapsed = runtime
+            .last_ping_instant
+            .map_or(0, |t| now.saturating_duration_since(t).as_secs());
+        return Some(format!("pinging {}", format_duration_ms(elapsed)));
     }
     let remaining = ping_remaining(runtime, ping_seconds, now)?;
     if remaining == 0 {
@@ -279,7 +295,7 @@ fn fetch_countdown(runtime: &RuntimeView, refresh_seconds: u64, now: Instant) ->
     if let Some(deadline) = runtime.next_refresh_instant {
         let remaining = deadline.saturating_duration_since(now).as_secs();
         return Some(format!(
-            "next {}",
+            "fetch {}",
             format_duration(u128::from(remaining) * 1000)
         ));
     }
@@ -290,7 +306,7 @@ fn fetch_countdown(runtime: &RuntimeView, refresh_seconds: u64, now: Instant) ->
             let elapsed = now.saturating_duration_since(finished_at).as_secs();
             let remaining = refresh_seconds.saturating_sub(elapsed);
             Some(format!(
-                "next {}",
+                "fetch {}",
                 format_duration(u128::from(remaining) * 1000)
             ))
         },
@@ -360,7 +376,7 @@ mod tests {
     use crate::tui::view::RuntimeView;
 
     #[test]
-    fn running_refresh_uses_hms_past_one_hour() {
+    fn fetching_refresh_uses_hms_past_one_hour() {
         assert_eq!(format_duration_ms(90), "01:30");
         assert_eq!(format_duration_ms(3600), "01:00:00");
         assert_eq!(format_duration_ms(30 * 3600 + 65), "30:01:05");
@@ -375,7 +391,7 @@ mod tests {
             refresh_finished_instant: Some(now),
             ..RuntimeView::default()
         };
-        assert_eq!(refresh_status(&runtime, 300, now), "next 05:00");
+        assert_eq!(refresh_status(&runtime, 300, now), "fetch 05:00");
     }
 
     #[test]
@@ -393,7 +409,7 @@ mod tests {
         let expected_remaining =
             300u64.saturating_sub(now.saturating_duration_since(finished).as_secs());
         let expected = format!(
-            "next {:02}:{:02}",
+            "fetch {:02}:{:02}",
             expected_remaining / 60,
             expected_remaining % 60
         );
@@ -409,15 +425,15 @@ mod tests {
             next_ping_instant: Some(now + Duration::from_secs(300)),
             ..RuntimeView::default()
         };
-        assert_eq!(refresh_status(&runtime, 900, now), "next 15:00");
+        assert_eq!(refresh_status(&runtime, 900, now), "fetch 15:00");
         assert_eq!(
-            ping_status(&runtime, 300, now),
+            ping_status(&runtime, 300, 900, now),
             Some("ping 05:00".to_string())
         );
     }
 
     #[test]
-    fn pinging_shows_ping_elapsed() {
+    fn pinging_keeps_fetch_countdown_on_first_line() {
         let now = Instant::now();
         let started = now.checked_sub(Duration::from_secs(65)).unwrap_or(now);
         let elapsed = now.saturating_duration_since(started).as_secs();
@@ -425,11 +441,16 @@ mod tests {
             refreshing: false,
             pinging: true,
             last_ping_instant: Some(started),
+            next_refresh_instant: Some(now + Duration::from_secs(900)),
+            next_ping_instant: Some(now + Duration::from_secs(300)),
             ..RuntimeView::default()
         };
+        // The fetch countdown stays on the first line while ping runs.
+        assert_eq!(refresh_status(&runtime, 900, now), "fetch 15:00");
+        // The ping elapsed lives on the second line, reading `pinging`.
         assert_eq!(
-            refresh_status(&runtime, 900, now),
-            format!("ping {}", format_duration_ms(elapsed))
+            ping_status(&runtime, 300, 900, now),
+            Some(format!("pinging {}", format_duration_ms(elapsed)))
         );
     }
 
@@ -443,7 +464,7 @@ mod tests {
         };
         assert_eq!(refresh_status(&runtime, 0, now), "manual".to_string());
         assert_eq!(
-            ping_status(&runtime, 300, now),
+            ping_status(&runtime, 300, 900, now),
             Some("ping 05:00".to_string())
         );
     }
@@ -451,24 +472,44 @@ mod tests {
     #[test]
     fn ping_line_hidden_when_disabled() {
         let runtime = RuntimeView::default();
-        assert_eq!(ping_status(&runtime, 0, Instant::now()), None);
+        assert_eq!(ping_status(&runtime, 0, 900, Instant::now()), None);
     }
 
     #[test]
-    fn ping_line_hidden_while_any_cycle_runs() {
+    fn ping_line_hidden_when_intervals_match() {
+        // Refresh == ping means the fetch already revalidates everything on
+        // that cadence: no ping line at all, idle or mid-ping.
+        let now = Instant::now();
+        let idle = RuntimeView {
+            refreshing: false,
+            next_refresh_instant: Some(now + Duration::from_secs(300)),
+            next_ping_instant: Some(now + Duration::from_secs(300)),
+            ..RuntimeView::default()
+        };
+        assert_eq!(ping_status(&idle, 300, 300, now), None);
+        let pinging = RuntimeView {
+            refreshing: false,
+            pinging: true,
+            last_ping_instant: Some(now),
+            next_refresh_instant: Some(now + Duration::from_secs(300)),
+            ..RuntimeView::default()
+        };
+        assert_eq!(ping_status(&pinging, 300, 300, now), None);
+        // The fetch countdown itself is unaffected.
+        assert_eq!(refresh_status(&idle, 300, now), "fetch 05:00");
+    }
+
+    #[test]
+    fn ping_line_hidden_while_fetching() {
         let now = Instant::now();
         let refreshing = RuntimeView {
             refreshing: true,
+            refresh_started_instant: Some(now),
             next_ping_instant: Some(now + Duration::from_secs(300)),
             ..RuntimeView::default()
         };
-        assert_eq!(ping_status(&refreshing, 300, now), None);
-        let pinging = RuntimeView {
-            pinging: true,
-            next_ping_instant: Some(now + Duration::from_secs(300)),
-            ..RuntimeView::default()
-        };
-        assert_eq!(ping_status(&pinging, 300, now), None);
+        assert_eq!(refresh_status(&refreshing, 900, now), "fetching 00:00");
+        assert_eq!(ping_status(&refreshing, 300, 900, now), None);
     }
 
     #[test]
@@ -479,7 +520,10 @@ mod tests {
             next_ping_instant: Some(now),
             ..RuntimeView::default()
         };
-        assert_eq!(ping_status(&runtime, 300, now), Some("pinging".to_string()));
+        assert_eq!(
+            ping_status(&runtime, 300, 900, now),
+            Some("pinging".to_string())
+        );
     }
 
     #[test]
@@ -518,7 +562,7 @@ mod tests {
             for x in 0..120 {
                 line.push_str(buffer[(x, y)].symbol());
             }
-            if line.contains("next 15:00") {
+            if line.contains("fetch 15:00") {
                 saw_fetch = true;
             }
             if let Some(start) = line.find("ping 05:00") {
@@ -574,7 +618,7 @@ mod tests {
             let shown_elapsed =
                 format_duration_hms(frame_now.saturating_duration_since(started).as_secs());
             let shown_refresh = refresh_status(&runtime, 900, frame_now);
-            let shown_ping = ping_status(&runtime, 300, frame_now).unwrap_or_default();
+            let shown_ping = ping_status(&runtime, 300, 900, frame_now).unwrap_or_default();
             if shown_elapsed != prev_e {
                 elapsed_flips.push(t_ms);
             }
@@ -606,7 +650,7 @@ mod tests {
     }
 
     #[test]
-    fn running_refresh_stays_mm_ss_under_one_hour() {
+    fn fetching_refresh_stays_mm_ss_under_one_hour() {
         let now = Instant::now();
         // Deterministic on any uptime: derive the expectation from the
         // actual elapsed instead of assuming 90s of machine uptime.
@@ -619,10 +663,10 @@ mod tests {
         };
         assert_eq!(
             refresh_status(&runtime, 300, now),
-            format!("running {}", format_duration_ms(elapsed))
+            format!("fetching {}", format_duration_ms(elapsed))
         );
         if elapsed >= 90 {
-            assert_eq!(refresh_status(&runtime, 300, now), "running 01:30");
+            assert_eq!(refresh_status(&runtime, 300, now), "fetching 01:30");
         }
     }
 }

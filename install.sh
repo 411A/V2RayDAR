@@ -390,7 +390,7 @@ verify_zone_tree() {
         _stem="${_file%.zone}"
         case "$_stem" in
             [A-Za-z][A-Za-z]) ;;
-            *) info "skipping non-country file $_file"; continue ;;
+            *) continue ;;
         esac
         _expected="$(printf '%s\n' "$_md5data" | awk -v f="$_file" '$2 == f { print $1; exit }')"
         if [ -z "$_expected" ]; then
@@ -404,13 +404,6 @@ verify_zone_tree() {
             return 1
         fi
         _checked=$((_checked + 1))
-    done
-
-    printf '%s\n' "$_md5data" | while read -r _hash _file; do
-        case "$_file" in *.zone) ;; *) continue ;; esac
-        if [ ! -f "$_vdir/$_file" ]; then
-            info "GeoIP archive does not ship $_file, skipping"
-        fi
     done
 
     if [ "$_checked" -eq 0 ]; then
@@ -464,7 +457,8 @@ refresh_geoip_data() {
     rm -rf "$_geoip_dir" || { rm -rf "$_tmpdir"; return 1; }
     mv "$_tmpdir/new" "$_geoip_dir" || { rm -rf "$_tmpdir"; return 1; }
     rm -rf "$_tmpdir"
-    info "country IP database updated"
+    _zones="$(find "$_geoip_dir" -name '*.zone' | wc -l | tr -d ' ')"
+    info "country IP database updated ($_zones zones)"
 }
 
 # ─── Extract ───────────────────────────────────────────────────────────────────
@@ -526,7 +520,7 @@ do_portable_install() {
             fi
             rm -rf "$_tmpdir"
 
-            info "updated to v${VERSION}"
+            info "updated to ${DISPLAY_VERSION}"
         else
             info "keeping current version"
             return
@@ -582,7 +576,7 @@ do_user_install() {
             cp "$_extract_dir/$APP_NAME" "$_bin_dir/$APP_NAME"
             rm -rf "$_tmpdir"
 
-            info "updated to v${VERSION}"
+            info "updated to ${DISPLAY_VERSION}"
         else
             info "keeping current version"
             return
@@ -764,7 +758,8 @@ main() {
         VERSION="$(get_latest_version)"
     fi
     if [ "$DEV_BUILD" = "1" ]; then TAG="dev-build"; else TAG="v$VERSION"; fi
-    info "version: $VERSION"
+    DISPLAY_VERSION="$TAG"
+    info "version: $DISPLAY_VERSION"
 
     select_asset
     info "asset: $ASSET"
@@ -775,7 +770,7 @@ main() {
 
     echo ""
     echo "  ========================================"
-    echo "       V2RayDAR Installer v${VERSION}"
+    echo "       V2RayDAR Installer ${DISPLAY_VERSION}"
     echo "  ========================================"
     echo ""
     info "Detected: ${_detected_os} ${ARCH}"
@@ -934,6 +929,11 @@ main() {
         user)       do_user_install "$INSTALL_DIR"
                     add_to_path "$INSTALL_DIR" ;;
     esac
+
+    # Remove a stale release archive from older installers (binaries only).
+    if [ -f "$INSTALL_DIR/$ASSET" ]; then
+        rm -f "$INSTALL_DIR/$ASSET" && info "removed stale archive: $ASSET"
+    fi
 
     # Fresh country IP database next to the new install (user-mode binaries
     # live in a bin dir, so their data follows the XDG-style app root).

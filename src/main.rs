@@ -259,6 +259,7 @@ async fn main() -> Result<()> {
             true,
             !cli.verbose,
             None,
+            true,
         )
         .await?;
         return Ok(());
@@ -310,7 +311,7 @@ async fn main() -> Result<()> {
         let previous_top_n = HashSet::new();
         tokio::spawn(async move {
             while let Some(event) = proxy_log_rx.recv().await {
-                push_tui_progress(&state, event, &previous_top_n).await;
+                push_tui_progress(&state, event, &previous_top_n, true).await;
             }
         });
     }
@@ -713,6 +714,7 @@ async fn probe_refresh_candidates(
             state,
             ProgressEvent::LiveLog(message.trim_end_matches('.').to_string()),
             &HashSet::new(),
+            true,
         )
         .await;
         return Vec::new();
@@ -737,6 +739,7 @@ async fn probe_refresh_candidates(
             config.probe.mode
         )),
         &HashSet::new(),
+        true,
     )
     .await;
 
@@ -882,6 +885,12 @@ async fn persist_ranked_configs(
     Ok(())
 }
 
+/// Cycle origin marker for Recent Logs: 🤖 automatic (timer, startup,
+/// config reload), 👤 manual (TUI chord/command, CLI invocation).
+fn cycle_actor(manual: bool) -> &'static str {
+    if manual { "👤" } else { "🤖" }
+}
+
 #[allow(
     clippy::significant_drop_tightening,
     clippy::too_many_lines,
@@ -896,11 +905,12 @@ async fn refresh_once(
     print_terminal_summary: bool,
     print_compact_progress: bool,
     ping_cancel: Option<Arc<AtomicBool>>,
+    manual: bool,
 ) -> Result<()> {
     // Refresh is always prioritized over ping: when a fetch comes due while
     // a ping is still running, stop the ping and keep the working results it
     // gathered (carried below) instead of resetting the count. `refreshing`
-    // flips at once so the TUI shows fetching, not pinging, while the ping
+    // flips at once so the TUI shows running, not pinging, while the ping
     // winds down; the cycle lock below still serializes the actual work.
     if ping_cancel.as_ref().is_some_and(|cancel| {
         cancel.load(AtomicOrdering::SeqCst) || state.try_read().is_ok_and(|runtime| runtime.pinging)
@@ -951,6 +961,7 @@ async fn refresh_once(
         state.clone(),
         previous_top_n.clone(),
         print_compact_progress,
+        true,
     );
     if print_compact_progress {
         print_log(format!(
@@ -1187,6 +1198,7 @@ async fn refresh_once(
                             "Subscription retry through first working config failed: {error}"
                         )),
                         &HashSet::new(),
+                        true,
                     )
                     .await;
                 }
@@ -1199,6 +1211,7 @@ async fn refresh_once(
                         .to_string(),
                 ),
                 &HashSet::new(),
+                true,
             )
             .await;
         }
@@ -1395,7 +1408,8 @@ async fn refresh_once(
         .tested_candidates
         .saturating_sub(runtime.reachable_candidates);
     let summary = format!(
-        "{} → {} ({}) · {} fetched, {} failed, {} working ({} used)",
+        "{} {} → {} ({}) · {} fetched, {} failed, {} working ({} used)",
+        cycle_actor(manual),
         started_at.with_timezone(&Local).format("%H:%M:%S"),
         finished_at.with_timezone(&Local).format("%H:%M:%S"),
         format_duration_short(runtime.refresh_duration_ms.unwrap_or_default()),
@@ -1560,7 +1574,9 @@ async fn ping_once(
     cycle: Arc<tokio::sync::Mutex<()>>,
     print_compact_progress: bool,
     ping_cancel: Arc<AtomicBool>,
+    manual: bool,
 ) -> Result<bool> {
+    let actor = cycle_actor(manual);
     let Ok(_cycle_guard) = cycle.try_lock() else {
         debug!("ping skipped: fetch cycle is running");
         return Ok(false);
@@ -1604,6 +1620,9 @@ async fn ping_once(
         state.clone(),
         previous_top_n.clone(),
         print_compact_progress,
+        // A ping re-tests cached configs without fetching: probe byte
+        // counts must not leak into Sub Usage (see `push_tui_progress`).
+        false,
     );
     *runtime_config.write().await = RuntimeConfig::from(config);
     {
@@ -1612,7 +1631,10 @@ async fn ping_once(
         runtime.last_ping_instant = Some(started_instant);
         runtime.tested_candidates = 0;
         runtime.reachable_candidates = 0;
-        runtime.total_candidates = cached.len();
+        // `total_candidates` (Fetched) belongs to the last fetch: a ping
+        // re-tests the cached configs, so only Failed/Working move.
+        // (The "Ping started" line stays live-only; Recent Logs keeps just
+        // the compact final result, like fetch summaries.)
     }
 
     let mut ranked = probe_refresh_candidates(
@@ -1648,14 +1670,21 @@ async fn ping_once(
             runtime.last_error = None;
         }
         let summary = format!(
-            "Ping preempted by refresh: kept {kept} working of {tested} tested configs in {}",
+            "{actor} Ping preempted by refresh: kept {kept} working of {tested} tested configs in {}",
             format_duration_short(started_instant.elapsed().as_millis())
         );
         info!(summary = %summary, "ping preempted");
         if print_compact_progress {
             print_log(&summary);
         }
-        push_tui_progress(&state, ProgressEvent::LiveLog(summary), &HashSet::new()).await;
+        // Live-only: Recent Logs keeps just compact final results.
+        push_tui_progress(
+            &state,
+            ProgressEvent::LiveLog(summary),
+            &HashSet::new(),
+            true,
+        )
+        .await;
         return Ok(true);
     }
     let mut stable_working_counts = state.read().await.stable_working_counts.clone();
@@ -1700,7 +1729,7 @@ async fn ping_once(
     }
 
     let summary = format!(
-        "Ping finished: {working} working of {} cached configs in {}",
+        "{actor} Ping finished: {working} working of {} cached configs in {}",
         progress_state.tested_candidates,
         format_duration_short(started_instant.elapsed().as_millis())
     );
@@ -1708,7 +1737,17 @@ async fn ping_once(
     if print_compact_progress {
         print_log(&summary);
     }
-    push_tui_progress(&state, ProgressEvent::LiveLog(summary), &HashSet::new()).await;
+    push_tui_progress(
+        &state,
+        ProgressEvent::LiveLog(summary.clone()),
+        &HashSet::new(),
+        true,
+    )
+    .await;
+    {
+        let mut runtime = state.write().await;
+        push_runtime_log(&mut runtime, summary);
+    }
     Ok(false)
 }
 
@@ -1745,6 +1784,7 @@ async fn run_ping_cycle(
         cycle.clone(),
         print_compact_progress,
         ping_cancel.clone(),
+        label == "manual",
     )
     .await
     {
@@ -1946,6 +1986,7 @@ fn spawn_refresh_loop(
                     print_terminal_summary,
                     print_compact_progress,
                     Some(ping_cancel.clone()),
+                    false,
                 )
                 .await
                 {
@@ -1980,7 +2021,7 @@ fn spawn_refresh_loop(
                         let config = config_rx.borrow().clone();
                         *runtime_config.write().await = RuntimeConfig::from(&config);
                         last_refresh_fingerprint = Some(RefreshFingerprint::from(&config));
-                        if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), cycle.clone(), print_terminal_summary, print_compact_progress, Some(ping_cancel.clone())).await {
+                        if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), cycle.clone(), print_terminal_summary, print_compact_progress, Some(ping_cancel.clone()), true).await {
                             error!(error = %err, "manual refresh failed");
                             record_refresh_error(&state, err.to_string()).await;
                         } else {
@@ -2013,6 +2054,7 @@ fn spawn_refresh_loop(
                         print_terminal_summary,
                         print_compact_progress,
                         Some(ping_cancel.clone()),
+                        false,
                     )
                     .await
                     {
@@ -2041,7 +2083,7 @@ fn spawn_refresh_loop(
                     drain_triggers(&mut trigger_rx);
                     let config = config_rx.borrow().clone();
                     last_refresh_fingerprint = Some(RefreshFingerprint::from(&config));
-                    if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), cycle.clone(), print_terminal_summary, print_compact_progress, Some(ping_cancel.clone())).await {
+                    if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), cycle.clone(), print_terminal_summary, print_compact_progress, Some(ping_cancel.clone()), false).await {
                         error!(error = %err, "refresh failed");
                         record_refresh_error(&state, err.to_string()).await;
                     } else {
@@ -2065,7 +2107,7 @@ fn spawn_refresh_loop(
                     }
                     let config = config_rx.borrow().clone();
                     last_refresh_fingerprint = Some(RefreshFingerprint::from(&config));
-                    if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), cycle.clone(), print_terminal_summary, print_compact_progress, Some(ping_cancel.clone())).await {
+                    if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), cycle.clone(), print_terminal_summary, print_compact_progress, Some(ping_cancel.clone()), true).await {
                         error!(error = %err, "manual refresh failed");
                         record_refresh_error(&state, err.to_string()).await;
                     }
@@ -2083,7 +2125,7 @@ fn spawn_refresh_loop(
                     let fingerprint = RefreshFingerprint::from(&config);
                     if last_refresh_fingerprint.as_ref() != Some(&fingerprint) {
                         last_refresh_fingerprint = Some(fingerprint);
-                        if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), cycle.clone(), print_terminal_summary, print_compact_progress, Some(ping_cancel.clone())).await {
+                        if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), cycle.clone(), print_terminal_summary, print_compact_progress, Some(ping_cancel.clone()), false).await {
                             error!(error = %err, "refresh after config reload failed");
                             record_refresh_error(&state, err.to_string()).await;
                         } else {
@@ -2262,10 +2304,17 @@ async fn add_fetch_bytes(state: &Arc<RwLock<RuntimeState>>, bytes: u64) {
     state.fetch_bytes = state.fetch_bytes.saturating_add(bytes);
 }
 
+/// Progress events from one probe run into live TUI state.
+///
+/// `account_bytes` attributes probe byte counts to Sub Usage: true for
+/// fetch cycles (real downloads), false for ping cycles (re-testing cached
+/// configs must not look like fetching).
+#[allow(clippy::too_many_arguments)]
 fn spawn_tui_progress_forwarder(
     state: Arc<RwLock<RuntimeState>>,
     previous_top_n: HashSet<String>,
     print_compact_progress: bool,
+    account_bytes: bool,
 ) -> (
     mpsc::UnboundedSender<ProgressEvent>,
     tokio::task::JoinHandle<()>,
@@ -2277,7 +2326,7 @@ fn spawn_tui_progress_forwarder(
             if let Some(reporter) = reporter.as_mut() {
                 reporter.on_event(&event);
             }
-            push_tui_progress(&state, event, &previous_top_n).await;
+            push_tui_progress(&state, event, &previous_top_n, account_bytes).await;
         }
     });
     (tx, task)
@@ -2287,6 +2336,7 @@ async fn push_tui_progress(
     state: &Arc<RwLock<RuntimeState>>,
     event: ProgressEvent,
     previous_top_n: &HashSet<String>,
+    account_bytes: bool,
 ) {
     let mut state = state.write().await;
     match event {
@@ -2298,7 +2348,9 @@ async fn push_tui_progress(
         } => {
             state.tested_candidates = state.tested_candidates.saturating_add(tested);
             state.reachable_candidates = state.reachable_candidates.saturating_add(working);
-            state.fetch_bytes = state.fetch_bytes.saturating_add(bytes);
+            if account_bytes {
+                state.fetch_bytes = state.fetch_bytes.saturating_add(bytes);
+            }
         }
         ProgressEvent::RankedSnapshot(mut ranked) => {
             apply_snapshot_stability_counts(
@@ -2761,6 +2813,7 @@ mod tests {
                 Some(100),
             )]),
             &HashSet::new(),
+            true,
         )
         .await;
 
@@ -2789,6 +2842,7 @@ mod tests {
             &state,
             ProgressEvent::RankedSnapshot(vec![item]),
             &HashSet::from([key]),
+            true,
         )
         .await;
 
@@ -2816,6 +2870,7 @@ mod tests {
                 top_n: 2,
             },
             &HashSet::new(),
+            true,
         )
         .await;
         push_tui_progress(
@@ -2828,6 +2883,7 @@ mod tests {
                 top_n: 2,
             },
             &HashSet::new(),
+            true,
         )
         .await;
 
@@ -2866,6 +2922,7 @@ mod tests {
                 top_n: 3,
             },
             &HashSet::new(),
+            true,
         )
         .await;
 
@@ -3239,6 +3296,7 @@ mod tests {
             false,
             false,
             None,
+            false,
         )
         .await
         .expect("refresh succeeds");
@@ -3282,6 +3340,7 @@ mod tests {
             false,
             false,
             None,
+            false,
         )
         .await
         .expect("refresh succeeds");
@@ -3315,6 +3374,7 @@ mod tests {
             cycle,
             false,
             Arc::new(AtomicBool::new(false)),
+            false,
         )
         .await
         .expect("ping succeeds");
@@ -3458,6 +3518,15 @@ mod tests {
         .await;
         tokio::time::sleep(std::time::Duration::from_secs(4)).await;
         assert_eq!(summary_count(&state).await, baseline + 1);
+        // Manual trigger: the Recent Logs summary carries 👤.
+        assert!(
+            state
+                .read()
+                .await
+                .logs
+                .iter()
+                .any(|line| line.contains("👤") && line.contains("fetched,"))
+        );
     }
 
     #[tokio::test]
@@ -3532,6 +3601,15 @@ mod tests {
         assert_eq!(
             live_log_count(&state, "Subscription loading finished").await,
             fetch_mark
+        );
+        // Manual ping: Recent Logs gains just the compact 👤 summary.
+        assert!(
+            state
+                .read()
+                .await
+                .logs
+                .iter()
+                .any(|line| line.contains("👤 Ping finished"))
         );
     }
 
@@ -3626,6 +3704,7 @@ mod tests {
             false,
             false,
             Some(ping_cancel.clone()),
+            false,
         )
         .await
         .expect("refresh succeeds");
@@ -3646,6 +3725,113 @@ mod tests {
         // Counters continue from the carried values plus the fresh probe.
         assert_eq!(runtime.tested_candidates, 6);
         assert!(!runtime.refreshing);
+        // Automatic refresh: Recent Logs summary carries 🤖.
+        assert!(
+            runtime
+                .logs
+                .iter()
+                .any(|line| line.contains("🤖") && line.contains("fetched,"))
+        );
+        drop(runtime);
+    }
+
+    #[tokio::test]
+    async fn probe_deltas_attribute_bytes_only_for_fetch_cycles() {
+        // Ping re-tests without fetching: its probe bytes must not leak
+        // into Sub Usage, while counters still accumulate in both modes.
+        let state = Arc::new(tokio::sync::RwLock::new(RuntimeState::default()));
+        push_tui_progress(
+            &state,
+            ProgressEvent::ProbeDelta {
+                tested: 2,
+                working: 1,
+                bytes: 100,
+            },
+            &HashSet::new(),
+            false,
+        )
+        .await;
+        let runtime = state.read().await;
+        assert_eq!(runtime.tested_candidates, 2);
+        assert_eq!(runtime.reachable_candidates, 1);
+        assert_eq!(runtime.fetch_bytes, 0);
+        drop(runtime);
+        push_tui_progress(
+            &state,
+            ProgressEvent::ProbeDelta {
+                tested: 2,
+                working: 1,
+                bytes: 100,
+            },
+            &HashSet::new(),
+            true,
+        )
+        .await;
+        let runtime = state.read().await;
+        assert_eq!(runtime.tested_candidates, 4);
+        assert_eq!(runtime.reachable_candidates, 2);
+        assert_eq!(runtime.fetch_bytes, 100);
+        drop(runtime);
+    }
+
+    #[tokio::test]
+    async fn ping_leaves_fetched_total_and_sub_usage_alone() {
+        // A ping re-tests cached configs without fetching: the Fetched total
+        // and Sub Usage from the last fetch must survive, while Failed and
+        // Working follow the ping results. Recent Logs gains just the
+        // compact 👤 summary (started/preempted stay live-only).
+        let config = manual_trigger_test_config();
+        let database = manual_trigger_test_database();
+        let mut cached = ranked(
+            "cached",
+            "vless://00000000-0000-0000-0000-000000000000@127.0.0.1:9#e2e",
+            false,
+            None,
+        );
+        cached.endpoint = crate::model::Endpoint {
+            host: "127.0.0.1".to_string(),
+            port: 9,
+        };
+        let state = Arc::new(tokio::sync::RwLock::new(RuntimeState {
+            ranked: vec![cached],
+            total_candidates: 8816,
+            fetch_bytes: 5_505_024,
+            ..Default::default()
+        }));
+        let runtime_config = Arc::new(tokio::sync::RwLock::new(RuntimeConfig::from(&config)));
+        let cycle = Arc::new(tokio::sync::Mutex::new(()));
+
+        let preempted = ping_once(
+            &config,
+            database,
+            state.clone(),
+            runtime_config,
+            cycle,
+            false,
+            Arc::new(AtomicBool::new(false)),
+            true,
+        )
+        .await
+        .expect("ping succeeds");
+        assert!(!preempted);
+
+        let runtime = state.read().await;
+        assert_eq!(runtime.total_candidates, 8816);
+        assert_eq!(runtime.fetch_bytes, 5_505_024);
+        assert_eq!(runtime.tested_candidates, 1);
+        assert_eq!(runtime.reachable_candidates, 0);
+        assert!(
+            runtime
+                .logs
+                .iter()
+                .any(|line| line.contains("👤 Ping finished"))
+        );
+        assert!(
+            !runtime
+                .logs
+                .iter()
+                .any(|line| line.contains("Ping started"))
+        );
         drop(runtime);
     }
 
@@ -3686,6 +3872,7 @@ mod tests {
             cycle,
             false,
             ping_cancel,
+            false,
         )
         .await
         .expect("ping succeeds");

@@ -107,7 +107,7 @@ subscriptions:
     priority: 3
 
   - name: src-4
-    url: https://raw.githubusercontent.com/zieng2/wl/main/vless_universal.txt
+    url: https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/verified/configs.txt
     enabled: true
     priority: 4
 
@@ -205,3 +205,8 @@ subscriptions:
     url: https://raw.githubusercontent.com/iampedii/whitedns-sub/refs/heads/main/mihomo.yaml
     enabled: true
     priority: 23
+  
+  - name: src-24
+    url: https://raw.githubusercontent.com/zieng2/wl/main/vless_universal.txt
+    enabled: true
+    priority: 24

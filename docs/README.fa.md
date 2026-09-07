@@ -57,17 +57,14 @@
 
 ## &#x200F;📦 نصب سریع
 
-دستور مخصوص سیستم‌عامل خود را در ترمینال کپی کنید. اسکریپت نصب پلتفرم شما را تشخیص داده، آخرین نسخه را همراه <code>sing-box</code> &#x200F;دانلود کرده و همه چیز را راه‌اندازی می‌کند. حالت پرتابل در <code>Desktop/V2RayDAR</code> &#x200F;(یا در صورت نبود پوشه رومیزی، در <code>~/V2RayDAR</code>) نصب می‌شود. حالت کاربری فایل باینری را در <code>~/.local/bin</code> &#x200F;نصب می‌کند.
+دستور مخصوص سیستم‌عامل خود را در ترمینال کپی و Enter کنید — سپس یک Enter دیگر (پاسخ پیش‌فرض «بله») و نصب‌کننده به‌صورت خودکار با تنظیمات پیش‌فرض تمام می‌شود (در صورت نصب بودن، در همان محل به‌روز می‌شود). پاسخ «نه» یعنی پرسش‌های مرحله‌به‌مرحله. اسکریپت نصب پلتفرم شما را تشخیص داده، آخرین نسخه را همراه <code>sing-box</code> &#x200F;دانلود کرده و همه چیز را راه‌اندازی می‌کند. حالت پرتابل در <code>Desktop/V2RayDAR</code> &#x200F;(یا در صورت نبود پوشه رومیزی، در <code>~/V2RayDAR</code>) نصب می‌شود. حالت کاربری فایل باینری را در <code>~/.local/bin</code> &#x200F;نصب می‌کند.
 
-&#x200F;<strong>حالت پرتابل</strong> (توصیه‌شده) — همه فایل‌ها در یک پوشه، اجرا با <code>--portable</code>:
+&#x200F;<strong>حالت پرتابل</strong> (توصیه‌شده) — همه فایل‌ها در یک پوشه، اجرا با <code>--portable</code>: فقط کپی و پیست کنید و Enter بزنید تا نصب تمام شود!
 
 <div dir="ltr">
 
 ```bash
-# Linux
-curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh
-
-# macOS
+# Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh
 
 # Windows
@@ -136,14 +133,16 @@ pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar &&
 | <code>Esc</code> / <code>Ctrl+H</code> | &#x200F;بازگشت |
 | <code>Space</code> | &#x200F;فعال/غیرفعال کردن اشتراک |
 | <code>e</code> | &#x200F;ویرایش اشتراک انتخاب‌شده |
+| <code>Ctrl+R</code> | &#x200F;بروزرسانی دستی (دریافت دوباره، فقط وقتی اجرا نمی‌شود) |
+| <code>Ctrl+P</code> | &#x200F;پینگ دستی پیکربندی‌های ذخیره‌شده (وقتی چرخه‌ای در حال اجراست نه) |
 | <code>q</code> | &#x200F;خروج |
 | <code>:</code> | &#x200F;ورود به حالت فرمان |
 
 </div>
 
-&#x200F;فرمان‌های حالت <code>:</code>: <code>:q</code> خروج، <code>:w</code> ذخیره، <code>:a</code> افزودن، <code>:d</code> حذف، <code>:n</code> تغییر نام، <code>:u</code> تغییر URL، <code>:p</code> تغییر اولویت.
+&#x200F;فرمان‌های حالت <code>:</code>: <code>:q</code> خروج، <code>:w</code> ذخیره، <code>:a</code> افزودن، <code>:d</code> حذف، <code>:n</code> تغییر نام، <code>:u</code> تغییر URL، <code>:p</code> تغییر اولویت، <code>:r</code> بروزرسانی، <code>:ping</code> پینگ.
 
-4. &#x200F;<strong>تغییر تنظیمات</strong> &#x200F;از منوی اصلی TUI (<code>Configurations</code>) یا ویرایش مستقیم <code>configs.yaml</code> — تغییرات در بروزرسانی بعدی اعمال می‌شوند. تنظیمات کلیدی: <code>top_n</code>، <code>refresh_seconds</code>، <code>sharing.enabled</code>، <code>probe.mode</code>.
+4. &#x200F;<strong>تغییر تنظیمات</strong> &#x200F;از منوی اصلی TUI (<code>Configurations</code>) یا ویرایش مستقیم <code>configs.yaml</code> — تغییرات در بروزرسانی بعدی اعمال می‌شوند. تنظیمات کلیدی: <code>top_n</code>، <code>refresh_seconds</code>، <code>ping_seconds</code>، <code>sharing.enabled</code>، <code>probe.mode</code>. تنظیمات جدید نسخه‌های تازه‌تر در اجرا با مقدار پیش‌فرض به پرونده شما افزوده می‌شوند؛ مقادیر شما دست‌نخورده می‌مانند.
 5. &#x200F;<strong>خروج</strong> &#x200F;با <code>q</code> یا <code>:q</code>. با خروج، اندپوینت متوقف می‌شود.
 
 ### &#x200F;حالت‌های اجرا
@@ -173,7 +172,8 @@ v2raydar --uninstall    # حذف داده‌های برنامه و قوانین 
 | --- | --- | --- |
 | <code>bind</code> | <code>127.0.0.1:27141</code> | &#x200F;آدرس محلی HTTP |
 | <code>top_n</code> | <code>10</code> | &#x200F;تعداد کانفیگ‌های کارآمد منتشر شده |
-| <code>refresh_seconds</code> | <code>300</code> | &#x200F;فاصله بروزرسانی خودکار (ثانیه) |
+| <code>refresh_seconds</code> | <code>900</code> | &#x200F;فاصله بروزرسانی خودکار (ثانیه) |
+| <code>ping_seconds</code> | <code>300</code> | &#x200F;فاصله پینگ دوباره پیکربندی‌های ذخیره‌شده بدون دریافت دوباره (ثانیه)؛ 0 غیرفعال می‌کند |
 | <code>encoded_subscription</code> | <code>true</code> | &#x200F;برگرداندن base64 برای <code>/subscription</code> |
 | <code>prioritize_stability</code> | <code>true</code> | &#x200F;اولویت با کانفیگ‌های پایدار قبلی |
 | <code>return_configs_asap</code> | <code>false</code> | &#x200F;انتشار سریع کانفیگ‌های کارآمد |
@@ -204,7 +204,7 @@ v2raydar --uninstall    # حذف داده‌های برنامه و قوانین 
 | <code>probe.accepted_statuses</code> | <code>[204, 200]</code> | &#x200F;کدهای وضعیت موفق |
 | <code>probe.download_url</code> | <code>null</code> | &#x200F;URL تست پهنای باند |
 | <code>probe.download_bytes_limit</code> | <code>1048576</code> | &#x200F;حداکثر بایت تست سرعت |
-| <code>geoip_db_path</code> | <code>null</code> | &#x200F;مسیر اختیاری پایگاه GeoIP |
+| <code>geoip_db_path</code> | <code>null</code> | &#x200F;مسیر اختیاری فایل <code>GeoLite2-Country.mmdb</code> یا پوشه zoneهای کشورها (<code>zones.txt</code> یا فایل‌های قدیمی <code>&lt;cc&gt;.zone</code>). اگر <code>null</code> باشد از <code>&lt;data-root&gt;/geoip</code> استفاده می‌شود (اول پایگاه MaxMind بعد zoneها؛ هر دو توسط نصب‌کننده به‌روز می‌شوند). Country data: GeoLite2 by MaxMind (CC BY-SA 4.0); fallback zones by ipdeny |
 | <code>subscriptions</code> | <em>منابع پیش‌انتخاب</em> | &#x200F;فهرست منابع اشتراک |
 
 </div>

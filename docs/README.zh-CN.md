@@ -51,14 +51,11 @@
 
 ## 📦 快速安装
 
-将对应操作系统的命令复制到终端。安装脚本自动检测平台，下载最新版本并附带 `sing-box`，完成全部配置。便携模式安装到 `Desktop/V2RayDAR`（若存在桌面目录），否则安装到 `~/V2RayDAR`。用户模式将二进制文件安装到 `~/.local/bin`。
+将对应系统的命令粘贴到终端并回车——再按一次回车（默认“是”），安装程序即按默认设置自动完成（已安装则就地更新）；回答“否”则进入逐步提示。安装脚本自动检测平台，下载最新版本并附带 `sing-box`，完成全部配置。便携模式安装到 `Desktop/V2RayDAR`（若存在桌面目录），否则安装到 `~/V2RayDAR`。用户模式将二进制文件安装到 `~/.local/bin`。
 
-**便携模式**（推荐）— 所有文件在同一目录，使用 `--portable` 运行：
+**便携模式**（推荐）— 所有文件在同一目录，使用 `--portable` 运行：只需复制粘贴并按回车，直到安装完成！
 ```bash
-# Linux
-curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh
-
-# macOS
+# Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh
 
 # Windows
@@ -108,10 +105,12 @@ pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar &&
 | `Esc` / `Ctrl+H` | 返回 |
 | `Space` | 切换订阅开关 |
 | `e` | 编辑选中的订阅 |
+| `Ctrl+R` | 手动刷新（重新获取一次，刷新运行时不可用） |
+| `Ctrl+P` | 手动重测已缓存的配置（有任务运行时不可用） |
 | `q` | 退出 |
-| `:` | 命令模式 — `:q` 退出，`:w` 保存，`:a` 添加，`:d` 删除，`:n` 重命名，`:u` 修改 URL，`:p` 修改优先级 |
+| `:` | 命令模式 — `:q` 退出，`:w` 保存，`:a` 添加，`:d` 删除，`:n` 重命名，`:u` 修改 URL，`:p` 修改优先级，`:r` 刷新，`:ping` 重测 |
 
-4. **更改设置** — 从 TUI 主菜单（Configurations）或直接编辑 `configs.yaml`，更改将在下次刷新时生效。关键设置：`top_n`、`refresh_seconds`、`sharing.enabled`、`probe.mode`。
+4. **更改设置** — 从 TUI 主菜单（Configurations）或直接编辑 `configs.yaml`，更改将在下次刷新时生效。关键设置：`top_n`、`refresh_seconds`、`ping_seconds`、`sharing.enabled`、`probe.mode`。新版本新增的设置项会在启动时以默认值追加到旧配置文件，你已有的值不会被改动。
 5. **退出** — 按 `q` 或 `:q`。退出后端点停止服务。
 
 ### 运行模式
@@ -135,7 +134,8 @@ Windows 用户将 `v2raydar` 替换为 `v2raydar.exe`。macOS 上首次打开捆
 | --- | --- | --- |
 | `bind` | `127.0.0.1:27141` | 本地 HTTP 绑定地址，用于 `/subscription`、`/subscription.txt`、`/results` 和 `/health`。 |
 | `top_n` | `10` | 发布给客户端的可用配置数量。 |
-| `refresh_seconds` | `300` | 自动刷新间隔（秒）；`0` 禁用定时刷新。 |
+| `refresh_seconds` | `900` | 自动刷新间隔（秒）；`0` 禁用定时刷新。 |
+| `ping_seconds` | `300` | 已缓存配置的重测间隔（秒），不重新获取订阅；`0` 禁用。 |
 | `encoded_subscription` | `true` | `/subscription` 返回 base64 编码（兼容 v2rayN / v2rayNG）。 |
 | `prioritize_stability` | `true` | 优先重新探测上一轮保存的 Top-N，即使新发现的配置延迟更低也保持其靠前。设为 `false` 则优先选择低延迟的可用配置。 |
 | `return_configs_asap` | `false` | 设为 `true` 时，找到可用配置后立即发布到端点，最多 `top_n` 个；早期配置可能不是延迟最低或最稳定的。 |
@@ -166,7 +166,7 @@ Windows 用户将 `v2raydar` 替换为 `v2raydar.exe`。macOS 上首次打开捆
 | `probe.accepted_statuses` | `[204, 200]` | 视为成功的 HTTP 状态码。 |
 | `probe.download_url` | `null` | 可选的吞吐量测试目标。 |
 | `probe.download_bytes_limit` | `1048576` | 每次速度测试的读取上限。 |
-| `geoip_db_path` | `null` | 可选的 `GeoLite2-Country.mmdb` 文件路径。为 `null` 时使用内置数据库进行国家检测。 |
+| `geoip_db_path` | `null` | 可选的 `GeoLite2-Country.mmdb` 文件或国家 IP 区目录（`zones.txt`，或旧式 `<cc>.zone` 文件）路径。为 `null` 时使用 `<data-root>/geoip`（优先 MaxMind 数据库，zone 兜底；两者均由安装程序更新）。Country data: GeoLite2 by MaxMind (CC BY-SA 4.0); fallback zones by ipdeny. |
 | `subscriptions` | _（预选源）_ | `{ name, url, enabled, priority }` 源列表。建议添加自己的源以获得更好的覆盖。 |
 
 </details>

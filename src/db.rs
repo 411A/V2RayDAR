@@ -14,6 +14,7 @@ impl Database {
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)
             .with_context(|| format!("failed to open database at {}", path.display()))?;
+        restrict_file_permissions(path);
 
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
@@ -253,5 +254,20 @@ impl Database {
         conn.execute("DELETE FROM stable_top", [])?;
         drop(conn);
         Ok(())
+    }
+}
+
+/// Restrict the SQLite file to owner-only (0600 on Unix).
+/// Best-effort, no-op on Windows; single syscall, no query delay.
+#[allow(clippy::missing_const_for_fn)]
+fn restrict_file_permissions(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
     }
 }

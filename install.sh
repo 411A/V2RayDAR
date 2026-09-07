@@ -44,6 +44,37 @@ need() {
     command -v "$1" >/dev/null 2>&1 || err "required command not found: $1"
 }
 
+# Ensure a download tool exists. When the script arrives without curl (local
+# copy, wget pipe), bootstrap it automatically via the system package manager
+# instead of failing: update indexes, then install curl (and tar, needed to
+# extract the release archive).
+ensure_curl() {
+    command -v curl >/dev/null 2>&1 && return 0
+    if command -v pkg >/dev/null 2>&1; then
+        # Termux: pkg wraps apt; a full upgrade here would be slow and is not
+        # needed to install two small packages, so update + install only.
+        info "curl not found, installing it via pkg..."
+        pkg update -y && pkg install -y curl tar \
+            || err "failed to install curl via pkg (run: pkg install -y curl tar)"
+    elif command -v apt-get >/dev/null 2>&1; then
+        # Debian/Ubuntu (and Termux fallback): script-safe apt frontend.
+        _apt="apt-get"
+        if [ "$(id -u)" -ne 0 ]; then
+            command -v sudo >/dev/null 2>&1 \
+                || err "curl not found and no root/sudo available; install curl and tar first"
+            _apt="sudo apt-get"
+        fi
+        info "curl not found, installing it via ${_apt}..."
+        # shellcheck disable=SC2086
+        $_apt update && $_apt full-upgrade -y && $_apt install -y curl tar \
+            || err "failed to install curl via ${_apt}"
+    else
+        err "required command not found: curl"
+    fi
+    command -v curl >/dev/null 2>&1 \
+        || err "curl installation failed; install curl and tar manually, then rerun"
+}
+
 confirm() {
     if [ "${NON_INTERACTIVE:-0}" = "1" ]; then
         return 0
@@ -215,6 +246,20 @@ get_latest_version() {
     echo "$_version"
 }
 
+get_dev_version() {
+    need curl
+    set +e
+    _response="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/tags/dev-build" 2>/dev/null)"
+    _curl_exit=$?
+    set -e
+    if [ "$_curl_exit" -ne 0 ] || [ -z "$_response" ]; then
+        err "no dev-build pre-release found (trigger the Release workflow on dev with prerelease first)"
+    fi
+    _version="$(echo "$_response" | sed -n 's/.*"tag_name": *"\(dev-build\)".*/\1/p' | head -1)"
+    [ -n "$_version" ] || err "no dev-build pre-release found (trigger the Release workflow on dev with prerelease first)"
+    echo "$_version"
+}
+
 download_file() {
     _url="$1"
     _dest="$2"
@@ -254,7 +299,7 @@ download_file() {
 
 verify_checksum() {
     _file="$1"
-    _checksums_url="${GITHUB_DOWNLOAD}/v${VERSION}/checksums.txt"
+    _checksums_url="${GITHUB_DOWNLOAD}/${TAG}/checksums.txt"
     set +e
     _checksums="$(curl -fsSL "$_checksums_url" 2>/dev/null)"
     _curl_exit=$?
@@ -281,6 +326,203 @@ verify_checksum() {
     else
         err "checksum mismatch: expected $_expected, got $_actual"
     fi
+}
+
+# ─── Country IP Database (GeoIP) ─────────────────────────────────────────────
+# Keyless ipdeny zone blocks, refreshed independently of app releases into
+# <data-root>/geoip/zones.txt (one "<cc> <cidr>" per line, v4 and v6 mixed;
+# the app prefers it over loose files). The MaxMind mmdb beside it stays the
+# primary tier and is never touched by the zone refresh. The app loads both
+# at startup (see src/geoip.rs) and runs fine without them. Every installer
+# run refreshes unconditionally; failures never fail the install — callers
+# run this in a subshell and warn on error.
+
+GEOIP_V4_URL="https://www.ipdeny.com/ipblocks/data/countries/all-zones.tar.gz"
+GEOIP_V4_MD5_URL="https://www.ipdeny.com/ipblocks/data/countries/MD5SUM"
+GEOIP_V6_URL="https://www.ipdeny.com/ipv6/ipaddresses/blocks/ipv6-all-zones.tar.gz"
+GEOIP_V6_MD5_URL="https://www.ipdeny.com/ipv6/ipaddresses/blocks/MD5SUM"
+GEOIP_MMDB_URL="https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-Country.mmdb"
+GEOIP_MMDB_FILE="GeoLite2-Country.mmdb"
+# Sanity floor for the mmdb (real file is ~8MB; the publisher ships no
+# checksum, so TLS + this size check + structural validation on open in the
+# app are the integrity layers).
+GEOIP_MMDB_MIN_BYTES=1000000
+
+# Data dir for an existing install: user-mode binaries live in a bin dir, so
+# their data follows the XDG-style app root; portable installs keep data
+# next to the binary.
+geoip_data_dir_for_found() {
+    case "$FOUND_PATH" in
+        "$HOME/.local/bin"|"${PREFIX:-/usr/local}/bin")
+            printf '%s' "${XDG_DATA_HOME:-$HOME/.local/share}/V2RayDAR/v2raydar_data/geoip" ;;
+        *)
+            printf '%s' "$FOUND_PATH/v2raydar_data/geoip" ;;
+    esac
+}
+
+# Remove databases from the retired GeoLite2 era (replaced by zone files).
+cleanup_legacy_mmdb() {
+    for _mmdb in \
+        "$FOUND_PATH/GeoLite2-Country.mmdb" \
+        "$FOUND_PATH/v2raydar_data/GeoLite2-Country.mmdb" \
+        "${XDG_DATA_HOME:-$HOME/.local/share}/V2RayDAR/v2raydar_data/GeoLite2-Country.mmdb" \
+        "$HOME/V2RayDAR/v2raydar_data/GeoLite2-Country.mmdb" \
+    ; do
+        if [ -n "$_mmdb" ] && [ -f "$_mmdb" ]; then
+            rm -f "$_mmdb" && info "removed legacy GeoLite2 database: $_mmdb"
+        fi
+    done
+}
+
+# Verify an extracted zone tree: every country file we would install must be
+# listed in MD5SUM with a matching hash, and unexpected files fail the run.
+# Files the listing mentions but the archive does not ship (publisher
+# placeholders such as ap.zone) are skipped with a note — the app runs fine
+# on the remaining countries.
+verify_zone_tree() {
+    _vdir="$1"
+    _md5data="$2"
+    if command -v md5sum >/dev/null 2>&1; then
+        _hasher="md5sum"
+    elif command -v md5 >/dev/null 2>&1; then
+        _hasher="md5 -r"
+    else
+        warn "no md5 tool found, skipping GeoIP verification"
+        return 0
+    fi
+
+    _checked=0
+    for _path in "$_vdir"/*.zone; do
+        [ -f "$_path" ] || continue
+        _file="$(basename "$_path")"
+        _stem="${_file%.zone}"
+        case "$_stem" in
+            [A-Za-z][A-Za-z]) ;;
+            *) continue ;;
+        esac
+        _expected="$(printf '%s\n' "$_md5data" | awk -v f="$_file" '$2 == f { print $1; exit }')"
+        if [ -z "$_expected" ]; then
+            warn "GeoIP file $_file is not in the checksum list"
+            return 1
+        fi
+        # shellcheck disable=SC2086
+        _actual="$($_hasher "$_path" | awk '{print $1}')"
+        if [ "$_actual" != "$_expected" ]; then
+            warn "GeoIP checksum mismatch for $_file"
+            return 1
+        fi
+        _checked=$((_checked + 1))
+    done
+
+    if [ "$_checked" -eq 0 ]; then
+        warn "no GeoIP zone files verified"
+        return 1
+    fi
+    return 0
+}
+
+# Download and atomically install the MaxMind country database (primary
+# tier). No published checksum exists, so failures and undersized files keep
+# the previous database.
+refresh_geoip_mmdb() {
+    _geoip_dir="$1"
+    info "updating GeoIP country database..."
+    _tmpdir="$(mktemp_d)"
+    download_file "$GEOIP_MMDB_URL" "$_tmpdir/$GEOIP_MMDB_FILE"
+    _bytes="$(wc -c < "$_tmpdir/$GEOIP_MMDB_FILE" | tr -d ' ')"
+    case "$_bytes" in ''|*[!0-9]*) _bytes=0 ;; esac
+    if [ "$_bytes" -lt "$GEOIP_MMDB_MIN_BYTES" ]; then
+        warn "GeoIP database download looks truncated ($_bytes bytes), keeping existing data"
+        rm -rf "$_tmpdir"
+        return 1
+    fi
+    mkdir -p "$_geoip_dir"
+    mv "$_tmpdir/$GEOIP_MMDB_FILE" "$_geoip_dir/$GEOIP_MMDB_FILE" || { rm -rf "$_tmpdir"; return 1; }
+    rm -rf "$_tmpdir"
+    info "GeoIP country database updated"
+    return 0
+}
+
+# Consolidate verified zone files into one "<cc> <cidr>" file (v4 + v6).
+# Blank lines and publisher comments never reach the output.
+consolidate_zone_tree() {
+    _staged="$1"
+    _out="$2"
+    _stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date)"
+    {
+        printf '# V2RayDAR consolidated country zones (<cc> <cidr>), generated %s\n' "$_stamp"
+        for _path in "$_staged"/*.zone "$_staged"/ipv6/*.zone; do
+            [ -f "$_path" ] || continue
+            _file="$(basename "$_path")"
+            _stem="${_file%.zone}"
+            case "$_stem" in
+                [A-Za-z][A-Za-z]) ;;
+                *) continue ;;
+            esac
+            while IFS= read -r _line || [ -n "$_line" ]; do
+                case "$_line" in ''|'#'*) continue ;; esac
+                printf '%s %s\n' "$_stem" "$_line"
+            done < "$_path"
+        done
+    } > "$_out"
+}
+
+# Download, verify, and install fresh zones as one zones.txt into a geoip
+# dir. Only zones.txt and stale loose files are touched: the MaxMind mmdb
+# beside them (primary tier) is preserved, and legacy <cc>.zone files plus
+# the ipv6/ subdir are removed once the single file lands.
+refresh_geoip_data() {
+    _geoip_dir="$1"
+    info "updating country IP database..."
+    _tmpdir="$(mktemp_d)"
+    set +e
+    _v4md5="$(curl -fsSL "$GEOIP_V4_MD5_URL" 2>/dev/null)"
+    _v6md5="$(curl -fsSL "$GEOIP_V6_MD5_URL" 2>/dev/null)"
+    set -e
+    if [ -z "${_v4md5:-}" ] || [ -z "${_v6md5:-}" ]; then
+        warn "could not fetch GeoIP checksums, keeping existing data"
+        rm -rf "$_tmpdir"
+        return 1
+    fi
+    download_file "$GEOIP_V4_URL" "$_tmpdir/v4.tar.gz"
+    download_file "$GEOIP_V6_URL" "$_tmpdir/v6.tar.gz"
+
+    mkdir -p "$_tmpdir/stage" "$_tmpdir/stage/ipv6"
+    if ! tar xzf "$_tmpdir/v4.tar.gz" -C "$_tmpdir/stage"; then
+        warn "could not extract GeoIP v4 archive, keeping existing data"
+        rm -rf "$_tmpdir"
+        return 1
+    fi
+    if ! tar xzf "$_tmpdir/v6.tar.gz" -C "$_tmpdir/stage/ipv6"; then
+        warn "could not extract GeoIP v6 archive, keeping existing data"
+        rm -rf "$_tmpdir"
+        return 1
+    fi
+    if ! verify_zone_tree "$_tmpdir/stage" "$_v4md5"; then
+        warn "GeoIP v4 verification failed, keeping existing data"
+        rm -rf "$_tmpdir"
+        return 1
+    fi
+    if ! verify_zone_tree "$_tmpdir/stage/ipv6" "$_v6md5"; then
+        warn "GeoIP v6 verification failed, keeping existing data"
+        rm -rf "$_tmpdir"
+        return 1
+    fi
+
+    consolidate_zone_tree "$_tmpdir/stage" "$_tmpdir/zones.txt"
+    _prefixes="$(grep -c -v '^#' "$_tmpdir/zones.txt" 2>/dev/null || echo 0)"
+    case "$_prefixes" in ''|*[!0-9]*|0) _prefixes=0 ;; esac
+    if [ "$_prefixes" -eq 0 ]; then
+        warn "GeoIP consolidation produced no prefixes, keeping existing data"
+        rm -rf "$_tmpdir"
+        return 1
+    fi
+    mkdir -p "$_geoip_dir"
+    mv "$_tmpdir/zones.txt" "$_geoip_dir/zones.txt" || { rm -rf "$_tmpdir"; return 1; }
+    rm -f "$_geoip_dir"/*.zone
+    rm -rf "$_geoip_dir/ipv6"
+    rm -rf "$_tmpdir"
+    info "country IP database updated ($_prefixes prefixes in zones.txt)"
 }
 
 # ─── Extract ───────────────────────────────────────────────────────────────────
@@ -327,7 +569,7 @@ do_portable_install() {
             _archive="$_tmpdir/$ASSET"
 
             info "downloading ${ASSET}..."
-            download_file "${GITHUB_DOWNLOAD}/v${VERSION}/${ASSET}" "$_archive"
+            download_file "${GITHUB_DOWNLOAD}/${TAG}/${ASSET}" "$_archive"
             verify_checksum "$_archive"
 
             info "updating..."
@@ -342,7 +584,7 @@ do_portable_install() {
             fi
             rm -rf "$_tmpdir"
 
-            info "updated to v${VERSION}"
+            info "updated to ${DISPLAY_VERSION}"
         else
             info "keeping current version"
             return
@@ -355,7 +597,7 @@ do_portable_install() {
         _archive="$_tmpdir/$ASSET"
 
         info "downloading ${ASSET}..."
-        download_file "${GITHUB_DOWNLOAD}/v${VERSION}/${ASSET}" "$_archive"
+        download_file "${GITHUB_DOWNLOAD}/${TAG}/${ASSET}" "$_archive"
         verify_checksum "$_archive"
 
         info "installing..."
@@ -387,7 +629,7 @@ do_user_install() {
             _archive="$_tmpdir/$ASSET"
 
             info "downloading ${ASSET}..."
-            download_file "${GITHUB_DOWNLOAD}/v${VERSION}/${ASSET}" "$_archive"
+            download_file "${GITHUB_DOWNLOAD}/${TAG}/${ASSET}" "$_archive"
             verify_checksum "$_archive"
 
             _extract_dir="$_tmpdir/extract"
@@ -398,7 +640,7 @@ do_user_install() {
             cp "$_extract_dir/$APP_NAME" "$_bin_dir/$APP_NAME"
             rm -rf "$_tmpdir"
 
-            info "updated to v${VERSION}"
+            info "updated to ${DISPLAY_VERSION}"
         else
             info "keeping current version"
             return
@@ -411,7 +653,7 @@ do_user_install() {
         _archive="$_tmpdir/$ASSET"
 
         info "downloading ${ASSET}..."
-        download_file "${GITHUB_DOWNLOAD}/v${VERSION}/${ASSET}" "$_archive"
+        download_file "${GITHUB_DOWNLOAD}/${TAG}/${ASSET}" "$_archive"
         verify_checksum "$_archive"
 
         _extract_dir="$_tmpdir/extract"
@@ -531,6 +773,7 @@ Usage:
 
 Options:
     -v, --version VERSION    Install a specific version (default: latest)
+        --pre                Install the dev-build pre-release (developer testing)
     -d, --dir DIR            Install to a specific directory (portable mode)
     -p, --portable           Install in portable mode (everything in one directory)
     -u, --user               Install in user mode (binary to ~/.local/bin)
@@ -546,6 +789,7 @@ main() {
     INSTALL_DIR=""
     INSTALL_MODE=""
     NON_INTERACTIVE=0
+    DEV_BUILD=0
 
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -554,12 +798,13 @@ main() {
             -p|--portable) INSTALL_MODE="portable"; shift ;;
             -u|--user)     INSTALL_MODE="user"; shift ;;
             -y|--yes)      NON_INTERACTIVE=1; shift ;;
+            --pre)         DEV_BUILD=1; shift ;;
             -h|--help)     usage; exit 0 ;;
             *)             err "unknown option: $1 (use --help)" ;;
         esac
     done
 
-    need curl
+    ensure_curl
     need uname
     need mktemp
 
@@ -567,9 +812,18 @@ main() {
     detect_arch
     detect_termux
 
-    [ -n "$VERSION" ] || VERSION="$(get_latest_version)"
     VERSION="${VERSION#v}"
-    info "version: $VERSION"
+    case "$(printf '%s' "${VERSION:-}" | tr '[:upper:]' '[:lower:]')" in
+        dev|dev-build|pre) DEV_BUILD=1 ;;
+    esac
+    if [ "$DEV_BUILD" = "1" ]; then
+        VERSION="$(get_dev_version)"
+    elif [ -z "$VERSION" ]; then
+        VERSION="$(get_latest_version)"
+    fi
+    if [ "$DEV_BUILD" = "1" ]; then TAG="dev-build"; else TAG="v$VERSION"; fi
+    DISPLAY_VERSION="$TAG"
+    info "version: $DISPLAY_VERSION"
 
     select_asset
     info "asset: $ASSET"
@@ -580,14 +834,44 @@ main() {
 
     echo ""
     echo "  ========================================"
-    echo "       V2RayDAR Installer v${VERSION}"
+    echo "       V2RayDAR Installer ${DISPLAY_VERSION}"
     echo "  ========================================"
     echo ""
     info "Detected: ${_detected_os} ${ARCH}"
 
+    # ─── One-question auto mode ───────────────────────────────────────────────
+    # A single Enter (default Y) installs/updates with defaults and asks
+    # nothing else; N keeps the step-by-step prompts below.
+    if [ "${NON_INTERACTIVE:-0}" = "0" ]; then
+        if [ -t 0 ] || [ -t 2 ]; then
+            echo ""
+            if confirm "automatic install/update to v${VERSION} (no more questions)?"; then
+                NON_INTERACTIVE=1
+            fi
+        fi
+    fi
+
     if find_installed; then
         # Found an existing installation
-        if [ -n "$FOUND_VERSION" ]; then
+        if [ "$DEV_BUILD" = "1" ]; then
+            # Developer pre-release: skip semver comparison (dev-build is not
+            # a version number) and offer a straight binary replacement.
+            echo ""
+            if [ -n "$FOUND_VERSION" ]; then
+                warn "V2RayDAR v${FOUND_VERSION} is installed at $FOUND_PATH/$APP_NAME."
+            else
+                warn "V2RayDAR is installed at $FOUND_PATH/$APP_NAME (version unknown)."
+            fi
+            info "dev-build requested: binaries will be replaced, user data preserved."
+            echo ""
+            if [ "${NON_INTERACTIVE:-0}" = "1" ]; then
+                info "non-interactive mode: proceeding with dev-build install"
+            elif [ -t 0 ] || [ -t 2 ]; then
+                confirm "install dev-build (${TAG})?" || { info "cancelled"; return; }
+            else
+                info "non-interactive mode detected, proceeding with dev-build install"
+            fi
+        elif [ -n "$FOUND_VERSION" ]; then
             # Compare versions
             if version_compare "$FOUND_VERSION" "$VERSION"; then
                 # Same version
@@ -596,6 +880,14 @@ main() {
                 if [ -n "$FOUND_PATH" ]; then
                     info "location: $FOUND_PATH/$APP_NAME"
                 fi
+                echo ""
+                # No new app version: still refresh country data (MaxMind
+                # database first, zones.txt as its fallback).
+                cleanup_legacy_mmdb
+                ( refresh_geoip_mmdb "$(geoip_data_dir_for_found)" ) \
+                    || warn "GeoIP database update failed, keeping existing data"
+                ( refresh_geoip_data "$(geoip_data_dir_for_found)" ) \
+                    || warn "country IP database update failed, keeping existing data"
                 echo ""
                 return
             fi
@@ -629,6 +921,12 @@ main() {
                     info "location: $FOUND_PATH/$APP_NAME"
                 fi
                 echo ""
+                cleanup_legacy_mmdb
+                ( refresh_geoip_mmdb "$(geoip_data_dir_for_found)" ) \
+                    || warn "GeoIP database update failed, keeping existing data"
+                ( refresh_geoip_data "$(geoip_data_dir_for_found)" ) \
+                    || warn "country IP database update failed, keeping existing data"
+                echo ""
                 return
             fi
         else
@@ -651,6 +949,22 @@ main() {
         # Not installed
         echo ""
         info "V2RayDAR is not installed."
+    fi
+
+    # Auto mode with an existing install: update in place instead of dropping
+    # a second copy at the portable default (explicit -d/-p/-u flags still win).
+    if [ "${NON_INTERACTIVE:-0}" = "1" ] && [ -z "$INSTALL_MODE" ] && [ -n "${FOUND_PATH:-}" ] && [ -w "$FOUND_PATH" ]; then
+        case "$FOUND_PATH" in
+            "$HOME/.local/bin"|"${PREFIX:-/usr/local}/bin")
+                INSTALL_MODE="user"
+                INSTALL_DIR="$FOUND_PATH"
+                ;;
+            *)
+                INSTALL_MODE="portable"
+                INSTALL_DIR="$FOUND_PATH"
+                ;;
+        esac
+        info "auto mode: updating in place at $INSTALL_DIR"
     fi
 
     # ─── Proceed with installation ──────────────────────────────────────────────
@@ -684,6 +998,24 @@ main() {
         user)       do_user_install "$INSTALL_DIR"
                     add_to_path "$INSTALL_DIR" ;;
     esac
+
+    # Remove a stale release archive from older installers (binaries only).
+    if [ -f "$INSTALL_DIR/$ASSET" ]; then
+        rm -f "$INSTALL_DIR/$ASSET" && info "removed stale archive: $ASSET"
+    fi
+
+    # Fresh country data next to the new install (user-mode binaries live
+    # in a bin dir, so their data follows the XDG-style app root).
+    if [ "$INSTALL_MODE" = "user" ]; then
+        _geoip_dir="${XDG_DATA_HOME:-$HOME/.local/share}/V2RayDAR/v2raydar_data/geoip"
+    else
+        _geoip_dir="$INSTALL_DIR/v2raydar_data/geoip"
+    fi
+    cleanup_legacy_mmdb
+    ( refresh_geoip_mmdb "$_geoip_dir" ) \
+        || warn "GeoIP database update failed, keeping existing data"
+    ( refresh_geoip_data "$_geoip_dir" ) \
+        || warn "country IP database update failed, keeping existing data"
 
     echo ""
     info "done!"

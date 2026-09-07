@@ -2,7 +2,7 @@ use std::{
     cmp::Ordering,
     collections::{HashMap, VecDeque},
     future::Future,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Stdio,
     sync::{
         Arc,
@@ -32,9 +32,9 @@ use crate::{
         ACTIVE_PROBE_BATCH_CONCURRENCY_MULTIPLIER, ACTIVE_PROBE_BATCH_MAX_SIZE,
         ACTIVE_PROBE_BATCH_MIN_SIZE, ACTIVE_PROBE_HTTP_MAX_CONCURRENCY,
         ACTIVE_PROBE_PROCESS_MAX_CONCURRENCY, BITS_PER_BYTE, BITS_PER_MEGABIT,
-        LOCAL_PROXY_CONNECT_TIMEOUT, LOCAL_PROXY_WAIT_INTERVAL, LOCALHOST_IP,
-        SING_BOX_CLEANUP_TIMEOUT, SING_BOX_CONFIG_FILE_PREFIX, SING_BOX_INBOUND_TAG_PREFIX,
-        SING_BOX_OUTBOUND_TAG_PREFIX,
+        HTTP_EXCHANGE_OVERHEAD_BYTES, LOCAL_PROXY_CONNECT_TIMEOUT, LOCAL_PROXY_WAIT_INTERVAL,
+        LOCALHOST_IP, SING_BOX_CLEANUP_TIMEOUT, SING_BOX_CONFIG_FILE_PREFIX,
+        SING_BOX_INBOUND_TAG_PREFIX, SING_BOX_OUTBOUND_TAG_PREFIX,
     },
     convert::{
         decode_base64_bytes, decode_base64_to_string, first_param, json_string, json_u16, json_u64,
@@ -43,10 +43,20 @@ use crate::{
     model::{Candidate, ProbeStopPolicy, ProgressEvent, RankedConfig},
 };
 
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
-static SING_BOX_CACHE: OnceLock<Option<String>> = OnceLock::new();
-static SING_BOX_VERSION_DETECTED: OnceLock<Option<(u32, u32, u32)>> = OnceLock::new();
+#[derive(Debug, Clone)]
+struct CachedSingBox {
+    path: String,
+    available: bool,
+    version: Option<(u32, u32, u32)>,
+}
+
+static SING_BOX_CACHE: OnceLock<Mutex<Option<CachedSingBox>>> = OnceLock::new();
+
+fn sing_box_cache() -> &'static Mutex<Option<CachedSingBox>> {
+    SING_BOX_CACHE.get_or_init(|| Mutex::new(None))
+}
 
 /// Parse sing-box version string like "1.13.14" into (major, minor, patch).
 fn parse_sing_box_version(output: &str) -> Option<(u32, u32, u32)> {
@@ -63,19 +73,53 @@ fn parse_sing_box_version(output: &str) -> Option<(u32, u32, u32)> {
     }
 }
 
+/// Major version of a sing-box binary (`None` when it cannot run).
+///
+/// Powers feature gates without requiring a prior probe run (TCP mode never
+/// probes, so the availability cache may be cold at proxy start).
+pub(crate) async fn sing_box_major_version(path: &str) -> Option<u32> {
+    let output = Command::new(path)
+        .arg("version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_sing_box_version(&String::from_utf8_lossy(&output.stdout)).map(|(major, _, _)| major)
+}
+
 /// Check if the detected sing-box version is >= (major, minor, patch).
+///
+/// Uses the version from the last successful availability check.
+/// Returns `false` when no successful check has been cached yet.
+/// This is a cheap in-memory read with no I/O, safe for hot paths.
 pub fn sing_box_version_at_least(major: u32, minor: u32, patch: u32) -> bool {
-    match SING_BOX_VERSION_DETECTED.get() {
-        Some(Some((maj, min, pat))) => (*maj, *min, *pat) >= (major, minor, patch),
-        _ => false,
+    let version = sing_box_cache()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
+        .and_then(|cached| cached.version);
+    match version {
+        Some((maj, min, pat)) => (maj, min, pat) >= (major, minor, patch),
+        None => false,
     }
 }
 
-/// Check sing-box availability once per process lifetime.
-/// The path doesn't change mid-session, so re-checking is pure waste.
+/// Check sing-box availability, cached per path.
+///
+/// The cache key includes the path so TUI path changes take effect
+/// without a restart. Re-checks only happen when the path differs from
+/// the cached entry, so steady-state probing stays at zero extra cost.
 async fn sing_box_available(path: &str) -> bool {
-    if let Some(cached) = SING_BOX_CACHE.get() {
-        return cached.as_deref() == Some(path);
+    if let Ok(guard) = sing_box_cache().lock()
+        && let Some(cached) = guard.as_ref()
+        && cached.path == path
+    {
+        return cached.available;
     }
 
     debug!(sing_box_path = %path, "checking sing-box availability");
@@ -89,13 +133,14 @@ async fn sing_box_available(path: &str) -> bool {
         .await
         .ok();
     let available = output.as_ref().is_some_and(|o| o.status.success());
+    let mut version = None;
     if let Some(ref out) = output
-        && let Some(version) = parse_sing_box_version(&String::from_utf8_lossy(&out.stdout))
+        && let Some(detected) = parse_sing_box_version(&String::from_utf8_lossy(&out.stdout))
     {
-        let _ = SING_BOX_VERSION_DETECTED.set(Some(version));
+        version = Some(detected);
         info!(
             sing_box_path = %path,
-            version = ?version,
+            version = ?detected,
             "sing-box version detected"
         );
     }
@@ -105,19 +150,28 @@ async fn sing_box_available(path: &str) -> bool {
         duration_ms = started.elapsed().as_millis(),
         "sing-box availability check finished"
     );
-    let _ = SING_BOX_CACHE.set(if available {
-        Some(path.to_string())
-    } else {
-        None
-    });
+    if let Ok(mut guard) = sing_box_cache().lock() {
+        *guard = Some(CachedSingBox {
+            path: path.to_string(),
+            available,
+            version,
+        });
+    }
     available
 }
 
+/// Probe `candidates`, stopping early per `stop_policy`.
+///
+/// `cancel` is an external preemption switch (a refresh interrupting a ping):
+/// when set, in-flight probes finish their current item and the run returns
+/// whatever was verified so far instead of the full list. `None` probes to
+/// completion (normal refreshes, CLI ping).
 pub async fn probe_candidates(
     candidates: Vec<Candidate>,
     config: &ProbeConfig,
     progress: Option<UnboundedSender<ProgressEvent>>,
     stop_policy: &ProbeStopPolicy,
+    cancel: Option<Arc<AtomicBool>>,
 ) -> Vec<RankedConfig> {
     info!(
         mode = ?config.mode,
@@ -148,7 +202,7 @@ pub async fn probe_candidates(
                 config.sing_box_path
             ),
         );
-        send_probe_delta(progress.as_ref(), failed, 0);
+        send_probe_delta(progress.as_ref(), failed, 0, 0);
         return rank_configs(
             candidates
                 .into_iter()
@@ -166,9 +220,17 @@ pub async fn probe_candidates(
         );
     }
 
+    let cancel = cancel.unwrap_or_default();
     let ranked = match config.mode {
         ProbeMode::Active => {
-            probe_active_batched(candidates, config, progress.clone(), stop_policy).await
+            probe_active_batched(
+                candidates,
+                config,
+                progress.clone(),
+                stop_policy,
+                Some(cancel.clone()),
+            )
+            .await
         }
         ProbeMode::Tcp => {
             if !stop_policy.scan_all_configs {
@@ -182,8 +244,13 @@ pub async fn probe_candidates(
             }))
             .buffer_unordered(config.concurrency);
             let mut ranked = Vec::new();
+            // Dropping the stream cancels in-flight connects; one
+            // already-finished result at most slips through per check.
             while let Some(result) = results.next().await {
-                send_probe_delta(progress.as_ref(), 1, usize::from(result.reachable));
+                if cancel.load(AtomicOrdering::Relaxed) {
+                    break;
+                }
+                send_probe_delta(progress.as_ref(), 1, usize::from(result.reachable), 0);
                 ranked.push(result);
                 send_asap_configs(progress.as_ref(), &ranked, stop_policy);
             }
@@ -239,10 +306,17 @@ pub async fn ping_configs(uris: Vec<String>, config: &ProbeConfig) -> Vec<Ranked
             prioritize_stability: false,
             return_configs_asap: false,
             previous_working_keys: std::collections::HashSet::new(),
+            prefound_working: 0,
+            prefound_previous_working: 0,
         };
-        let active_results =
-            probe_active_batched(candidates_from_ranked(&results), config, None, &stop_policy)
-                .await;
+        let active_results = probe_active_batched(
+            candidates_from_ranked(&results),
+            config,
+            None,
+            &stop_policy,
+            None,
+        )
+        .await;
         if !active_results.is_empty() {
             results = active_results;
         }
@@ -375,6 +449,8 @@ struct ActiveProbeSuccess {
     http_status: u16,
     download_mbps: Option<f64>,
     download_bytes: Option<usize>,
+    /// Observed request + response-header bytes (no body read, no extra I/O).
+    bytes: u64,
 }
 
 struct ActivePreparation {
@@ -450,12 +526,62 @@ impl ProbeStopState {
     }
 }
 
+/// Results plus stop-search state shared by every batch of one
+/// `probe_active_batched` run.
+///
+/// Previously each batch evaluated early-stop against only its own results,
+/// so N concurrent batches each probed toward `top_n` on their own — and the
+/// wave loop kept whichever batch outcome arrived first, which could even be
+/// an empty loser that discarded a sibling's real results. Sharing fixes both
+/// without touching concurrency at all (same waves, batches, processes):
+///
+/// - every completed probe appends here first, so finished work is never lost
+///   no matter which batch outcome arrives first;
+/// - the stop condition sees everything found so far across all batches, so
+///   every batch quits within ~one probe of the global target.
+struct SharedProbeState {
+    ranked: Vec<RankedConfig>,
+    stop: ProbeStopState,
+    stop_announced: bool,
+}
+
+type SharedProbe = std::sync::Arc<std::sync::Mutex<SharedProbeState>>;
+
+fn lock_shared(shared: &SharedProbe) -> std::sync::MutexGuard<'_, SharedProbeState> {
+    shared
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Evaluate the shared stop condition; announces the reason once.
+/// Pure decision wrapper around [`probe_stop_reason`] — messaging behavior
+/// (half snapshot, reason text) is unchanged, it just fires globally now.
+fn eval_shared_stop(
+    shared: &SharedProbe,
+    policy: &ProbeStopPolicy,
+    progress: Option<&UnboundedSender<ProgressEvent>>,
+) -> Option<String> {
+    let mut shared = lock_shared(shared);
+    if shared.stop_announced {
+        return None;
+    }
+    let reason = {
+        let SharedProbeState { ranked, stop, .. } = &mut *shared;
+        probe_stop_reason(ranked, policy, stop, progress)
+    };
+    if reason.is_some() {
+        shared.stop_announced = true;
+    }
+    reason
+}
+
 #[allow(clippy::too_many_lines)]
 async fn probe_active_batched(
     candidates: Vec<Candidate>,
     config: &ProbeConfig,
     progress: Option<UnboundedSender<ProgressEvent>>,
     stop_policy: &ProbeStopPolicy,
+    cancel: Option<Arc<AtomicBool>>,
 ) -> Vec<RankedConfig> {
     let started = Instant::now();
     let input_count = candidates.len();
@@ -463,13 +589,14 @@ async fn probe_active_batched(
     let stop_policy_clone = stop_policy.clone();
     let ActivePreparation {
         mut prepared,
-        mut ranked,
+        ranked: prepared_ranked,
         prepared_candidates,
     } = tokio::task::spawn_blocking(move || {
         prepare_active_candidates(candidates, &stop_policy_clone)
     })
     .await
     .expect("prepare_active_candidates panicked");
+    let prepared_failed = prepared_ranked.len();
 
     let process_concurrency = active_probe_process_concurrency(config.process_concurrency);
     let mut batch_sizer = ActiveBatchSizer::new(config.concurrency, config.batch_size);
@@ -477,7 +604,7 @@ async fn probe_active_batched(
         input = input_count,
         prepared = prepared_candidates,
         test_definitions = prepared.len(),
-        parse_failed = ranked.len(),
+        parse_failed = prepared_failed,
         batch_size = batch_sizer.current,
         max_batch_size = batch_sizer.max,
         process_concurrency,
@@ -489,17 +616,24 @@ async fn probe_active_batched(
             "Prepared active test: {} sing-box definitions represent {} loaded configs; {} unsupported configs skipped",
             prepared.len(),
             prepared_candidates,
-            ranked.len()
+            prepared_failed
         ),
     );
-    if !ranked.is_empty() {
-        send_probe_delta(progress.as_ref(), ranked.len(), 0);
+    if prepared_failed > 0 {
+        send_probe_delta(progress.as_ref(), prepared_failed, 0, 0);
     }
-    let mut stop_state = ProbeStopState::new(&prepared, stop_policy);
-    let cancel = Arc::new(AtomicBool::new(false));
+    let shared: SharedProbe = Arc::new(Mutex::new(SharedProbeState {
+        ranked: prepared_ranked,
+        stop: ProbeStopState::new(&prepared, stop_policy),
+        stop_announced: false,
+    }));
+    // An external switch (refresh preempting a ping) shares the same flag
+    // the early-stop logic already uses, so preemption stops batches within
+    // ~one probe exactly like a reached target does.
+    let cancel = cancel.unwrap_or_default();
     let mut batch_index = 0_usize;
     while !prepared.is_empty() && !cancel.load(AtomicOrdering::Relaxed) {
-        let before = ranked.len();
+        let before = lock_shared(&shared).ranked.len();
         let mut wave = Vec::new();
         let mut wave_previous_working = 0_usize;
         for _ in 0..process_concurrency {
@@ -534,18 +668,17 @@ async fn probe_active_batched(
         let mut outcomes = stream::iter(wave.into_iter().map(|(batch_index, batch)| {
             let progress = progress.clone();
             let cancel = cancel.clone();
+            let shared = shared.clone();
             async move {
                 let batch_started = Instant::now();
                 let batch_stop_policy = stop_policy.clone();
-                let mut batch_stop_state = ProbeStopState::new(&batch, &batch_stop_policy);
                 let outcome = probe_active_batch_with_fallback(
                     batch_index,
                     batch,
                     config,
                     progress.as_ref(),
                     &batch_stop_policy,
-                    &mut batch_stop_state,
-                    &[],
+                    &shared,
                     cancel,
                 )
                 .await;
@@ -554,32 +687,33 @@ async fn probe_active_batched(
         }))
         .buffer_unordered(process_concurrency);
 
-        while let Some((finished_batch_index, batch_duration, batch_outcome)) =
-            outcomes.next().await
+        // Results already live in the shared list the moment each probe
+        // completes, so a batch outcome arriving first can neither strand
+        // real results nor require re-evaluation here: per-probe evaluation
+        // inside the batches is complete (any threshold crossing coincides
+        // with a probe completion). Late outcomes only carry sizing stats.
+        while let Some((finished_batch_index, batch_duration, batch_stats)) = outcomes.next().await
         {
-            batch_sizer.observe(&batch_outcome.stats);
-            ranked.extend(batch_outcome.ranked);
+            batch_sizer.observe(&batch_stats);
             info!(
                 batch_index = finished_batch_index,
-                produced = ranked.len().saturating_sub(before),
                 next_batch_size = batch_sizer.current,
                 duration_ms = batch_duration.as_millis(),
                 "active probe batch finished"
             );
-            if !cancel.load(AtomicOrdering::Relaxed)
-                && let Some(reason) =
-                    probe_stop_reason(&ranked, stop_policy, &mut stop_state, progress.as_ref())
-            {
-                cancel.store(true, AtomicOrdering::Relaxed);
-                send_progress(progress.as_ref(), reason);
-                break;
-            }
             if cancel.load(AtomicOrdering::Relaxed) {
                 break;
             }
         }
-        update_stability_search_after_batch(wave_previous_working, stop_policy, &mut stop_state);
-        let after = ranked.len();
+        {
+            let mut shared = lock_shared(&shared);
+            update_stability_search_after_batch(
+                wave_previous_working,
+                stop_policy,
+                &mut shared.stop,
+            );
+        }
+        let after = lock_shared(&shared).ranked.len();
         send_progress(
             progress.as_ref(),
             format!(
@@ -588,21 +722,9 @@ async fn probe_active_batched(
                 format_duration_short(wave_started.elapsed())
             ),
         );
-        if let Some(reason) =
-            probe_stop_reason(&ranked, stop_policy, &mut stop_state, progress.as_ref())
-        {
-            cancel.store(true, AtomicOrdering::Relaxed);
-            info!(
-                batch_index,
-                ranked = ranked.len(),
-                reachable = ranked.iter().filter(|item| item.reachable).count(),
-                "active probe early stop reached"
-            );
-            send_progress(progress.as_ref(), reason);
-            break;
-        }
     }
 
+    let mut ranked = std::mem::take(&mut lock_shared(&shared).ranked);
     info!(
         ranked = ranked.len(),
         duration_ms = started.elapsed().as_millis(),
@@ -804,7 +926,10 @@ fn probe_stop_reason(
         return None;
     }
 
-    let reachable = ranked.iter().filter(|item| item.reachable).count();
+    let new_reachable = ranked.iter().filter(|item| item.reachable).count();
+    // Working configs carried over from a preempted ping count toward the
+    // target, so the interrupting refresh only gathers the shortfall.
+    let reachable = new_reachable.saturating_add(policy.prefound_working);
     if !policy.prioritize_stability {
         return (reachable >= policy.top_n).then(|| {
             format!(
@@ -816,10 +941,13 @@ fn probe_stop_reason(
 
     let first_half = policy.top_n / 2;
     let second_half = policy.top_n.saturating_sub(first_half);
+    // `new_reachable > 0`: the snapshot replaces the live list, so it must
+    // never fire on carried-over results alone with an empty new list.
     if !policy.return_configs_asap
         && first_half > 0
         && reachable >= first_half
         && !state.half_snapshot_sent
+        && new_reachable > 0
     {
         state.half_snapshot_sent = true;
         send_ranked_snapshot(progress, stability_snapshot(ranked, policy, first_half));
@@ -833,7 +961,8 @@ fn probe_stop_reason(
         return None;
     }
 
-    let found_previous = stable_reachable_count(ranked, policy);
+    let found_previous =
+        stable_reachable_count(ranked, policy).saturating_add(policy.prefound_previous_working);
     let required_previous = second_half.min(policy.previous_working_keys.len());
     if found_previous >= required_previous {
         return Some(format!(
@@ -850,27 +979,6 @@ fn probe_stop_reason(
     }
 
     None
-}
-
-fn probe_stop_reason_with_batch(
-    previous_ranked: &[RankedConfig],
-    current_batch_ranked: &[RankedConfig],
-    ranked: &[RankedConfig],
-    policy: &ProbeStopPolicy,
-    state: &mut ProbeStopState,
-    progress: Option<&UnboundedSender<ProgressEvent>>,
-) -> Option<String> {
-    if policy.scan_all_configs {
-        return None;
-    }
-
-    let combined = previous_ranked
-        .iter()
-        .chain(current_batch_ranked.iter())
-        .chain(ranked.iter())
-        .cloned()
-        .collect::<Vec<_>>();
-    probe_stop_reason(&combined, policy, state, progress)
 }
 
 fn stable_reachable_count(ranked: &[RankedConfig], policy: &ProbeStopPolicy) -> usize {
@@ -1024,11 +1132,6 @@ fn active_probe_process_concurrency(configured: Option<usize>) -> usize {
         .clamp(1, ACTIVE_PROBE_PROCESS_MAX_CONCURRENCY)
 }
 
-struct BatchProbeOutcome {
-    ranked: Vec<RankedConfig>,
-    stats: BatchProbeStats,
-}
-
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 async fn probe_active_batch_with_fallback(
     batch_index: usize,
@@ -1036,12 +1139,10 @@ async fn probe_active_batch_with_fallback(
     config: &ProbeConfig,
     progress: Option<&UnboundedSender<ProgressEvent>>,
     stop_policy: &ProbeStopPolicy,
-    stop_state: &mut ProbeStopState,
-    previous_ranked: &[RankedConfig],
+    shared: &SharedProbe,
     cancel: Arc<AtomicBool>,
-) -> BatchProbeOutcome {
+) -> BatchProbeStats {
     let mut pending = vec![batch];
-    let mut ranked = Vec::new();
     let mut stats = BatchProbeStats::default();
 
     while let Some(batch) = pending.pop() {
@@ -1055,17 +1156,14 @@ async fn probe_active_batch_with_fallback(
             config,
             progress,
             stop_policy,
-            stop_state,
-            previous_ranked,
-            &ranked,
+            shared,
             cancel.clone(),
         )
         .await
         {
-            Ok(mut batch_ranked) => {
+            Ok(produced) => {
                 stats.started_cleanly = true;
-                stats.produced = stats.produced.saturating_add(batch_ranked.len());
-                ranked.append(&mut batch_ranked);
+                stats.produced = stats.produced.saturating_add(produced);
             }
             Err(mut failure) => {
                 let error = failure.error.to_string();
@@ -1086,8 +1184,12 @@ async fn probe_active_batch_with_fallback(
                             failure.entries.len()
                         ),
                     );
-                    send_probe_delta(progress, failed_entry.candidate_count(), 0);
-                    ranked.extend(failed_configs(failed_entry, "active_http", &error));
+                    send_probe_delta(progress, failed_entry.candidate_count(), 0, 0);
+                    lock_shared(shared).ranked.extend(failed_configs(
+                        failed_entry,
+                        "active_http",
+                        &error,
+                    ));
                     if !failure.entries.is_empty() {
                         pending.push(failure.entries);
                     }
@@ -1121,8 +1223,8 @@ async fn probe_active_batch_with_fallback(
                     );
                     let failed_count = candidate_count(&failure.entries);
                     stats.failed_candidates = stats.failed_candidates.saturating_add(failed_count);
-                    send_probe_delta(progress, failed_count, 0);
-                    ranked.extend(
+                    send_probe_delta(progress, failed_count, 0, 0);
+                    lock_shared(shared).ranked.extend(
                         failure
                             .entries
                             .into_iter()
@@ -1131,37 +1233,30 @@ async fn probe_active_batch_with_fallback(
                 }
             }
         }
-        let combined = previous_ranked
-            .iter()
-            .chain(ranked.iter())
-            .cloned()
-            .collect::<Vec<_>>();
-        if probe_stop_reason(&combined, stop_policy, stop_state, progress).is_some() {
-            cancel.store(true, AtomicOrdering::Relaxed);
-            break;
-        }
     }
 
-    BatchProbeOutcome { ranked, stats }
+    stats
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+// `BatchProbeFailure` carries the batch entries by value so the caller can
+// split-retry them; boxing would only add pointer indirection on this cold
+// error path for no measurable gain.
+#[allow(clippy::result_large_err)]
 async fn probe_active_batch(
     batch_index: usize,
     entries: Vec<PreparedActiveCandidate>,
     config: &ProbeConfig,
     progress: Option<&UnboundedSender<ProgressEvent>>,
     stop_policy: &ProbeStopPolicy,
-    stop_state: &mut ProbeStopState,
-    previous_ranked: &[RankedConfig],
-    current_batch_ranked: &[RankedConfig],
+    shared: &SharedProbe,
     cancel: Arc<AtomicBool>,
-) -> std::result::Result<Vec<RankedConfig>, BatchProbeFailure> {
+) -> std::result::Result<usize, BatchProbeFailure> {
     if entries.is_empty() {
-        return Ok(Vec::new());
+        return Ok(0);
     }
     if cancel.load(AtomicOrdering::Relaxed) {
-        return Ok(Vec::new());
+        return Ok(0);
     }
 
     let started = Instant::now();
@@ -1275,7 +1370,7 @@ async fn probe_active_batch(
         if !stderr.is_empty() {
             debug!(stderr = %stderr, "sing-box batch stderr after cancellation");
         }
-        return Ok(Vec::new());
+        return Ok(0);
     }
     debug!(
         entries = entries.len(),
@@ -1289,56 +1384,59 @@ async fn probe_active_batch(
     let mut probe_results = stream::iter(entries.into_iter().zip(ports).map(
         |(entry, port)| async move {
             let result = probe_active_target_inner(port, config).await;
-            ranked_configs_for_active_result(entry, result)
+            let bytes = result.as_ref().map(|ok| ok.bytes).unwrap_or(0);
+            (ranked_configs_for_active_result(entry, result), bytes)
         },
     ))
     .buffer_unordered(http_concurrency);
-    let mut ranked = Vec::with_capacity(total_candidates);
+    let mut produced = 0usize;
+    let mut working = 0usize;
     let mut completed = 0;
-    while let Some(mut results) = probe_results.next().await {
+    while let Some((mut results, bytes)) = probe_results.next().await {
         if cancel.load(AtomicOrdering::Relaxed) {
             break;
         }
         completed += 1;
         let tested_delta = results.len();
         let working_delta = results.iter().filter(|item| item.reachable).count();
-        ranked.append(&mut results);
-        send_probe_delta(progress, tested_delta, working_delta);
-        send_asap_configs(progress, &ranked, stop_policy);
+        working = working.saturating_add(working_delta);
+        produced = produced.saturating_add(tested_delta);
+        // Publish to the shared list first: every finished probe counts toward
+        // the global stop decision, so all batches quit within ~one probe of
+        // the target instead of each batch probing toward `top_n` on its own.
+        // Finished work is never lost, no matter which batch outcome the wave
+        // loop observes first.
+        lock_shared(shared).ranked.append(&mut results);
+        let stop_reason = eval_shared_stop(shared, stop_policy, progress);
+        send_probe_delta(progress, tested_delta, working_delta, bytes);
+        if stop_policy.return_configs_asap {
+            let snapshot = lock_shared(shared).ranked.clone();
+            send_asap_configs(progress, &snapshot, stop_policy);
+        }
         if completed == total_entries || completed % progress_interval == 0 {
             info!(
                 completed_probes = completed,
                 total_probes = total_entries,
-                ranked_candidates = ranked.len(),
+                ranked_candidates = produced,
                 total_candidates,
-                reachable = ranked.iter().filter(|item| item.reachable).count(),
+                reachable = working,
                 duration_ms = started.elapsed().as_millis(),
                 "active probe batch progress"
             );
             send_progress(
                 progress,
                 format!(
-                    "Batch {batch_index}: {}/{} configs checked, {} working",
-                    ranked.len(),
-                    total_candidates,
-                    ranked.iter().filter(|item| item.reachable).count()
+                    "Batch {batch_index}: {produced}/{total_candidates} configs checked, {working} working"
                 ),
             );
         }
-        if let Some(reason) = probe_stop_reason_with_batch(
-            previous_ranked,
-            current_batch_ranked,
-            &ranked,
-            stop_policy,
-            stop_state,
-            progress,
-        ) {
+        if let Some(reason) = stop_reason {
             info!(
                 completed_probes = completed,
                 total_probes = total_entries,
-                ranked_candidates = ranked.len(),
+                ranked_candidates = produced,
                 total_candidates,
-                reachable = ranked.iter().filter(|item| item.reachable).count(),
+                reachable = working,
                 "active probe batch stopped early"
             );
             send_progress(progress, reason);
@@ -1352,11 +1450,11 @@ async fn probe_active_batch(
         debug!(stderr = %stderr, "sing-box batch stderr");
     }
     debug!(
-        ranked = ranked.len(),
+        ranked = produced,
         duration_ms = started.elapsed().as_millis(),
         "active probe batch process finished"
     );
-    Ok(ranked)
+    Ok(produced)
 }
 
 pub async fn run_with_sing_box_proxy<F, Fut, T>(
@@ -1502,6 +1600,7 @@ async fn probe_active_target_inner(port: u16, config: &ProbeConfig) -> Result<Ac
     let response = client.get(&config.test_url).send().await?;
     let latency_ms = started.elapsed().as_millis();
     let status = response.status().as_u16();
+    let bytes = exchange_bytes(&config.test_url, &response);
     debug!(
         port,
         status, latency_ms, "active HTTP probe response received"
@@ -1519,7 +1618,22 @@ async fn probe_active_target_inner(port: u16, config: &ProbeConfig) -> Result<Ac
         http_status: status,
         download_mbps: None,
         download_bytes: None,
+        bytes,
     })
+}
+
+/// Observed exchange size for Sub Usage accounting: request estimate plus
+/// actual response header bytes. The body is never read for this, so no
+/// extra traffic or latency is added by counting.
+fn exchange_bytes(test_url: &str, response: &reqwest::Response) -> u64 {
+    let request = HTTP_EXCHANGE_OVERHEAD_BYTES.saturating_add(test_url.len() as u64);
+    let headers = response
+        .headers()
+        .iter()
+        .map(|(name, value)| name.as_str().len() as u64 + value.as_bytes().len() as u64 + 4)
+        .sum::<u64>()
+        .saturating_add(64);
+    request.saturating_add(headers)
 }
 
 async fn enrich_top_speedtests(
@@ -1851,7 +1965,23 @@ async fn write_sing_box_outbound_config(outbounds: &[Value], ports: &[u16]) -> R
     };
 
     fs::write(&path, serde_json::to_vec_pretty(&config)?).await?;
+    restrict_file_permissions(&path);
     Ok(path)
+}
+
+/// Restrict a sing-box temp config to owner-only (0600 on Unix).
+/// No-op on Windows; single syscall, no probing delay.
+#[allow(clippy::missing_const_for_fn)]
+fn restrict_file_permissions(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
 }
 
 async fn cleanup_sing_box_child(mut child: tokio::process::Child, config_path: PathBuf) -> String {
@@ -1889,11 +2019,16 @@ fn send_probe_delta(
     progress: Option<&UnboundedSender<ProgressEvent>>,
     tested: usize,
     working: usize,
+    bytes: u64,
 ) {
     if let Some(progress) = progress
         && tested > 0
     {
-        let _ = progress.send(ProgressEvent::ProbeDelta { tested, working });
+        let _ = progress.send(ProgressEvent::ProbeDelta {
+            tested,
+            working,
+            bytes,
+        });
     }
 }
 
@@ -2505,6 +2640,8 @@ mod tests {
             prioritize_stability,
             return_configs_asap: false,
             previous_working_keys,
+            prefound_working: 0,
+            prefound_previous_working: 0,
         }
     }
 
@@ -3001,5 +3138,332 @@ mod tests {
             config["route"]["rules"][1]["inbound"][0],
             format!("{SING_BOX_INBOUND_TAG_PREFIX}-1")
         );
+    }
+
+    const FAKE_SING_BOX_SOURCE: &str = include_str!("../tests/helpers/fake_singbox.rs");
+
+    /// Serializes the live-stub end-to-end tests: each reserves ~80 ephemeral
+    /// ports, releases them, and rebinds them from a child process. Two such
+    /// tests racing can hand each other's just-released ports to the other
+    /// test's reservations, so the stub fails to bind and every probe fails.
+    fn stub_e2e_lock() -> &'static tokio::sync::Mutex<()> {
+        static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+    }
+
+    fn healthy_candidate(base: usize, port: u16, remark: &str) -> Candidate {
+        let uri = format!(
+            "vless://u{base}@127.0.0.1:{port}?security=tls&sni=example.com&type=ws&path=/ws#{remark}"
+        );
+        Candidate {
+            id: uri.clone(),
+            dedup_key: format!("vless|127.0.0.1|{port}|ws|tls|u{base}"),
+            source: "test".to_string(),
+            priority: 1,
+            protocol: "vless".to_string(),
+            name: remark.to_string(),
+            endpoint: crate::model::Endpoint {
+                host: "127.0.0.1".to_string(),
+                port,
+            },
+            uri,
+        }
+    }
+
+    fn compile_fake_sing_box() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "v2raydar-fake-singbox-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir can be created");
+        let source = dir.join("fake_singbox.rs");
+        std::fs::write(&source, FAKE_SING_BOX_SOURCE).expect("stub source can be written");
+        let binary = dir.join(format!("fake-singbox{}", std::env::consts::EXE_SUFFIX));
+        let output = std::process::Command::new("rustc")
+            .arg("--edition=2021")
+            .arg("-O")
+            .arg(&source)
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .expect("rustc runs (required for hermetic probe tests)");
+        assert!(
+            output.status.success(),
+            "stub compiles: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        binary
+    }
+
+    fn active_probe_test_config(sing_box_path: &std::path::Path) -> ProbeConfig {
+        ProbeConfig {
+            mode: ProbeMode::Active,
+            sing_box_path: sing_box_path.to_string_lossy().to_string(),
+            connect_timeout_ms: 2000,
+            active_timeout_ms: 5000,
+            startup_timeout_ms: 10_000,
+            concurrency: 16,
+            batch_size: Some(20),
+            process_concurrency: Some(4),
+            test_url: "http://probe.test/".to_string(),
+            accepted_statuses: vec![204],
+            download_url: None,
+            download_bytes_limit: 1_048_576,
+            sing_box_path_auto: false,
+        }
+    }
+
+    /// 200 unique healthy outbounds against the fake sing-box.
+    fn two_hundred_healthy_candidates() -> Vec<Candidate> {
+        let mut candidates = Vec::with_capacity(200);
+        for i in 0..200u16 {
+            candidates.push(healthy_candidate(
+                usize::from(i),
+                20_000 + i,
+                &format!("node-{i}"),
+            ));
+        }
+        assert_eq!(candidates.len(), 200);
+        candidates
+    }
+
+    fn working_count(ranked: &[RankedConfig]) -> usize {
+        ranked.iter().filter(|item| item.reachable).count()
+    }
+
+    /// End-to-end early stop against a live fake sing-box: four concurrent
+    /// batches race, and the run must land on the target instead of each
+    /// batch probing toward `top_n` on its own (or dropping results).
+    /// The bound is deliberately loose against CI timing variance; exactness
+    /// is pinned by the deterministic `shared_stop_*` unit tests below.
+    #[tokio::test]
+    async fn active_probe_stops_near_top_n_under_full_concurrency() {
+        let _e2e_guard = stub_e2e_lock().lock().await;
+        let stub = compile_fake_sing_box();
+        let dir = stub.parent().expect("stub has a parent").to_path_buf();
+        let config = active_probe_test_config(&stub);
+
+        let policy = stop_policy(20, false, std::collections::HashSet::new());
+        let ranked = probe_candidates(
+            two_hundred_healthy_candidates(),
+            &config,
+            None,
+            &policy,
+            None,
+        )
+        .await;
+        assert!(
+            working_count(&ranked) >= 20,
+            "must find top_n working, got {}",
+            working_count(&ranked)
+        );
+        assert!(
+            ranked.len() <= 40,
+            "tested {} configs for top_n=20",
+            ranked.len()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn active_probe_stops_near_top_n_with_stability() {
+        let _e2e_guard = stub_e2e_lock().lock().await;
+        let stub = compile_fake_sing_box();
+        let dir = stub.parent().expect("stub has a parent").to_path_buf();
+        let config = active_probe_test_config(&stub);
+
+        let candidates = two_hundred_healthy_candidates();
+        let previous: std::collections::HashSet<String> = candidates
+            .iter()
+            .take(20)
+            .map(|item| item.dedup_key.clone())
+            .collect();
+        let policy = stop_policy(20, true, previous);
+        let ranked = probe_candidates(candidates, &config, None, &policy, None).await;
+        assert!(
+            working_count(&ranked) >= 20,
+            "must find top_n working, got {}",
+            working_count(&ranked)
+        );
+        // Looser than the simple run: confirming the required previous-run
+        // configs can lag one wave behind when batches complete in lockstep,
+        // so more fresh configs get probed meanwhile by design.
+        assert!(
+            ranked.len() <= 60,
+            "tested {} configs for top_n=20",
+            ranked.len()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn shared_probe(
+        top_n: usize,
+        prioritize_stability: bool,
+        previous: std::collections::HashSet<String>,
+    ) -> (SharedProbe, ProbeStopPolicy) {
+        let policy = stop_policy(top_n, prioritize_stability, previous);
+        let shared: SharedProbe = Arc::new(Mutex::new(SharedProbeState {
+            ranked: Vec::new(),
+            stop: ProbeStopState {
+                half_snapshot_sent: true,
+                stability_search_exhausted: false,
+                remaining_previous_working: 0,
+            },
+            stop_announced: false,
+        }));
+        (shared, policy)
+    }
+
+    /// Append one working result and evaluate; returns the stop reason.
+    fn record_working(shared: &SharedProbe, policy: &ProbeStopPolicy, key: &str) -> Option<String> {
+        lock_shared(shared)
+            .ranked
+            .push(ranked(key, key, true, Some(10)));
+        eval_shared_stop(shared, policy, None)
+    }
+
+    #[test]
+    fn shared_stop_fires_exactly_at_top_n_working() {
+        let (shared, policy) = shared_probe(3, false, std::collections::HashSet::new());
+
+        assert!(record_working(&shared, &policy, "a").is_none());
+        assert!(record_working(&shared, &policy, "b").is_none());
+        let reason = record_working(&shared, &policy, "c");
+        assert!(
+            reason
+                .as_deref()
+                .is_some_and(|message| message.contains("3/3")),
+            "stop must fire at top_n, got {reason:?}"
+        );
+        // Announced once: further results never re-fire.
+        assert!(record_working(&shared, &policy, "d").is_none());
+
+        // Unreachable results never advance the stop condition.
+        let (idle, idle_policy) = shared_probe(1, false, std::collections::HashSet::new());
+        lock_shared(&idle)
+            .ranked
+            .push(ranked("x", "x", false, None));
+        assert!(eval_shared_stop(&idle, &idle_policy, None).is_none());
+    }
+
+    #[test]
+    fn shared_stop_never_fires_when_scanning_all() {
+        let mut policy = stop_policy(2, false, std::collections::HashSet::new());
+        policy.scan_all_configs = true;
+        let shared: SharedProbe = Arc::new(Mutex::new(SharedProbeState {
+            ranked: vec![
+                ranked("a", "a", true, Some(10)),
+                ranked("b", "b", true, Some(10)),
+                ranked("c", "c", true, Some(10)),
+            ],
+            stop: ProbeStopState {
+                half_snapshot_sent: true,
+                stability_search_exhausted: false,
+                remaining_previous_working: 0,
+            },
+            stop_announced: false,
+        }));
+
+        assert!(eval_shared_stop(&shared, &policy, None).is_none());
+    }
+
+    #[test]
+    fn shared_stop_requires_previous_working_under_stability() {
+        let previous: std::collections::HashSet<String> =
+            ["old-1", "old-2"].into_iter().map(str::to_string).collect();
+        let (shared, policy) = shared_probe(4, true, previous);
+
+        for key in ["new-1", "new-2", "new-3", "new-4"] {
+            assert!(
+                record_working(&shared, &policy, key).is_none(),
+                "must wait for previous-run configs"
+            );
+        }
+        assert!(record_working(&shared, &policy, "old-1").is_none());
+        assert!(record_working(&shared, &policy, "old-2").is_some());
+    }
+
+    #[test]
+    fn shared_stop_fires_on_exhausted_previous_search() {
+        let previous: std::collections::HashSet<String> =
+            std::iter::once("gone").map(str::to_string).collect();
+        let (shared, policy) = shared_probe(2, true, previous);
+        lock_shared(&shared).stop.stability_search_exhausted = true;
+
+        assert!(record_working(&shared, &policy, "new-1").is_none());
+        assert!(record_working(&shared, &policy, "new-2").is_some());
+    }
+
+    #[test]
+    fn shared_stop_counts_prefound_working_toward_top_n() {
+        // A refresh that preempted a ping with 2 working already verified
+        // only needs 1 fresh working config to reach top_n=3.
+        let (shared, mut policy) = shared_probe(3, false, std::collections::HashSet::new());
+        policy.prefound_working = 2;
+        assert!(record_working(&shared, &policy, "a").is_some());
+    }
+
+    #[test]
+    fn shared_stop_counts_prefound_previous_toward_stability_quorum() {
+        // top_n=4 needs 2 previous-run configs; the preempted ping already
+        // verified old-1, so one fresh old-2 completes the quorum at 4 total.
+        let previous: std::collections::HashSet<String> =
+            ["old-1", "old-2"].into_iter().map(str::to_string).collect();
+        let (shared, mut policy) = shared_probe(4, true, previous);
+        policy.prefound_working = 2;
+        policy.prefound_previous_working = 1;
+        assert!(record_working(&shared, &policy, "new-1").is_none());
+        assert!(record_working(&shared, &policy, "old-2").is_some());
+    }
+
+    #[test]
+    fn shared_stop_snapshot_never_fires_on_prefound_alone() {
+        // Carried-over results count toward the threshold but must never
+        // publish an empty fresh list over the live one.
+        let (shared, mut policy) = shared_probe(4, true, std::collections::HashSet::new());
+        lock_shared(&shared).stop.half_snapshot_sent = false;
+        policy.prefound_working = 2;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        assert!(eval_shared_stop(&shared, &policy, Some(&tx)).is_none());
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn shared_stop_sends_half_snapshot_once() {
+        // Snapshot path lives in stability mode; empty previous keys keep the
+        // stop rule itself equivalent to a plain count.
+        let (shared, policy) = shared_probe(4, true, std::collections::HashSet::new());
+        // Re-enable the snapshot path (other tests bypass it).
+        lock_shared(&shared).stop.half_snapshot_sent = false;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        for key in ["a", "b"] {
+            lock_shared(&shared)
+                .ranked
+                .push(ranked(key, key, true, Some(10)));
+        }
+        let progress = Some(&tx);
+        assert!(eval_shared_stop(&shared, &policy, progress).is_none());
+        assert!(
+            matches!(rx.try_recv(), Ok(ProgressEvent::RankedSnapshot(_))),
+            "half snapshot must publish once new configs reach top_n/2"
+        );
+
+        for key in ["c", "d", "e"] {
+            lock_shared(&shared)
+                .ranked
+                .push(ranked(key, key, true, Some(10)));
+        }
+        // Stop fires here (4/4); no second snapshot may follow (the live
+        // log line the half path also emits is expected and drained here).
+        assert!(eval_shared_stop(&shared, &policy, progress).is_some());
+        assert!(matches!(rx.try_recv(), Ok(ProgressEvent::LiveLog(_))));
+        assert!(rx.try_recv().is_err());
     }
 }

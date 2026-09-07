@@ -10,7 +10,7 @@ use crate::constants::PROXY_EMOJI;
 use super::{
     main_menu_panel::{row_hits_with_offset, visible_row_count},
     util::draw_scrollbar,
-    view::RuntimeView,
+    view::{RuntimeView, same_proxy_uri},
 };
 
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
@@ -118,12 +118,14 @@ pub fn draw(
                 .map_or_else(|| "-".to_string(), |value| format!("{value} ms"));
             let row_index = *scroll + visible_index;
             let is_selected = selected_found == Some(&row_index);
-            // Show 🚪 only after refresh finishes — never during probing.
-            let proxy_ready = !runtime.refreshing;
-            let is_proxy_row = proxy_ready
-                && proxy_pending_uri.map_or(item.is_proxy, |pending| pending == item.uri);
+            // Always show 🚪, including during refresh. Hiding it while
+            // `refreshing` made the door vanish for minutes on large lists
+            // (and forever when a refresh stalls), with no user feedback
+            // for a just-selected manual proxy.
+            let is_proxy_row = proxy_pending_uri
+                .map_or(item.is_proxy, |pending| same_proxy_uri(pending, &item.uri));
             let proxy_cell = if is_proxy_row {
-                Cell::from(PROXY_EMOJI)
+                Cell::from(proxy_glyph())
             } else {
                 Cell::from("")
             };
@@ -133,8 +135,15 @@ pub fn draw(
                 Style::default()
             };
             if very_narrow {
+                // Narrow Termux/phone screens have no proxy column: prefix the
+                // rank so the active proxy stays visible instead of vanishing.
+                let rank_cell = if is_proxy_row {
+                    Cell::from(format!("{}{}", proxy_glyph(), item.rank))
+                } else {
+                    Cell::from(item.rank.to_string())
+                };
                 Row::new([
-                    Cell::from(item.rank.to_string()),
+                    rank_cell,
                     Cell::from(truncate(&item.protocol, 6)),
                     Cell::from(truncate(&item.display_name, 16)),
                     Cell::from(latency),
@@ -180,6 +189,21 @@ pub fn draw(
         area,
     );
     draw_scrollbar(frame, area, total_items, visible_rows, *scroll, false);
+}
+
+/// Door glyph with a plain-ASCII fallback for `conhost`/minimal fonts.
+///
+/// Honors `NO_EMOJI=1` (and `TERM=dumb`) so the proxy marker never turns
+/// into tofu on native Windows console or tiny Termux screens.
+/// Cached after first read: no per-frame env overhead.
+fn proxy_glyph() -> &'static str {
+    use std::sync::OnceLock;
+    static FALLBACK: OnceLock<bool> = OnceLock::new();
+    let fallback = *FALLBACK.get_or_init(|| {
+        std::env::var_os("NO_EMOJI").is_some()
+            || std::env::var_os("TERM").is_some_and(|term| term == "dumb")
+    });
+    if fallback { "[P]" } else { PROXY_EMOJI }
 }
 
 fn truncate(value: &str, width: usize) -> std::borrow::Cow<'_, str> {

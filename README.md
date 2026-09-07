@@ -53,17 +53,14 @@
 
 ## 📦 Quick Install
 
-Copy the command for your OS into a terminal. The installer detects your platform, downloads the latest release with bundled `sing-box`, and sets everything up. Portable mode installs into `Desktop/V2RayDAR` when a Desktop folder exists, otherwise `~/V2RayDAR`. User mode installs the binary to `~/.local/bin`.
+Paste the line for your OS into a terminal and press Enter — then press Enter once more (the default Yes) and the installer finishes automatically with defaults, updating in place when already installed. Answer No for step-by-step prompts. The installer detects your platform, downloads the latest release with bundled `sing-box`, and sets everything up. Portable mode installs into `Desktop/V2RayDAR` when a Desktop folder exists, otherwise `~/V2RayDAR`. User mode installs the binary to `~/.local/bin`.
 
-**Portable** (recommended) — everything in one folder, run with `--portable`:
+**Portable** (recommended) — everything in one folder, run with `--portable`: just copy-paste & press enter until it finishes installing!
 ```bash
-# Linux
+# Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh
 
-# macOS
-curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh
-
-# Windows
+# Windows (PowerShell)
 irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
 ```
 
@@ -110,10 +107,12 @@ After installing with the script above, run `v2raydar` (or `v2raydar.exe` on Win
 | `Esc` / `Ctrl+H` | Go back |
 | `Space` | Toggle subscription on/off |
 | `e` | Edit selected subscription |
+| `Ctrl+R` | Manual refresh — re-fetch once, unless a refresh is running |
+| `Ctrl+P` | Manual re-ping of cached configs, unless any cycle is running |
 | `q` | Quit |
-| `:` | Command mode — `:q` quit, `:w` save, `:a` add, `:d` delete, `:n` rename, `:u` URL, `:p` priority |
+| `:` | Command mode — `:q` quit, `:w` save, `:a` add, `:d` delete, `:n` rename, `:u` URL, `:p` priority, `:r` refresh, `:ping` |
 
-4. **Change settings** from the TUI main menu (Configurations) or edit `configs.yaml` directly — changes take effect on the next refresh. Key settings: `top_n`, `refresh_seconds`, `sharing.enabled`, `probe.mode`.
+4. **Change settings** from the TUI main menu (Configurations) or edit `configs.yaml` directly — changes take effect on the next refresh. Key settings: `top_n`, `refresh_seconds`, `ping_seconds`, `sharing.enabled`, `probe.mode`. Settings added by newer versions are appended to older files with defaults on startup; your values are never overwritten.
 5. **Exit** with `q` or `:q`. The endpoint stops when the app exits.
 
 ### Run modes
@@ -137,7 +136,8 @@ Windows users replace `v2raydar` with `v2raydar.exe`. On macOS open the bundled 
 | --- | --- | --- |
 | `bind` | `127.0.0.1:27141` | Local HTTP bind address for `/subscription`, `/subscription.txt`, `/results`, and `/health`. |
 | `top_n` | `10` | Number of working configs published to clients. |
-| `refresh_seconds` | `300` | Auto-refresh interval in seconds; `0` disables the timer. |
+| `refresh_seconds` | `900` | Auto-refresh interval in seconds; `0` disables the timer. |
+| `ping_seconds` | `300` | Re-ping interval in seconds for cached configs without re-fetching; `0` disables. Both count toward Sub Usage. |
 | `encoded_subscription` | `true` | Returns `/subscription` as base64 (v2rayN / v2rayNG friendly). |
 | `prioritize_stability` | `true` | Re-pings the previous run's saved top-N first and keeps them at the front, even if new low-ping configs appear. When `false`, prefers any working low-ping config. |
 | `return_configs_asap` | `false` | When `true`, publishes working configs to the endpoint and `Current Found Configs` as soon as they are found, up to `top_n`; early configs may not have the lowest ping or best stability. |
@@ -168,7 +168,7 @@ Windows users replace `v2raydar` with `v2raydar.exe`. On macOS open the bundled 
 | `probe.accepted_statuses` | `[204, 200]` | HTTP statuses counted as success. |
 | `probe.download_url` | `null` | Optional throughput-test target. |
 | `probe.download_bytes_limit` | `1048576` | Upper bound for the optional download test. |
-| `geoip_db_path` | `null` | Optional path to a `GeoLite2-Country.mmdb` file. If `null`, uses the embedded database for country detection. |
+| `geoip_db_path` | `null` | Optional path to a `GeoLite2-Country.mmdb` file or a country-zone directory (`zones.txt`, or legacy `<cc>.zone` files). If `null`, uses `<data-root>/geoip` (MaxMind database first, zone fallback; both refreshed by the installer). Country data: GeoLite2 by MaxMind (CC BY-SA 4.0); fallback zones by ipdeny. |
 | `subscriptions` | _(pre-selected sources)_ | List of `{ name, url, enabled, priority }` sources. Add your own for better results. |
 
 </details>

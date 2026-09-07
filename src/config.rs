@@ -9,14 +9,15 @@ use crate::constants::{
     DEFAULT_ACCEPTED_STATUSES, DEFAULT_ACTIVE_TIMEOUT_MS, DEFAULT_BIND,
     DEFAULT_CLEAN_OFFLINES_AFTER_DAYS, DEFAULT_CONFIG_TEMPLATE, DEFAULT_CONNECT_TIMEOUT_MS,
     DEFAULT_DOWNLOAD_BYTES_LIMIT, DEFAULT_ENCODED_SUBSCRIPTION, DEFAULT_FETCH_CONCURRENCY,
-    DEFAULT_FETCH_TIMEOUT_MS, DEFAULT_MAX_SUBSCRIPTION_BYTES, DEFAULT_PRIORITIZE_STABILITY,
-    DEFAULT_PROBE_BATCH_SIZE, DEFAULT_PROBE_CONCURRENCY, DEFAULT_PROBE_PROCESS_CONCURRENCY,
-    DEFAULT_PROXY_DISCOVERABLE, DEFAULT_PROXY_ENABLED, DEFAULT_PROXY_HEALTH_CHECK_INTERVAL,
-    DEFAULT_PROXY_HEALTH_CHECK_URL, DEFAULT_PROXY_PORT, DEFAULT_REFRESH_SECONDS,
-    DEFAULT_REQUIRE_TOKEN, DEFAULT_RETURN_CONFIGS_ASAP, DEFAULT_ROTATING_PROXY,
-    DEFAULT_SCAN_ALL_CONFIGS, DEFAULT_SHARING_ENABLED, DEFAULT_SHARING_TOKEN,
-    DEFAULT_SING_BOX_PATH, DEFAULT_STARTUP_TIMEOUT_MS, DEFAULT_SUBSCRIPTION_ENABLED,
-    DEFAULT_SUBSCRIPTION_PRIORITY, DEFAULT_TEST_URL, DEFAULT_TOP_N, DEFAULT_USE_CACHE_ONLY,
+    DEFAULT_FETCH_TIMEOUT_MS, DEFAULT_MAX_SUBSCRIPTION_BYTES, DEFAULT_PING_SECONDS,
+    DEFAULT_PRIORITIZE_STABILITY, DEFAULT_PROBE_BATCH_SIZE, DEFAULT_PROBE_CONCURRENCY,
+    DEFAULT_PROBE_PROCESS_CONCURRENCY, DEFAULT_PROXY_DISCOVERABLE, DEFAULT_PROXY_ENABLED,
+    DEFAULT_PROXY_HEALTH_CHECK_INTERVAL, DEFAULT_PROXY_HEALTH_CHECK_URL, DEFAULT_PROXY_PORT,
+    DEFAULT_REFRESH_SECONDS, DEFAULT_REQUIRE_TOKEN, DEFAULT_RETURN_CONFIGS_ASAP,
+    DEFAULT_ROTATING_PROXY, DEFAULT_SCAN_ALL_CONFIGS, DEFAULT_SHARING_ENABLED,
+    DEFAULT_SHARING_TOKEN, DEFAULT_SING_BOX_PATH, DEFAULT_STARTUP_TIMEOUT_MS,
+    DEFAULT_SUBSCRIPTION_ENABLED, DEFAULT_SUBSCRIPTION_PRIORITY, DEFAULT_TEST_URL, DEFAULT_TOP_N,
+    DEFAULT_USE_CACHE_ONLY,
 };
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -28,6 +29,8 @@ pub struct AppConfig {
     pub top_n: usize,
     #[serde(default = "default_refresh_seconds")]
     pub refresh_seconds: u64,
+    #[serde(default = "default_ping_seconds")]
+    pub ping_seconds: u64,
     #[serde(default = "default_encoded_subscription")]
     pub encoded_subscription: bool,
     #[serde(default = "default_prioritize_stability")]
@@ -228,7 +231,9 @@ impl AppConfig {
         let config = Self::default_for_first_run();
         validate(config).context("default config template failed validation")?;
         fs::write(path, DEFAULT_CONFIG_TEMPLATE)
-            .with_context(|| format!("unable to write default config to {}", path.display()))
+            .with_context(|| format!("unable to write default config to {}", path.display()))?;
+        restrict_file_permissions(path);
+        Ok(())
     }
 
     pub fn subscription_url(&self, host: &str, raw: bool) -> String {
@@ -336,6 +341,13 @@ fn validate(mut config: AppConfig) -> Result<AppConfig> {
         if subscription.url.trim().is_empty() {
             return Err(anyhow!(
                 "subscription '{}' has an empty url",
+                subscription.name
+            ));
+        }
+
+        if !is_allowed_subscription_url(&subscription.url) {
+            return Err(anyhow!(
+                "subscription '{}' has an unsupported url scheme (use http(s)://, data:, or file://)",
                 subscription.name
             ));
         }
@@ -476,6 +488,108 @@ fn generate_token() -> String {
     URL_SAFE_NO_PAD.encode(fallback)
 }
 
+/// Allowed subscription URL schemes.
+///
+/// `http(s)://` for remote feeds, `data:` for inline tests, `file://`
+/// or bare paths for local files. Anything else (e.g. `javascript:`,
+/// `ftp:`, `gopher:`) is rejected at config load with zero network cost.
+#[must_use]
+pub fn is_allowed_subscription_url(url: &str) -> bool {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.chars().any(char::is_control) {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("data:") {
+        return true;
+    }
+    if lower.starts_with("file://") {
+        return true;
+    }
+    // Bare local path without a scheme (no `://` and no `:` prefix trick).
+    if !trimmed.contains("://") && !trimmed.starts_with("javascript:") {
+        // Reject anything that looks like `scheme:` to block exotic schemes,
+        // but keep Windows paths (`C:\...`, `C:/...`) and Unix paths.
+        if let Some(prefix_end) = trimmed.find(':') {
+            let prefix = &trimmed[..prefix_end];
+            // Single-letter drive prefix is a Windows path, not a scheme.
+            if prefix.len() == 1 && prefix.chars().all(|c| c.is_ascii_alphabetic()) {
+                return true;
+            }
+            return false;
+        }
+        return true;
+    }
+    false
+}
+
+/// Redact a subscription URL for logs.
+///
+/// Keeps scheme + host + truncated path, strips query/fragment/userinfo
+/// so private `?token=` values never hit logs. Pure string ops, no DNS.
+#[must_use]
+pub fn redact_subscription_url(url: &str) -> String {
+    let trimmed = url.trim();
+    if trimmed.to_ascii_lowercase().starts_with("data:") {
+        return "data:<redacted>".to_string();
+    }
+    // Strip userinfo: `scheme://user:pass@host/...` -> `scheme://host/...`
+    let without_userinfo = if let Some(scheme_end) = trimmed.find("://") {
+        let (scheme, rest) = trimmed.split_at(scheme_end + 3);
+        if let Some(at) = rest.find('@')
+            && let Some(slash) = rest.find('/')
+        {
+            if at < slash {
+                format!("{scheme}{}", &rest[at + 1..])
+            } else {
+                trimmed.to_string()
+            }
+        } else if rest.contains('@') && !rest.contains('/') {
+            // `host` only with userinfo, no path.
+            if let Some(at) = rest.find('@') {
+                format!("{scheme}{}", &rest[at + 1..])
+            } else {
+                trimmed.to_string()
+            }
+        } else {
+            trimmed.to_string()
+        }
+    } else {
+        trimmed.to_string()
+    };
+    // Strip query and fragment.
+    let mut end = without_userinfo.len();
+    if let Some(idx) = without_userinfo.find(['?', '#']) {
+        end = idx;
+    }
+    let mut redacted = without_userinfo[..end].to_string();
+    // Truncate very long paths to keep logs readable.
+    const MAX_LEN: usize = 120;
+    if redacted.len() > MAX_LEN {
+        redacted.truncate(MAX_LEN);
+        redacted.push_str("...");
+    }
+    redacted
+}
+
+/// Restrict a config file to owner-only (0600 on Unix).
+/// Best-effort, no-op on Windows; single syscall, no refresh delay.
+#[allow(clippy::missing_const_for_fn)]
+fn restrict_file_permissions(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+}
+
 fn default_bind() -> SocketAddr {
     DEFAULT_BIND.parse().expect("default bind address is valid")
 }
@@ -486,6 +600,10 @@ const fn default_top_n() -> usize {
 
 const fn default_refresh_seconds() -> u64 {
     DEFAULT_REFRESH_SECONDS
+}
+
+const fn default_ping_seconds() -> u64 {
+    DEFAULT_PING_SECONDS
 }
 
 const fn default_encoded_subscription() -> bool {
@@ -869,6 +987,29 @@ subscriptions:
         assert!(error.to_string().contains("sharing.token"));
     }
 
+    #[test]
+    fn default_intervals_fetch_fifteen_minutes_ping_five() {
+        let config = AppConfig::default_for_first_run();
+
+        assert_eq!(config.refresh_seconds, 900);
+        assert_eq!(config.ping_seconds, 300);
+    }
+
+    #[test]
+    fn ping_interval_zero_disables_and_parses() {
+        let config = load_inline_config(
+            "ping-zero",
+            r"
+ping_seconds: 0
+subscriptions:
+    - name: local
+      url: data:,vless://uuid@example.com:443%23demo
+",
+        );
+
+        assert_eq!(config.ping_seconds, 0);
+    }
+
     fn load_inline_config(name: &str, content: &str) -> AppConfig {
         let path = write_inline_config(name, content);
         let config = AppConfig::load(&path).expect("config loads");
@@ -890,5 +1031,49 @@ subscriptions:
         ));
         fs::write(&path, content).expect("temp config can be written");
         path
+    }
+
+    #[test]
+    fn allows_http_https_data_file_and_bare_paths() {
+        use super::{is_allowed_subscription_url, redact_subscription_url};
+
+        assert!(is_allowed_subscription_url("https://example.com/sub.txt"));
+        assert!(is_allowed_subscription_url("http://10.20.1.10:8080/sub"));
+        assert!(is_allowed_subscription_url(
+            "data:,vless://uuid@example.com:443%23demo"
+        ));
+        assert!(is_allowed_subscription_url("file:///tmp/sub.txt"));
+        assert!(!is_allowed_subscription_url("javascript:alert(1)"));
+        assert!(!is_allowed_subscription_url("ftp://example.com/sub"));
+        assert!(!is_allowed_subscription_url("gopher://example.com/"));
+        assert!(!is_allowed_subscription_url(""));
+
+        assert_eq!(
+            redact_subscription_url("https://example.com/sub?token=secret#frag"),
+            "https://example.com/sub"
+        );
+        assert_eq!(
+            redact_subscription_url("https://user:pass@example.com/sub"),
+            "https://example.com/sub"
+        );
+        assert_eq!(
+            redact_subscription_url("data:,vless://secret"),
+            "data:<redacted>"
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_subscription_scheme() {
+        let path = write_inline_config(
+            "bad-scheme",
+            r"
+subscriptions:
+    - name: bad
+      url: javascript:alert(1)
+",
+        );
+        let error = AppConfig::load(&path).expect_err("unsupported scheme should fail");
+        fs::remove_file(&path).ok();
+        assert!(error.to_string().contains("unsupported url scheme"));
     }
 }

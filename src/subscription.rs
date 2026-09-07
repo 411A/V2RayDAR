@@ -10,7 +10,7 @@ use tokio::{fs, sync::mpsc::UnboundedSender};
 use tracing::{debug, info, warn};
 
 use crate::{
-    config::{AppConfig, SubscriptionSource},
+    config::{AppConfig, SubscriptionSource, redact_subscription_url},
     constants::{HTTP_EXCHANGE_OVERHEAD_BYTES, LOCALHOST_IP},
     model::{Candidate, ProgressEvent},
     parser::parse_subscription_document,
@@ -347,7 +347,7 @@ async fn fetch_source(
     let started = std::time::Instant::now();
     info!(
         source = %source.name,
-        url = %source.url,
+        url = %redact_subscription_url(&source.url),
         priority = source.priority,
         "subscription source fetch started"
     );

@@ -73,6 +73,25 @@ fn parse_sing_box_version(output: &str) -> Option<(u32, u32, u32)> {
     }
 }
 
+/// Major version of a sing-box binary (`None` when it cannot run).
+///
+/// Powers feature gates without requiring a prior probe run (TCP mode never
+/// probes, so the availability cache may be cold at proxy start).
+pub(crate) async fn sing_box_major_version(path: &str) -> Option<u32> {
+    let output = Command::new(path)
+        .arg("version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_sing_box_version(&String::from_utf8_lossy(&output.stdout)).map(|(major, _, _)| major)
+}
+
 /// Check if the detected sing-box version is >= (major, minor, patch).
 ///
 /// Uses the version from the last successful availability check.

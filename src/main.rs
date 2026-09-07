@@ -328,6 +328,7 @@ async fn main() -> Result<()> {
     }
 
     proxy::spawn_health_loop(shared.clone(), shared_ranked.clone());
+    proxy::spawn_starvation_loop(shared.clone(), shared_ranked.clone());
     let proxy = shared;
 
     let (config_tx, config_rx) = watch::channel(config.clone());

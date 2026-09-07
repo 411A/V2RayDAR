@@ -430,8 +430,10 @@ fn edit_selected_subscription(state: &mut TuiState) {
 }
 
 /// Queue one manual refresh (re-fetch subscriptions). Refused while a
-/// refresh is already running; the loops coalesce any duplicate queued
-/// while the first is still being picked up, so holding the chord fires once.
+/// refresh is already running; a running ping is preempted instead — its
+/// partial results are kept and the refresh only gathers the shortfall.
+/// The loops coalesce any duplicate queued while the first is still being
+/// picked up, so holding the chord fires once.
 fn trigger_refresh(state: &mut TuiState) -> EventResult {
     if state.refresh_busy {
         state.status = "Refresh already running".to_string();
@@ -735,6 +737,20 @@ mod tests {
         super::trigger_refresh(&mut state);
         assert_eq!(state.status, "Refresh already running");
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn manual_refresh_preempts_ping_instead_of_refusing() {
+        // Refresh is prioritized over ping: a running ping must not refuse
+        // the trigger — the refresh loop stops it and carries its partials.
+        let (mut state, _tx, _runtime) = state_with_found(PROXY_URI);
+        state.ping_busy = true;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        state.refresh_trigger = Some(tx);
+
+        super::trigger_refresh(&mut state);
+        assert_eq!(state.status, "Manual refresh started");
+        assert!(rx.try_recv().is_ok());
     }
 
     #[test]

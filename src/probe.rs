@@ -141,11 +141,18 @@ async fn sing_box_available(path: &str) -> bool {
     available
 }
 
+/// Probe `candidates`, stopping early per `stop_policy`.
+///
+/// `cancel` is an external preemption switch (a refresh interrupting a ping):
+/// when set, in-flight probes finish their current item and the run returns
+/// whatever was verified so far instead of the full list. `None` probes to
+/// completion (normal refreshes, CLI ping).
 pub async fn probe_candidates(
     candidates: Vec<Candidate>,
     config: &ProbeConfig,
     progress: Option<UnboundedSender<ProgressEvent>>,
     stop_policy: &ProbeStopPolicy,
+    cancel: Option<Arc<AtomicBool>>,
 ) -> Vec<RankedConfig> {
     info!(
         mode = ?config.mode,
@@ -194,9 +201,17 @@ pub async fn probe_candidates(
         );
     }
 
+    let cancel = cancel.unwrap_or_default();
     let ranked = match config.mode {
         ProbeMode::Active => {
-            probe_active_batched(candidates, config, progress.clone(), stop_policy).await
+            probe_active_batched(
+                candidates,
+                config,
+                progress.clone(),
+                stop_policy,
+                Some(cancel.clone()),
+            )
+            .await
         }
         ProbeMode::Tcp => {
             if !stop_policy.scan_all_configs {
@@ -210,7 +225,12 @@ pub async fn probe_candidates(
             }))
             .buffer_unordered(config.concurrency);
             let mut ranked = Vec::new();
+            // Dropping the stream cancels in-flight connects; one
+            // already-finished result at most slips through per check.
             while let Some(result) = results.next().await {
+                if cancel.load(AtomicOrdering::Relaxed) {
+                    break;
+                }
                 send_probe_delta(progress.as_ref(), 1, usize::from(result.reachable), 0);
                 ranked.push(result);
                 send_asap_configs(progress.as_ref(), &ranked, stop_policy);
@@ -267,10 +287,17 @@ pub async fn ping_configs(uris: Vec<String>, config: &ProbeConfig) -> Vec<Ranked
             prioritize_stability: false,
             return_configs_asap: false,
             previous_working_keys: std::collections::HashSet::new(),
+            prefound_working: 0,
+            prefound_previous_working: 0,
         };
-        let active_results =
-            probe_active_batched(candidates_from_ranked(&results), config, None, &stop_policy)
-                .await;
+        let active_results = probe_active_batched(
+            candidates_from_ranked(&results),
+            config,
+            None,
+            &stop_policy,
+            None,
+        )
+        .await;
         if !active_results.is_empty() {
             results = active_results;
         }
@@ -535,6 +562,7 @@ async fn probe_active_batched(
     config: &ProbeConfig,
     progress: Option<UnboundedSender<ProgressEvent>>,
     stop_policy: &ProbeStopPolicy,
+    cancel: Option<Arc<AtomicBool>>,
 ) -> Vec<RankedConfig> {
     let started = Instant::now();
     let input_count = candidates.len();
@@ -580,7 +608,10 @@ async fn probe_active_batched(
         stop: ProbeStopState::new(&prepared, stop_policy),
         stop_announced: false,
     }));
-    let cancel = Arc::new(AtomicBool::new(false));
+    // An external switch (refresh preempting a ping) shares the same flag
+    // the early-stop logic already uses, so preemption stops batches within
+    // ~one probe exactly like a reached target does.
+    let cancel = cancel.unwrap_or_default();
     let mut batch_index = 0_usize;
     while !prepared.is_empty() && !cancel.load(AtomicOrdering::Relaxed) {
         let before = lock_shared(&shared).ranked.len();
@@ -876,7 +907,10 @@ fn probe_stop_reason(
         return None;
     }
 
-    let reachable = ranked.iter().filter(|item| item.reachable).count();
+    let new_reachable = ranked.iter().filter(|item| item.reachable).count();
+    // Working configs carried over from a preempted ping count toward the
+    // target, so the interrupting refresh only gathers the shortfall.
+    let reachable = new_reachable.saturating_add(policy.prefound_working);
     if !policy.prioritize_stability {
         return (reachable >= policy.top_n).then(|| {
             format!(
@@ -888,10 +922,13 @@ fn probe_stop_reason(
 
     let first_half = policy.top_n / 2;
     let second_half = policy.top_n.saturating_sub(first_half);
+    // `new_reachable > 0`: the snapshot replaces the live list, so it must
+    // never fire on carried-over results alone with an empty new list.
     if !policy.return_configs_asap
         && first_half > 0
         && reachable >= first_half
         && !state.half_snapshot_sent
+        && new_reachable > 0
     {
         state.half_snapshot_sent = true;
         send_ranked_snapshot(progress, stability_snapshot(ranked, policy, first_half));
@@ -905,7 +942,8 @@ fn probe_stop_reason(
         return None;
     }
 
-    let found_previous = stable_reachable_count(ranked, policy);
+    let found_previous =
+        stable_reachable_count(ranked, policy).saturating_add(policy.prefound_previous_working);
     let required_previous = second_half.min(policy.previous_working_keys.len());
     if found_previous >= required_previous {
         return Some(format!(
@@ -2583,6 +2621,8 @@ mod tests {
             prioritize_stability,
             return_configs_asap: false,
             previous_working_keys,
+            prefound_working: 0,
+            prefound_previous_working: 0,
         }
     }
 
@@ -3189,8 +3229,14 @@ mod tests {
         let config = active_probe_test_config(&stub);
 
         let policy = stop_policy(20, false, std::collections::HashSet::new());
-        let ranked =
-            probe_candidates(two_hundred_healthy_candidates(), &config, None, &policy).await;
+        let ranked = probe_candidates(
+            two_hundred_healthy_candidates(),
+            &config,
+            None,
+            &policy,
+            None,
+        )
+        .await;
         assert!(
             working_count(&ranked) >= 20,
             "must find top_n working, got {}",
@@ -3219,7 +3265,7 @@ mod tests {
             .map(|item| item.dedup_key.clone())
             .collect();
         let policy = stop_policy(20, true, previous);
-        let ranked = probe_candidates(candidates, &config, None, &policy).await;
+        let ranked = probe_candidates(candidates, &config, None, &policy, None).await;
         assert!(
             working_count(&ranked) >= 20,
             "must find top_n working, got {}",
@@ -3333,6 +3379,40 @@ mod tests {
 
         assert!(record_working(&shared, &policy, "new-1").is_none());
         assert!(record_working(&shared, &policy, "new-2").is_some());
+    }
+
+    #[test]
+    fn shared_stop_counts_prefound_working_toward_top_n() {
+        // A refresh that preempted a ping with 2 working already verified
+        // only needs 1 fresh working config to reach top_n=3.
+        let (shared, mut policy) = shared_probe(3, false, std::collections::HashSet::new());
+        policy.prefound_working = 2;
+        assert!(record_working(&shared, &policy, "a").is_some());
+    }
+
+    #[test]
+    fn shared_stop_counts_prefound_previous_toward_stability_quorum() {
+        // top_n=4 needs 2 previous-run configs; the preempted ping already
+        // verified old-1, so one fresh old-2 completes the quorum at 4 total.
+        let previous: std::collections::HashSet<String> =
+            ["old-1", "old-2"].into_iter().map(str::to_string).collect();
+        let (shared, mut policy) = shared_probe(4, true, previous);
+        policy.prefound_working = 2;
+        policy.prefound_previous_working = 1;
+        assert!(record_working(&shared, &policy, "new-1").is_none());
+        assert!(record_working(&shared, &policy, "old-2").is_some());
+    }
+
+    #[test]
+    fn shared_stop_snapshot_never_fires_on_prefound_alone() {
+        // Carried-over results count toward the threshold but must never
+        // publish an empty fresh list over the live one.
+        let (shared, mut policy) = shared_probe(4, true, std::collections::HashSet::new());
+        lock_shared(&shared).stop.half_snapshot_sent = false;
+        policy.prefound_working = 2;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        assert!(eval_shared_stop(&shared, &policy, Some(&tx)).is_none());
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

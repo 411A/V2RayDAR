@@ -1,4 +1,4 @@
-﻿# V2RayDAR Installer for Windows
+# V2RayDAR Installer for Windows
 # Usage:
 #   irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
 #   .\install.ps1 -Version 0.4.0 -Portable
@@ -17,7 +17,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-# ─── Cleanup on Ctrl+C / forced exit ─────────────────────────────────────────
+# --- Cleanup on Ctrl+C / forced exit -----------------------------------------
 $Script:TempPaths = @()
 function Remove-TempItems {
     foreach ($p in $Script:TempPaths) {
@@ -33,7 +33,7 @@ $AppName = "v2raydar"
 $GitHubApi = "https://api.github.com/repos/$Repo/releases/latest"
 $GitHubDownload = "https://github.com/$Repo/releases/download"
 
-# ─── Helpers ───────────────────────────────────────────────────────────────────
+# --- Helpers -------------------------------------------------------------------
 
 function Write-Info    { param([string]$Msg) Write-Host "> $Msg" -ForegroundColor Cyan }
 function Write-Warn    { param([string]$Msg) Write-Host "! $Msg" -ForegroundColor Yellow }
@@ -56,7 +56,7 @@ function Confirm {
     return $answer -match '^[Yy]'
 }
 
-# ─── Version Comparison ────────────────────────────────────────────────────────
+# --- Version Comparison --------------------------------------------------------
 # Compare two semver strings (e.g. "0.4.0" vs "0.5.3").
 # Returns: 0 if equal, 1 if $Left > $Right, -1 if $Left < $Right
 # Uses .NET [version] for idiomatic, efficient comparison with fallback.
@@ -66,7 +66,7 @@ function Compare-Version {
     $l = $Left.TrimStart('v')
     $r = $Right.TrimStart('v')
 
-    # Use .NET [version] — idiomatic, handles Major.Minor[.Build[.Revision]]
+    # Use .NET [version] - idiomatic, handles Major.Minor[.Build[.Revision]]
     try {
         return [version]$l.CompareTo([version]$r)
     }
@@ -87,7 +87,7 @@ function Compare-Version {
     return 0
 }
 
-# ─── Installation Detection ───────────────────────────────────────────────────
+# --- Installation Detection ---------------------------------------------------
 # Search common locations for an existing v2raydar binary and get its version.
 # Sets $Script:FoundPath and $Script:FoundVersion. Returns $true if found.
 function Find-Installed {
@@ -144,7 +144,7 @@ function Get-VersionFromBinary {
     return $false
 }
 
-# ─── Platform Detection ────────────────────────────────────────────────────────
+# --- Platform Detection --------------------------------------------------------
 
 function Get-Arch {
     $cpu = $env:PROCESSOR_ARCHITECTURE
@@ -159,14 +159,14 @@ function Get-Arch {
     }
 }
 
-# ─── Asset Selection ───────────────────────────────────────────────────────────
+# --- Asset Selection -----------------------------------------------------------
 
 function Select-Asset {
     param([string]$Arch)
     return "v2raydar-windows-${Arch}_with_singbox.zip"
 }
 
-# ─── Download ──────────────────────────────────────────────────────────────────
+# --- Download ------------------------------------------------------------------
 
 function Get-LatestVersion {
     try {
@@ -326,11 +326,11 @@ function Verify-Checksum {
     }
 }
 
-# ─── Country IP Database (GeoIP) ─────────────────────────────────────────────
+# --- Country IP Database (GeoIP) ---------------------------------------------
 # Keyless ipdeny zone files, refreshed independently of app releases into
 # <data-root>/geoip (v4 zones plus an ipv6/ subdir). The app loads them at
 # startup (see src/geoip.rs) and runs fine without them. Every installer run
-# refreshes unconditionally; failures never fail the install — functions
+# refreshes unconditionally; failures never fail the install - functions
 # return $false and callers warn.
 
 $GeoipV4Url = "https://www.ipdeny.com/ipblocks/data/countries/all-zones.tar.gz"
@@ -468,7 +468,7 @@ function Update-GeoipData {
     }
 }
 
-# ─── Extract ───────────────────────────────────────────────────────────────────
+# --- Extract -------------------------------------------------------------------
 
 function Extract-Archive {
     param([string]$FilePath, [string]$Dest)
@@ -484,7 +484,7 @@ function Extract-Archive {
     Remove-Item -Path $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-# ─── Install Modes ─────────────────────────────────────────────────────────────
+# --- Install Modes -------------------------------------------------------------
 
 function Do-PortableInstall {
     param([string]$Target)
@@ -508,7 +508,7 @@ function Do-PortableInstall {
             Write-Info "updating..."
             Extract-Archive -FilePath $archive -Dest $tmpDir
 
-            # Replace only binaries — user data stays untouched
+            # Replace only binaries - user data stays untouched
             Copy-Item -Path "$tmpDir\$AppName.exe" -Destination $exePath -Force
             $singBox = Join-Path $tmpDir "sing-box.exe"
             if (Test-Path $singBox) {
@@ -631,7 +631,7 @@ function Do-UserInstall {
     Write-Info "run:  $AppName"
 }
 
-# ─── Interactive Prompts ───────────────────────────────────────────────────────
+# --- Interactive Prompts -------------------------------------------------------
 
 function Select-InstallMode {
     $desktop = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
@@ -639,8 +639,8 @@ function Select-InstallMode {
     $defaultDir = if (Test-Path $desktop) { Join-Path $desktop "V2RayDAR" } else { Join-Path $env:USERPROFILE "V2RayDAR" }
 
     Write-Host "  Installation mode:"
-    Write-Host "    1) Portable  — everything in one folder (recommended)"
-    Write-Host "    2) User      — binary to AppData"
+    Write-Host "    1) Portable  - everything in one folder (recommended)"
+    Write-Host "    2) User      - binary to AppData"
     Write-Host ""
 
     if ($Yes) { $choice = "1" }
@@ -668,7 +668,7 @@ function Select-InstallMode {
     }
 }
 
-# ─── Help ──────────────────────────────────────────────────────────────────────
+# --- Help ----------------------------------------------------------------------
 
 function Show-Help {
     Write-Host @"
@@ -690,7 +690,7 @@ Options:
 "@
 }
 
-# ─── Main ──────────────────────────────────────────────────────────────────────
+# --- Main ----------------------------------------------------------------------
 
 function Main {
     try {
@@ -718,7 +718,7 @@ function Main {
         $Asset = Select-Asset -Arch $arch
         Write-Info "asset: $Asset"
 
-        # ─── Check for existing installation ────────────────────────────────────
+        # --- Check for existing installation ------------------------------------
         Write-Host ""
         Write-Host "  ========================================"
         Write-Host "       V2RayDAR Installer v$Version"
@@ -759,7 +759,7 @@ function Main {
                 $cmp = Compare-Version -Left $Script:FoundVersion -Right $Version
 
                 if ($cmp -eq 0) {
-                    # Same version — already up to date
+                    # Same version - already up to date
                     Write-Host ""
                     Write-Host "> V2RayDAR v$($Script:FoundVersion) (latest version) is already installed." -ForegroundColor Green
                     if ($Script:FoundPath) {
@@ -775,7 +775,7 @@ function Main {
                     return
                 }
                 elseif ($cmp -lt 0) {
-                    # Installed version is older — outdated
+                    # Installed version is older - outdated
                     Write-Host ""
                     Write-Host "! V2RayDAR v$($Script:FoundVersion) is installed, but v$Version is available." -ForegroundColor Yellow
                     if ($Script:FoundPath) {
@@ -820,7 +820,7 @@ function Main {
             Write-Info "V2RayDAR is not installed."
         }
 
-        # ─── Proceed with installation ──────────────────────────────────────────
+        # --- Proceed with installation ------------------------------------------
         Write-Host ""
 
         # Auto mode with an existing install: update in place instead of

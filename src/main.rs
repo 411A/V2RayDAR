@@ -40,8 +40,9 @@ use crate::{
     constants::{
         APP_DATA_DIR_NAME, APP_NAME, CACHE_DIR_NAME, CONFIG_FILE_NAME, CONFIG_WATCH_INTERVAL,
         DB_FILE_NAME, DEFAULT_LOG_FILTER_PLAIN, DEFAULT_LOG_FILTER_TUI, DEFAULT_LOG_FILTER_VERBOSE,
-        FIREWALL_STATE_FILE_NAME, GEOIP_DIR_NAME, LEGACY_APP_MARKER_FILE_NAME,
-        LEGACY_CACHE_MARKER_FILE_NAME, LOCALHOST_IP, MAX_TUI_LOGS, sing_box_download_url,
+        FIREWALL_STATE_FILE_NAME, GEOIP_DIR_NAME, GEOIP_MMDB_FILE_NAME,
+        LEGACY_APP_MARKER_FILE_NAME, LEGACY_CACHE_MARKER_FILE_NAME, LOCALHOST_IP, MAX_TUI_LOGS,
+        sing_box_download_url,
     },
     db::Database,
     model::{Candidate, ProbeStopPolicy, ProgressEvent, RankedConfig, RuntimeConfig, RuntimeState},
@@ -193,32 +194,37 @@ async fn main() -> Result<()> {
         ),
     }
 
-    // Initialize GeoIP country zones (ipdeny `<cc>.zone` files, refreshed by
-    // the installer independently of app releases). Explicit `geoip_db_path`
-    // directory wins, otherwise `<root_dir>/geoip`. Legacy `.mmdb` paths are
-    // ignored with a warning — the GeoLite2 format is retired.
-    let geoip_dir = config
-        .geoip_db_path
-        .as_ref()
-        .map(std::path::PathBuf::from)
+    // Initialize GeoIP: MaxMind database first (most accurate), ipdeny
+    // country zones as fallback. Both are refreshed by the installer
+    // independently of app releases; the app itself never downloads anything.
+    // Explicit `geoip_db_path` (file or directory) wins, otherwise
+    // `<root_dir>/geoip` (+ its `GeoLite2-Country.mmdb`) is used.
+    let configured_geoip = config.geoip_db_path.as_ref().map(std::path::PathBuf::from);
+    let mmdb_path = configured_geoip
+        .clone()
         .filter(|path| {
-            if path
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("mmdb"))
-            {
-                warn!(
-                    path = %path.display(),
-                    "GeoLite2 .mmdb databases are no longer supported; using zone directory instead"
-                );
-                return false;
-            }
-            true
+            path.is_file()
+                && path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("mmdb"))
         })
         .or_else(|| {
-            let dir = paths.root_dir.join(GEOIP_DIR_NAME);
-            if dir.is_dir() { Some(dir) } else { None }
+            let bundled = paths
+                .root_dir
+                .join(GEOIP_DIR_NAME)
+                .join(GEOIP_MMDB_FILE_NAME);
+            if bundled.is_file() {
+                Some(bundled)
+            } else {
+                let legacy = paths.root_dir.join(GEOIP_MMDB_FILE_NAME);
+                if legacy.is_file() { Some(legacy) } else { None }
+            }
         });
-    crate::geoip::init(geoip_dir.as_deref());
+    let zone_dir = configured_geoip.filter(|path| path.is_dir()).or_else(|| {
+        let dir = paths.root_dir.join(GEOIP_DIR_NAME);
+        if dir.is_dir() { Some(dir) } else { None }
+    });
+    crate::geoip::init(mmdb_path.as_deref(), zone_dir.as_deref());
 
     if active_probe_needs_setup(&config, &paths).await {
         if cli.no_tui || cli.once {

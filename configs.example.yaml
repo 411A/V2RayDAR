@@ -24,8 +24,10 @@ max_subscription_bytes: 33554432
 use_cache_only: false
 # Optional private share link used as a fetch bridge on restricted networks
 emergency_config: null
-# Optional path to a country-zone directory (<cc>.zone files, e.g. from ipdeny).
-# null uses <data-root>/geoip, refreshed by the installer independently of releases.
+# Optional path to a GeoLite2-Country.mmdb file or a country-zone directory
+# (<cc>.zone files). null uses <data-root>/geoip; the installer refreshes the
+# MaxMind database first and the zone files as its fallback.
+# Country data: GeoLite2 by MaxMind (CC BY-SA 4.0); fallback zones by ipdeny.
 geoip_db_path: null
 # Days after which unreachable configs are removed from the database.
 clean_offlines_after_days: 7

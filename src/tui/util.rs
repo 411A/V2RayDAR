@@ -428,6 +428,8 @@ fn update_probe_section(document: &mut YamlDocument, previous: &AppConfig, confi
 /// (no watcher reload loop). YAML only — JSON configs already round-trip
 /// every field on save. Unparseable input is an error (the caller logs it
 /// and continues with in-memory defaults).
+// Long by construction: one row per known setting, like the save helpers.
+#[allow(clippy::too_many_lines)]
 pub fn backfill_missing_defaults(path: &Path) -> Result<usize> {
     if path
         .extension()
@@ -455,179 +457,172 @@ pub fn backfill_missing_defaults(path: &Path) -> Result<usize> {
             added += 1;
         }
     };
-
-    ensure(None, "bind", defaults.bind.to_string());
-    ensure(None, "top_n", defaults.top_n.to_string());
-    ensure(
-        None,
-        "refresh_seconds",
-        defaults.refresh_seconds.to_string(),
-    );
-    ensure(None, "ping_seconds", defaults.ping_seconds.to_string());
-    ensure(
-        None,
-        "encoded_subscription",
-        defaults.encoded_subscription.to_string(),
-    );
-    ensure(
-        None,
-        "prioritize_stability",
-        defaults.prioritize_stability.to_string(),
-    );
-    ensure(
-        None,
-        "return_configs_asap",
-        defaults.return_configs_asap.to_string(),
-    );
-    ensure(
-        None,
-        "scan_all_configs",
-        defaults.scan_all_configs.to_string(),
-    );
-    ensure(
-        None,
-        "fetch_timeout_ms",
-        defaults.fetch_timeout_ms.to_string(),
-    );
-    ensure(
-        None,
-        "fetch_concurrency",
-        defaults.fetch_concurrency.to_string(),
-    );
-    ensure(
-        None,
-        "max_subscription_bytes",
-        defaults.max_subscription_bytes.to_string(),
-    );
-    ensure(None, "use_cache_only", defaults.use_cache_only.to_string());
-    ensure(
-        None,
-        "emergency_config",
-        defaults
-            .emergency_config
-            .as_deref()
+    let null_or = |value: Option<&str>| {
+        value
             .filter(|value| !value.trim().is_empty())
-            .map_or_else(|| "null".to_string(), yaml_scalar),
-    );
-    ensure(
-        None,
-        "geoip_db_path",
-        defaults
-            .geoip_db_path
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .map_or_else(|| "null".to_string(), yaml_scalar),
-    );
-    ensure(
-        None,
-        "clean_offlines_after_days",
-        defaults.clean_offlines_after_days.to_string(),
-    );
-
-    ensure(
-        Some("sharing"),
-        "enabled",
-        defaults.sharing.enabled.to_string(),
-    );
-    ensure(
-        Some("sharing"),
-        "require_token",
-        defaults.sharing.require_token.to_string(),
-    );
-    ensure(
-        Some("sharing"),
-        "token",
-        nullable_string(&defaults.sharing.token),
-    );
-    ensure(Some("proxy"), "enabled", defaults.proxy.enabled.to_string());
-    ensure(Some("proxy"), "port", defaults.proxy.port.to_string());
-    ensure(
-        Some("proxy"),
-        "discoverable",
-        defaults.proxy.discoverable.to_string(),
-    );
-    ensure(
-        Some("proxy"),
-        "rotating_proxy",
-        defaults.proxy.rotating_proxy.to_string(),
-    );
-    ensure(
-        Some("proxy"),
-        "health_check_url",
-        yaml_scalar(&defaults.proxy.health_check_url),
-    );
-    ensure(
-        Some("proxy"),
-        "health_check_interval_seconds",
-        defaults.proxy.health_check_interval_seconds.to_string(),
-    );
-    ensure(Some("probe"), "mode", probe_mode(defaults.probe.mode));
-    ensure(
-        Some("probe"),
-        "sing_box_path",
-        nullable_string(&defaults.probe.sing_box_path),
-    );
-    ensure(
-        Some("probe"),
-        "connect_timeout_ms",
-        defaults.probe.connect_timeout_ms.to_string(),
-    );
-    ensure(
-        Some("probe"),
-        "active_timeout_ms",
-        defaults.probe.active_timeout_ms.to_string(),
-    );
-    ensure(
-        Some("probe"),
-        "startup_timeout_ms",
-        defaults.probe.startup_timeout_ms.to_string(),
-    );
-    ensure(
-        Some("probe"),
-        "concurrency",
-        defaults.probe.concurrency.to_string(),
-    );
-    ensure(
-        Some("probe"),
-        "batch_size",
-        defaults
-            .probe
-            .batch_size
-            .map_or_else(|| "null".to_string(), |value| value.to_string()),
-    );
-    ensure(
-        Some("probe"),
-        "process_concurrency",
-        defaults
-            .probe
-            .process_concurrency
-            .map_or_else(|| "null".to_string(), |value| value.to_string()),
-    );
-    ensure(
-        Some("probe"),
-        "test_url",
-        yaml_scalar(&defaults.probe.test_url),
-    );
-    ensure(
-        Some("probe"),
-        "accepted_statuses",
-        format_inline_u16_list(&defaults.probe.accepted_statuses),
-    );
-    ensure(
-        Some("probe"),
-        "download_url",
-        defaults
-            .probe
-            .download_url
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .map_or_else(|| "null".to_string(), yaml_scalar),
-    );
-    ensure(
-        Some("probe"),
-        "download_bytes_limit",
-        defaults.probe.download_bytes_limit.to_string(),
-    );
+            .map_or_else(|| "null".to_string(), yaml_scalar)
+    };
+    let maybe_number = |value: Option<usize>| {
+        value.map_or_else(|| "null".to_string(), |number| number.to_string())
+    };
+    // (section, key, rendered default); `None` section means top level.
+    let entries: Vec<(Option<&str>, &str, String)> = vec![
+        (None, "bind", defaults.bind.to_string()),
+        (None, "top_n", defaults.top_n.to_string()),
+        (
+            None,
+            "refresh_seconds",
+            defaults.refresh_seconds.to_string(),
+        ),
+        (None, "ping_seconds", defaults.ping_seconds.to_string()),
+        (
+            None,
+            "encoded_subscription",
+            defaults.encoded_subscription.to_string(),
+        ),
+        (
+            None,
+            "prioritize_stability",
+            defaults.prioritize_stability.to_string(),
+        ),
+        (
+            None,
+            "return_configs_asap",
+            defaults.return_configs_asap.to_string(),
+        ),
+        (
+            None,
+            "scan_all_configs",
+            defaults.scan_all_configs.to_string(),
+        ),
+        (
+            None,
+            "fetch_timeout_ms",
+            defaults.fetch_timeout_ms.to_string(),
+        ),
+        (
+            None,
+            "fetch_concurrency",
+            defaults.fetch_concurrency.to_string(),
+        ),
+        (
+            None,
+            "max_subscription_bytes",
+            defaults.max_subscription_bytes.to_string(),
+        ),
+        (None, "use_cache_only", defaults.use_cache_only.to_string()),
+        (
+            None,
+            "emergency_config",
+            null_or(defaults.emergency_config.as_deref()),
+        ),
+        (
+            None,
+            "geoip_db_path",
+            null_or(defaults.geoip_db_path.as_deref()),
+        ),
+        (
+            None,
+            "clean_offlines_after_days",
+            defaults.clean_offlines_after_days.to_string(),
+        ),
+        (
+            Some("sharing"),
+            "enabled",
+            defaults.sharing.enabled.to_string(),
+        ),
+        (
+            Some("sharing"),
+            "require_token",
+            defaults.sharing.require_token.to_string(),
+        ),
+        (
+            Some("sharing"),
+            "token",
+            nullable_string(&defaults.sharing.token),
+        ),
+        (Some("proxy"), "enabled", defaults.proxy.enabled.to_string()),
+        (Some("proxy"), "port", defaults.proxy.port.to_string()),
+        (
+            Some("proxy"),
+            "discoverable",
+            defaults.proxy.discoverable.to_string(),
+        ),
+        (
+            Some("proxy"),
+            "rotating_proxy",
+            defaults.proxy.rotating_proxy.to_string(),
+        ),
+        (
+            Some("proxy"),
+            "health_check_url",
+            yaml_scalar(&defaults.proxy.health_check_url),
+        ),
+        (
+            Some("proxy"),
+            "health_check_interval_seconds",
+            defaults.proxy.health_check_interval_seconds.to_string(),
+        ),
+        (Some("probe"), "mode", probe_mode(defaults.probe.mode)),
+        (
+            Some("probe"),
+            "sing_box_path",
+            nullable_string(&defaults.probe.sing_box_path),
+        ),
+        (
+            Some("probe"),
+            "connect_timeout_ms",
+            defaults.probe.connect_timeout_ms.to_string(),
+        ),
+        (
+            Some("probe"),
+            "active_timeout_ms",
+            defaults.probe.active_timeout_ms.to_string(),
+        ),
+        (
+            Some("probe"),
+            "startup_timeout_ms",
+            defaults.probe.startup_timeout_ms.to_string(),
+        ),
+        (
+            Some("probe"),
+            "concurrency",
+            defaults.probe.concurrency.to_string(),
+        ),
+        (
+            Some("probe"),
+            "batch_size",
+            maybe_number(defaults.probe.batch_size),
+        ),
+        (
+            Some("probe"),
+            "process_concurrency",
+            maybe_number(defaults.probe.process_concurrency),
+        ),
+        (
+            Some("probe"),
+            "test_url",
+            yaml_scalar(&defaults.probe.test_url),
+        ),
+        (
+            Some("probe"),
+            "accepted_statuses",
+            format_inline_u16_list(&defaults.probe.accepted_statuses),
+        ),
+        (
+            Some("probe"),
+            "download_url",
+            null_or(defaults.probe.download_url.as_deref()),
+        ),
+        (
+            Some("probe"),
+            "download_bytes_limit",
+            defaults.probe.download_bytes_limit.to_string(),
+        ),
+    ];
+    for (section, key, value) in entries {
+        ensure(section, key, value);
+    }
 
     if added == 0 {
         return Ok(0);

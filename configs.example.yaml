@@ -3,7 +3,9 @@ bind: 127.0.0.1:27141
 # Number of best working configs published to subscription endpoints.
 top_n: 10
 # Auto-refresh interval in seconds; 0 disables timer refreshes.
-refresh_seconds: 300
+refresh_seconds: 900
+# Re-ping interval in seconds for cached configs without re-fetching; 0 disables.
+ping_seconds: 300
 # true returns /subscription as base64 for v2rayN/v2rayNG compatibility.
 encoded_subscription: true
 # true re-pings the last saved top-N first and keeps stable configs ahead.
@@ -22,8 +24,10 @@ max_subscription_bytes: 33554432
 use_cache_only: false
 # Optional private share link used as a fetch bridge on restricted networks
 emergency_config: null
-# Optional path to a GeoLite2-Country.mmdb file for country detection.
-# null uses the embedded database; set a path only if you need a custom one.
+# Optional path to a GeoLite2-Country.mmdb file or a country-zone directory
+# (<cc>.zone files). null uses <data-root>/geoip; the installer refreshes the
+# MaxMind database first and the zone files as its fallback.
+# Country data: GeoLite2 by MaxMind (CC BY-SA 4.0); fallback zones by ipdeny.
 geoip_db_path: null
 # Days after which unreachable configs are removed from the database.
 clean_offlines_after_days: 7

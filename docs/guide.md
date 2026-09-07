@@ -19,17 +19,14 @@ This document is the detailed user and developer guide. The short, ready-to-use 
 
 ## Quick Install
 
-Copy the command for your OS into a terminal. The installer detects your platform, downloads the latest release with bundled `sing-box`, and sets everything up. Portable mode installs into `Desktop/V2RayDAR` when a Desktop folder exists, otherwise `~/V2RayDAR`. User mode installs the binary to `~/.local/bin`.
+Paste the line for your OS into a terminal and press Enter — then press Enter once more (the default Yes) and the installer finishes automatically with defaults, updating in place when already installed. Answer No for step-by-step prompts. The installer detects your platform, downloads the latest release with bundled `sing-box`, and sets everything up. Portable mode installs into `Desktop/V2RayDAR` when a Desktop folder exists, otherwise `~/V2RayDAR`. User mode installs the binary to `~/.local/bin`.
 
-**Portable** (recommended) — everything in one folder, run with `--portable`:
+**Portable** (recommended) — everything in one folder, run with `--portable`: just copy-paste & press enter until it finishes installing!
 ```bash
-# Linux
+# Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh
 
-# macOS
-curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh
-
-# Windows
+# Windows (PowerShell)
 irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
 ```
 
@@ -397,7 +394,8 @@ String-like null values such as `null`, `"null"`, empty strings, `"none"`, and `
 | --- | --- | --- | --- |
 | `bind` | Socket address | `127.0.0.1:27141` | Primary HTTP bind address. |
 | `top_n` | Integer | `10` | Number of reachable configs published to clients. |
-| `refresh_seconds` | Integer seconds | `300` | Automatic refresh interval. `0` disables timer refreshes but config changes can still trigger refreshes. |
+| `refresh_seconds` | Integer seconds | `900` | Automatic refresh interval. `0` disables timer refreshes but config changes can still trigger refreshes. |
+| `ping_seconds` | Integer seconds | `300` | Re-ping interval for cached configs without re-fetching subscriptions. `0` disables. Fetch and ping traffic both count toward Sub Usage. |
 | `encoded_subscription` | Boolean | `true` | Makes `/subscription` return base64 text. `/subscription.txt` is always raw text. |
 | `prioritize_stability` | Boolean | `true` | Re-pings the previous run's saved top-N first and keeps them ahead of newly discovered low-ping configs. When `false`, the ranking simply prefers any working low-ping config. The saved top-N is held in the cache folder and wiped on every fresh run and on quit. |
 | `return_configs_asap` | Boolean | `false` | When `true`, publishes each working config to `/subscription`, `/subscription.txt`, `/results`, and the TUI `Current Found Configs` box as soon as it is found, until `top_n` working configs are available. Early configs may not have the lowest ping or best stability. |
@@ -410,7 +408,7 @@ String-like null values such as `null`, `"null"`, empty strings, `"none"`, and `
 | `emergency_config` | String or null | `null` | Optional working share link used as a bridge proxy when HTTP subscription fetches fail. |
 | `sharing` | Object | See below | LAN sharing and URL token settings. |
 | `probe` | Object | See below | Validation mode, timeouts, concurrency, and active-test settings. |
-| `geoip_db_path` | String or null | `null` | Optional path to a `GeoLite2-Country.mmdb` file. If `null`, uses the embedded database for country detection. |
+| `geoip_db_path` | String or null | `null` | Optional path to a `GeoLite2-Country.mmdb` file or a country-zone directory (`zones.txt`, or legacy `<cc>.zone` files). If `null`, uses `<data-root>/geoip` (MaxMind database first, zone fallback; both refreshed by the installer). Country data: GeoLite2 by MaxMind (CC BY-SA 4.0); fallback zones by ipdeny. |
 | `subscriptions` | Array | Pre-selected sources | Sources to fetch and scan. Add your own for better results. |
 
 ## Sharing Settings
@@ -729,9 +727,13 @@ The app runs one refresh immediately after startup.
 
 After that:
 
-- `refresh_seconds: 300` refreshes every five minutes.
+- `refresh_seconds: 900` refreshes every fifteen minutes.
+- `ping_seconds: 300` re-pings cached configs every five minutes without re-fetching.
+- `Ctrl+R` triggers one manual refresh (re-fetch); refused while a refresh is running.
+- `Ctrl+P` triggers one manual re-ping; refused while any cycle is running.
 - `refresh_seconds: 0` disables timer refreshes.
 - Relevant config-file changes can still trigger refreshes even when `refresh_seconds` is `0`.
+- When a newer version adds settings, the missing keys are appended to your existing `configs.yaml` with defaults on startup; your values, comments, and subscriptions are left untouched.
 
 Headless mode prints compact progress by default and a detailed trace with `--verbose`.
 
@@ -775,6 +777,8 @@ Global controls:
 | `s` | Save editable config state. |
 | Space | Toggle the selected subscription where applicable. |
 | `e` | Open actions for the selected subscription. |
+| `Ctrl+R` | Run one manual refresh (re-fetch); refused while a refresh is running. |
+| `Ctrl+P` | Re-ping cached configs once; refused while any cycle is running. |
 | `:` | Enter command mode. |
 
 Command mode accepts:
@@ -789,6 +793,8 @@ Command mode accepts:
 | `:t`, `:toggle` | Enable or disable selected subscription. |
 | `:d`, `:delete` | Delete selected subscription. |
 | `:w`, `:save` | Save config changes. |
+| `:r`, `:refresh` | Run one manual refresh (same rules as `Ctrl+R`). |
+| `:ping` | Re-ping cached configs once (same rules as `Ctrl+P`). |
 
 Adding a subscription is a four-step flow:
 
@@ -1319,7 +1325,8 @@ Run at least one successful online refresh first so the database has configs to 
 ```yaml
 bind: 127.0.0.1:27141
 top_n: 10
-refresh_seconds: 300
+refresh_seconds: 900
+ping_seconds: 300
 encoded_subscription: true
 prioritize_stability: true
 return_configs_asap: false

@@ -49,6 +49,7 @@ pub struct RankedConfig {
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct RuntimeState {
     pub last_refresh: Option<String>,
     pub last_error: Option<String>,
@@ -60,8 +61,21 @@ pub struct RuntimeState {
     pub refresh_started_instant: Option<Instant>,
     #[serde(skip)]
     pub refresh_finished_instant: Option<Instant>,
+    /// Explicit deadline for the next automatic refresh.
+    /// Set when the refresh loop schedules its sleep, so the TUI countdown
+    /// matches the actual timer instead of recomputing from `finished_at`
+    /// (which drifts by proxy-switch/health-check time after `refresh_once`).
+    #[serde(skip)]
+    pub next_refresh_instant: Option<Instant>,
+    /// Explicit deadline for the next ping cycle (same idea, ping loop).
+    #[serde(skip)]
+    pub next_ping_instant: Option<Instant>,
+    /// Start of the current (or most recent) ping cycle.
+    #[serde(skip)]
+    pub last_ping_instant: Option<Instant>,
     pub refresh_duration_ms: Option<u128>,
     pub refreshing: bool,
+    pub pinging: bool,
     pub total_candidates: usize,
     pub tested_candidates: usize,
     pub reachable_candidates: usize,
@@ -83,6 +97,8 @@ pub enum ProgressEvent {
     ProbeDelta {
         tested: usize,
         working: usize,
+        /// Observed HTTP exchange bytes (Sub Usage accounting).
+        bytes: u64,
     },
     RankedSnapshot(Vec<RankedConfig>),
     WorkingConfigsFound {
@@ -99,6 +115,13 @@ pub struct ProbeStopPolicy {
     pub prioritize_stability: bool,
     pub return_configs_asap: bool,
     pub previous_working_keys: HashSet<String>,
+    /// Working configs verified by a preempted ping cycle just before this
+    /// probe started. They count toward `top_n` so a refresh that interrupts
+    /// a ping only gathers the shortfall instead of re-probing everything.
+    pub prefound_working: usize,
+    /// Of those, the ones that were also in `previous_working_keys`: they
+    /// count toward the stability quorum like freshly verified ones.
+    pub prefound_previous_working: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -107,6 +130,7 @@ pub struct RuntimeConfig {
     pub bind: SocketAddr,
     pub top_n: usize,
     pub refresh_seconds: u64,
+    pub ping_seconds: u64,
     pub encoded_subscription: bool,
     pub prioritize_stability: bool,
     pub return_configs_asap: bool,

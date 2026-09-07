@@ -251,9 +251,20 @@ fn refresh_status(runtime: &RuntimeView, refresh_seconds: u64, now: Instant) -> 
     fetch_countdown(runtime, refresh_seconds, now).unwrap_or_else(|| "manual".to_string())
 }
 
-/// Second line of the Refresh box (`None` hides the line when disabled).
+/// Second line of the Refresh box.
+///
+/// Hidden while any cycle runs (a refresh already probes, and a ping run
+/// announces itself on the first line), and while ping is disabled — the
+/// countdown only appears on an idle TUI. At zero remaining the cycle is
+/// imminent, so it reads `pinging` instead of `ping 0s`.
 fn ping_status(runtime: &RuntimeView, ping_seconds: u64, now: Instant) -> Option<String> {
+    if runtime.refreshing || runtime.pinging {
+        return None;
+    }
     let remaining = ping_remaining(runtime, ping_seconds, now)?;
+    if remaining == 0 {
+        return Some("pinging".to_string());
+    }
     Some(format!("ping {}", format_duration(remaining)))
 }
 
@@ -441,6 +452,34 @@ mod tests {
     fn ping_line_hidden_when_disabled() {
         let runtime = RuntimeView::default();
         assert_eq!(ping_status(&runtime, 0, Instant::now()), None);
+    }
+
+    #[test]
+    fn ping_line_hidden_while_any_cycle_runs() {
+        let now = Instant::now();
+        let refreshing = RuntimeView {
+            refreshing: true,
+            next_ping_instant: Some(now + Duration::from_secs(300)),
+            ..RuntimeView::default()
+        };
+        assert_eq!(ping_status(&refreshing, 300, now), None);
+        let pinging = RuntimeView {
+            pinging: true,
+            next_ping_instant: Some(now + Duration::from_secs(300)),
+            ..RuntimeView::default()
+        };
+        assert_eq!(ping_status(&pinging, 300, now), None);
+    }
+
+    #[test]
+    fn ping_line_shows_pinging_at_zero_remaining() {
+        let now = Instant::now();
+        let runtime = RuntimeView {
+            refreshing: false,
+            next_ping_instant: Some(now),
+            ..RuntimeView::default()
+        };
+        assert_eq!(ping_status(&runtime, 300, now), Some("pinging".to_string()));
     }
 
     #[test]

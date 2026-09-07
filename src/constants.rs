@@ -57,6 +57,26 @@ pub const PROXY_MAX_RECENTLY_FAILED_KEYS: usize = 50;
 pub const PROXY_STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 pub const PROXY_HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 pub const PROXY_PORT_POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// A health check only passes when the response body actually transfers:
+/// complete, or at least this much received (short-circuits huge bodies).
+/// Headers alone never pass — false-positive configs handshake then stall.
+pub const PROXY_HEALTH_CHECK_BODY_BYTES: u64 = 262_144;
+/// Timeout for one Clash API snapshot read (well under the poll interval).
+pub const PROXY_CLASH_API_TIMEOUT: Duration = Duration::from_secs(5);
+/// How often the starvation detector polls sing-box `/connections`.
+pub const PROXY_STARVATION_POLL_INTERVAL: Duration = Duration::from_secs(5);
+/// A connection counts as starved only after trying this long with zero
+/// bytes back: long enough that slow-but-working links never trip it.
+pub const PROXY_STARVATION_MIN_AGE: Duration = Duration::from_secs(20);
+/// ... and after uploading at least this much (handshake retries add up).
+/// TCP acknowledgements alone put any working connection's download above
+/// zero, so `download == 0` at this volume is pathological, not slow.
+pub const PROXY_STARVATION_MIN_UPLOAD_BYTES: u64 = 32 * 1024;
+/// Controller ports probed above the proxy port for the Clash API listener.
+pub const PROXY_CLASH_CONTROLLER_PORT_ATTEMPTS: u16 = 32;
+/// Unreachable-controller polls to skip before retrying (same-port
+/// restarts re-arm the detector instead of staying dark).
+pub const PROXY_CLASH_UNREACHABLE_RETRY_POLLS: u8 = 12;
 pub const PROXY_DNS_PRIMARY: &str = "8.8.8.8";
 pub const PROXY_DNS_FALLBACK: &str = "1.1.1.1";
 pub const PROXY_SING_BOX_TAG_OUTBOUND: &str = "proxy-0";

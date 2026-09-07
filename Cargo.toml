@@ -15,7 +15,7 @@ getrandom = "0.4.3"
 maxminddb = "0.29.0"
 percent-encoding = "2.3.2"
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm", "layout-cache"] }
-reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "stream"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "stream"] }
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "aws-lc-rs"] }
 rustls-platform-verifier = "0.7"
 webpki-roots = "0.26"

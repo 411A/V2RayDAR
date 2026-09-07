@@ -1,4 +1,6 @@
 use std::{
+    collections::{HashMap, HashSet},
+    net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -6,6 +8,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow};
 use reqwest::Proxy;
+use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::{
     fs,
@@ -20,12 +23,14 @@ use tracing::{error, info, warn};
 use crate::{
     config::ProxyConfig,
     constants::{
-        LOCALHOST_IP, PROXY_DNS_FALLBACK, PROXY_DNS_PRIMARY, PROXY_FAILOVER_COOLDOWN,
-        PROXY_HEALTH_CHECK_TIMEOUT, PROXY_MAX_CONSECUTIVE_FAILURES, PROXY_MAX_RECENTLY_FAILED_KEYS,
-        PROXY_PORT_POLL_INTERVAL, PROXY_SING_BOX_TAG_DIRECT, PROXY_SING_BOX_TAG_DNS_DIRECT,
-        PROXY_SING_BOX_TAG_DNS_FALLBACK, PROXY_SING_BOX_TAG_DNS_PROXY, PROXY_SING_BOX_TAG_INBOUND,
-        PROXY_SING_BOX_TAG_OUTBOUND, PROXY_STARTUP_TIMEOUT, SING_BOX_CLEANUP_TIMEOUT,
-        SING_BOX_CONFIG_FILE_PREFIX,
+        LOCALHOST_IP, PROXY_CLASH_API_TIMEOUT, PROXY_CLASH_CONTROLLER_PORT_ATTEMPTS,
+        PROXY_CLASH_UNREACHABLE_RETRY_POLLS, PROXY_DNS_FALLBACK, PROXY_DNS_PRIMARY,
+        PROXY_FAILOVER_COOLDOWN, PROXY_HEALTH_CHECK_BODY_BYTES, PROXY_HEALTH_CHECK_TIMEOUT,
+        PROXY_MAX_CONSECUTIVE_FAILURES, PROXY_MAX_RECENTLY_FAILED_KEYS, PROXY_PORT_POLL_INTERVAL,
+        PROXY_SING_BOX_TAG_DIRECT, PROXY_SING_BOX_TAG_DNS_DIRECT, PROXY_SING_BOX_TAG_DNS_FALLBACK,
+        PROXY_SING_BOX_TAG_DNS_PROXY, PROXY_SING_BOX_TAG_INBOUND, PROXY_SING_BOX_TAG_OUTBOUND,
+        PROXY_STARTUP_TIMEOUT, PROXY_STARVATION_MIN_AGE, PROXY_STARVATION_MIN_UPLOAD_BYTES,
+        PROXY_STARVATION_POLL_INTERVAL, SING_BOX_CLEANUP_TIMEOUT, SING_BOX_CONFIG_FILE_PREFIX,
     },
     model::{ProgressEvent, RankedConfig},
     probe::{sing_box_outbound_from_share_link, sing_box_version_at_least},
@@ -52,6 +57,20 @@ struct ProxyState {
     failed_config_keys: Vec<String>,
     proxy_config: ProxyConfig,
     manual_proxy_uri: Option<String>,
+    /// Clash API controller of the running sing-box (localhost-only).
+    /// `None` when no free port was found at start: the proxy works
+    /// normally, only starvation detection stays off.
+    clash_controller: Option<SocketAddr>,
+    /// Random per-start bearer secret for the controller. Never logged.
+    clash_secret: Option<String>,
+}
+
+/// Clash API controller allocation for one proxy start: localhost listener
+/// plus a fresh random secret.
+#[derive(Debug, Clone)]
+struct ClashApi {
+    port: u16,
+    secret: String,
 }
 
 struct ManagedProcess {
@@ -92,6 +111,8 @@ impl PersistentProxy {
                 failed_config_keys: Vec::new(),
                 proxy_config: config,
                 manual_proxy_uri,
+                clash_controller: None,
+                clash_secret: None,
             })),
             process: Mutex::new(None),
             events,
@@ -268,7 +289,24 @@ impl PersistentProxy {
             LOCALHOST_IP
         };
 
-        let config_json = build_sing_box_config(&outbound, current_config.port, listen);
+        let clash_api = if clash_api_supported(&self.sing_box_path).await {
+            let api = alloc_controller_port(current_config.port).map(|port| ClashApi {
+                port,
+                secret: random_clash_secret(),
+            });
+            if api.is_none() {
+                warn!(
+                    port = current_config.port,
+                    "proxy: no free controller port, starvation detection disabled"
+                );
+            }
+            api
+        } else {
+            warn!("proxy: sing-box predates the Clash API, starvation detection disabled");
+            None
+        };
+        let config_json =
+            build_sing_box_config(&outbound, current_config.port, listen, clash_api.as_ref());
         let config_path = write_proxy_config(&config_json).await?;
 
         let mut child = Command::new(&self.sing_box_path)
@@ -323,12 +361,25 @@ impl PersistentProxy {
             stderr_task,
         };
 
+        let (controller, secret) = clash_api
+            .map(|api| {
+                let addr = SocketAddr::new(
+                    LOCALHOST_IP
+                        .parse()
+                        .expect("localhost IP is a valid address"),
+                    api.port,
+                );
+                (addr, api.secret)
+            })
+            .unzip();
         {
             let mut state = self.state.write().await;
             state.running = true;
             state.consecutive_failures = 0;
             state.last_health_check = None;
             state.last_health_ok = false;
+            state.clash_controller = controller;
+            state.clash_secret = secret;
         }
 
         *self.process.lock().await = Some(managed);
@@ -379,15 +430,13 @@ impl PersistentProxy {
             "https://httpbin.org/ip",
         ];
 
-        let ok = if let Ok(resp) = client.get(&health_url).send().await {
-            resp.status().is_success() || resp.status().as_u16() == 204
+        let ok = if body_transfers(&client, &health_url).await {
+            true
         } else {
             // Primary failed - try fallbacks
             let mut any_ok = false;
             for fallback in &fallback_urls {
-                if let Ok(resp) = client.get(*fallback).send().await
-                    && (resp.status().is_success() || resp.status().as_u16() == 204)
-                {
+                if body_transfers(&client, fallback).await {
                     any_ok = true;
                     break;
                 }
@@ -515,6 +564,10 @@ impl PersistentProxy {
 
         let mut state = self.state.write().await;
         state.running = false;
+        // The controller dies with the process; a stale address must never
+        // be polled (the secret is dropped here too).
+        state.clash_controller = None;
+        state.clash_secret = None;
     }
 
     pub async fn shutdown(&self) {
@@ -536,6 +589,47 @@ impl PersistentProxy {
             country: state.active_config_country.clone(),
         }
     }
+}
+
+/// GET `url` through the proxy; true only when the response body actually
+/// transfers: the stream completes, or yields plenty (short-circuits huge
+/// bodies). A stall anywhere — connect, handshake, headers, mid-body — fails
+/// via the client timeout. Status alone is never enough: false-positive
+/// configs complete handshakes and headers, then deliver nothing.
+async fn body_transfers(client: &reqwest::Client, url: &str) -> bool {
+    let resp = match client.get(url).send().await {
+        Ok(resp) => resp,
+        Err(_) => return false,
+    };
+    if !(resp.status().is_success() || resp.status().as_u16() == 204) {
+        return false;
+    }
+    let (received, complete) =
+        accumulate_limited(resp.bytes_stream(), PROXY_HEALTH_CHECK_BODY_BYTES).await;
+    complete || received >= PROXY_HEALTH_CHECK_BODY_BYTES
+}
+
+/// Drain a byte stream up to `cap`, returning `(received, complete)`.
+/// `complete` is true only on clean EOF; any error (e.g. a timeout stall)
+/// ends the stream incomplete with whatever arrived so far. Reaching `cap`
+/// reports `(cap, false)` — the caller treats "plenty received" as success.
+async fn accumulate_limited<S, B, E>(mut stream: S, cap: u64) -> (u64, bool)
+where
+    S: futures_util::Stream<Item = Result<B, E>> + Unpin,
+    B: AsRef<[u8]>,
+{
+    let mut received = 0u64;
+    while received < cap {
+        match futures_util::StreamExt::next(&mut stream).await {
+            Some(Ok(chunk)) => {
+                received = received
+                    .saturating_add(u64::try_from(chunk.as_ref().len()).unwrap_or(u64::MAX));
+            }
+            Some(Err(_)) => return (received, false),
+            None => return (received, true),
+        }
+    }
+    (received, false)
 }
 
 pub fn spawn_health_loop(proxy: SharedProxy, ranked: Arc<RwLock<Vec<RankedConfig>>>) {
@@ -605,6 +699,200 @@ pub fn spawn_health_loop(proxy: SharedProxy, ranked: Arc<RwLock<Vec<RankedConfig
             drop(p);
         }
     });
+}
+
+/// One tracked user connection: first-seen instant plus latest counters.
+/// Local clock only — sing-box timestamps are never parsed.
+#[derive(Debug, Clone, Copy)]
+struct ConnSample {
+    first_seen: Instant,
+    upload: u64,
+    download: u64,
+}
+
+/// sing-box `/connections` entry (only the fields the detector needs;
+/// unknown fields such as metadata/chains/rules are ignored).
+#[derive(Debug, Clone, Deserialize)]
+struct ClashConnection {
+    id: String,
+    upload: i64,
+    download: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClashConnectionsSnapshot {
+    connections: Vec<ClashConnection>,
+}
+
+/// Starvation rule: old enough, uploaded real volume, zero bytes back.
+/// Idle connections (no upload) never match; any working link carries
+/// TCP/TLS acknowledgement traffic, so `download == 0` at this volume is
+/// pathological rather than slow.
+fn connection_starved(age: Duration, upload: u64, download: u64) -> bool {
+    download == 0 && upload >= PROXY_STARVATION_MIN_UPLOAD_BYTES && age >= PROXY_STARVATION_MIN_AGE
+}
+
+/// Read the active connection list from the sing-box Clash API.
+/// `secret` is sent as a bearer token and never logged.
+async fn fetch_clash_connections(addr: SocketAddr, secret: &str) -> Result<Vec<ClashConnection>> {
+    let client = reqwest::Client::builder()
+        .timeout(PROXY_CLASH_API_TIMEOUT)
+        .build()
+        .context("clash API client build failed")?;
+    let snapshot: ClashConnectionsSnapshot = client
+        .get(format!("http://{addr}/connections"))
+        .header("Authorization", format!("Bearer {secret}"))
+        .send()
+        .await
+        .context("clash API snapshot request failed")?
+        .error_for_status()
+        .context("clash API snapshot status failed")?
+        .json()
+        .await
+        .context("clash API snapshot decode failed")?;
+    Ok(snapshot.connections)
+}
+
+/// Passive starvation detector: polls the sing-box connection table and
+/// fails over when a user connection keeps trying with nothing coming back.
+///
+/// Idle users are untouched (no upload → never starved). A suspect triggers
+/// one immediate transfer health check; failover happens only when that
+/// fails too (the config genuinely carries no data). A manually pinned
+/// config is never switched away from — it only gets a loud log line.
+pub fn spawn_starvation_loop(proxy: SharedProxy, ranked: Arc<RwLock<Vec<RankedConfig>>>) {
+    tokio::spawn(async move {
+        let mut samples: HashMap<String, ConnSample> = HashMap::new();
+        let mut reported: HashSet<String> = HashSet::new();
+        // Latch (controller, skipped polls) while the API is unreachable so
+        // one failing start doesn't spam every poll — but retry periodically
+        // in case the same port comes back on a later restart.
+        let mut unreachable: Option<(SocketAddr, u8)> = None;
+
+        loop {
+            time::sleep(PROXY_STARVATION_POLL_INTERVAL).await;
+
+            let (running, controller, secret) = {
+                let p = proxy.lock().await;
+                let state = p.state.read().await;
+                (
+                    state.running,
+                    state.clash_controller,
+                    state.clash_secret.clone(),
+                )
+            };
+            let (Some(addr), Some(secret)) = (controller, secret) else {
+                samples.clear();
+                reported.clear();
+                unreachable = None;
+                continue;
+            };
+            if !running {
+                samples.clear();
+                reported.clear();
+                unreachable = None;
+                continue;
+            }
+            // A proxy restart mints a fresh controller; re-arm on change.
+            if unreachable.is_some_and(|(unreachable_addr, _)| unreachable_addr != addr) {
+                unreachable = None;
+            }
+            if let Some((_, skipped)) = unreachable {
+                // Retry roughly every minute; same-port restarts re-arm.
+                if skipped < PROXY_CLASH_UNREACHABLE_RETRY_POLLS {
+                    unreachable = Some((addr, skipped + 1));
+                    continue;
+                }
+                unreachable = None;
+            }
+
+            let connections = match fetch_clash_connections(addr, &secret).await {
+                Ok(connections) => connections,
+                Err(err) => {
+                    warn!(
+                        error = %err,
+                        "proxy: clash API unreachable, starvation detection paused"
+                    );
+                    unreachable = Some((addr, 0));
+                    continue;
+                }
+            };
+
+            let now = Instant::now();
+            let live: HashSet<&str> = connections.iter().map(|conn| conn.id.as_str()).collect();
+            for conn in &connections {
+                let sample = samples.entry(conn.id.clone()).or_insert(ConnSample {
+                    first_seen: now,
+                    upload: 0,
+                    download: 0,
+                });
+                sample.upload = u64::try_from(conn.upload.max(0)).unwrap_or(u64::MAX);
+                sample.download = u64::try_from(conn.download.max(0)).unwrap_or(u64::MAX);
+                if reported.contains(&conn.id) {
+                    continue;
+                }
+                if connection_starved(
+                    now.saturating_duration_since(sample.first_seen),
+                    sample.upload,
+                    sample.download,
+                ) {
+                    reported.insert(conn.id.clone());
+                    on_starved_connection(&proxy, &ranked, &conn.id, sample.upload).await;
+                    // One trigger per poll: a failover restarts the process,
+                    // so the rest of this snapshot is already stale.
+                    break;
+                }
+            }
+            samples.retain(|id, _| live.contains(id.as_str()));
+            reported.retain(|id| live.contains(id.as_str()));
+        }
+    });
+}
+
+/// One starved connection found: verify the active config with a transfer
+/// check and fail over to the next best config when it carries nothing.
+/// A manually pinned config is kept (loud log instead of a switch).
+async fn on_starved_connection(
+    proxy: &SharedProxy,
+    ranked: &Arc<RwLock<Vec<RankedConfig>>>,
+    conn_id: &str,
+    upload: u64,
+) {
+    warn!(
+        connection = %conn_id,
+        upload_bytes = upload,
+        "proxy: connection uploaded with zero download, verifying active config"
+    );
+    proxy.lock().await.emit_log(format!(
+        "proxy: a connection sent {upload} bytes with nothing back; verifying active config"
+    ));
+    let manual = proxy
+        .lock()
+        .await
+        .state
+        .read()
+        .await
+        .manual_proxy_uri
+        .clone();
+    if manual.is_some() {
+        let message =
+            "proxy: manually pinned config looks starved; staying (clear the pin to auto-failover)";
+        warn!("{message}");
+        proxy.lock().await.emit_log(message.to_string());
+        return;
+    }
+    if proxy.lock().await.health_check().await {
+        info!("proxy: starved connection, but the active config transfers data; keeping");
+        return;
+    }
+    warn!("proxy: active config verified starved, attempting failover");
+    let ranked_snapshot = ranked.read().await.clone();
+    let p = proxy.lock().await;
+    if let Err(err) = p.failover(&ranked_snapshot).await {
+        error!(error = %err, "proxy: starvation failover failed");
+        p.emit_log(format!("proxy: starvation failover failed: {err}"));
+    }
+    drop(p);
 }
 
 #[derive(Debug, Clone)]
@@ -697,7 +985,58 @@ fn restrict_file_permissions(path: &Path) {
     }
 }
 
-fn build_sing_box_config(outbound: &Value, port: u16, listen: &str) -> Value {
+/// Whether the sing-box binary supports the Clash API controller config.
+/// The API ships in every 1.x; older binaries would reject the unknown
+/// `experimental` key and fail to start, so they get a controller-less
+/// proxy (starvation detection stays off) instead of an outage.
+async fn clash_api_supported(sing_box_path: &str) -> bool {
+    if sing_box_version_at_least(1, 0, 0) {
+        return true;
+    }
+    crate::probe::sing_box_major_version(sing_box_path)
+        .await
+        .is_some_and(|major| major >= 1)
+}
+
+/// Find a free localhost port for the Clash API controller, probing above
+/// the proxy port. Returns `None` when the range is exhausted — the proxy
+/// then starts without a controller (starvation detection stays off).
+fn alloc_controller_port(proxy_port: u16) -> Option<u16> {
+    for offset in 1..=PROXY_CLASH_CONTROLLER_PORT_ATTEMPTS {
+        let candidate = proxy_port.saturating_add(offset);
+        if candidate == proxy_port {
+            continue;
+        }
+        if std::net::TcpListener::bind((LOCALHOST_IP, candidate)).is_ok() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Fresh random bearer secret for one proxy start (64 hex chars from the OS
+/// RNG). Localhost-only listener; still never logged or persisted.
+fn random_clash_secret() -> String {
+    let mut buf = [0u8; 32];
+    if getrandom::fill(&mut buf).is_ok() {
+        return buf.iter().map(|b| format!("{b:02x}")).collect();
+    }
+    // Practically unreachable; unique per start, localhost-only.
+    format!(
+        "fallback-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos())
+    )
+}
+
+fn build_sing_box_config(
+    outbound: &Value,
+    port: u16,
+    listen: &str,
+    clash_api: Option<&ClashApi>,
+) -> Value {
     let mut outbound = outbound.clone();
     if let Some(obj) = outbound.as_object_mut() {
         obj.insert("tag".to_string(), json!(PROXY_SING_BOX_TAG_OUTBOUND));
@@ -735,7 +1074,18 @@ fn build_sing_box_config(outbound: &Value, port: u16, listen: &str) -> Value {
         })
     };
 
-    json!({
+    // The control plane always stays on localhost, even for a discoverable
+    // (LAN-shared) proxy inbound: only this process may query connections.
+    let experimental = clash_api.map(|api| {
+        json!({
+            "clash_api": {
+                "external_controller": format!("{LOCALHOST_IP}:{}", api.port),
+                "secret": api.secret,
+            }
+        })
+    });
+
+    let mut config = json!({
         "log": { "level": "warning" },
         "dns": { "servers": dns_servers },
         "inbounds": [{
@@ -746,12 +1096,314 @@ fn build_sing_box_config(outbound: &Value, port: u16, listen: &str) -> Value {
         }],
         "outbounds": [outbound, direct_outbound],
         "route": route
-    })
+    });
+    if let Some(experimental) = experimental
+        && let Some(obj) = config.as_object_mut()
+    {
+        obj.insert("experimental".to_string(), experimental);
+    }
+    config
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    fn minimal_outbound() -> Value {
+        json!({
+            "type": "vless",
+            "settings": {
+                "vnext": [{
+                    "address": "example.com",
+                    "port": 443,
+                    "users": [{ "id": "test-uuid" }]
+                }]
+            }
+        })
+    }
+
+    #[test]
+    fn build_config_clash_api_present_when_allocated() {
+        let api = ClashApi {
+            port: 27911,
+            secret: "s3cr3t".to_string(),
+        };
+        let config = build_sing_box_config(&minimal_outbound(), 27910, "127.0.0.1", Some(&api));
+        assert_eq!(
+            config["experimental"]["clash_api"]["external_controller"]
+                .as_str()
+                .unwrap(),
+            "127.0.0.1:27911"
+        );
+        assert_eq!(
+            config["experimental"]["clash_api"]["secret"]
+                .as_str()
+                .unwrap(),
+            "s3cr3t"
+        );
+    }
+
+    #[test]
+    fn build_config_clash_api_stays_localhost_when_discoverable() {
+        let api = ClashApi {
+            port: 27911,
+            secret: "s3cr3t".to_string(),
+        };
+        let config = build_sing_box_config(&minimal_outbound(), 27910, "0.0.0.0", Some(&api));
+        assert_eq!(config["inbounds"][0]["listen"], "0.0.0.0");
+        assert_eq!(
+            config["experimental"]["clash_api"]["external_controller"]
+                .as_str()
+                .unwrap(),
+            "127.0.0.1:27911"
+        );
+    }
+
+    #[test]
+    fn build_config_no_experimental_without_clash_api() {
+        let config = build_sing_box_config(&minimal_outbound(), 27910, "127.0.0.1", None);
+        assert!(config.get("experimental").is_none());
+    }
+
+    #[test]
+    fn alloc_controller_port_returns_port_above_proxy() {
+        let picked = alloc_controller_port(27910).expect("free port near default");
+        assert!(picked > 27910);
+        assert!(picked <= 27910 + PROXY_CLASH_CONTROLLER_PORT_ATTEMPTS);
+    }
+
+    #[test]
+    fn alloc_controller_port_skips_occupied_port() {
+        let occupied = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind");
+        let taken = occupied.local_addr().expect("addr").port();
+        // `occupied` is held, so the allocator must skip `taken` even when
+        // it is the first candidate.
+        let base = taken.saturating_sub(1);
+        let picked = alloc_controller_port(base).expect("later port is free");
+        assert_ne!(picked, taken);
+        drop(occupied);
+    }
+
+    #[test]
+    fn clash_secret_is_long_hex_and_unique() {
+        let first = random_clash_secret();
+        let second = random_clash_secret();
+        assert_eq!(first.len(), 64);
+        assert!(first.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn connection_starved_matches_only_trying_without_data() {
+        // Idle: no upload, never starved.
+        assert!(!connection_starved(
+            PROXY_STARVATION_MIN_AGE + Duration::from_secs(60),
+            0,
+            0
+        ));
+        // Young: heavy upload but not old enough.
+        assert!(!connection_starved(
+            PROXY_STARVATION_MIN_AGE - Duration::from_secs(1),
+            10 * 1024 * 1024,
+            0
+        ));
+        // Light upload: below the trying threshold.
+        assert!(!connection_starved(
+            PROXY_STARVATION_MIN_AGE + Duration::from_secs(60),
+            PROXY_STARVATION_MIN_UPLOAD_BYTES - 1,
+            0
+        ));
+        // Anything downloaded proves data flows.
+        assert!(!connection_starved(
+            PROXY_STARVATION_MIN_AGE + Duration::from_secs(3600),
+            10 * 1024 * 1024,
+            1
+        ));
+        // Starved: old, real volume up, zero back — on the boundary too.
+        assert!(connection_starved(
+            PROXY_STARVATION_MIN_AGE,
+            PROXY_STARVATION_MIN_UPLOAD_BYTES,
+            0
+        ));
+        assert!(connection_starved(
+            PROXY_STARVATION_MIN_AGE + Duration::from_secs(3600),
+            10 * 1024 * 1024,
+            0
+        ));
+    }
+
+    #[test]
+    fn clash_snapshot_parses_connections_and_ignores_unknown_fields() {
+        let body = serde_json::json!({
+            "downloadTotal": 100,
+            "uploadTotal": 200,
+            "connections": [
+                {
+                    "id": "a",
+                    "upload": 70000,
+                    "download": 0,
+                    "start": "2026-09-07T00:00:00Z",
+                    "metadata": {
+                        "network": "tcp",
+                        "sourceIP": "127.0.0.1",
+                        "destinationIP": "1.2.3.4",
+                        "destinationPort": "443",
+                        "host": "example.com"
+                    },
+                    "chains": ["proxy-0"],
+                    "rule": "final",
+                    "rulePayload": ""
+                },
+                { "id": "b", "upload": 10, "download": 5 }
+            ],
+            "memory": 123
+        });
+        let snapshot: ClashConnectionsSnapshot =
+            serde_json::from_value(body).expect("snapshot decodes");
+        assert_eq!(snapshot.connections.len(), 2);
+        assert_eq!(snapshot.connections[0].id, "a");
+        assert_eq!(snapshot.connections[0].upload, 70000);
+        assert_eq!(snapshot.connections[0].download, 0);
+    }
+
+    #[tokio::test]
+    async fn accumulate_reports_complete_stream() {
+        let stream =
+            futures_util::stream::iter(vec![Ok::<Vec<u8>, &str>(vec![1, 2, 3]), Ok(vec![4, 5])]);
+        assert_eq!(accumulate_limited(stream, 1024).await, (5, true));
+    }
+
+    #[tokio::test]
+    async fn accumulate_stops_at_cap_without_claiming_eof() {
+        // Chunks are atomic: 3 + 2 bytes overshoot the cap of 4, the loop
+        // stops anyway, and EOF is not claimed.
+        let stream =
+            futures_util::stream::iter(vec![Ok::<Vec<u8>, &str>(vec![1, 2, 3]), Ok(vec![4, 5])]);
+        assert_eq!(accumulate_limited(stream, 4).await, (5, false));
+    }
+
+    #[tokio::test]
+    async fn accumulate_reports_partial_on_mid_stream_error() {
+        let stream =
+            futures_util::stream::iter(vec![Ok::<Vec<u8>, &str>(vec![1, 2, 3]), Err("stalled")]);
+        assert_eq!(accumulate_limited(stream, 1024).await, (3, false));
+    }
+
+    #[tokio::test]
+    async fn accumulate_empty_stream_is_complete() {
+        let stream = futures_util::stream::iter(Vec::<Result<Vec<u8>, &str>>::new());
+        assert_eq!(accumulate_limited(stream, 1024).await, (0, true));
+    }
+
+    /// Minimal mock of the sing-box Clash API: one canned `/connections`
+    /// snapshot, bearer-checked. Validates the exact request shape the
+    /// detector sends (path, auth) plus the decode path, with no sing-box.
+    struct MockClashApi {
+        addr: SocketAddr,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl MockClashApi {
+        async fn start(secret: &'static str, body: &'static str) -> Self {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .expect("mock binds");
+            let addr = listener.local_addr().expect("mock addr");
+            let task = tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                while let Ok((mut stream, _)) = listener.accept().await {
+                    let mut raw = Vec::new();
+                    let mut chunk = vec![0u8; 1024];
+                    let request = loop {
+                        let Ok(n) = stream.read(&mut chunk).await else {
+                            break String::new();
+                        };
+                        if n == 0 {
+                            break String::new();
+                        }
+                        raw.extend_from_slice(&chunk[..n]);
+                        if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break String::from_utf8_lossy(&raw).into_owned();
+                        }
+                    };
+                    // Header names arrive lowercase on the wire; values keep
+                    // their case (the secret is lowercase hex, so lowering
+                    // the whole request is safe here).
+                    let lowered = request.to_lowercase();
+                    let authorized = lowered.contains(&format!("authorization: bearer {secret}"));
+                    let response = if lowered.starts_with("get /connections ") && authorized {
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                    } else {
+                        "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            .to_string()
+                    };
+                    let _ = stream.write_all(response.as_bytes()).await;
+                }
+            });
+            Self { addr, task }
+        }
+    }
+
+    impl Drop for MockClashApi {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    const MOCK_SNAPSHOT: &str = r#"{"downloadTotal":0,"uploadTotal":70000,"connections":[{"id":"x","upload":70000,"download":0,"metadata":{"network":"tcp"}}],"memory":1}"#;
+
+    #[tokio::test]
+    async fn fetch_clash_connections_parses_snapshot() {
+        let mock = MockClashApi::start("topsecret", MOCK_SNAPSHOT).await;
+        let connections = tokio::time::timeout(
+            Duration::from_secs(10),
+            fetch_clash_connections(mock.addr, "topsecret"),
+        )
+        .await
+        .expect("no hang")
+        .expect("fetch");
+        assert_eq!(connections.len(), 1);
+        assert_eq!(connections[0].id, "x");
+        assert_eq!(connections[0].upload, 70000);
+        assert_eq!(connections[0].download, 0);
+        assert!(connection_starved(
+            Duration::from_secs(3600),
+            connections[0].upload.max(0) as u64,
+            connections[0].download.max(0) as u64,
+        ));
+    }
+
+    #[tokio::test]
+    async fn fetch_clash_connections_rejects_wrong_secret() {
+        let mock = MockClashApi::start("topsecret", MOCK_SNAPSHOT).await;
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            fetch_clash_connections(mock.addr, "wrong"),
+        )
+        .await
+        .expect("no hang");
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn fetch_clash_connections_fails_on_closed_port() {
+        let port = {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .expect("bind");
+            listener.local_addr().expect("addr").port()
+        };
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse().expect("addr");
+        let result =
+            tokio::time::timeout(Duration::from_secs(10), fetch_clash_connections(addr, "x"))
+                .await
+                .expect("no hang");
+        assert!(result.is_err());
+    }
 
     #[test]
     fn build_config_basic() {
@@ -766,7 +1418,7 @@ mod tests {
             }
         });
 
-        let config = build_sing_box_config(&outbound, 27910, "127.0.0.1");
+        let config = build_sing_box_config(&outbound, 27910, "127.0.0.1", None);
 
         assert_eq!(config["inbounds"][0]["listen_port"], 27910);
         assert_eq!(config["inbounds"][0]["listen"], "127.0.0.1");
@@ -795,7 +1447,7 @@ mod tests {
             }
         });
 
-        let config = build_sing_box_config(&outbound, 10808, "0.0.0.0");
+        let config = build_sing_box_config(&outbound, 10808, "0.0.0.0", None);
         assert_eq!(config["inbounds"][0]["listen"], "0.0.0.0");
     }
 
@@ -813,7 +1465,7 @@ mod tests {
             }
         });
 
-        let config = build_sing_box_config(&outbound, 27910, "127.0.0.1");
+        let config = build_sing_box_config(&outbound, 27910, "127.0.0.1", None);
         let rules = config["route"]["rules"].as_array().unwrap();
         assert!(rules.iter().any(|r| r["protocol"] == json!("bittorrent")));
     }
@@ -831,7 +1483,7 @@ mod tests {
             }
         });
 
-        let config = build_sing_box_config(&outbound, 27910, "127.0.0.1");
+        let config = build_sing_box_config(&outbound, 27910, "127.0.0.1", None);
         let dns_servers = config["dns"]["servers"].as_array().unwrap();
         let has_proxy_dns = dns_servers
             .iter()
@@ -855,7 +1507,7 @@ mod tests {
             }
         });
 
-        let config = build_sing_box_config(&outbound, 27910, "127.0.0.1");
+        let config = build_sing_box_config(&outbound, 27910, "127.0.0.1", None);
         let dns_servers = config["dns"]["servers"].as_array().unwrap();
 
         let (server_key, _addr_key) = if sing_box_version_at_least(1, 12, 0) {

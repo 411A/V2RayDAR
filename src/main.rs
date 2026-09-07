@@ -833,6 +833,8 @@ async fn refresh_once(
     print_compact_progress: bool,
 ) -> Result<()> {
     // Serialize with ping cycles so ranked/counter writes never interleave.
+    // The `refreshing` flag is set only after this lock is held, so a queued
+    // refresh never reports itself as running while a ping still holds it.
     let _cycle_guard = cycle.lock().await;
     info!(
         enabled_subscriptions = config
@@ -1686,7 +1688,6 @@ fn spawn_refresh_loop(
                         let config = config_rx.borrow().clone();
                         *runtime_config.write().await = RuntimeConfig::from(&config);
                         last_refresh_fingerprint = Some(RefreshFingerprint::from(&config));
-                        mark_refresh_pending(&state).await;
                         if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), cycle.clone(), print_terminal_summary, print_compact_progress).await {
                             error!(error = %err, "manual refresh failed");
                             record_refresh_error(&state, err.to_string()).await;
@@ -1747,7 +1748,6 @@ fn spawn_refresh_loop(
                     drain_triggers(&mut trigger_rx);
                     let config = config_rx.borrow().clone();
                     last_refresh_fingerprint = Some(RefreshFingerprint::from(&config));
-                    mark_refresh_pending(&state).await;
                     if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), cycle.clone(), print_terminal_summary, print_compact_progress).await {
                         error!(error = %err, "refresh failed");
                         record_refresh_error(&state, err.to_string()).await;
@@ -1769,7 +1769,6 @@ fn spawn_refresh_loop(
                     }
                     let config = config_rx.borrow().clone();
                     last_refresh_fingerprint = Some(RefreshFingerprint::from(&config));
-                    mark_refresh_pending(&state).await;
                     if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), cycle.clone(), print_terminal_summary, print_compact_progress).await {
                         error!(error = %err, "manual refresh failed");
                         record_refresh_error(&state, err.to_string()).await;
@@ -1832,16 +1831,6 @@ async fn update_proxy_and_ranked(
     runtime.proxy_active_uri = snapshot.active_uri;
     runtime.proxy_port = snapshot.port;
     runtime.proxy_discoverable = snapshot.discoverable;
-}
-
-async fn mark_refresh_pending(state: &Arc<RwLock<RuntimeState>>) {
-    let mut state = state.write().await;
-    state.refreshing = true;
-    state.refresh_started_at = Some(Utc::now().to_rfc3339());
-    state.refresh_started_instant = Some(std::time::Instant::now());
-    state.refresh_finished_at = None;
-    state.refresh_finished_instant = None;
-    state.next_refresh_instant = None;
 }
 
 /// Record the exact deadline the refresh loop is sleeping until, so the TUI

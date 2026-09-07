@@ -53,7 +53,7 @@
 
 将对应系统的命令粘贴到终端并回车——再按一次回车（默认“是”），安装程序即按默认设置自动完成（已安装则就地更新）；回答“否”则进入逐步提示。安装脚本自动检测平台，下载最新版本并附带 `sing-box`，完成全部配置。便携模式安装到 `Desktop/V2RayDAR`（若存在桌面目录），否则安装到 `~/V2RayDAR`。用户模式将二进制文件安装到 `~/.local/bin`。
 
-**便携模式**（推荐）— 所有文件在同一目录，使用 `--portable` 运行：
+**便携模式**（推荐）— 所有文件在同一目录，使用 `--portable` 运行：只需复制粘贴并按回车，直到安装完成！
 ```bash
 # Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh

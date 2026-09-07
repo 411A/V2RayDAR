@@ -21,7 +21,7 @@ This document is the detailed user and developer guide. The short, ready-to-use 
 
 Paste the line for your OS into a terminal and press Enter — then press Enter once more (the default Yes) and the installer finishes automatically with defaults, updating in place when already installed. Answer No for step-by-step prompts. The installer detects your platform, downloads the latest release with bundled `sing-box`, and sets everything up. Portable mode installs into `Desktop/V2RayDAR` when a Desktop folder exists, otherwise `~/V2RayDAR`. User mode installs the binary to `~/.local/bin`.
 
-**Portable** (recommended) — everything in one folder, run with `--portable`:
+**Portable** (recommended) — everything in one folder, run with `--portable`: just copy-paste & press enter until it finishes installing!
 ```bash
 # Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh

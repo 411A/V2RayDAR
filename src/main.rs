@@ -1196,14 +1196,36 @@ async fn refresh_once(
         config.prioritize_stability,
     );
 
-    persist_ranked_configs(
-        &database,
+    // Stability fallback: a run that verifies nothing working must not
+    // publish an empty working set over a live one (or wipe stability
+    // memory) — keep serving the previous working configs instead.
+    let fell_back = keep_previous_working_set(
+        config.prioritize_stability,
         &ranked,
-        config.top_n,
-        config.clean_offlines_after_days,
-        true,
-    )
-    .await?;
+        &previous_before_refresh.ranked,
+    );
+    let fallback_working = previous_before_refresh
+        .ranked
+        .iter()
+        .filter(|item| item.reachable)
+        .count();
+    if fell_back {
+        warn!(
+            previous_working = fallback_working,
+            "refresh verified no working configs; keeping previous working set"
+        );
+        ranked = previous_before_refresh.ranked.clone();
+        stable_working_counts = previous_before_refresh.stable_working_counts.clone();
+    } else {
+        persist_ranked_configs(
+            &database,
+            &ranked,
+            config.top_n,
+            config.clean_offlines_after_days,
+            true,
+        )
+        .await?;
+    }
     // Use the accumulated reachable count from probing — do NOT recalculate
     // from the final ranked list, as deduplication may reduce the count and
     // cause the "Working" display to drop after refresh finishes.
@@ -1229,7 +1251,11 @@ async fn refresh_once(
         last_ping_instant: progress_state.last_ping_instant,
         total_candidates: fetched_count,
         tested_candidates: ranked.len(),
-        reachable_candidates: progress_state.reachable_candidates,
+        reachable_candidates: if fell_back {
+            fallback_working
+        } else {
+            progress_state.reachable_candidates
+        },
         fetch_bytes,
         speedtest_bytes,
         fetch_errors,
@@ -1255,6 +1281,14 @@ async fn refresh_once(
         runtime.reachable_candidates,
         format_bytes(refresh_fetch_bytes),
     );
+    if fell_back {
+        push_live_log(
+            &mut runtime,
+            timestamped_log(format!(
+                "Refresh verified no working configs; kept {fallback_working} previous working configs"
+            )),
+        );
+    }
     push_runtime_log(&mut runtime, summary);
 
     if print_terminal_summary {
@@ -1353,6 +1387,19 @@ fn compare_stability_ranked(left: &RankedConfig, right: &RankedConfig) -> Orderi
         .then_with(|| left.uri.cmp(&right.uri))
 }
 
+/// Stability fallback predicate: with `prioritize_stability`, a run that
+/// verifies nothing working must keep serving the previous working set
+/// instead of publishing an empty list (and wiping stability memory).
+fn keep_previous_working_set(
+    prioritize_stability: bool,
+    new_ranked: &[RankedConfig],
+    previous_ranked: &[RankedConfig],
+) -> bool {
+    prioritize_stability
+        && !new_ranked.iter().any(|item| item.reachable)
+        && previous_ranked.iter().any(|item| item.reachable)
+}
+
 /// Re-probe cached configs without re-fetching subscriptions.
 ///
 /// Runs on the independent `ping_seconds` timer. Skips silently when there
@@ -1442,9 +1489,29 @@ async fn ping_once(
         &previous_top_n,
         config.prioritize_stability,
     );
-    persist_ranked_configs(&database, &ranked, config.top_n, 0, false).await?;
-
-    let working = progress_state.reachable_candidates;
+    // Same stability fallback as the fetch cycle: a ping that verifies
+    // nothing working must not blank a live working set (or wipe memory).
+    let working = if keep_previous_working_set(
+        config.prioritize_stability,
+        &ranked,
+        &progress_state.ranked,
+    ) {
+        let kept = progress_state
+            .ranked
+            .iter()
+            .filter(|item| item.reachable)
+            .count();
+        warn!(
+            previous_working = kept,
+            "ping verified no working configs; keeping previous working set"
+        );
+        ranked = progress_state.ranked.clone();
+        stable_working_counts = progress_state.stable_working_counts.clone();
+        kept
+    } else {
+        persist_ranked_configs(&database, &ranked, config.top_n, 0, false).await?;
+        progress_state.reachable_candidates
+    };
     {
         let mut runtime = state.write().await;
         runtime.ranked = ranked;
@@ -2866,6 +2933,163 @@ mod tests {
         assert_eq!(counts["vless://fast@example.com:443"], 6);
         assert_eq!(final_ranked[0].stability_count, 6);
         assert_eq!(final_ranked[1].stability_count, 6);
+    }
+
+    fn previous_working_ranked(uri: &str, key: &str) -> crate::model::RankedConfig {
+        crate::model::RankedConfig {
+            rank: 1,
+            stability_count: 7,
+            id: key.to_string(),
+            dedup_key: key.to_string(),
+            source: "previous".to_string(),
+            priority: 1,
+            protocol: "vless".to_string(),
+            name: "prev".to_string(),
+            endpoint: crate::model::Endpoint {
+                host: "127.0.0.1".to_string(),
+                port: 9,
+            },
+            uri: uri.to_string(),
+            reachable: true,
+            validation: "tcp".to_string(),
+            latency_ms: Some(50),
+            http_status: None,
+            download_mbps: None,
+            download_bytes: None,
+            error: None,
+            country_code: None,
+        }
+    }
+
+    #[test]
+    fn stability_fallback_predicate() {
+        let working = previous_working_ranked("vless://a@example.com:443", "a");
+        let failed = crate::model::RankedConfig {
+            reachable: false,
+            ..working.clone()
+        };
+        let working_ref = std::slice::from_ref(&working);
+        let failed_ref = std::slice::from_ref(&failed);
+        // Total failure over a live set: keep.
+        assert!(keep_previous_working_set(true, failed_ref, working_ref));
+        assert!(keep_previous_working_set(true, &[], working_ref));
+        // Fresh truth wins whenever anything verifies.
+        assert!(!keep_previous_working_set(true, working_ref, working_ref));
+        // Nothing to keep, or stability off: publish as-is.
+        assert!(!keep_previous_working_set(true, failed_ref, &[]));
+        assert!(!keep_previous_working_set(true, failed_ref, failed_ref));
+        assert!(!keep_previous_working_set(false, failed_ref, working_ref));
+    }
+
+    #[tokio::test]
+    async fn refresh_keeps_previous_working_set_when_new_run_finds_nothing() {
+        // Fetch succeeds (one data: candidate on a closed port) but the probe
+        // verifies nothing: with stability on, the previous working set must
+        // stay published and stability memory must survive.
+        let mut config = manual_trigger_test_config();
+        config.prioritize_stability = true;
+        let database = manual_trigger_test_database();
+        database
+            .save_stable_top_keys(&["prev-key".to_string()])
+            .expect("stable keys save");
+        let previous = previous_working_ranked("vless://prev@example.com:443", "prev-key");
+        let state = Arc::new(tokio::sync::RwLock::new(crate::model::RuntimeState {
+            ranked: vec![previous],
+            stable_working_counts: HashMap::from([("prev-key".to_string(), 7)]),
+            ..Default::default()
+        }));
+        let runtime_config = Arc::new(tokio::sync::RwLock::new(RuntimeConfig::from(&config)));
+        let cycle = Arc::new(tokio::sync::Mutex::new(()));
+
+        refresh_once(
+            &config,
+            database.clone(),
+            state.clone(),
+            runtime_config,
+            cycle,
+            false,
+            false,
+        )
+        .await
+        .expect("refresh succeeds");
+
+        let runtime = state.read().await;
+        assert_eq!(runtime.ranked.len(), 1);
+        assert_eq!(runtime.ranked[0].uri, "vless://prev@example.com:443");
+        assert!(runtime.ranked[0].reachable);
+        assert_eq!(runtime.reachable_candidates, 1);
+        assert_eq!(runtime.stable_working_counts.get("prev-key"), Some(&7));
+        drop(runtime);
+        assert!(
+            database
+                .load_stable_top_keys()
+                .expect("stable keys load")
+                .contains("prev-key")
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_publishes_workless_result_when_stability_off() {
+        // Same total failure with stability off: fresh truth wins, even when
+        // it serves nothing (documents the opt-out scope).
+        let mut config = manual_trigger_test_config();
+        config.prioritize_stability = false;
+        let database = manual_trigger_test_database();
+        let previous = previous_working_ranked("vless://prev@example.com:443", "prev-key");
+        let state = Arc::new(tokio::sync::RwLock::new(crate::model::RuntimeState {
+            ranked: vec![previous],
+            ..Default::default()
+        }));
+        let runtime_config = Arc::new(tokio::sync::RwLock::new(RuntimeConfig::from(&config)));
+        let cycle = Arc::new(tokio::sync::Mutex::new(()));
+
+        refresh_once(
+            &config,
+            database,
+            state.clone(),
+            runtime_config,
+            cycle,
+            false,
+            false,
+        )
+        .await
+        .expect("refresh succeeds");
+
+        let runtime = state.read().await;
+        assert!(!runtime.ranked.iter().any(|item| item.reachable));
+    }
+
+    #[tokio::test]
+    async fn ping_keeps_previous_working_set_when_nothing_verifies() {
+        // Ping re-probes a stale working entry on a closed port: with
+        // stability on, the cached working set must survive the failed ping.
+        let mut config = manual_trigger_test_config();
+        config.prioritize_stability = true;
+        let database = manual_trigger_test_database();
+        let previous = previous_working_ranked("vless://prev@example.com:443", "prev-key");
+        let state = Arc::new(tokio::sync::RwLock::new(crate::model::RuntimeState {
+            ranked: vec![previous],
+            stable_working_counts: HashMap::from([("prev-key".to_string(), 7)]),
+            ..Default::default()
+        }));
+        let runtime_config = Arc::new(tokio::sync::RwLock::new(RuntimeConfig::from(&config)));
+        let cycle = Arc::new(tokio::sync::Mutex::new(()));
+
+        ping_once(
+            &config,
+            database,
+            state.clone(),
+            runtime_config,
+            cycle,
+            false,
+        )
+        .await
+        .expect("ping succeeds");
+
+        let runtime = state.read().await;
+        assert_eq!(runtime.ranked.len(), 1);
+        assert_eq!(runtime.ranked[0].uri, "vless://prev@example.com:443");
+        assert!(runtime.ranked[0].reachable);
     }
 
     fn manual_trigger_test_config() -> crate::config::AppConfig {

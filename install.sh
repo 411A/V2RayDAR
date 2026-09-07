@@ -44,6 +44,37 @@ need() {
     command -v "$1" >/dev/null 2>&1 || err "required command not found: $1"
 }
 
+# Ensure a download tool exists. When the script arrives without curl (local
+# copy, wget pipe), bootstrap it automatically via the system package manager
+# instead of failing: update indexes, then install curl (and tar, needed to
+# extract the release archive).
+ensure_curl() {
+    command -v curl >/dev/null 2>&1 && return 0
+    if command -v pkg >/dev/null 2>&1; then
+        # Termux: pkg wraps apt; a full upgrade here would be slow and is not
+        # needed to install two small packages, so update + install only.
+        info "curl not found, installing it via pkg..."
+        pkg update -y && pkg install -y curl tar \
+            || err "failed to install curl via pkg (run: pkg install -y curl tar)"
+    elif command -v apt-get >/dev/null 2>&1; then
+        # Debian/Ubuntu (and Termux fallback): script-safe apt frontend.
+        _apt="apt-get"
+        if [ "$(id -u)" -ne 0 ]; then
+            command -v sudo >/dev/null 2>&1 \
+                || err "curl not found and no root/sudo available; install curl and tar first"
+            _apt="sudo apt-get"
+        fi
+        info "curl not found, installing it via ${_apt}..."
+        # shellcheck disable=SC2086
+        $_apt update && $_apt full-upgrade -y && $_apt install -y curl tar \
+            || err "failed to install curl via ${_apt}"
+    else
+        err "required command not found: curl"
+    fi
+    command -v curl >/dev/null 2>&1 \
+        || err "curl installation failed; install curl and tar manually, then rerun"
+}
+
 confirm() {
     if [ "${NON_INTERACTIVE:-0}" = "1" ]; then
         return 0
@@ -576,7 +607,7 @@ main() {
         esac
     done
 
-    need curl
+    ensure_curl
     need uname
     need mktemp
 

@@ -1598,7 +1598,7 @@ fn drain_triggers(rx: &mut mpsc::UnboundedReceiver<()>) {
     while rx.try_recv().is_ok() {}
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn spawn_refresh_loop(
     mut config_rx: watch::Receiver<AppConfig>,
     database: Arc<Database>,

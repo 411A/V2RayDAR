@@ -1,4 +1,4 @@
-use std::{fs, path::Path};
+use std::{collections::HashMap, fs, path::Path};
 
 use anyhow::{Context, Result};
 
@@ -419,15 +419,53 @@ fn update_probe_section(document: &mut YamlDocument, previous: &AppConfig, confi
     }
 }
 
+/// The shipped example config, embedded at compile time: the single source
+/// of truth for canonical key order. Editing `configs.example.yaml`
+/// automatically moves backfill positions — no code lists to keep in sync.
+const EXAMPLE_CONFIG: &str = include_str!("../../configs.example.yaml");
+
+/// Canonical key order derived from the example config: top-level keys plus
+/// nested keys per section, in file order.
+#[derive(Debug, Default)]
+struct ExampleKeyOrder {
+    top: Vec<String>,
+    nested: HashMap<String, Vec<String>>,
+}
+
+fn example_key_order() -> ExampleKeyOrder {
+    let mut order = ExampleKeyOrder::default();
+    let mut section: Option<String> = None;
+    for line in EXAMPLE_CONFIG.lines() {
+        let Some((indent, key)) = parse_yaml_key(line) else {
+            continue;
+        };
+        if indent == 0 {
+            if !order.top.iter().any(|existing| existing == key) {
+                order.top.push(key.to_string());
+            }
+            section = Some(key.to_string());
+        } else if indent == 2
+            && let Some(section) = section.as_ref()
+        {
+            let keys = order.nested.entry(section.clone()).or_default();
+            if !keys.iter().any(|existing| existing == key) {
+                keys.push(key.to_string());
+            }
+        }
+    }
+    order
+}
+
 /// Backfill settings missing from an older `configs.yaml` with current defaults.
 ///
 /// Runs once at startup (never from the file watcher): only *adds* absent
-/// keys, never modifies existing values, comments, ordering, or the
-/// `subscriptions` list. Returns the number of added keys and writes the
-/// file only when something was added, so mtime stays stable otherwise
-/// (no watcher reload loop). YAML only — JSON configs already round-trip
-/// every field on save. Unparseable input is an error (the caller logs it
-/// and continues with in-memory defaults).
+/// keys at their `configs.example.yaml` positions (derived from the embedded
+/// example, never hardcoded), never modifies existing values, comments,
+/// ordering, or the `subscriptions` list. Returns the number of added keys
+/// and writes the file only when something was added, so mtime stays stable
+/// otherwise (no watcher reload loop). YAML only — JSON configs already
+/// round-trip every field on save. Unparseable input is an error (the caller
+/// logs it and continues with in-memory defaults).
 // Long by construction: one row per known setting, like the save helpers.
 #[allow(clippy::too_many_lines)]
 pub fn backfill_missing_defaults(path: &Path) -> Result<usize> {
@@ -446,13 +484,24 @@ pub fn backfill_missing_defaults(path: &Path) -> Result<usize> {
         .with_context(|| format!("unable to parse existing config {}", path.display()))?;
     let defaults = AppConfig::default_for_first_run();
 
+    static NO_KEYS: &[String] = &[];
+    let canonical = example_key_order();
+
     let mut document = YamlDocument::new(&original);
     let mut added = 0;
     let mut ensure = |section: Option<&str>, key: &str, value: String| {
         if !mapping_has_key(&parsed, section, key) {
             match section {
-                None => document.set_top_level_scalar(key, value),
-                Some(section) => document.set_nested_scalar(section, key, value),
+                None => {
+                    document.insert_missing_top_level(key, &value, &canonical.top);
+                }
+                Some(section) => document.insert_missing_nested(
+                    section,
+                    key,
+                    &value,
+                    canonical.nested.get(section).map_or(NO_KEYS, Vec::as_slice),
+                    &canonical.top,
+                ),
             }
             added += 1;
         }
@@ -466,6 +515,7 @@ pub fn backfill_missing_defaults(path: &Path) -> Result<usize> {
         value.map_or_else(|| "null".to_string(), |number| number.to_string())
     };
     // (section, key, rendered default); `None` section means top level.
+    // Positions come from the embedded example (see [`example_key_order`]).
     let entries: Vec<(Option<&str>, &str, String)> = vec![
         (None, "bind", defaults.bind.to_string()),
         (None, "top_n", defaults.top_n.to_string()),
@@ -714,6 +764,170 @@ impl YamlDocument {
             self.lines.splice(start..end, replacement);
         } else {
             self.append_section(replacement);
+        }
+    }
+
+    /// Insert a missing top-level scalar at its canonical position: right
+    /// after the nearest preceding canonical key's block, else before the
+    /// nearest following key's comment run. Existing lines are never touched.
+    fn insert_missing_top_level(&mut self, key: &str, value: &str, order: &[String]) {
+        let pos = order
+            .iter()
+            .position(|item| item.as_str() == key)
+            .unwrap_or(usize::MAX);
+        let end = pos.min(order.len());
+        if let Some(after) = order[..end]
+            .iter()
+            .rev()
+            .find_map(|prev| self.top_level_block_end(prev))
+        {
+            self.lines
+                .insert(after.min(self.lines.len()), format!("{key}: {value}"));
+            return;
+        }
+        if let Some(before) = order
+            .iter()
+            .skip(end.saturating_add(1))
+            .find_map(|next| self.find_top_level_key(next))
+        {
+            let at = self.comment_run_start(before, 0);
+            self.insert_with_blank_separator(at, format!("{key}: {value}"));
+            return;
+        }
+        self.lines.push(format!("{key}: {value}"));
+    }
+
+    /// Insert a missing top-level section header at its canonical position,
+    /// separated from the previous block by one blank line.
+    fn insert_missing_top_level_section(&mut self, section: &str, top_order: &[String]) {
+        let pos = top_order
+            .iter()
+            .position(|item| item.as_str() == section)
+            .unwrap_or(usize::MAX);
+        let end = pos.min(top_order.len());
+        if let Some(after) = top_order[..end]
+            .iter()
+            .rev()
+            .find_map(|prev| self.top_level_block_end(prev))
+        {
+            self.insert_section_block(after, format!("{section}:"));
+            return;
+        }
+        if let Some(before) = top_order
+            .iter()
+            .skip(end.saturating_add(1))
+            .find_map(|next| self.find_top_level_key(next))
+        {
+            let at = self.comment_run_start(before, 0);
+            self.insert_section_block(at, format!("{section}:"));
+            return;
+        }
+        if !self.lines.is_empty()
+            && self
+                .lines
+                .last()
+                .is_some_and(|line| !line.trim().is_empty())
+        {
+            self.lines.push(String::new());
+        }
+        self.lines.push(format!("{section}:"));
+    }
+
+    /// Insert a missing nested key at its canonical position inside its
+    /// section (after the nearest preceding key, else before the nearest
+    /// following key's comment run). A missing section is created at its
+    /// canonical top-level slot first.
+    fn insert_missing_nested(
+        &mut self,
+        section: &str,
+        key: &str,
+        value: &str,
+        order: &[String],
+        top_order: &[String],
+    ) {
+        if self.section_range(section).is_none() {
+            self.insert_missing_top_level_section(section, top_order);
+        }
+        let Some((start, end, indent)) = self.section_range(section) else {
+            return;
+        };
+        let child_indent = " ".repeat(indent + 2);
+        let rendered = format!("{child_indent}{key}: {value}");
+        let pos = order
+            .iter()
+            .position(|item| item.as_str() == key)
+            .unwrap_or(usize::MAX);
+        let end_pos = pos.min(order.len());
+        if let Some(index) = order[..end_pos]
+            .iter()
+            .map(String::as_str)
+            .rev()
+            .find_map(|prev| self.find_direct_key(prev, start + 1, end, indent + 2))
+        {
+            self.lines.insert(index + 1, rendered);
+            return;
+        }
+        if let Some(index) = order
+            .iter()
+            .skip(end_pos.saturating_add(1))
+            .map(String::as_str)
+            .find_map(|next| self.find_direct_key(next, start + 1, end, indent + 2))
+        {
+            let at = self.comment_run_start(index, start + 1);
+            self.lines.insert(at, rendered);
+            return;
+        }
+        let at = self.comment_run_start(end, start + 1);
+        self.lines.insert(at.min(self.lines.len()), rendered);
+    }
+
+    /// End of a top-level key's block, excluding the blank/comment run that
+    /// belongs to the following key: the insert point for a missing key that
+    /// canonically follows it.
+    fn top_level_block_end(&self, key: &str) -> Option<usize> {
+        let index = self.find_top_level_key(key)?;
+        let end = self.section_range(key).map_or(index + 1, |(_, end, _)| end);
+        Some(self.comment_run_start(end, index + 1))
+    }
+
+    /// Walk up over blank/comment lines: the start of the comment run
+    /// belonging to `index` (never below `lower_bound`).
+    fn comment_run_start(&self, index: usize, lower_bound: usize) -> usize {
+        let mut at = index.min(self.lines.len());
+        let lower_bound = lower_bound.min(at);
+        while at > lower_bound {
+            let trimmed = self.lines[at - 1].trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                at -= 1;
+            } else {
+                break;
+            }
+        }
+        at
+    }
+
+    /// Insert one line, keeping a single blank separator when squeezing
+    /// between two content lines.
+    fn insert_with_blank_separator(&mut self, at: usize, line: String) {
+        let at = at.min(self.lines.len());
+        let crowded = at > 0
+            && !self.lines[at - 1].trim().is_empty()
+            && (at >= self.lines.len() || !self.lines[at].trim().is_empty());
+        if crowded {
+            self.lines.splice(at..at, [String::new(), line]);
+        } else {
+            self.lines.insert(at, line);
+        }
+    }
+
+    /// Insert a section header, keeping one blank line above it when it
+    /// follows content.
+    fn insert_section_block(&mut self, at: usize, header: String) {
+        let at = at.min(self.lines.len());
+        if at > 0 && !self.lines[at - 1].trim().is_empty() {
+            self.lines.splice(at..at, [String::new(), header]);
+        } else {
+            self.lines.insert(at, header);
         }
     }
 
@@ -1522,6 +1736,382 @@ subscriptions:
         assert!(saved.contains("enabled: true"));
         assert!(saved.contains("  - name: first"));
         assert!(!saved.contains("refresh_seconds: 900"));
+    }
+
+    #[test]
+    fn backfill_inserts_missing_keys_at_example_positions() {
+        // An older config missing ping_seconds, geoip_db_path,
+        // clean_offlines_after_days, and the whole proxy section.
+        let path = write_config(
+            "backfill-positions",
+            r"bind: 127.0.0.1:27141
+top_n: 20
+# Auto-refresh interval in seconds; 0 disables timer refreshes.
+refresh_seconds: 600
+# true returns /subscription as base64 for v2rayN/v2rayNG compatibility.
+encoded_subscription: true
+# true re-pings the last saved top-N first and keeps stable configs ahead.
+prioritize_stability: true
+# true publishes early working configs before final ranking; results may be less optimal & unstable.
+return_configs_asap: true
+# true tests every candidate; expect longer runs and more CPU/network use.
+scan_all_configs: false
+# Per-source download timeout in milliseconds; raise only for slow sources.
+fetch_timeout_ms: 30000
+# Subscription sources fetched in parallel; high values can stress network/RAM.
+fetch_concurrency: 8
+# Maximum bytes accepted per source; high values allow large memory use.
+max_subscription_bytes: 33554432
+# true skips live source downloads and tests only cached subscription snapshots.
+use_cache_only: false
+# Optional private share link used as a fetch bridge on restricted networks
+emergency_config: null
+
+#* LAN sharing controls for phones or other devices on your network.
+sharing:
+  # false keeps endpoints local-only unless bind is manually exposed.
+  enabled: true
+  # true requires ?token=... for LAN subscription/results requests.
+  require_token: false
+  # true auto-generates a token; a string sets your own shared secret.
+  token: null
+
+#* Candidate validation settings.
+probe:
+  # active uses sing-box for real HTTP tests; tcp is only a lightweight diagnostic.
+  mode: active
+  # null auto-detects bundled/Termux sing-box; set a path if needed.
+  sing_box_path: null
+  # TCP diagnostic timeout in milliseconds; lower fails faster on bad networks.
+  connect_timeout_ms: 5000
+  # HTTP active-probe timeout per candidate; high values slow failed probes.
+  active_timeout_ms: 30000
+  # Wait time for each temporary sing-box process to start.
+  startup_timeout_ms: 5000
+  # HTTP checks per active batch; high values can increase CPU/network pressure.
+  concurrency: 16
+  # Initial candidates per sing-box batch; high values can raise process RAM use.
+  batch_size: 20
+  # Parallel sing-box processes; keep low or expect high RAM/socket usage.
+  process_concurrency: null
+  # URL loaded through each candidate to prove reachability.
+  test_url: https://www.gstatic.com/generate_204
+  # HTTP status codes treated as successful active probes.
+  accepted_statuses: [204, 200]
+  # Optional speed-test URL; enabling it consumes extra bandwidth
+  # You can use this URL for example: https://archive.org/download/steamboat-willie_1928/steamboat-willie_1928.ia.mp4
+  download_url: null
+  # Maximum bytes read per speed test; high values use more data/time.
+  download_bytes_limit: 1048576
+
+subscriptions:
+  - name: first
+    url: data:,vless://uuid@example.com:443%23demo
+",
+        );
+        // 3 top-level scalars + the 6 proxy keys.
+        assert_eq!(backfill_missing_defaults(&path).expect("backfill runs"), 9);
+        let saved = fs::read_to_string(&path).expect("config can be read");
+
+        let lines: Vec<&str> = saved.lines().collect();
+        let position = |needle: &str| {
+            lines
+                .iter()
+                .position(|line| line.trim() == needle)
+                .unwrap_or_else(|| panic!("missing line: {needle}"))
+        };
+        // Missing scalars land right after their example predecessor.
+        assert_eq!(
+            position("ping_seconds: 300"),
+            position("refresh_seconds: 600") + 1
+        );
+        assert_eq!(
+            position("geoip_db_path: null"),
+            position("emergency_config: null") + 1
+        );
+        assert_eq!(
+            position("clean_offlines_after_days: 7"),
+            position("geoip_db_path: null") + 1
+        );
+        // The absent proxy section lands between sharing and probe, in order.
+        let proxy_at = position("proxy:");
+        assert!(proxy_at > position("token: null"));
+        assert!(lines[proxy_at - 1].trim().is_empty());
+        for (offset, key) in [
+            "enabled: false",
+            "port: 27910",
+            "discoverable: false",
+            "rotating_proxy: true",
+            "health_check_url: https://cp.cloudflare.com",
+            "health_check_interval_seconds: 60",
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert_eq!(lines[proxy_at + 1 + offset].trim(), *key);
+        }
+        assert!(proxy_at + 6 < position("probe:"));
+        // User values, comments, and subscriptions stay intact.
+        assert!(saved.contains("top_n: 20"));
+        assert!(saved.contains("refresh_seconds: 600"));
+        assert!(saved.contains("enabled: true"));
+        assert!(saved.contains("mode: active"));
+        assert!(saved.contains("#* Candidate validation settings."));
+        assert!(saved.contains("  - name: first"));
+
+        // Second run is a no-op: positions are stable, nothing rewrites.
+        assert_eq!(
+            backfill_missing_defaults(&path).expect("backfill reruns"),
+            0
+        );
+        assert_eq!(fs::read_to_string(&path).expect("config reread"), saved);
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn backfill_inserts_missing_nested_keys_in_section_order() {
+        // Partial sections: proxy keeps only `enabled`, probe is missing
+        // `mode` (inserted before the surviving `sing_box_path`).
+        let path = write_config(
+            "backfill-nested-order",
+            r"bind: 127.0.0.1:27141
+top_n: 10
+refresh_seconds: 900
+ping_seconds: 300
+encoded_subscription: false
+prioritize_stability: true
+return_configs_asap: false
+scan_all_configs: false
+fetch_timeout_ms: 30000
+fetch_concurrency: 8
+max_subscription_bytes: 33554432
+use_cache_only: false
+emergency_config: null
+geoip_db_path: null
+clean_offlines_after_days: 7
+sharing:
+  enabled: false
+  require_token: false
+  token: null
+proxy:
+  enabled: false
+probe:
+  sing_box_path: null
+subscriptions:
+  - name: first
+    url: data:,vless://uuid@example.com:443%23demo
+",
+        );
+        // 5 proxy keys + mode + 10 probe keys after sing_box_path.
+        assert_eq!(backfill_missing_defaults(&path).expect("backfill runs"), 16);
+        let saved = fs::read_to_string(&path).expect("config can be read");
+        let lines: Vec<&str> = saved.lines().collect();
+        let block = |section: &str, end_section: &str| {
+            let start = lines
+                .iter()
+                .position(|line| line.trim() == section)
+                .unwrap_or_else(|| panic!("missing section: {section}"));
+            let end = lines
+                .iter()
+                .position(|line| line.trim() == end_section)
+                .unwrap_or_else(|| panic!("missing section: {end_section}"));
+            lines[start..end]
+                .iter()
+                .map(|line| line.trim())
+                .filter(|line| !line.is_empty() && !line.starts_with('#'))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            block("proxy:", "probe:"),
+            vec![
+                "proxy:",
+                "enabled: false",
+                "port: 27910",
+                "discoverable: false",
+                "rotating_proxy: true",
+                "health_check_url: https://cp.cloudflare.com",
+                "health_check_interval_seconds: 60",
+            ]
+        );
+        // `mode` slots before the surviving `sing_box_path`, the rest append
+        // in example order.
+        let probe = block("probe:", "subscriptions:");
+        assert_eq!(
+            &probe[..4],
+            [
+                "probe:",
+                "mode: active",
+                "sing_box_path: null",
+                "connect_timeout_ms: 5000",
+            ]
+        );
+        assert_eq!(
+            &probe[4..],
+            [
+                "active_timeout_ms: 30000",
+                "startup_timeout_ms: 5000",
+                "concurrency: 16",
+                "batch_size: 20",
+                "process_concurrency: null",
+                "test_url: https://www.gstatic.com/generate_204",
+                "accepted_statuses: [204, 200]",
+                "download_url: null",
+                "download_bytes_limit: 1048576",
+            ]
+        );
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn every_example_key_round_trips_through_backfill_at_its_position() {
+        // No hardcoded keys: the embedded example enumerates the coverage.
+        // Delete each key from a complete config and require the backfill to
+        // restore the exact content order with one addition. (The
+        // subscriptions list is user data, never backfilled.) If the example
+        // gains a key without backfill support, its round trip fails here.
+        let canonical = example_key_order();
+        let pristine = {
+            let path = temp_config_path("backfill-roundtrip-pristine");
+            AppConfig::write_default(&path).expect("default config writes");
+            let content = fs::read_to_string(&path).expect("config can be read");
+            fs::remove_file(&path).ok();
+            content
+        };
+        fn content_lines(config: &str) -> Vec<&str> {
+            config
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty() && !line.starts_with('#'))
+                .collect()
+        }
+        let expected = content_lines(&pristine);
+
+        let mut cases: Vec<(Option<String>, String)> = Vec::new();
+        for key in &canonical.top {
+            // Section headers and the subscriptions list never round-trip:
+            // deleting one orphans its block (invalid YAML, rightly refused)
+            // or touches user data.
+            if key != "subscriptions" && !canonical.nested.contains_key(key) {
+                cases.push((None, key.clone()));
+            }
+        }
+        for (section, keys) in &canonical.nested {
+            if section == "subscriptions" {
+                continue;
+            }
+            for key in keys {
+                cases.push((Some(section.clone()), key.clone()));
+            }
+        }
+        assert!(!cases.is_empty());
+
+        for (section, key) in cases {
+            let reduced = remove_config_key_line(&pristine, section.as_deref(), &key);
+            assert_ne!(reduced, pristine, "{key} removal must change the file");
+            let path = write_config("backfill-roundtrip", &reduced);
+            let added = backfill_missing_defaults(&path).expect("backfill runs");
+            let restored = fs::read_to_string(&path).expect("config can be read");
+            fs::remove_file(&path).ok();
+            assert_eq!(added, 1, "{key} must be the only addition");
+            assert_eq!(
+                content_lines(&restored),
+                expected,
+                "{key} must return to its example position"
+            );
+        }
+    }
+
+    #[test]
+    fn every_backfilled_key_has_an_example_position() {
+        // The reverse drift guard (no hardcoded keys): backfill a config
+        // that only has user data and require every added key — top-level
+        // and nested — to exist in the derived example order. A setting
+        // added to the backfill table but forgotten in configs.example.yaml
+        // fails here instead of silently appending at block end.
+        let path = write_config("backfill-coverage", "subscriptions: []\n");
+        let added = backfill_missing_defaults(&path).expect("backfill runs");
+        assert!(added > 0);
+        let saved = fs::read_to_string(&path).expect("config can be read");
+        fs::remove_file(&path).ok();
+        let parsed: serde_yaml::Value =
+            serde_yaml::from_str(&saved).expect("backfilled config parses");
+        let canonical = example_key_order();
+        let top = parsed.as_mapping().expect("top-level mapping");
+        for (key, value) in top {
+            let Some(key) = key.as_str() else {
+                continue;
+            };
+            if key == "subscriptions" {
+                continue;
+            }
+            assert!(
+                canonical.top.iter().any(|known| known == key),
+                "top-level {key} missing from configs.example.yaml"
+            );
+            if let Some(nested) = value.as_mapping() {
+                for (nested_key, _) in nested {
+                    let Some(nested_key) = nested_key.as_str() else {
+                        continue;
+                    };
+                    assert!(
+                        canonical
+                            .nested
+                            .get(key)
+                            .is_some_and(|keys| keys.iter().any(|known| known == nested_key)),
+                        "{key}.{nested_key} missing from configs.example.yaml"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Delete one key's line (top-level, or nested in `section`) from config
+    /// text. Returns the input unchanged when the key is absent.
+    fn remove_config_key_line(config: &str, section: Option<&str>, key: &str) -> String {
+        fn is_key_line(line: &str, indent: usize, key: &str) -> bool {
+            let trimmed = line.trim_start();
+            !trimmed.is_empty()
+                && !trimmed.starts_with('#')
+                && line.len() - trimmed.len() == indent
+                && trimmed
+                    .split_once(':')
+                    .is_some_and(|(name, _)| name.trim() == key)
+        }
+
+        let lines: Vec<&str> = config.lines().collect();
+        let drop_line = if let Some(section) = section {
+            let header = format!("{section}:");
+            let Some(start) = lines.iter().position(|line| line.trim() == header) else {
+                return config.to_string();
+            };
+            let indent = lines[start].len() - lines[start].trim_start().len();
+            lines
+                .iter()
+                .enumerate()
+                .skip(start + 1)
+                .take_while(|(_, line)| {
+                    let trimmed = line.trim_start();
+                    trimmed.is_empty()
+                        || trimmed.starts_with('#')
+                        || line.len() - trimmed.len() > indent
+                })
+                .find(|(_, line)| is_key_line(line, indent + 2, key))
+                .map(|(index, _)| index)
+        } else {
+            lines.iter().position(|line| is_key_line(line, 0, key))
+        };
+        let Some(drop) = drop_line else {
+            return config.to_string();
+        };
+        let mut kept = lines[..drop].join("\n");
+        if drop + 1 < lines.len() {
+            kept.push('\n');
+            kept.push_str(&lines[drop + 1..].join("\n"));
+        }
+        if config.ends_with('\n') && !kept.ends_with('\n') {
+            kept.push('\n');
+        }
+        kept
     }
 
     #[test]

@@ -333,10 +333,12 @@ function Verify-Checksum {
 }
 
 # --- Country IP Database (GeoIP) ---------------------------------------------
-# Keyless ipdeny zone files, refreshed independently of app releases into
-# <data-root>/geoip (v4 zones plus an ipv6/ subdir). The app loads them at
-# startup (see src/geoip.rs) and runs fine without them. Every installer run
-# refreshes unconditionally; failures never fail the install - functions
+# Keyless ipdeny zone blocks, refreshed independently of app releases into
+# <data-root>/geoip/zones.txt (one "<cc> <cidr>" per line, v4 and v6 mixed;
+# the app prefers it over loose files). The MaxMind mmdb beside it stays the
+# primary tier and is never touched by the zone refresh. The app loads both
+# at startup (see src/geoip.rs) and runs fine without them. Every installer
+# run refreshes unconditionally; failures never fail the install - functions
 # return $false and callers warn.
 
 $GeoipV4Url = "https://www.ipdeny.com/ipblocks/data/countries/all-zones.tar.gz"
@@ -462,7 +464,38 @@ function Update-GeoipMmdb {
     }
 }
 
-# Download, verify, and atomically install fresh zone files into a geoip dir.
+# Consolidate verified zone files into one "<cc> <cidr>" file (v4 + v6).
+# Blank lines and publisher comments never reach the output. UTF-8 without
+# BOM so the app parses every line (a BOM would corrupt the first entry).
+function New-ConsolidatedZones {
+    param([string]$Staged, [string]$Dest)
+
+    $writer = New-Object System.IO.StreamWriter($Dest, $false, (New-Object System.Text.UTF8Encoding $false))
+    try {
+        $writer.WriteLine("# V2RayDAR consolidated country zones (<cc> <cidr>), generated $((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))")
+        $prefixes = 0
+        foreach ($dir in @($Staged, (Join-Path $Staged "ipv6"))) {
+            foreach ($f in @(Get-ChildItem -Path $dir -Filter "*.zone" -File -ErrorAction SilentlyContinue)) {
+                if ($f.BaseName.Length -ne 2 -or $f.BaseName -notmatch '^[A-Za-z]{2}$') { continue }
+                foreach ($line in [System.IO.File]::ReadLines($f.FullName)) {
+                    $trimmed = $line.Trim()
+                    if ([string]::IsNullOrEmpty($trimmed) -or $trimmed.StartsWith('#')) { continue }
+                    $writer.WriteLine("$($f.BaseName.ToLowerInvariant()) $trimmed")
+                    $prefixes++
+                }
+            }
+        }
+    }
+    finally {
+        $writer.Close()
+    }
+    return $prefixes
+}
+
+# Download, verify, and install fresh zones as one zones.txt into a geoip
+# dir. Only zones.txt and stale loose files are touched: the MaxMind mmdb
+# beside them (primary tier) is preserved, and legacy <cc>.zone files plus
+# the ipv6/ subdir are removed once the single file lands.
 function Update-GeoipData {
     param([string]$GeoipDir)
 
@@ -523,16 +556,19 @@ function Update-GeoipData {
             return $false
         }
 
+        $zonesTmp = Join-Path $tmpDir "zones.txt"
+        $prefixes = New-ConsolidatedZones -Staged $stage -Dest $zonesTmp
+        if ($prefixes -le 0) {
+            Write-Warn "GeoIP consolidation produced no prefixes, keeping existing data"
+            return $false
+        }
         if (-not (Test-Path $GeoipDir)) {
             New-Item -ItemType Directory -Path $GeoipDir -Force | Out-Null
         }
-        $newDir = Join-Path $tmpDir "new"
-        Move-Item -Path $stage -Destination $newDir -Force
-        Remove-Item -Path $GeoipDir -Recurse -Force
-        Move-Item -Path $newDir -Destination $GeoipDir -Force
-        $zoneCount = @(Get-ChildItem -Path $GeoipDir -Filter "*.zone" -File).Count
-        $zoneCount += @(Get-ChildItem -Path (Join-Path $GeoipDir "ipv6") -Filter "*.zone" -File -ErrorAction SilentlyContinue).Count
-        Write-Info "country IP database updated ($zoneCount zones)"
+        Move-Item -Path $zonesTmp -Destination (Join-Path $GeoipDir "zones.txt") -Force
+        Remove-Item -Path (Join-Path $GeoipDir "*.zone") -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path (Join-Path $GeoipDir "ipv6") -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Info "country IP database updated ($prefixes prefixes in zones.txt)"
         return $true
     }
     finally {
@@ -840,7 +876,7 @@ function Main {
                     }
                     Write-Host ""
                     # No new app version: still refresh country data (MaxMind
-                    # database first, zone files as its fallback).
+                    # database first, zones.txt as its fallback).
                     Remove-LegacyMmdb -Roots @($Script:FoundPath)
                     if (-not (Update-GeoipMmdb -GeoipDir (Get-GeoipDirForFound))) {
                         Write-Warn "GeoIP database update failed, keeping existing data"

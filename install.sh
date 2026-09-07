@@ -610,6 +610,18 @@ main() {
     echo ""
     info "Detected: ${_detected_os} ${ARCH}"
 
+    # ─── One-question auto mode ───────────────────────────────────────────────
+    # A single Enter (default Y) installs/updates with defaults and asks
+    # nothing else; N keeps the step-by-step prompts below.
+    if [ "${NON_INTERACTIVE:-0}" = "0" ]; then
+        if [ -t 0 ] || [ -t 2 ]; then
+            echo ""
+            if confirm "automatic install/update to v${VERSION} (no more questions)?"; then
+                NON_INTERACTIVE=1
+            fi
+        fi
+    fi
+
     if find_installed; then
         # Found an existing installation
         if [ "$DEV_BUILD" = "1" ]; then
@@ -694,6 +706,22 @@ main() {
         # Not installed
         echo ""
         info "V2RayDAR is not installed."
+    fi
+
+    # Auto mode with an existing install: update in place instead of dropping
+    # a second copy at the portable default (explicit -d/-p/-u flags still win).
+    if [ "${NON_INTERACTIVE:-0}" = "1" ] && [ -z "$INSTALL_MODE" ] && [ -n "${FOUND_PATH:-}" ] && [ -w "$FOUND_PATH" ]; then
+        case "$FOUND_PATH" in
+            "$HOME/.local/bin"|"${PREFIX:-/usr/local}/bin")
+                INSTALL_MODE="user"
+                INSTALL_DIR="$FOUND_PATH"
+                ;;
+            *)
+                INSTALL_MODE="portable"
+                INSTALL_DIR="$FOUND_PATH"
+                ;;
+        esac
+        info "auto mode: updating in place at $INSTALL_DIR"
     fi
 
     # ─── Proceed with installation ──────────────────────────────────────────────

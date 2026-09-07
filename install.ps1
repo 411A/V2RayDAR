@@ -305,6 +305,8 @@ function Verify-Checksum {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         $checksumsUrl = "$GitHubDownload/$Tag/checksums.txt"
         $checksums = (Invoke-WebRequest -Uri $checksumsUrl -UseBasicParsing).Content
+        # Release assets serve as octet-stream, which arrives as bytes.
+        if ($checksums -is [byte[]]) { $checksums = [System.Text.Encoding]::UTF8.GetString($checksums) }
         $fileName = Split-Path $FilePath -Leaf
         $expected = ($checksums -split "`n" | Where-Object { $_ -match $fileName } | Select-Object -First 1) -split '\s+' | Select-Object -First 1
 
@@ -381,7 +383,6 @@ function Test-ZoneTree {
     $checked = 0
     foreach ($f in @(Get-ChildItem -Path $Dir -Filter "*.zone" -File)) {
         if ($f.BaseName.Length -ne 2 -or $f.BaseName -notmatch '^[A-Za-z]{2}$') {
-            Write-Info "skipping non-country file $($f.Name)"
             continue
         }
         if (-not $map.ContainsKey($f.Name)) {
@@ -404,7 +405,7 @@ function Test-ZoneTree {
 
     foreach ($name in $map.Keys) {
         if (-not (Test-Path (Join-Path $Dir $name))) {
-            Write-Info "GeoIP archive does not ship $name, skipping"
+            Write-Verbose "GeoIP archive does not ship $name, skipping"
         }
     }
 
@@ -477,7 +478,9 @@ function Update-GeoipData {
         Move-Item -Path $stage -Destination $newDir -Force
         Remove-Item -Path $GeoipDir -Recurse -Force
         Move-Item -Path $newDir -Destination $GeoipDir -Force
-        Write-Info "country IP database updated"
+        $zoneCount = @(Get-ChildItem -Path $GeoipDir -Filter "*.zone" -File).Count
+        $zoneCount += @(Get-ChildItem -Path (Join-Path $GeoipDir "ipv6") -Filter "*.zone" -File -ErrorAction SilentlyContinue).Count
+        Write-Info "country IP database updated ($zoneCount zones)"
         return $true
     }
     finally {
@@ -533,7 +536,7 @@ function Do-PortableInstall {
             }
             Remove-Item -Path $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
 
-            Write-Info "updated to v$Version"
+            Write-Info "updated to $DisplayVersion"
         }
         else {
             Write-Info "keeping current version"
@@ -602,7 +605,7 @@ function Do-UserInstall {
             }
 
             Remove-Item -Path $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
-            Write-Info "updated to v$Version"
+            Write-Info "updated to $DisplayVersion"
         }
         else {
             Write-Info "keeping current version"
@@ -726,7 +729,8 @@ function Main {
         }
         $Version = $Version.TrimStart('v')
         if ($DevBuild) { $Tag = "dev-build" } else { $Tag = "v$Version" }
-        Write-Info "version: $Version"
+        $DisplayVersion = if ($DevBuild) { $Tag } else { "v$Version" }
+        Write-Info "version: $DisplayVersion"
 
         # Detect arch
         $arch = Get-Arch
@@ -738,7 +742,7 @@ function Main {
         # --- Check for existing installation ------------------------------------
         Write-Host ""
         Write-Host "  ========================================"
-        Write-Host "       V2RayDAR Installer v$Version"
+        Write-Host "       V2RayDAR Installer $DisplayVersion"
         Write-Host "  ========================================"
         Write-Host ""
         Write-Info "Detected: Windows $arch"
@@ -888,6 +892,12 @@ function Main {
         # Fresh country IP database next to the new install.
         $geoipDir = Join-Path $InstallDir "v2raydar_data/geoip"
         Remove-LegacyMmdb -Roots @($Script:FoundPath, $InstallDir)
+        # Remove a stale release archive from older installers (binaries only).
+        $staleArchive = Join-Path $InstallDir $Asset
+        if (Test-Path $staleArchive) {
+            Remove-Item -Path $staleArchive -Force -ErrorAction SilentlyContinue
+            Write-Info "removed stale archive: $Asset"
+        }
         if (-not (Update-GeoipData -GeoipDir $geoipDir)) {
             Write-Warn "country IP database update failed, keeping existing data"
         }

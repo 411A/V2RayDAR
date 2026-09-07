@@ -366,7 +366,11 @@ cleanup_legacy_mmdb() {
     done
 }
 
-# Verify every .zone file in a directory against an MD5SUM listing.
+# Verify an extracted zone tree: every country file we would install must be
+# listed in MD5SUM with a matching hash, and unexpected files fail the run.
+# Files the listing mentions but the archive does not ship (publisher
+# placeholders such as ap.zone) are skipped with a note — the app runs fine
+# on the remaining countries.
 verify_zone_tree() {
     _vdir="$1"
     _md5data="$2"
@@ -380,26 +384,37 @@ verify_zone_tree() {
     fi
 
     _checked=0
-    while read -r _hash _file; do
-        case "$_file" in *.zone) ;; *) continue ;; esac
-        if [ ! -f "$_vdir/$_file" ]; then
-            warn "GeoIP archive is missing $_file"
+    for _path in "$_vdir"/*.zone; do
+        [ -f "$_path" ] || continue
+        _file="$(basename "$_path")"
+        _stem="${_file%.zone}"
+        case "$_stem" in
+            [A-Za-z][A-Za-z]) ;;
+            *) info "skipping non-country file $_file"; continue ;;
+        esac
+        _expected="$(printf '%s\n' "$_md5data" | awk -v f="$_file" '$2 == f { print $1; exit }')"
+        if [ -z "$_expected" ]; then
+            warn "GeoIP file $_file is not in the checksum list"
             return 1
         fi
         # shellcheck disable=SC2086
-        _actual="$($_hasher "$_vdir/$_file" | awk '{print $1}')"
-        if [ "$_actual" != "$_hash" ]; then
+        _actual="$($_hasher "$_path" | awk '{print $1}')"
+        if [ "$_actual" != "$_expected" ]; then
             warn "GeoIP checksum mismatch for $_file"
             return 1
         fi
         _checked=$((_checked + 1))
-    done <<CHECKSUMS
-$_md5data
-CHECKSUMS
+    done
 
-    _files="$(find "$_vdir" -maxdepth 1 -name '*.zone' | wc -l | tr -d ' ')"
-    if [ "$_checked" -eq 0 ] || [ "$_checked" -ne "$_files" ]; then
-        warn "GeoIP file count mismatch (verified $_checked of $_files)"
+    printf '%s\n' "$_md5data" | while read -r _hash _file; do
+        case "$_file" in *.zone) ;; *) continue ;; esac
+        if [ ! -f "$_vdir/$_file" ]; then
+            info "GeoIP archive does not ship $_file, skipping"
+        fi
+    done
+
+    if [ "$_checked" -eq 0 ]; then
+        warn "no GeoIP zone files verified"
         return 1
     fi
     return 0

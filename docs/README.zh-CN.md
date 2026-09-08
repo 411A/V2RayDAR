@@ -53,7 +53,7 @@
 
 将对应系统的命令粘贴到终端并回车——再按一次回车（默认“是”），安装程序即按默认设置自动完成（已安装则就地更新）；回答“否”则进入逐步提示。安装脚本自动检测平台，下载最新版本并附带 `sing-box`，完成全部配置。便携模式安装到 `Desktop/V2RayDAR`（若存在桌面目录），否则安装到 `~/V2RayDAR`。用户模式将二进制文件安装到 `~/.local/bin`。
 
-**便携模式**（推荐）— 所有文件在同一目录，使用 `--portable` 运行：只需复制粘贴并按回车，直到安装完成！
+**便携模式**（推荐）— 所有文件在同一目录：只需复制粘贴并按回车，直到安装完成！自包含目录（可执行文件旁附带的 `sing-box` 或已有的 `v2raydar_data/`）会被自动检测；`--portable` 可强制启用。
 ```bash
 # Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh
@@ -79,7 +79,7 @@ pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar &&
 * **停止：** `Ctrl + C`
 * **启动：** `cd ~/V2RayDAR && ./v2raydar --no-tui`
 
-**手动下载** — 从 [Releases](https://github.com/411A/V2RayDAR/releases/latest) 下载对应操作系统的压缩包，使用 `--portable` 运行。
+**手动下载** — 从 [Releases](https://github.com/411A/V2RayDAR/releases/latest) 下载对应操作系统的压缩包后直接运行 — 便携目录会被自动检测（`--portable` 可强制启用）。
 
 安装脚本验证 SHA-256 校验和，检测已安装版本并提供更新（保留 `configs.yaml`、`data.db` 和 `v2raydar_data/`），默认无需 sudo。
 
@@ -119,7 +119,7 @@ pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar &&
 v2raydar                # TUI + 本地订阅端点
 v2raydar --no-tui       # 无头模式 — 仅端点和日志
 v2raydar --once         # 刷新一次，打印结果后退出
-v2raydar --portable     # 数据保存在可执行文件旁边
+v2raydar --portable     # 数据保存在可执行文件旁边（便携目录自动检测）
 v2raydar --uninstall    # 删除应用数据和防火墙规则
 ```
 
@@ -135,7 +135,7 @@ Windows 用户将 `v2raydar` 替换为 `v2raydar.exe`。macOS 上首次打开捆
 | `bind` | `127.0.0.1:27141` | 本地 HTTP 绑定地址，用于 `/subscription`、`/subscription.txt`、`/results` 和 `/health`。 |
 | `top_n` | `10` | 发布给客户端的可用配置数量。 |
 | `refresh_seconds` | `900` | 自动刷新间隔（秒）；`0` 禁用定时刷新。 |
-| `ping_seconds` | `300` | 已缓存配置的重测间隔（秒），不重新获取订阅；`0` 禁用。 |
+| `ping_seconds` | `300` | 已缓存配置的重测间隔（秒），不重新获取订阅；`0` 禁用。当缓存验证通过的数量少于 `top_n` 时，ping 还会检测数据库中此前见过的配置以补足。 |
 | `encoded_subscription` | `true` | `/subscription` 返回 base64 编码（兼容 v2rayN / v2rayNG）。 |
 | `prioritize_stability` | `true` | 优先重新探测上一轮保存的 Top-N，即使新发现的配置延迟更低也保持其靠前。设为 `false` 则优先选择低延迟的可用配置。 |
 | `return_configs_asap` | `false` | 设为 `true` 时，找到可用配置后立即发布到端点，最多 `top_n` 个；早期配置可能不是延迟最低或最稳定的。 |

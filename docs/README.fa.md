@@ -59,7 +59,7 @@
 
 دستور مخصوص سیستم‌عامل خود را در ترمینال کپی و Enter کنید — سپس یک Enter دیگر (پاسخ پیش‌فرض «بله») و نصب‌کننده به‌صورت خودکار با تنظیمات پیش‌فرض تمام می‌شود (در صورت نصب بودن، در همان محل به‌روز می‌شود). پاسخ «نه» یعنی پرسش‌های مرحله‌به‌مرحله. اسکریپت نصب پلتفرم شما را تشخیص داده، آخرین نسخه را همراه <code>sing-box</code> &#x200F;دانلود کرده و همه چیز را راه‌اندازی می‌کند. حالت پرتابل در <code>Desktop/V2RayDAR</code> &#x200F;(یا در صورت نبود پوشه رومیزی، در <code>~/V2RayDAR</code>) نصب می‌شود. حالت کاربری فایل باینری را در <code>~/.local/bin</code> &#x200F;نصب می‌کند.
 
-&#x200F;<strong>حالت پرتابل</strong> (توصیه‌شده) — همه فایل‌ها در یک پوشه، اجرا با <code>--portable</code>: فقط کپی و پیست کنید و Enter بزنید تا نصب تمام شود!
+&#x200F;<strong>حالت پرتابل</strong> (توصیه‌شده) — همه فایل‌ها در یک پوشه: فقط کپی و پیست کنید و Enter بزنید تا نصب تمام شود! پوشه خودکفا (<code>sing-box</code> همراه یا <code>v2raydar_data/</code> موجود در کنار فایل اجرایی) به‌طور خودکار تشخیص داده می‌شود؛ <code>--portable</code> آن را اجباری می‌کند.
 
 <div dir="ltr">
 
@@ -101,7 +101,7 @@ pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar &&
 * **پایان اتصال:** `Ctrl + C`
 * **شروع:** `cd ~/V2RayDAR && ./v2raydar --no-tui`
 
-&#x200F;<strong>دانلود دستی</strong> — آرشیو مخصوص سیستم‌عامل خود را از <a href="https://github.com/411A/V2RayDAR/releases/latest">Releases</a> دانلود کرده و با <code>--portable</code> اجرا کنید.
+&#x200F;<strong>دانلود دستی</strong> — آرشیو مخصوص سیستم‌عامل خود را از <a href="https://github.com/411A/V2RayDAR/releases/latest">Releases</a> دانلود کرده و اجرا کنید — پوشه‌های پرتابل به‌طور خودکار تشخیص داده می‌شوند (<code>--portable</code> آن را اجباری می‌کند).
 
 &#x200F;اسکریپت نصب هش SHA-256 را بررسی کرده، نصب‌های موجود را شناسایی و پیشنهاد به‌روزرسانی می‌دهد (با حفظ <code>configs.yaml</code>، <code>data.db</code> و <code>v2raydar_data/</code>) و به صورت پیش‌فرض نیازی به sudo ندارد.
 
@@ -153,7 +153,7 @@ pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar &&
 v2raydar                # TUI + اندپوینت اشتراک محلی
 v2raydar --no-tui       # بدون رابط گرافیکی — فقط اندپوینت و لاگ‌ها
 v2raydar --once         # یک بار بروزرسانی، چاپ نتایج، خروج
-v2raydar --portable     # نگهداری داده‌ها در کنار فایل اجرایی
+v2raydar --portable     # نگهداری داده‌ها در کنار فایل اجرایی (تشخیص خودکار در پوشه پرتابل)
 v2raydar --uninstall    # حذف داده‌های برنامه و قوانین فایروال
 ```
 
@@ -173,7 +173,7 @@ v2raydar --uninstall    # حذف داده‌های برنامه و قوانین 
 | <code>bind</code> | <code>127.0.0.1:27141</code> | &#x200F;آدرس محلی HTTP |
 | <code>top_n</code> | <code>10</code> | &#x200F;تعداد کانفیگ‌های کارآمد منتشر شده |
 | <code>refresh_seconds</code> | <code>900</code> | &#x200F;فاصله بروزرسانی خودکار (ثانیه) |
-| <code>ping_seconds</code> | <code>300</code> | &#x200F;فاصله پینگ دوباره پیکربندی‌های ذخیره‌شده بدون دریافت دوباره (ثانیه)؛ 0 غیرفعال می‌کند |
+| <code>ping_seconds</code> | <code>300</code> | &#x200F;فاصله پینگ دوباره پیکربندی‌های ذخیره‌شده بدون دریافت دوباره (ثانیه)؛ 0 غیرفعال می‌کند. اگر تعداد تأییدشده کمتر از <code>top_n</code> باشد، پینگ پیکربندی‌های دیده‌شده قبلی در پایگاه داده را نیز برای تکمیل بررسی می‌کند |
 | <code>encoded_subscription</code> | <code>true</code> | &#x200F;برگرداندن base64 برای <code>/subscription</code> |
 | <code>prioritize_stability</code> | <code>true</code> | &#x200F;اولویت با کانفیگ‌های پایدار قبلی |
 | <code>return_configs_asap</code> | <code>false</code> | &#x200F;انتشار سریع کانفیگ‌های کارآمد |

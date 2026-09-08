@@ -21,7 +21,7 @@ This document is the detailed user and developer guide. The short, ready-to-use 
 
 Paste the line for your OS into a terminal and press Enter — then press Enter once more (the default Yes) and the installer finishes automatically with defaults, updating in place when already installed. Answer No for step-by-step prompts. The installer detects your platform, downloads the latest release with bundled `sing-box`, and sets everything up. Portable mode installs into `Desktop/V2RayDAR` when a Desktop folder exists, otherwise `~/V2RayDAR`. User mode installs the binary to `~/.local/bin`.
 
-**Portable** (recommended) — everything in one folder, run with `--portable`: just copy-paste & press enter until it finishes installing!
+**Portable** (recommended) — everything in one folder: just copy-paste & press enter until it finishes installing! A self-contained folder (bundled `sing-box` or an existing `v2raydar_data/` beside the executable) is detected automatically, so double-clicking just works — `--portable` forces it anywhere.
 ```bash
 # Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh
@@ -45,7 +45,7 @@ irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
 pkg update -y && pkg install -y curl tar && curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | bash && cd V2RayDAR && ./v2raydar --no-tui
 ```
 
-**Manual download** — grab the archive for your OS from [Releases](https://github.com/411A/V2RayDAR/releases/latest) and run with `--portable`.
+**Manual download** — grab the archive for your OS from [Releases](https://github.com/411A/V2RayDAR/releases/latest) and run it — portable folders are detected automatically (`--portable` forces it).
 
 The installer verifies SHA-256 checksums, detects existing installations and offers to update (preserving `configs.yaml`, `data.db`, and `v2raydar_data/`), and never requires sudo by default.
 
@@ -130,7 +130,7 @@ Checksums verify integrity. They do not prevent Windows SmartScreen or macOS Gat
 
 ## First Run
 
-On first launch without `--config`, V2RayDAR creates `configs.yaml` with a set of pre-selected subscription sources to get you started. Adding your own sources is recommended for better coverage. The portable installer runs with `--portable`, so config and database stay beside the executable; user-installed mode uses the platform app-data location.
+On first launch without `--config`, V2RayDAR creates `configs.yaml` with a set of pre-selected subscription sources to get you started. Adding your own sources is recommended for better coverage. In a portable folder, config and database stay beside the executable (auto-detected; `--portable` forces it); user-installed mode uses the platform app-data location.
 
 Windows:
 
@@ -192,7 +192,7 @@ Use a custom config file:
 v2raydar --config path/to/configs.yaml
 ```
 
-Keep the data folder beside the executable:
+Keep the data folder beside the executable (usually automatic in portable folders):
 
 ```bash
 v2raydar --portable
@@ -395,7 +395,7 @@ String-like null values such as `null`, `"null"`, empty strings, `"none"`, and `
 | `bind` | Socket address | `127.0.0.1:27141` | Primary HTTP bind address. |
 | `top_n` | Integer | `10` | Number of reachable configs published to clients. |
 | `refresh_seconds` | Integer seconds | `900` | Automatic refresh interval. `0` disables timer refreshes but config changes can still trigger refreshes. |
-| `ping_seconds` | Integer seconds | `300` | Re-ping interval for cached configs without re-fetching subscriptions. `0` disables. Fetch and ping traffic both count toward Sub Usage. |
+| `ping_seconds` | Integer seconds | `300` | Re-ping interval for cached configs without re-fetching subscriptions. `0` disables. When the cache verifies fewer than `top_n`, the ping also probes previously-seen database configs to refill. Fetch and ping traffic both count toward Sub Usage. |
 | `encoded_subscription` | Boolean | `true` | Makes `/subscription` return base64 text. `/subscription.txt` is always raw text. |
 | `prioritize_stability` | Boolean | `true` | Re-pings the previous run's saved top-N first and keeps them ahead of newly discovered low-ping configs. When `false`, the ranking simply prefers any working low-ping config. The saved top-N is held in the cache folder and wiped on every fresh run and on quit. |
 | `return_configs_asap` | Boolean | `false` | When `true`, publishes each working config to `/subscription`, `/subscription.txt`, `/results`, and the TUI `Current Found Configs` box as soon as it is found, until `top_n` working configs are available. Early configs may not have the lowest ping or best stability. |
@@ -658,7 +658,7 @@ The database contains:
 - `configs` table — all known configs with dedup_key, URI, source, protocol, endpoint, reachability status, latency, stability count, and `last_online` timestamp,
 - `stable_top` table — the previous run's saved top-N dedup_keys used by `prioritize_stability`.
 
-When a refresh completes, all probed configs are upserted into the database. Configs that are reachable get their `last_online` timestamp updated. Configs that are unreachable keep their existing `last_online` value. After each refresh, configs not seen online for `clean_offlines_after_days` (default: 7) are removed.
+When a refresh completes, all probed configs are upserted into the database. Configs that are reachable get their `last_online` timestamp updated. Configs that are unreachable keep their existing `last_online` value. Fetched candidates are also cached insert-only before probing, so the database holds the whole pool — including configs no cycle has tested yet — while known rows are never reset by a re-fetch. After each refresh, configs not seen online for `clean_offlines_after_days` (default: 7) are removed.
 
 ## Restricted-Network Behavior
 
@@ -728,7 +728,7 @@ The app runs one refresh immediately after startup.
 After that:
 
 - `refresh_seconds: 900` refreshes every fifteen minutes.
-- `ping_seconds: 300` re-pings cached configs every five minutes without re-fetching.
+- `ping_seconds: 300` re-pings cached configs every five minutes without re-fetching. When the cache verifies fewer than `top_n`, the ping also probes previously-seen database configs to refill the shortfall.
 - `Ctrl+R` triggers one manual refresh (re-fetch); refused while a refresh is running.
 - `Ctrl+P` triggers one manual re-ping; refused while any cycle is running.
 - `refresh_seconds: 0` disables timer refreshes.
@@ -754,10 +754,14 @@ Main menu items:
 
 - `Open Configs File`
 - `Share subscription URL on LAN`
+- `Persistent proxy for app traffic`
 - `Subscriptions`
 - `Clean Cache`
 - `Configurations`
 - `Live Logs`
+- `QR Codes: Generate & View` (desktop only)
+
+`QR Codes: Generate & View` renders the LAN subscription QR (needs sharing on plus the firewall rule) and the Telegram SOCKS5 proxy QR (needs the LAN-enabled proxy) side by side into `v2raydar_data/QRCodes.jpg` and opens the image, so a phone can join with one scan. Anything unavailable is reported in the status line instead.
 
 The UI is mouse-aware. Clicking rows selects them.
 
@@ -1026,7 +1030,7 @@ Important modules:
 | `src/main.rs` | CLI parsing, startup, refresh loop, config watcher, uninstall, ranking integration. |
 | `src/config.rs` | Config schema, defaults, validation, token generation, config loading. |
 | `src/constants.rs` | Default values, UI lists, artifact names, supported URI schemes. |
-| `src/paths.rs` | Installed, portable, and custom-config path resolution. |
+| `src/paths.rs` | Installed, portable (auto-detected), and custom-config path resolution. |
 | `src/subscription.rs` | Fetching subscription sources, cache snapshots, cache fallback, proxied retry. |
 | `src/parser.rs` | Share-link extraction and endpoint parsing. |
 | `src/clash.rs` | Clash/Mihomo YAML subscription parsing. |
@@ -1046,7 +1050,7 @@ The refresh pipeline in `src/main.rs` is roughly:
 
 1. Load runtime config into shared state.
 2. Fetch enabled subscriptions directly unless `use_cache_only` is true.
-3. Parse fetched subscription bodies into candidates — **including Clash/Mihomo YAML configs** which are detected by their `proxies:` structure and converted to share links.
+3. Parse fetched subscription bodies into candidates — **including Clash/Mihomo YAML configs** which are detected by their `proxies:` structure and converted to share links — and cache the sightings insert-only into the database (known rows untouched) so later pings can backfill from the whole pool.
 4. Probe candidates with `probe_candidates`. When `prioritize_stability: true`, the scheduler re-pings the previous run's saved top-N first.
 5. If direct fetches failed, retry failed HTTP sources through `emergency_config` or a working config when active mode is available, then probe newly loaded retry candidates.
 6. If no fresh subscription source was fetched successfully, load previously-probed configs from the database and probe them.

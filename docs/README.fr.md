@@ -53,7 +53,7 @@
 
 Collez la ligne de votre OS dans un terminal et appuyez sur Entrée — puis encore Entrée (réponse par défaut Oui) et l'installateur termine automatiquement avec les réglages par défaut (mise à jour sur place si déjà installé). Répondez Non pour les invites étape par étape. Le script d'installation détecte votre plateforme, télécharge la dernière version avec `sing-box` et configure tout. Le mode portable s'installe dans `Desktop/V2RayDAR` (si le dossier Bureau existe), sinon dans `~/V2RayDAR`. Le mode utilisateur installe le binaire dans `~/.local/bin`.
 
-**Mode portable** (recommandé) — tout dans un dossier, lancement avec `--portable` : copiez-collez et appuyez sur Entrée jusqu'à la fin de l'installation !
+**Mode portable** (recommandé) — tout dans un dossier : copiez-collez et appuyez sur Entrée jusqu'à la fin de l'installation ! Un dossier autonome (`sing-box` fourni ou `v2raydar_data/` existant à côté de l'exécutable) est détecté automatiquement ; `--portable` le force.
 ```bash
 # Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh
@@ -79,7 +79,7 @@ pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar &&
 * **Arrêt :** `Ctrl + C`
 * **Démarrage :** `cd ~/V2RayDAR && ./v2raydar --no-tui`
 
-**Téléchargement manuel** — téléchargez l'archive pour votre OS depuis [Releases](https://github.com/411A/V2RayDAR/releases/latest) et lancez avec `--portable`.
+**Téléchargement manuel** — téléchargez l'archive pour votre OS depuis [Releases](https://github.com/411A/V2RayDAR/releases/latest) et lancez-la — les dossiers portables sont détectés automatiquement (`--portable` le force).
 
 Le script d'installation vérifie les checksums SHA-256, détecte les installations existantes et propose une mise à jour (en préservant `configs.yaml`, `data.db` et `v2raydar_data/`), et ne nécessite pas sudo par défaut.
 
@@ -119,7 +119,7 @@ Après l'installation avec le script ci-dessus, lancez `v2raydar` (ou `v2raydar.
 v2raydar                # TUI + endpoint d'abonnement local
 v2raydar --no-tui       # sans interface — endpoint et logs uniquement
 v2raydar --once         # un rafraîchissement, afficher les résultats, quitter
-v2raydar --portable     # données à côté de l'exécutable
+v2raydar --portable     # données à côté de l'exécutable (détecté automatiquement dans les dossiers portables)
 v2raydar --uninstall    # supprimer les données et règles de pare-feu
 ```
 
@@ -135,7 +135,7 @@ Les utilisateurs Windows remplacent `v2raydar` par `v2raydar.exe`. Sous macOS, o
 | `bind` | `127.0.0.1:27141` | Adresse HTTP locale pour `/subscription`, `/subscription.txt`, `/results` et `/health`. |
 | `top_n` | `10` | Nombre de configs fonctionnelles publiées aux clients. |
 | `refresh_seconds` | `900` | Intervalle de rafraîchissement automatique (secondes) ; `0` désactive le timer. |
-| `ping_seconds` | `300` | Intervalle de re-test des configs en cache sans re-téléchargement (secondes) ; `0` désactive. |
+| `ping_seconds` | `300` | Intervalle de re-test des configs en cache sans re-téléchargement (secondes) ; `0` désactive. Quand le cache vérifie moins de `top_n`, le ping teste aussi les configs déjà vues en base pour compléter. |
 | `encoded_subscription` | `true` | `/subscription` renvoie du base64 (compatible v2rayN / v2rayNG). |
 | `prioritize_stability` | `true` | Re-vérifie le Top-N sauvegardé de la session précédente et les garde en tête, même si de nouvelles configs avec latence plus basse apparaissent. Avec `false`, préfère toute config fonctionnelle à faible latence. |
 | `return_configs_asap` | `false` | Avec `true`, publie les configs fonctionnelles dès leur découverte (max `top_n`) ; les premières configs peuvent ne pas avoir la meilleure latence ou stabilité. |

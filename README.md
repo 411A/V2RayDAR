@@ -48,6 +48,7 @@
 - Re-exposes the top working configs at a local URL so any compatible client just sees one always-fresh subscription.
 - **Persistent HTTP/SOCKS5 proxy** — keeps a `sing-box` process running with the best config, exposing a local proxy port any app can use. Enable `proxy.enabled` in `configs.yaml` and point Telegram, browsers, or any app at `127.0.0.1:27910`.
 - **LAN proxy sharing** — set `proxy.discoverable: true` to bind `0.0.0.0` and add firewall rules, so every phone on your Wi-Fi can use the proxy. Telegram one-tap setup: `https://t.me/socks?server=192.0.2.2&port=27910`.
+- **QR code sheet** (desktop) — the main menu's `QR Codes: Generate & View` renders the LAN subscription and Telegram proxy as scannable QR codes (`v2raydar_data/QRCodes.jpg`) and opens the image for your phone.
 - Survives restricted networks via previously-probed configs in the database, an in-network bridge config, or an `emergency_config`.
 - Optional LAN sharing with optional token protection, so the phone in your pocket can use the same feed.
 
@@ -55,7 +56,7 @@
 
 Paste the line for your OS into a terminal and press Enter — then press Enter once more (the default Yes) and the installer finishes automatically with defaults, updating in place when already installed. Answer No for step-by-step prompts. The installer detects your platform, downloads the latest release with bundled `sing-box`, and sets everything up. Portable mode installs into `Desktop/V2RayDAR` when a Desktop folder exists, otherwise `~/V2RayDAR`. User mode installs the binary to `~/.local/bin`.
 
-**Portable** (recommended) — everything in one folder, run with `--portable`: just copy-paste & press enter until it finishes installing!
+**Portable** (recommended) — everything in one folder: just copy-paste & press enter until it finishes installing! A self-contained folder (bundled `sing-box` or an existing `v2raydar_data/` beside the executable) is detected automatically, so double-clicking just works — `--portable` forces it anywhere.
 ```bash
 # Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh
@@ -81,7 +82,7 @@ pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar &&
 * **Stop:** `Ctrl + C`
 * **Start:** `cd ~/V2RayDAR && ./v2raydar --no-tui`
 
-**Manual download** — grab the archive for your OS from [Releases](https://github.com/411A/V2RayDAR/releases/latest) and run with `--portable`.
+**Manual download** — grab the archive for your OS from [Releases](https://github.com/411A/V2RayDAR/releases/latest) and run it — portable folders are detected automatically (`--portable` forces it).
 
 The installer verifies SHA-256 checksums, detects existing installations and offers to update (preserving `configs.yaml`, `data.db`, and `v2raydar_data/`), and never requires sudo by default.
 
@@ -121,7 +122,7 @@ After installing with the script above, run `v2raydar` (or `v2raydar.exe` on Win
 v2raydar                # TUI + local subscription endpoint
 v2raydar --no-tui       # headless — endpoint and logs only
 v2raydar --once         # refresh once, print results, exit
-v2raydar --portable     # keep all data next to the executable
+v2raydar --portable     # keep all data next to the executable (auto-detected in portable folders)
 v2raydar --uninstall    # remove app data and owned firewall rules
 ```
 
@@ -137,7 +138,7 @@ Windows users replace `v2raydar` with `v2raydar.exe`. On macOS open the bundled 
 | `bind` | `127.0.0.1:27141` | Local HTTP bind address for `/subscription`, `/subscription.txt`, `/results`, and `/health`. |
 | `top_n` | `10` | Number of working configs published to clients. |
 | `refresh_seconds` | `900` | Auto-refresh interval in seconds; `0` disables the timer. |
-| `ping_seconds` | `300` | Re-ping interval in seconds for cached configs without re-fetching; `0` disables. Both count toward Sub Usage. |
+| `ping_seconds` | `300` | Re-ping interval in seconds for cached configs without re-fetching; `0` disables. When the cache verifies fewer than `top_n`, the ping also probes previously-seen database configs to refill. Both count toward Sub Usage. |
 | `encoded_subscription` | `true` | Returns `/subscription` as base64 (v2rayN / v2rayNG friendly). |
 | `prioritize_stability` | `true` | Re-pings the previous run's saved top-N first and keeps them at the front, even if new low-ping configs appear. When `false`, prefers any working low-ping config. |
 | `return_configs_asap` | `false` | When `true`, publishes working configs to the endpoint and `Current Found Configs` as soon as they are found, up to `top_n`; early configs may not have the lowest ping or best stability. |

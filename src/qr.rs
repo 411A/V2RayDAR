@@ -710,6 +710,19 @@ const fn glyph_symbol(ch: char) -> Option<&'static [&'static str; 7]> {
     }
 }
 
+/// What `generate_and_save` produced: the saved sheet plus the reasons for
+/// any card that did not qualify, so the caller can tell the user why a
+/// card is missing instead of showing a silently partial sheet.
+#[derive(Debug)]
+pub struct QrOutcome {
+    /// Where the sheet was written.
+    pub path: PathBuf,
+    /// Human reasons for cards that did not qualify. Non-empty on partial
+    /// success (e.g. proxy rendered but the subscription port is firewalled);
+    /// callers should surface these so a missing card never looks silent.
+    pub skipped: Vec<String>,
+}
+
 /// Plan, render, and save the sheet as `QRCodes.jpg` in `v2raydar_data`.
 ///
 /// # Errors
@@ -721,12 +734,23 @@ pub fn generate_and_save(
     config: &RuntimeConfig,
     state_dir: &Path,
     firewall_ok: &dyn Fn(u16) -> bool,
-) -> Result<PathBuf> {
+) -> Result<QrOutcome> {
     let planned = plan_live(config, firewall_ok);
+    save_planned(&planned, state_dir)
+}
+
+/// Persist an already-made plan; keeps the skip reasons so partial sheets
+/// stay explainable. Split from `generate_and_save` so tests can cover the
+/// partial-success path without touching the network.
+fn save_planned(planned: &QrPlan, state_dir: &Path) -> Result<QrOutcome> {
     if planned.cards.is_empty() {
         bail!("QR Codes unavailable: {}", planned.skipped.join("; "));
     }
-    save_jpeg(&planned.cards, state_dir)
+    let path = save_jpeg(&planned.cards, state_dir)?;
+    Ok(QrOutcome {
+        path,
+        skipped: planned.skipped.clone(),
+    })
 }
 
 /// Save rendered cards as `QRCodes.jpg` inside `v2raydar_data`.
@@ -1154,6 +1178,41 @@ mod tests {
         let error = save_jpeg(&[], &dir).expect_err("must fail");
 
         assert!(format!("{error:#}").contains("no QR cards"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_planned_keeps_the_firewalled_subscription_reason() {
+        // The reported bug: sharing on, proxy on, but only the proxy card
+        // renders because the subscription port is firewalled. The outcome
+        // must still carry the exact reason instead of going silent.
+        let planned = plan(&test_config(), &lan_hosts(), None, &|port| port != 27_141);
+        assert_eq!(planned.cards.len(), 1);
+        let dir = unique_temp_dir("partial-skip");
+
+        let outcome = save_planned(&planned, &dir).expect("proxy card still renders");
+
+        assert_eq!(outcome.path, dir.join(QR_IMAGE_FILE_NAME));
+        assert!(outcome.path.exists());
+        assert_eq!(outcome.skipped.len(), 1);
+        assert!(
+            outcome.skipped[0].contains("27141"),
+            "unexpected reasons: {:?}",
+            outcome.skipped
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_planned_reports_no_skips_when_everything_ready() {
+        let planned = plan(&test_config(), &lan_hosts(), None, &|_| true);
+        assert!(planned.skipped.is_empty());
+        let dir = unique_temp_dir("no-skip");
+
+        let outcome = save_planned(&planned, &dir).expect("renders");
+
+        assert!(outcome.skipped.is_empty());
+        assert!(outcome.path.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

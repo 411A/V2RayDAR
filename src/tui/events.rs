@@ -587,7 +587,15 @@ fn activate_main(
             match crate::qr::generate_and_save(&live_config, &paths.root_dir, &|port| {
                 super::firewall::allows_port(&paths.root_dir, port)
             }) {
-                Ok(path) => state.status = crate::qr::open_image(&path),
+                Ok(outcome) => {
+                    let mut message = crate::qr::open_image(&outcome.path);
+                    if !outcome.skipped.is_empty() {
+                        message.push_str(" (skipped: ");
+                        message.push_str(&outcome.skipped.join("; "));
+                        message.push(')');
+                    }
+                    state.status = message;
+                }
                 Err(error) => state.status = format!("QR Codes unavailable: {error:#}"),
             }
         }

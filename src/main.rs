@@ -317,6 +317,21 @@ async fn main() -> Result<()> {
         });
     }
 
+    // Re-apply owned firewall rules at startup so the recorded state can
+    // never drift from the enabled features: a moved/deleted state file
+    // (e.g. the portable-path migration) used to drop the subscription card
+    // from the QR sheet while the proxy card self-healed below.
+    if config.sharing.enabled
+        && let Err(err) = crate::tui::firewall::apply(
+            &paths.root_dir,
+            true,
+            config.bind.port(),
+            constants::FIREWALL_RULE_NAME,
+        )
+    {
+        tracing::warn!(error = %err, "failed to add subscription firewall rule");
+    }
+
     if config.proxy.enabled
         && config.proxy.discoverable
         && let Err(err) = crate::tui::firewall::apply(

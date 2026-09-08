@@ -918,6 +918,18 @@ async fn refresh_once(
         if let Some(cancel) = &ping_cancel {
             cancel.store(true, AtomicOrdering::SeqCst);
         }
+        // Footprint for the ping's "preempted by refresh" line: anyone
+        // doubting a preemption can match it against this entry's timestamp.
+        info!("refresh preempting running ping; partials will be carried over");
+        push_tui_progress(
+            &state,
+            ProgressEvent::LiveLog(timestamped_log(
+                "Refresh preempting running ping".to_string(),
+            )),
+            &HashSet::new(),
+            true,
+        )
+        .await;
         state.write().await.refreshing = true;
     }
     let _cycle_guard = cycle.lock().await;
@@ -1564,7 +1576,8 @@ fn keep_previous_working_set(
 ///
 /// With stability on, previously served working configs that still verify
 /// keep their seats and the shortfall to `top_n` fills from newly verified
-/// ones; a retest that cannot match the served count keeps the previous set.
+/// ones; whatever verifies is published, and only a zero-verified run keeps
+/// the previous set.
 ///
 /// Returns whether a refresh preempted this ping (`true`): the probe stopped
 /// early and the caller must skip the proxy update — the refresh publishes
@@ -1731,14 +1744,21 @@ async fn ping_once(
         if print_compact_progress {
             print_log(&summary);
         }
-        // Live-only: Recent Logs keeps just compact final results.
         push_tui_progress(
             &state,
-            ProgressEvent::LiveLog(summary),
+            ProgressEvent::LiveLog(summary.clone()),
             &HashSet::new(),
             true,
         )
         .await;
+        // A preemption is a final result for this ping: it belongs in Recent
+        // Logs like the finished summary, so a "preempted but no refresh in
+        // sight" report can be checked against the refresh line that must
+        // follow it within the same minute.
+        {
+            let mut runtime = state.write().await;
+            push_runtime_log(&mut runtime, summary);
+        }
         return Ok(true);
     }
     // Baseline is the pre-probe snapshot: the live state above may already
@@ -1760,15 +1780,13 @@ async fn ping_once(
     // Stability top-up: previously served working configs that still verify
     // keep their seats in previous order (even when slower than newcomers);
     // the shortfall to top_n fills from newly verified working configs by
-    // latency. When the retest cannot even match the served count, the whole
-    // previous set is kept instead — a degraded moment, and the next fetch
-    // rediscovers from the full pool.
+    // latency. Whatever verifies gets published — fresh truth always wins
+    // over a stale list; only a zero-verified run keeps the previous set.
     let previous_working = previous_before_ping
         .ranked
         .iter()
         .filter(|item| item.reachable)
         .count();
-    let verified_working = ranked.iter().filter(|item| item.reachable).count();
     let fell_back = keep_previous_working_set(
         config.prioritize_stability,
         &ranked,
@@ -1776,8 +1794,6 @@ async fn ping_once(
     );
     // (still_count, fill_count) when the top-up below publishes a mix.
     let mut topped_up: Option<(usize, usize)> = None;
-    // True when the degraded-moment guard keeps the previous set whole.
-    let mut kept_previous = fell_back;
     if fell_back {
         warn!(
             previous_working,
@@ -1814,51 +1830,40 @@ async fn ping_once(
         fill.truncate(fill_target.saturating_sub(still_count));
         let fill_count = fill.len();
         published.extend(fill);
-        if !published.is_empty() && published.len() < previous_working {
-            warn!(
-                previous_working,
-                verified_working,
-                "ping verified fewer working configs; keeping previous working set"
-            );
-            ranked.clone_from(&previous_before_ping.ranked);
-            stable_working_counts.clone_from(&previous_before_ping.stable_working_counts);
-            kept_previous = true;
-        } else {
-            // Unverified entries trail for record-keeping (DB offline memory,
-            // Failed counters); the served head is still-working then new.
-            published.extend(ranked.iter().filter(|item| !item.reachable).cloned());
-            let published_keys: HashSet<String> = published
-                .iter()
-                .map(|item| item.dedup_key.clone())
-                .collect();
-            stable_working_counts.retain(|key, _| published_keys.contains(key));
-            for item in published.iter_mut() {
-                if item.reachable {
-                    let count = stable_working_counts
-                        .entry(item.dedup_key.clone())
-                        .or_default();
-                    *count = count.saturating_add(1);
-                    item.stability_count = *count;
-                } else {
-                    item.stability_count = stable_working_counts
-                        .get(&item.dedup_key)
-                        .copied()
-                        .unwrap_or(0);
-                }
+        // Unverified entries trail for record-keeping (DB offline memory,
+        // Failed counters); the served head is still-working then new.
+        published.extend(ranked.iter().filter(|item| !item.reachable).cloned());
+        let published_keys: HashSet<String> = published
+            .iter()
+            .map(|item| item.dedup_key.clone())
+            .collect();
+        stable_working_counts.retain(|key, _| published_keys.contains(key));
+        for item in published.iter_mut() {
+            if item.reachable {
+                let count = stable_working_counts
+                    .entry(item.dedup_key.clone())
+                    .or_default();
+                *count = count.saturating_add(1);
+                item.stability_count = *count;
+            } else {
+                item.stability_count = stable_working_counts
+                    .get(&item.dedup_key)
+                    .copied()
+                    .unwrap_or(0);
             }
-            for (index, item) in published.iter_mut().enumerate() {
-                item.rank = index + 1;
-            }
-            ranked = published;
-            persist_ranked_configs(&database, &ranked, config.top_n, 0, false).await?;
-            if fill_count > 0 && still_count > 0 {
-                topped_up = Some((still_count, fill_count));
-            }
+        }
+        for (index, item) in published.iter_mut().enumerate() {
+            item.rank = index + 1;
+        }
+        ranked = published;
+        persist_ranked_configs(&database, &ranked, config.top_n, 0, false).await?;
+        if fill_count > 0 && still_count > 0 {
+            topped_up = Some((still_count, fill_count));
         }
     } else {
         persist_ranked_configs(&database, &ranked, config.top_n, 0, false).await?;
     }
-    let working = if kept_previous {
+    let working = if fell_back {
         previous_working
     } else {
         progress_state.reachable_candidates
@@ -1873,13 +1878,7 @@ async fn ping_once(
         runtime.last_error = None;
     }
 
-    let summary = if kept_previous && !fell_back {
-        format!(
-            "{actor} Ping finished: verified {verified_working} working of {} cached configs in {}; kept previous {previous_working} working configs",
-            progress_state.tested_candidates,
-            format_duration_short(started_instant.elapsed().as_millis())
-        )
-    } else if let Some((still_count, fill_count)) = topped_up {
+    let summary = if let Some((still_count, fill_count)) = topped_up {
         format!(
             "{actor} Ping finished: kept {still_count} previous + {fill_count} new working of {} cached configs in {}",
             progress_state.tested_candidates,
@@ -4036,10 +4035,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ping_keeps_previous_working_set_when_verifying_fewer() {
-        // A degraded ping must not shrink the live set: two previously
-        // working configs, one now failing — the ping keeps serving both
-        // ("as perfect as previous") and says so in Recent Logs.
+    async fn ping_publishes_partial_results_when_verifying_fewer() {
+        // Fresh truth wins over a stale list: two previously working
+        // configs, one now failing with nothing new to fill the gap — the
+        // ping publishes the one that still verifies instead of keeping
+        // the dead one served.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback binds");
         let open_port = listener.local_addr().expect("listener addr").port();
         let mut config = manual_trigger_test_config();
@@ -4087,13 +4087,19 @@ mod tests {
         assert!(!preempted);
 
         let runtime = state.read().await;
-        assert_eq!(runtime.reachable_candidates, 2);
-        assert!(runtime.ranked.iter().all(|item| item.reachable));
+        assert_eq!(runtime.reachable_candidates, 1);
+        let head: Vec<&str> = runtime
+            .ranked
+            .iter()
+            .filter(|item| item.reachable)
+            .map(|item| item.name.as_str())
+            .collect();
+        assert_eq!(head, vec!["alive"]);
         assert!(
             runtime
                 .logs
                 .iter()
-                .any(|line| line.contains("kept previous 2 working configs"))
+                .any(|line| line.contains("1 working of 2 cached"))
         );
         drop(runtime);
         drop(listener);

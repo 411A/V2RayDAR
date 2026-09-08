@@ -576,6 +576,41 @@ fn eval_shared_stop(
 }
 
 #[allow(clippy::too_many_lines)]
+/// Stop signaling for one active-probe run.
+///
+/// `external` is the caller's preemption switch (a refresh interrupting a
+/// ping) — the probe only ever reads it. `target_reached` is the
+/// run-internal early-stop broadcast that batches raise among themselves so
+/// sibling waves quit within ~one probe of the target.
+///
+/// The two flags must stay separate: an early stop is a successful finish,
+/// and writing it into the external flag made every ping that reached its
+/// target report "preempted by refresh" — and left the flag set, so all
+/// later pings probed nothing until the next refresh cleared it.
+#[derive(Clone)]
+struct ProbeStopSignal {
+    external: Arc<AtomicBool>,
+    target_reached: Arc<AtomicBool>,
+}
+
+impl ProbeStopSignal {
+    fn from_external(cancel: Option<Arc<AtomicBool>>) -> Self {
+        Self {
+            external: cancel.unwrap_or_default(),
+            target_reached: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn stopped(&self) -> bool {
+        self.external.load(AtomicOrdering::Relaxed)
+            || self.target_reached.load(AtomicOrdering::Relaxed)
+    }
+
+    fn broadcast_target_reached(&self) {
+        self.target_reached.store(true, AtomicOrdering::Relaxed);
+    }
+}
+
 async fn probe_active_batched(
     candidates: Vec<Candidate>,
     config: &ProbeConfig,
@@ -642,17 +677,17 @@ async fn probe_active_batched(
         stop: ProbeStopState::new(&prepared, stop_policy),
         stop_announced: false,
     }));
-    // An external switch (refresh preempting a ping) shares the same flag
-    // the early-stop logic already uses, so preemption stops batches within
-    // ~one probe exactly like a reached target does.
-    let cancel = cancel.unwrap_or_default();
+    // The external switch only stops batches; the early-stop broadcast
+    // below uses the run-internal flag so a reached target never looks
+    // like an external preemption to the caller.
+    let stop = ProbeStopSignal::from_external(cancel);
     let mut batch_index = 0_usize;
-    while !prepared.is_empty() && !cancel.load(AtomicOrdering::Relaxed) {
+    while !prepared.is_empty() && !stop.stopped() {
         let before = lock_shared(&shared).ranked.len();
         let mut wave = Vec::new();
         let mut wave_previous_working = 0_usize;
         for _ in 0..process_concurrency {
-            if prepared.is_empty() || cancel.load(AtomicOrdering::Relaxed) {
+            if prepared.is_empty() || stop.stopped() {
                 break;
             }
             batch_index += 1;
@@ -682,7 +717,7 @@ async fn probe_active_batched(
         let wave_started = Instant::now();
         let mut outcomes = stream::iter(wave.into_iter().map(|(batch_index, batch)| {
             let progress = progress.clone();
-            let cancel = cancel.clone();
+            let stop = stop.clone();
             let shared = shared.clone();
             async move {
                 let batch_started = Instant::now();
@@ -694,7 +729,7 @@ async fn probe_active_batched(
                     progress.as_ref(),
                     &batch_stop_policy,
                     &shared,
-                    cancel,
+                    stop,
                 )
                 .await;
                 (batch_index, batch_started.elapsed(), outcome)
@@ -716,7 +751,7 @@ async fn probe_active_batched(
                 duration_ms = batch_duration.as_millis(),
                 "active probe batch finished"
             );
-            if cancel.load(AtomicOrdering::Relaxed) {
+            if stop.stopped() {
                 break;
             }
         }
@@ -1178,13 +1213,13 @@ async fn probe_active_batch_with_fallback(
     progress: Option<&UnboundedSender<ProgressEvent>>,
     stop_policy: &ProbeStopPolicy,
     shared: &SharedProbe,
-    cancel: Arc<AtomicBool>,
+    stop: ProbeStopSignal,
 ) -> BatchProbeStats {
     let mut pending = vec![batch];
     let mut stats = BatchProbeStats::default();
 
     while let Some(batch) = pending.pop() {
-        if cancel.load(AtomicOrdering::Relaxed) {
+        if stop.stopped() {
             break;
         }
         let batch_len = batch.len();
@@ -1195,7 +1230,7 @@ async fn probe_active_batch_with_fallback(
             progress,
             stop_policy,
             shared,
-            cancel.clone(),
+            stop.clone(),
         )
         .await
         {
@@ -1288,12 +1323,12 @@ async fn probe_active_batch(
     progress: Option<&UnboundedSender<ProgressEvent>>,
     stop_policy: &ProbeStopPolicy,
     shared: &SharedProbe,
-    cancel: Arc<AtomicBool>,
+    stop: ProbeStopSignal,
 ) -> std::result::Result<usize, BatchProbeFailure> {
     if entries.is_empty() {
         return Ok(0);
     }
-    if cancel.load(AtomicOrdering::Relaxed) {
+    if stop.stopped() {
         return Ok(0);
     }
 
@@ -1403,7 +1438,7 @@ async fn probe_active_batch(
         );
         return Err(BatchProbeFailure::retryable(entries, err));
     }
-    if cancel.load(AtomicOrdering::Relaxed) {
+    if stop.stopped() {
         let stderr = cleanup_sing_box_child(child, config_path).await;
         if !stderr.is_empty() {
             debug!(stderr = %stderr, "sing-box batch stderr after cancellation");
@@ -1431,7 +1466,7 @@ async fn probe_active_batch(
     let mut working = 0usize;
     let mut completed = 0;
     while let Some((mut results, bytes)) = probe_results.next().await {
-        if cancel.load(AtomicOrdering::Relaxed) {
+        if stop.stopped() {
             break;
         }
         completed += 1;
@@ -1478,7 +1513,9 @@ async fn probe_active_batch(
                 "active probe batch stopped early"
             );
             send_progress(progress, reason);
-            cancel.store(true, AtomicOrdering::Relaxed);
+            // Internal broadcast only: the caller's external flag stays
+            // untouched so a reached target never reports as preempted.
+            stop.broadcast_target_reached();
             break;
         }
     }
@@ -2645,6 +2682,29 @@ mod tests {
         let mut item = ranked("node", "vless://uuid@example.com:443", false, None);
         item.error = Some(error.to_string());
         item
+    }
+
+    #[test]
+    fn stop_signal_keeps_external_and_internal_separate() {
+        // Either flag stops the run, but broadcasting a reached target must
+        // never set the caller's external flag: that leak made successful
+        // pings report "preempted by refresh" and poisoned later pings.
+        let external = Arc::new(AtomicBool::new(false));
+        let stop = ProbeStopSignal::from_external(Some(external.clone()));
+
+        assert!(!stop.stopped());
+        stop.broadcast_target_reached();
+        assert!(stop.stopped());
+        assert!(
+            !external.load(AtomicOrdering::SeqCst),
+            "early-stop broadcast must not touch the external flag"
+        );
+
+        external.store(true, AtomicOrdering::SeqCst);
+        assert!(stop.stopped());
+
+        let fresh = ProbeStopSignal::from_external(None);
+        assert!(!fresh.stopped());
     }
 
     #[test]

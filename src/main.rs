@@ -1117,6 +1117,10 @@ async fn refresh_once(
         .candidates
         .retain(|candidate| !carried_keys.contains(candidate.dedup_key.as_str()));
 
+    // Remember every sighting (insert-only) before probing consumes the
+    // list: untested leftovers stay available for ping backfill.
+    cache_fetched_candidates(&database, &fetched.candidates).await;
+
     let probe_started = std::time::Instant::now();
     let mut ranked = probe_refresh_candidates(
         std::mem::take(&mut fetched.candidates),
@@ -1187,6 +1191,7 @@ async fn refresh_once(
                         push_live_log(&mut runtime, retry_finished_log);
                     }
                     if retry_count > 0 {
+                        cache_fetched_candidates(&database, &retry.candidates).await;
                         let mut retry_ranked = probe_refresh_candidates(
                             std::mem::take(&mut retry.candidates),
                             config,
@@ -1276,6 +1281,7 @@ async fn refresh_once(
                     push_live_log(&mut runtime, cache_finished_log);
                 }
                 if cache_count > 0 {
+                    // Already database rows: nothing new to remember.
                     let mut cached_ranked = probe_refresh_candidates(
                         candidates,
                         config,
@@ -1567,6 +1573,105 @@ fn keep_previous_working_set(
         && previous_ranked.iter().any(|item| item.reachable)
 }
 
+/// Cap for one ping backfill round: bounds the extra probing when a ping
+/// verifies fewer than `top_n` working configs.
+const PING_BACKFILL_MAX_CANDIDATES: usize = 256;
+
+fn candidate_from_ranked(item: &RankedConfig) -> Candidate {
+    Candidate {
+        id: item.id.clone(),
+        dedup_key: item.dedup_key.clone(),
+        source: item.source.clone(),
+        priority: item.priority,
+        protocol: item.protocol.clone(),
+        name: item.name.clone(),
+        endpoint: item.endpoint.clone(),
+        uri: item.uri.clone(),
+    }
+}
+
+/// Probe previously-seen database configs the current ping did not test,
+/// merging fresh results into `ranked`. Returns how many backfill
+/// candidates were tested (0 when the pool is empty or unreadable — the
+/// ping still publishes its own results then).
+///
+/// Probe bytes never touch Sub Usage, like the main ping probe.
+#[allow(clippy::too_many_arguments)]
+async fn probe_ping_backfill(
+    config: &AppConfig,
+    database: &Arc<Database>,
+    state: &Arc<RwLock<RuntimeState>>,
+    previous_top_n: &HashSet<String>,
+    tested_keys: &HashSet<String>,
+    ranked: &mut Vec<RankedConfig>,
+    print_compact_progress: bool,
+    ping_cancel: &Arc<AtomicBool>,
+) -> usize {
+    let db = database.clone();
+    let tested = tested_keys.clone();
+    let extras = tokio::task::spawn_blocking(move || {
+        db.load_backfill_candidates(&tested, PING_BACKFILL_MAX_CANDIDATES)
+    })
+    .await;
+    let extras = match extras {
+        Ok(Ok(rows)) => rows,
+        Ok(Err(error)) => {
+            warn!(error = %error, "ping backfill skipped: database unreadable");
+            return 0;
+        }
+        Err(error) => {
+            warn!(error = %error, "ping backfill skipped: database task failed");
+            return 0;
+        }
+    };
+    if extras.is_empty() {
+        return 0;
+    }
+    let extra_candidates: Vec<Candidate> = extras.iter().map(candidate_from_ranked).collect();
+    let backfill_count = extra_candidates.len();
+    let (backfill_tx, backfill_task) = spawn_tui_progress_forwarder(
+        state.clone(),
+        previous_top_n.clone(),
+        print_compact_progress,
+        false,
+    );
+    let mut backfill_ranked = probe_refresh_candidates(
+        extra_candidates,
+        config,
+        previous_top_n,
+        state,
+        &backfill_tx,
+        print_compact_progress,
+        "Ping backfill",
+        None,
+        Some(ping_cancel.clone()),
+    )
+    .await;
+    drop(backfill_tx);
+    let _ = backfill_task.await;
+    ranked.append(&mut backfill_ranked);
+    deduplicate_ranked_configs(ranked);
+    backfill_count
+}
+
+/// Cache freshly fetched configs in the database (insert-only, never
+/// touching known rows) so later pings can backfill from the whole pool —
+/// including configs no cycle has tested yet. Failures never fail the
+/// refresh; the fetch already succeeded.
+async fn cache_fetched_candidates(database: &Arc<Database>, candidates: &[Candidate]) {
+    if candidates.is_empty() {
+        return;
+    }
+    let db = database.clone();
+    let sightings: Vec<Candidate> = candidates.to_vec();
+    let result = tokio::task::spawn_blocking(move || db.insert_new_candidates(&sightings)).await;
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => warn!(error = %error, "fetch cache skipped: database write failed"),
+        Err(error) => warn!(error = %error, "fetch cache skipped: database task failed"),
+    }
+}
+
 /// Re-probe cached configs without re-fetching subscriptions.
 ///
 /// Runs on the independent `ping_seconds` timer. Skips silently when there
@@ -1578,7 +1683,9 @@ fn keep_previous_working_set(
 /// With stability on, previously served working configs that still verify
 /// keep their seats and the shortfall to `top_n` fills from newly verified
 /// ones; whatever verifies is published, and only a zero-verified run keeps
-/// the previous set.
+/// the previous set. When the cache alone verifies fewer than `top_n`, the
+/// ping additionally probes previously-seen database configs (never
+/// re-fetching) to try to refill the shortfall.
 ///
 /// Returns whether a refresh preempted this ping (`true`): the probe stopped
 /// early and the caller must skip the proxy update — the refresh publishes
@@ -1623,21 +1730,14 @@ async fn ping_once(
         .await
         .ranked
         .iter()
-        .map(|item| Candidate {
-            id: item.id.clone(),
-            dedup_key: item.dedup_key.clone(),
-            source: item.source.clone(),
-            priority: item.priority,
-            protocol: item.protocol.clone(),
-            name: item.name.clone(),
-            endpoint: item.endpoint.clone(),
-            uri: item.uri.clone(),
-        })
+        .map(candidate_from_ranked)
         .collect();
     if cached.is_empty() {
         debug!("ping skipped: no cached configs yet");
         return Ok(false);
     }
+    let cached_count = cached.len();
+    let tested_keys: HashSet<String> = cached.iter().map(|item| item.dedup_key.clone()).collect();
 
     // Baseline for every keep/top-up decision below: ASAP progress events
     // rewrite `state.ranked` live mid-probe (truncated to top_n), so the
@@ -1690,7 +1790,31 @@ async fn ping_once(
     drop(progress_tx);
     let _ = progress_task.await;
 
-    let progress_state = state.read().await.clone();
+    let mut progress_state = state.read().await.clone();
+    // Database backfill: the cache alone may verify fewer than `top_n`
+    // (configs die between cycles), so dip into previously-seen database
+    // configs — never re-fetching — to try to refill the shortfall.
+    // Skipped on preemption (the refresh owns the results then) and when
+    // `top_n` is already met or unlimited.
+    let mut backfill_tested = 0_usize;
+    if !ping_cancel.load(AtomicOrdering::SeqCst)
+        && config.top_n > 0
+        && ranked.iter().filter(|item| item.reachable).count() < config.top_n
+    {
+        backfill_tested = probe_ping_backfill(
+            config,
+            &database,
+            &state,
+            &previous_top_n,
+            &tested_keys,
+            &mut ranked,
+            print_compact_progress,
+            &ping_cancel,
+        )
+        .await;
+        progress_state = state.read().await.clone();
+    }
+
     if ping_cancel.load(AtomicOrdering::SeqCst) {
         // Preempted by a refresh (no re-ranking, no persist — the refresh
         // owns all of that now). But partials skew toward fast failures, so
@@ -1719,14 +1843,20 @@ async fn ping_once(
                 runtime
                     .stable_working_counts
                     .clone_from(&previous_before_ping.stable_working_counts);
+                // Counters describe the kept set, not the aborted run: the
+                // top bar must show the still-served working configs instead
+                // of freezing the partial zeros. The refresh seeds its stop
+                // policy from these consistent values via the carry.
+                runtime.tested_candidates = previous_before_ping.tested_candidates;
+                runtime.reachable_candidates = previous_served;
             } else {
                 runtime.ranked = ranked;
+                // Counters stay partial (honest progress, and the refresh seeds
+                // its stop policy from them — no ghost working). The ranked list
+                // above is what continuity needs.
+                runtime.tested_candidates = tested;
+                runtime.reachable_candidates = working;
             }
-            // Counters stay partial (honest progress, and the refresh seeds
-            // its stop policy from them — no ghost working). The ranked list
-            // above is what continuity needs.
-            runtime.tested_candidates = tested;
-            runtime.reachable_candidates = working;
             runtime.pinging = false;
             runtime.last_error = None;
         }
@@ -1879,16 +2009,19 @@ async fn ping_once(
         runtime.last_error = None;
     }
 
+    let scope = if backfill_tested > 0 {
+        format!("{cached_count} cached + {backfill_tested} DB backfill")
+    } else {
+        format!("{} cached", progress_state.tested_candidates)
+    };
     let summary = if let Some((still_count, fill_count)) = topped_up {
         format!(
-            "{actor} Ping finished: kept {still_count} previous + {fill_count} new working of {} cached configs in {}",
-            progress_state.tested_candidates,
+            "{actor} Ping finished: kept {still_count} previous + {fill_count} new working of {scope} configs in {}",
             format_duration_short(started_instant.elapsed().as_millis())
         )
     } else {
         format!(
-            "{actor} Ping finished: {working} working of {} cached configs in {}",
-            progress_state.tested_candidates,
+            "{actor} Ping finished: {working} working of {scope} configs in {}",
             format_duration_short(started_instant.elapsed().as_millis())
         )
     };
@@ -4107,6 +4240,363 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ping_backfills_shortfall_from_database() {
+        // The cache alone verifies fewer than top_n: the ping must dip into
+        // previously-seen database configs (never re-fetching) to refill.
+        // One cached working + one DB working with top_n 2 must serve 2.
+        let first = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback binds");
+        let second = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback binds");
+        let port_of =
+            |listener: &std::net::TcpListener| listener.local_addr().expect("listener addr").port();
+        let mut config = manual_trigger_test_config();
+        config.prioritize_stability = true;
+        config.top_n = 2;
+        let database = manual_trigger_test_database();
+        let mut cached_alive = ranked(
+            "cached-alive",
+            "vless://00000000-0000-0000-0000-000000000031@127.0.0.1#cached-alive",
+            true,
+            Some(5),
+        );
+        cached_alive.endpoint = crate::model::Endpoint {
+            host: "127.0.0.1".to_string(),
+            port: port_of(&first),
+        };
+        let mut db_alive = ranked(
+            "db-alive",
+            "vless://00000000-0000-0000-0000-000000000032@127.0.0.1#db-alive",
+            true,
+            Some(7),
+        );
+        db_alive.endpoint = crate::model::Endpoint {
+            host: "127.0.0.1".to_string(),
+            port: port_of(&second),
+        };
+        let mut db_dead = ranked(
+            "db-dead",
+            "vless://00000000-0000-0000-0000-000000000033@127.0.0.1#db-dead",
+            false,
+            None,
+        );
+        // Unroutable loopback: the widened pool probes it, but it must
+        // fail fast and hermetically (no real network in tests).
+        db_dead.endpoint = crate::model::Endpoint {
+            host: "127.0.0.1".to_string(),
+            port: 9,
+        };
+        persist_ranked_configs(&database, &[db_alive, db_dead], 2, 0, false)
+            .await
+            .expect("db seeds");
+        let state = Arc::new(tokio::sync::RwLock::new(RuntimeState {
+            ranked: vec![cached_alive],
+            ..Default::default()
+        }));
+        let runtime_config = Arc::new(tokio::sync::RwLock::new(RuntimeConfig::from(&config)));
+        let cycle = Arc::new(tokio::sync::Mutex::new(()));
+
+        let preempted = ping_once(
+            &config,
+            database,
+            state.clone(),
+            runtime_config,
+            cycle,
+            false,
+            Arc::new(AtomicBool::new(false)),
+            true,
+        )
+        .await
+        .expect("ping succeeds");
+        assert!(!preempted);
+
+        let runtime = state.read().await;
+        assert_eq!(runtime.reachable_candidates, 2);
+        let head: Vec<&str> = runtime
+            .ranked
+            .iter()
+            .filter(|item| item.reachable)
+            .map(|item| item.name.as_str())
+            .collect();
+        assert_eq!(head, vec!["cached-alive", "db-alive"]);
+        assert!(
+            runtime
+                .logs
+                .iter()
+                .any(|line| line.contains("1 cached + 2 DB backfill")),
+            "backfill scope missing: {:?}",
+            runtime.logs
+        );
+        drop(runtime);
+        drop((first, second));
+    }
+
+    #[tokio::test]
+    async fn ping_backfills_never_tested_database_rows() {
+        // The exact fetch-cache flow: a sighting the database holds but no
+        // cycle ever tested (reachable 0, no measurements) still refills a
+        // shortfall when it verifies on probe.
+        let first = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback binds");
+        let second = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback binds");
+        let port_of =
+            |listener: &std::net::TcpListener| listener.local_addr().expect("listener addr").port();
+        let mut config = manual_trigger_test_config();
+        config.prioritize_stability = true;
+        config.top_n = 2;
+        let database = manual_trigger_test_database();
+        let mut cached_alive = ranked(
+            "cached-alive",
+            "vless://00000000-0000-0000-0000-000000000061@127.0.0.1#cached-alive",
+            true,
+            Some(5),
+        );
+        cached_alive.endpoint = crate::model::Endpoint {
+            host: "127.0.0.1".to_string(),
+            port: port_of(&first),
+        };
+        let sighting = crate::model::Candidate {
+            id: "sighting".to_string(),
+            dedup_key: "vless://00000000-0000-0000-0000-000000000062@127.0.0.1#sighting"
+                .to_string(),
+            source: "test".to_string(),
+            priority: 1,
+            protocol: "vless".to_string(),
+            name: "sighting".to_string(),
+            endpoint: crate::model::Endpoint {
+                host: "127.0.0.1".to_string(),
+                port: port_of(&second),
+            },
+            uri: "vless://00000000-0000-0000-0000-000000000062@127.0.0.1#sighting".to_string(),
+        };
+        database
+            .insert_new_candidates(std::slice::from_ref(&sighting))
+            .expect("sighting inserts");
+        let state = Arc::new(tokio::sync::RwLock::new(RuntimeState {
+            ranked: vec![cached_alive],
+            ..Default::default()
+        }));
+        let runtime_config = Arc::new(tokio::sync::RwLock::new(RuntimeConfig::from(&config)));
+        let cycle = Arc::new(tokio::sync::Mutex::new(()));
+
+        let preempted = ping_once(
+            &config,
+            database,
+            state.clone(),
+            runtime_config,
+            cycle,
+            false,
+            Arc::new(AtomicBool::new(false)),
+            true,
+        )
+        .await
+        .expect("ping succeeds");
+        assert!(!preempted);
+
+        let runtime = state.read().await;
+        assert_eq!(runtime.reachable_candidates, 2);
+        let head: Vec<&str> = runtime
+            .ranked
+            .iter()
+            .filter(|item| item.reachable)
+            .map(|item| item.name.as_str())
+            .collect();
+        assert_eq!(head, vec!["cached-alive", "sighting"]);
+        assert!(
+            runtime
+                .logs
+                .iter()
+                .any(|line| line.contains("1 cached + 1 DB backfill")),
+            "backfill scope missing: {:?}",
+            runtime.logs
+        );
+        drop(runtime);
+        drop((first, second));
+    }
+
+    #[tokio::test]
+    async fn insert_new_candidates_never_clobbers_known_rows() {
+        // Re-fetching a known working config must not reset it to untested,
+        // while genuinely new sightings become backfill-eligible pool rows.
+        let database = manual_trigger_test_database();
+        let mut known = ranked(
+            "known",
+            "vless://00000000-0000-0000-0000-000000000071@127.0.0.1#known",
+            true,
+            Some(100),
+        );
+        known.stability_count = 4;
+        persist_ranked_configs(&database, std::slice::from_ref(&known), 1, 0, false)
+            .await
+            .expect("known persists");
+        let repeat = crate::model::Candidate {
+            id: "repeat".to_string(),
+            dedup_key: known.dedup_key.clone(),
+            source: "test".to_string(),
+            priority: 1,
+            protocol: "vless".to_string(),
+            name: "repeat".to_string(),
+            endpoint: crate::model::Endpoint {
+                host: "127.0.0.1".to_string(),
+                port: 9,
+            },
+            uri: known.uri.clone(),
+        };
+        let fresh = crate::model::Candidate {
+            id: "fresh".to_string(),
+            dedup_key: "vless://00000000-0000-0000-0000-000000000072@127.0.0.1#fresh".to_string(),
+            source: "test".to_string(),
+            priority: 1,
+            protocol: "vless".to_string(),
+            name: "fresh".to_string(),
+            endpoint: crate::model::Endpoint {
+                host: "127.0.0.1".to_string(),
+                port: 9,
+            },
+            uri: "vless://00000000-0000-0000-0000-000000000072@127.0.0.1#fresh".to_string(),
+        };
+        database
+            .insert_new_candidates(&[repeat, fresh])
+            .expect("sightings insert");
+
+        let loaded = database
+            .load_backfill_candidates(&HashSet::new(), 10)
+            .expect("loads");
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].name, "known");
+        assert!(loaded[0].reachable);
+        assert_eq!(loaded[0].stability_count, 4);
+        assert_eq!(loaded[0].latency_ms, Some(100));
+        assert_eq!(loaded[1].name, "fresh");
+        assert!(!loaded[1].reachable);
+    }
+
+    #[tokio::test]
+    async fn ping_skips_backfill_when_top_n_met() {
+        // Cache already verifies top_n: the database must stay untouched.
+        // A poison row (unparsable URI, would fail preparation if probed)
+        // proves no extra probing happened via the tested count.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback binds");
+        let open_port = listener.local_addr().expect("listener addr").port();
+        let mut config = manual_trigger_test_config();
+        config.prioritize_stability = true;
+        config.top_n = 1;
+        let database = manual_trigger_test_database();
+        let mut cached_alive = ranked(
+            "cached-alive",
+            "vless://00000000-0000-0000-0000-000000000041@127.0.0.1#cached-alive",
+            true,
+            Some(5),
+        );
+        cached_alive.endpoint = crate::model::Endpoint {
+            host: "127.0.0.1".to_string(),
+            port: open_port,
+        };
+        let poison = ranked("poison", "not-a-uri", true, None);
+        persist_ranked_configs(&database, std::slice::from_ref(&poison), 1, 0, false)
+            .await
+            .expect("db seeds");
+        let state = Arc::new(tokio::sync::RwLock::new(RuntimeState {
+            ranked: vec![cached_alive],
+            ..Default::default()
+        }));
+        let runtime_config = Arc::new(tokio::sync::RwLock::new(RuntimeConfig::from(&config)));
+        let cycle = Arc::new(tokio::sync::Mutex::new(()));
+
+        let preempted = ping_once(
+            &config,
+            database,
+            state.clone(),
+            runtime_config,
+            cycle,
+            false,
+            Arc::new(AtomicBool::new(false)),
+            true,
+        )
+        .await
+        .expect("ping succeeds");
+        assert!(!preempted);
+
+        let runtime = state.read().await;
+        assert_eq!(runtime.reachable_candidates, 1);
+        assert_eq!(runtime.tested_candidates, 1);
+        assert!(
+            runtime
+                .logs
+                .iter()
+                .any(|line| line.contains("1 working of 1 cached configs")),
+            "unexpected scope: {:?}",
+            runtime.logs
+        );
+        assert!(
+            !runtime.logs.iter().any(|line| line.contains("DB backfill")),
+            "backfill must not run: {:?}",
+            runtime.logs
+        );
+        drop(runtime);
+        drop(listener);
+    }
+
+    #[tokio::test]
+    async fn backfill_loader_orders_excludes_and_caps() {
+        // Veterans first (working, then stable, then fast), then failed and
+        // never-tested rows; tested keys excluded, hard cap honored.
+        let database = manual_trigger_test_database();
+        let mut steady = ranked(
+            "steady",
+            "vless://00000000-0000-0000-0000-000000000051@127.0.0.1#steady",
+            true,
+            Some(900),
+        );
+        steady.stability_count = 5;
+        let mut quick = ranked(
+            "quick",
+            "vless://00000000-0000-0000-0000-000000000052@127.0.0.1#quick",
+            true,
+            Some(50),
+        );
+        quick.stability_count = 3;
+        let mut stale = ranked(
+            "stale",
+            "vless://00000000-0000-0000-0000-000000000053@127.0.0.1#stale",
+            true,
+            Some(10),
+        );
+        stale.stability_count = 1;
+        let buried = ranked(
+            "buried",
+            "vless://00000000-0000-0000-0000-000000000054@127.0.0.1#buried",
+            false,
+            None,
+        );
+        persist_ranked_configs(
+            &database,
+            &[steady.clone(), quick.clone(), stale.clone(), buried],
+            4,
+            0,
+            false,
+        )
+        .await
+        .expect("db seeds");
+
+        let exclude = HashSet::from([steady.dedup_key.clone()]);
+        let loaded = database
+            .load_backfill_candidates(&exclude, 2)
+            .expect("loads");
+        let names: Vec<&str> = loaded.iter().map(|item| item.name.as_str()).collect();
+        assert_eq!(names, vec!["quick", "stale"]);
+
+        let capped = database
+            .load_backfill_candidates(&HashSet::new(), 1)
+            .expect("loads capped");
+        assert_eq!(capped.len(), 1);
+        assert_eq!(capped[0].name, "steady");
+
+        let all = database
+            .load_backfill_candidates(&HashSet::new(), 10)
+            .expect("loads all");
+        let names: Vec<&str> = all.iter().map(|item| item.name.as_str()).collect();
+        assert_eq!(names, vec!["steady", "quick", "stale", "buried"]);
+    }
+
+    #[tokio::test]
     async fn ping_tops_up_previous_working_with_new_configs() {
         // Previously working configs that still verify keep their seats in
         // previous order (even if slower); the shortfall to top_n fills from
@@ -4195,9 +4685,10 @@ mod tests {
     #[tokio::test]
     async fn preempted_ping_keeps_previous_working_set() {
         // A preempted ping whose partials verify nothing must not wipe the
-        // live set: the previous working configs stay served (the refresh
-        // still carries the partial counts separately), Debug-asserted here
-        // with a preset cancel flag standing in for the interrupting refresh.
+        // live set: the previous working configs stay served with their
+        // counters (the top bar must show the 2 still served, not the
+        // partial zeros) — Debug-asserted here with a preset cancel flag
+        // standing in for the interrupting refresh.
         let mut config = manual_trigger_test_config();
         config.prioritize_stability = true;
         let database = manual_trigger_test_database();
@@ -4223,6 +4714,8 @@ mod tests {
         };
         let state = Arc::new(tokio::sync::RwLock::new(RuntimeState {
             ranked: vec![first, second],
+            tested_candidates: 7,
+            reachable_candidates: 2,
             ..Default::default()
         }));
         let runtime_config = Arc::new(tokio::sync::RwLock::new(RuntimeConfig::from(&config)));
@@ -4245,7 +4738,8 @@ mod tests {
 
         let runtime = state.read().await;
         assert!(!runtime.pinging);
-        assert_eq!(runtime.reachable_candidates, 0);
+        assert_eq!(runtime.reachable_candidates, 2);
+        assert_eq!(runtime.tested_candidates, 7);
         assert_eq!(runtime.ranked.len(), 2);
         assert!(runtime.ranked.iter().all(|item| item.reachable));
         assert!(

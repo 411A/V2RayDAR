@@ -32,7 +32,7 @@ use crate::{
         PROXY_STARTUP_TIMEOUT, PROXY_STARVATION_MIN_AGE, PROXY_STARVATION_MIN_UPLOAD_BYTES,
         PROXY_STARVATION_POLL_INTERVAL, SING_BOX_CLEANUP_TIMEOUT, SING_BOX_CONFIG_FILE_PREFIX,
     },
-    model::{ProgressEvent, RankedConfig},
+    model::{ProgressEvent, RankedConfig, RuntimeState},
     probe::{sing_box_outbound_from_share_link, sing_box_version_at_least},
 };
 
@@ -742,19 +742,42 @@ where
     (received, false)
 }
 
-pub fn spawn_health_loop(proxy: SharedProxy, ranked: Arc<RwLock<Vec<RankedConfig>>>) {
+/// Mirror the proxy snapshot into the TUI runtime state so the 🚪 door tracks
+/// a mid-cycle failover immediately instead of pointing at (or vanishing
+/// from) the dead config until the next ping/refresh syncs it minutes later.
+/// Same five fields `update_proxy_and_ranked` copies; ranked is untouched.
+async fn sync_runtime_proxy_snapshot(proxy: &SharedProxy, runtime: &Arc<RwLock<RuntimeState>>) {
+    let snapshot = proxy.lock().await.snapshot().await;
+    let mut state = runtime.write().await;
+    state
+        .proxy_active_config
+        .clone_from(&snapshot.active_config);
+    state.proxy_active_uri = snapshot.active_uri;
+    state.proxy_running = snapshot.running;
+    state.proxy_port = snapshot.port;
+    state.proxy_discoverable = snapshot.discoverable;
+}
+
+pub fn spawn_health_loop(
+    proxy: SharedProxy,
+    ranked: Arc<RwLock<Vec<RankedConfig>>>,
+    runtime: Arc<RwLock<RuntimeState>>,
+) {
     tokio::spawn(async move {
         let mut last_interval = 0u64;
 
         loop {
             // Read interval from state — reactive to config changes
-            let (running, consecutive_failures, interval) = {
+            let (running, consecutive_failures, interval, controller, secret, manual) = {
                 let p = proxy.lock().await;
                 let state = p.state.read().await;
                 let result = (
                     state.running,
                     state.consecutive_failures,
                     state.proxy_config.health_check_interval_seconds,
+                    state.clash_controller,
+                    state.clash_secret.clone(),
+                    state.manual_proxy_uri.clone(),
                 );
                 drop(state);
                 drop(p);
@@ -777,11 +800,44 @@ pub fn spawn_health_loop(proxy: SharedProxy, ranked: Arc<RwLock<Vec<RankedConfig
                 continue;
             }
 
+            // Idle users must never trigger a switch: failover is driven by
+            // real user traffic (the starvation detector), not by background
+            // probes. When the Clash controller is available, skip the
+            // transfer health check entirely while no user connections exist.
+            // A manually pinned config never auto-switches either — it only
+            // gets loud log lines from the starvation path.
+            if let (Some(addr), Some(secret)) = (controller, secret) {
+                match fetch_clash_connections(addr, &secret).await {
+                    Ok(connections) => {
+                        if connections.is_empty() {
+                            continue;
+                        }
+                    }
+                    Err(err) => {
+                        warn!(
+                            error = %err,
+                            "proxy: clash API unreachable, falling back to transfer health check"
+                        );
+                    }
+                }
+            }
+
             // No proxy lock is held across the transfer checks below: a dead
             // proxy burns sequential URL timeouts and must not stall updates.
             let health_ok = PersistentProxy::health_check(&proxy).await;
 
             if health_ok {
+                continue;
+            }
+
+            if manual.is_some() {
+                warn!(
+                    "proxy: health check failed on a manually pinned config; staying (clear the pin to auto-failover)"
+                );
+                proxy.lock().await.emit_log(
+                    "proxy: health fail on manual pin; staying (clear the pin to auto-failover)"
+                        .into(),
+                );
                 continue;
             }
 
@@ -807,6 +863,7 @@ pub fn spawn_health_loop(proxy: SharedProxy, ranked: Arc<RwLock<Vec<RankedConfig
                     .await
                     .emit_log(format!("proxy: failover failed: {err}"));
             }
+            sync_runtime_proxy_snapshot(&proxy, &runtime).await;
         }
     });
 }
@@ -870,7 +927,11 @@ async fn fetch_clash_connections(addr: SocketAddr, secret: &str) -> Result<Vec<C
 /// one immediate transfer health check; failover happens only when that
 /// fails too (the config genuinely carries no data). A manually pinned
 /// config is never switched away from — it only gets a loud log line.
-pub fn spawn_starvation_loop(proxy: SharedProxy, ranked: Arc<RwLock<Vec<RankedConfig>>>) {
+pub fn spawn_starvation_loop(
+    proxy: SharedProxy,
+    ranked: Arc<RwLock<Vec<RankedConfig>>>,
+    runtime: Arc<RwLock<RuntimeState>>,
+) {
     tokio::spawn(async move {
         let mut samples: HashMap<String, ConnSample> = HashMap::new();
         let mut reported: HashSet<String> = HashSet::new();
@@ -946,7 +1007,7 @@ pub fn spawn_starvation_loop(proxy: SharedProxy, ranked: Arc<RwLock<Vec<RankedCo
                     sample.download,
                 ) {
                     reported.insert(conn.id.clone());
-                    on_starved_connection(&proxy, &ranked, &conn.id, sample.upload).await;
+                    on_starved_connection(&proxy, &ranked, &conn.id, sample.upload, &runtime).await;
                     // One trigger per poll: a failover restarts the process,
                     // so the rest of this snapshot is already stale.
                     break;
@@ -960,12 +1021,14 @@ pub fn spawn_starvation_loop(proxy: SharedProxy, ranked: Arc<RwLock<Vec<RankedCo
 
 /// One starved connection found: verify the active config with a transfer
 /// check and fail over to the next best config when it carries nothing.
-/// A manually pinned config is kept (loud log instead of a switch).
+/// A manually pinned config is verified the same way but never auto-switched:
+/// it stays with a loud log so the user can pick another proxy themselves.
 async fn on_starved_connection(
     proxy: &SharedProxy,
     ranked: &Arc<RwLock<Vec<RankedConfig>>>,
     conn_id: &str,
     upload: u64,
+    runtime: &Arc<RwLock<RuntimeState>>,
 ) {
     warn!(
         connection = %conn_id,
@@ -975,6 +1038,13 @@ async fn on_starved_connection(
     proxy.lock().await.emit_log(format!(
         "proxy: a connection sent {upload} bytes with nothing back; verifying active config"
     ));
+    // Even a manually chosen config is transfer-verified here: the user cannot
+    // tell from the list whether it actually carries data. Manual only changes
+    // what happens on failure (loud stay, no auto-switch).
+    if PersistentProxy::health_check(proxy).await {
+        info!("proxy: starved connection, but the active config transfers data; keeping");
+        return;
+    }
     let manual = proxy
         .lock()
         .await
@@ -984,14 +1054,9 @@ async fn on_starved_connection(
         .manual_proxy_uri
         .clone();
     if manual.is_some() {
-        let message =
-            "proxy: manually pinned config looks starved; staying (clear the pin to auto-failover)";
+        let message = "proxy: manually pinned config verified starved; staying (clear the pin to auto-failover)";
         warn!("{message}");
         proxy.lock().await.emit_log(message.to_string());
-        return;
-    }
-    if PersistentProxy::health_check(proxy).await {
-        info!("proxy: starved connection, but the active config transfers data; keeping");
         return;
     }
     warn!("proxy: active config verified starved, attempting failover");
@@ -1003,6 +1068,7 @@ async fn on_starved_connection(
             .await
             .emit_log(format!("proxy: starvation failover failed: {err}"));
     }
+    sync_runtime_proxy_snapshot(proxy, runtime).await;
 }
 
 #[derive(Debug, Clone)]

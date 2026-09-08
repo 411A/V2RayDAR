@@ -226,8 +226,13 @@ impl Database {
 
     /// Pool for ping backfill: previously-seen configs the current cycle
     /// did not test, veterans first (working, then stable, then fast),
-    /// then failed and never-tested rows. The ping only dips into this
-    /// when it verifies fewer than `top_n` working configs.
+    /// then never-tested rows, then failed rows. Never-tested outranks
+    /// failed because the refresh early-stops: the fetch sights thousands
+    /// of configs insert-only but only probes until `top_n`, so the
+    /// unprobed sightings are the same fresh pool a fetch would check next —
+    /// grinding stale failures first is why ping alone found worse configs
+    /// than a fetch. The ping only dips into this when it verifies fewer
+    /// than `top_n` working configs.
     #[allow(clippy::significant_drop_tightening)]
     pub fn load_backfill_candidates(
         &self,
@@ -247,8 +252,11 @@ impl Database {
             sql.push_str(&placeholders);
             sql.push(')');
         }
+        // Veterans (reachable) first; among the rest, never-tested
+        // (`validation = ''`, sighted insert-only but never probed) before
+        // failed (`validation != ''`, probed and failed, even with history).
         sql.push_str(
-            " ORDER BY reachable DESC, stability_count DESC, latency_ms ASC NULLS LAST LIMIT ?",
+            " ORDER BY reachable DESC, (validation = '') DESC, stability_count DESC, latency_ms ASC NULLS LAST LIMIT ?",
         );
 
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -384,5 +392,78 @@ fn restrict_file_permissions(path: &Path) {
     #[cfg(not(unix))]
     {
         let _ = path;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Endpoint;
+
+    fn ranked_row(key: &str, reachable: bool, validation: &str, stability: u32) -> RankedConfig {
+        RankedConfig {
+            rank: 0,
+            stability_count: stability,
+            id: format!("id-{key}"),
+            dedup_key: key.to_string(),
+            source: "test".to_string(),
+            priority: 1,
+            protocol: "vless".to_string(),
+            name: key.to_string(),
+            endpoint: Endpoint {
+                host: "example.com".to_string(),
+                port: 443,
+            },
+            uri: format!("vless://{key}@example.com:443"),
+            reachable,
+            validation: validation.to_string(),
+            latency_ms: None,
+            http_status: None,
+            download_mbps: None,
+            download_bytes: None,
+            error: None,
+            country_code: None,
+        }
+    }
+
+    #[test]
+    fn backfill_orders_never_tested_before_failed() {
+        // Veterans first, then never-tested sightings (validation ''), then
+        // failed rows — even when a failed row carries stability history.
+        let dir = std::env::temp_dir().join(format!(
+            "v2raydar-backfill-order-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir can be created");
+        let db = Database::open(&dir.join("data.db")).expect("db opens");
+        db.upsert_configs(&[
+            ranked_row("failed-history", false, "active_http", 5),
+            ranked_row("veteran", true, "active_http", 1),
+        ])
+        .expect("seeded tested rows");
+        db.insert_new_candidates(&[Candidate {
+            id: "id-fresh".to_string(),
+            dedup_key: "fresh".to_string(),
+            source: "test".to_string(),
+            priority: 1,
+            protocol: "vless".to_string(),
+            name: "fresh".to_string(),
+            endpoint: Endpoint {
+                host: "example.com".to_string(),
+                port: 443,
+            },
+            uri: "vless://fresh@example.com:443".to_string(),
+        }])
+        .expect("seeded sighting");
+        let order: Vec<String> = db
+            .load_backfill_candidates(&HashSet::new(), 10)
+            .expect("backfill loads")
+            .into_iter()
+            .map(|item| item.dedup_key)
+            .collect();
+        assert_eq!(order, vec!["veteran", "fresh", "failed-history"]);
     }
 }

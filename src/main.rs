@@ -344,8 +344,8 @@ async fn main() -> Result<()> {
         tracing::warn!(error = %err, "failed to add proxy firewall rule");
     }
 
-    proxy::spawn_health_loop(shared.clone(), shared_ranked.clone());
-    proxy::spawn_starvation_loop(shared.clone(), shared_ranked.clone());
+    proxy::spawn_health_loop(shared.clone(), shared_ranked.clone(), state.clone());
+    proxy::spawn_starvation_loop(shared.clone(), shared_ranked.clone(), state.clone());
     let proxy = shared;
 
     let (config_tx, config_rx) = watch::channel(config.clone());
@@ -1622,51 +1622,77 @@ async fn probe_ping_backfill(
     print_compact_progress: bool,
     ping_cancel: &Arc<AtomicBool>,
 ) -> usize {
-    let db = database.clone();
-    let tested = tested_keys.clone();
-    let extras = tokio::task::spawn_blocking(move || {
-        db.load_backfill_candidates(&tested, PING_BACKFILL_MAX_CANDIDATES)
-    })
-    .await;
-    let extras = match extras {
-        Ok(Ok(rows)) => rows,
-        Ok(Err(error)) => {
-            warn!(error = %error, "ping backfill skipped: database unreadable");
-            return 0;
-        }
-        Err(error) => {
-            warn!(error = %error, "ping backfill skipped: database task failed");
-            return 0;
-        }
-    };
-    if extras.is_empty() {
+    // Refill loop: one 256-batch is rarely enough to reach `top_n` when the
+    // pool is large and mostly dead (e.g. 4 working per 256 with 9102 cached).
+    // Keep pulling fresh batches (excluding everything tested so far) until
+    // `top_n` working is reached, the pool is exhausted, or a refresh
+    // preempts the ping. Each batch is still capped so one ping stays bounded.
+    if config.top_n == 0 {
         return 0;
     }
-    let extra_candidates: Vec<Candidate> = extras.iter().map(candidate_from_ranked).collect();
-    let backfill_count = extra_candidates.len();
-    let (backfill_tx, backfill_task) = spawn_tui_progress_forwarder(
-        state.clone(),
-        previous_top_n.clone(),
-        print_compact_progress,
-        false,
-    );
-    let mut backfill_ranked = probe_refresh_candidates(
-        extra_candidates,
-        config,
-        previous_top_n,
-        state,
-        &backfill_tx,
-        print_compact_progress,
-        "Ping backfill",
-        None,
-        Some(ping_cancel.clone()),
-    )
-    .await;
-    drop(backfill_tx);
-    let _ = backfill_task.await;
-    ranked.append(&mut backfill_ranked);
-    deduplicate_ranked_configs(ranked);
-    backfill_count
+    let mut tested = tested_keys.clone();
+    let mut total_tested = 0_usize;
+    loop {
+        if ping_cancel.load(AtomicOrdering::SeqCst) {
+            break;
+        }
+        let reachable = ranked.iter().filter(|item| item.reachable).count();
+        if config.top_n > 0 && reachable >= config.top_n {
+            break;
+        }
+        let db = database.clone();
+        let exclude = tested.clone();
+        let extras = tokio::task::spawn_blocking(move || {
+            db.load_backfill_candidates(&exclude, PING_BACKFILL_MAX_CANDIDATES)
+        })
+        .await;
+        let extras = match extras {
+            Ok(Ok(rows)) => rows,
+            Ok(Err(error)) => {
+                warn!(error = %error, "ping backfill skipped: database unreadable");
+                break;
+            }
+            Err(error) => {
+                warn!(error = %error, "ping backfill skipped: database task failed");
+                break;
+            }
+        };
+        if extras.is_empty() {
+            break;
+        }
+        for item in &extras {
+            tested.insert(item.dedup_key.clone());
+        }
+        let extra_candidates: Vec<Candidate> = extras.iter().map(candidate_from_ranked).collect();
+        let backfill_count = extra_candidates.len();
+        total_tested += backfill_count;
+        let (backfill_tx, backfill_task) = spawn_tui_progress_forwarder(
+            state.clone(),
+            previous_top_n.clone(),
+            print_compact_progress,
+            false,
+        );
+        let mut backfill_ranked = probe_refresh_candidates(
+            extra_candidates,
+            config,
+            previous_top_n,
+            state,
+            &backfill_tx,
+            print_compact_progress,
+            "Ping backfill",
+            None,
+            Some(ping_cancel.clone()),
+        )
+        .await;
+        drop(backfill_tx);
+        let _ = backfill_task.await;
+        ranked.append(&mut backfill_ranked);
+        deduplicate_ranked_configs(ranked);
+        if ping_cancel.load(AtomicOrdering::SeqCst) {
+            break;
+        }
+    }
+    total_tested
 }
 
 /// Cache freshly fetched configs in the database (insert-only, never
@@ -1836,6 +1862,9 @@ async fn ping_once(
         // publishing them as-is could wipe a live set with zero verified:
         // when they verify fewer than served before, keep the previous set
         // instead. The refresh still carries the partial counts separately.
+        // Same when the partials dropped the still-served proxy row (a slow
+        // active config the ping had not re-probed yet): publishing them
+        // would hide the 🚪 door for the whole interrupting refresh.
         deduplicate_ranked_configs(&mut ranked);
         let partial_working = ranked.iter().filter(|item| item.reachable).count();
         let previous_served = previous_before_ping
@@ -1843,7 +1872,18 @@ async fn ping_once(
             .iter()
             .filter(|item| item.reachable)
             .count();
-        let keep_served = partial_working < previous_served && previous_served > 0;
+        let active_dropped = previous_before_ping
+            .proxy_active_uri
+            .as_deref()
+            .is_some_and(|active| {
+                previous_before_ping
+                    .ranked
+                    .iter()
+                    .any(|item| item.uri == active)
+                    && !ranked.iter().any(|item| item.uri == active)
+            });
+        let keep_served =
+            (partial_working < previous_served && previous_served > 0) || active_dropped;
         let tested = progress_state.tested_candidates;
         let working = progress_state.reachable_candidates;
         {
@@ -1926,8 +1966,10 @@ async fn ping_once(
     // Stability top-up: previously served working configs that still verify
     // keep their seats in previous order (even when slower than newcomers);
     // the shortfall to top_n fills from newly verified working configs by
-    // latency. Whatever verifies gets published — fresh truth always wins
-    // over a stale list; only a zero-verified run keeps the previous set.
+    // latency (including the DB backfill above, which loops until `top_n`
+    // or pool exhaustion so one 256-batch shortfall cannot publish 7 of 10).
+    // Whatever verifies gets published — fresh truth always wins over a
+    // stale list; only a zero-verified run keeps the previous set.
     let previous_working = previous_before_ping
         .ranked
         .iter()
@@ -2009,10 +2051,12 @@ async fn ping_once(
     } else {
         persist_ranked_configs(&database, &ranked, config.top_n, 0, false).await?;
     }
+    // Served working count drives the top bar: it must match the published
+    // reachable head, not a stale progress snapshot.
     let working = if fell_back {
         previous_working
     } else {
-        progress_state.reachable_candidates
+        ranked.iter().filter(|item| item.reachable).count()
     };
     {
         let mut runtime = state.write().await;
@@ -2124,6 +2168,15 @@ fn spawn_ping_loop(
     print_compact_progress: bool,
 ) {
     tokio::spawn(async move {
+        // Absolute deadline the automatic ping sleeps until. A `changed`
+        // notification (e.g. picking another SOCKS5/HTTP proxy from the TUI,
+        // which only flips `manual_proxy_uri`) must NOT restart this
+        // countdown: only an interval change, a finished cycle, or a fetch
+        // restart (`restart_rx`) re-arms it full. Without this, every manual
+        // proxy pick cancels the sleep and the next iteration sleeps the
+        // full interval again — resetting both timers from the beginning.
+        let mut next_deadline: Option<std::time::Instant> = None;
+        let mut last_interval: Option<u64> = None;
         loop {
             let config_snapshot = config_rx.borrow().clone();
             let ping_seconds = config_snapshot.ping_seconds;
@@ -2138,6 +2191,8 @@ fn spawn_ping_loop(
 
             if !auto_ping {
                 set_next_ping_deadline(&state, 0).await;
+                next_deadline = None;
+                last_interval = Some(ping_seconds);
                 tokio::select! {
                     trigger = trigger_rx.recv() => {
                         if trigger.is_none() {
@@ -2183,8 +2238,24 @@ fn spawn_ping_loop(
                 continue;
             }
 
-            set_next_ping_deadline(&state, ping_seconds).await;
-            let sleep = time::sleep(Duration::from_secs(ping_seconds));
+            let now = std::time::Instant::now();
+            // Re-arm full only when the interval changed, there is no
+            // deadline yet, or the previous one already passed (a cycle just
+            // ran). A `changed` wake-up with the same interval keeps the
+            // existing deadline, so proxy-only edits never reset the timer.
+            let rearm = last_interval != Some(ping_seconds)
+                || next_deadline.is_none_or(|deadline| deadline <= now);
+            if rearm {
+                let deadline = now + Duration::from_secs(ping_seconds);
+                next_deadline = Some(deadline);
+                last_interval = Some(ping_seconds);
+                state.write().await.next_ping_instant = Some(deadline);
+            }
+            let wait = next_deadline.map_or_else(
+                || Duration::from_secs(ping_seconds),
+                |deadline| deadline.saturating_duration_since(std::time::Instant::now()),
+            );
+            let sleep = time::sleep(wait);
             tokio::pin!(sleep);
 
             tokio::select! {
@@ -2204,6 +2275,12 @@ fn spawn_ping_loop(
                         "automatic",
                     )
                     .await;
+                    // Countdown restarts full after a finished cycle.
+                    let deadline =
+                        std::time::Instant::now() + Duration::from_secs(ping_seconds);
+                    next_deadline = Some(deadline);
+                    last_interval = Some(ping_seconds);
+                    state.write().await.next_ping_instant = Some(deadline);
                 }
                 trigger = trigger_rx.recv() => {
                     if trigger.is_none() {
@@ -2239,6 +2316,12 @@ fn spawn_ping_loop(
                     )
                     .await;
                     drain_triggers(&mut trigger_rx);
+                    // A manual run also restarts the automatic countdown full.
+                    let deadline =
+                        std::time::Instant::now() + Duration::from_secs(ping_seconds);
+                    next_deadline = Some(deadline);
+                    last_interval = Some(ping_seconds);
+                    state.write().await.next_ping_instant = Some(deadline);
                 }
                 changed = config_rx.changed() => {
                     if changed.is_err() {
@@ -2246,6 +2329,8 @@ fn spawn_ping_loop(
                     }
                     let config = config_rx.borrow().clone();
                     *runtime_config.write().await = RuntimeConfig::from(&config);
+                    // Intentionally no re-arm: the top of the loop preserves
+                    // `next_deadline` when the interval is unchanged.
                 }
                 restart = restart_rx.recv() => {
                     // A fetch just revalidated everything: drop the stale
@@ -2254,6 +2339,11 @@ fn spawn_ping_loop(
                         return;
                     }
                     drain_triggers(&mut restart_rx);
+                    let deadline =
+                        std::time::Instant::now() + Duration::from_secs(ping_seconds);
+                    next_deadline = Some(deadline);
+                    last_interval = Some(ping_seconds);
+                    state.write().await.next_ping_instant = Some(deadline);
                 }
             }
         }
@@ -2291,6 +2381,12 @@ fn spawn_refresh_loop(
     tokio::spawn(async move {
         let mut refresh_now = true;
         let mut last_refresh_fingerprint: Option<RefreshFingerprint> = None;
+        // Absolute deadline the automatic refresh sleeps until. Proxy-only
+        // edits (e.g. picking another SOCKS5/HTTP proxy, which leaves the
+        // fingerprint unchanged) must NOT restart this countdown: only an
+        // interval change or a finished refresh re-arms it full.
+        let mut refresh_deadline: Option<std::time::Instant> = None;
+        let mut last_refresh_seconds: Option<u64> = None;
 
         loop {
             let refresh_seconds = config_rx.borrow().refresh_seconds;
@@ -2322,12 +2418,24 @@ fn spawn_refresh_loop(
                 }
 
                 update_proxy_and_ranked(&proxy, &shared_ranked, &state, &config, true).await;
+                // Fresh cycle done: re-arm the automatic countdown full.
+                if refresh_seconds != 0 {
+                    let deadline = std::time::Instant::now() + Duration::from_secs(refresh_seconds);
+                    refresh_deadline = Some(deadline);
+                    last_refresh_seconds = Some(refresh_seconds);
+                    state.write().await.next_refresh_instant = Some(deadline);
+                } else {
+                    refresh_deadline = None;
+                    last_refresh_seconds = Some(refresh_seconds);
+                }
 
                 continue;
             }
 
             if refresh_seconds == 0 {
                 set_next_refresh_deadline(&state, 0).await;
+                refresh_deadline = None;
+                last_refresh_seconds = Some(refresh_seconds);
                 warn!("automatic refresh is disabled because refresh_seconds is 0");
                 tokio::select! {
                     trigger = trigger_rx.recv() => {
@@ -2397,8 +2505,25 @@ fn spawn_refresh_loop(
                 continue;
             }
 
-            set_next_refresh_deadline(&state, refresh_seconds).await;
-            let sleep = time::sleep(Duration::from_secs(refresh_seconds));
+            let now = std::time::Instant::now();
+            // Re-arm full only when the interval changed, there is no
+            // deadline yet, or the previous one already passed (a cycle just
+            // ran). A `changed` wake-up with an unchanged fingerprint keeps
+            // the existing deadline below, so proxy-only edits never reset
+            // the fetch timer.
+            let rearm = last_refresh_seconds != Some(refresh_seconds)
+                || refresh_deadline.is_none_or(|deadline| deadline <= now);
+            if rearm {
+                let deadline = now + Duration::from_secs(refresh_seconds);
+                refresh_deadline = Some(deadline);
+                last_refresh_seconds = Some(refresh_seconds);
+                state.write().await.next_refresh_instant = Some(deadline);
+            }
+            let wait = refresh_deadline.map_or_else(
+                || Duration::from_secs(refresh_seconds),
+                |deadline| deadline.saturating_duration_since(std::time::Instant::now()),
+            );
+            let sleep = time::sleep(wait);
             tokio::pin!(sleep);
 
             tokio::select! {
@@ -2416,6 +2541,11 @@ fn spawn_refresh_loop(
                     }
 
                     update_proxy_and_ranked(&proxy, &shared_ranked, &state, &config, true).await;
+                    let deadline =
+                        std::time::Instant::now() + Duration::from_secs(refresh_seconds);
+                    refresh_deadline = Some(deadline);
+                    last_refresh_seconds = Some(refresh_seconds);
+                    state.write().await.next_refresh_instant = Some(deadline);
                 }
                 trigger = trigger_rx.recv() => {
                     if trigger.is_none() {
@@ -2452,6 +2582,11 @@ fn spawn_refresh_loop(
 
                     update_proxy_and_ranked(&proxy, &shared_ranked, &state, &config, true).await;
                     drain_triggers(&mut trigger_rx);
+                    let deadline =
+                        std::time::Instant::now() + Duration::from_secs(refresh_seconds);
+                    refresh_deadline = Some(deadline);
+                    last_refresh_seconds = Some(refresh_seconds);
+                    state.write().await.next_refresh_instant = Some(deadline);
                 }
                 changed = config_rx.changed() => {
                     if changed.is_err() {
@@ -2461,7 +2596,9 @@ fn spawn_refresh_loop(
                     let config = config_rx.borrow().clone();
                     *runtime_config.write().await = RuntimeConfig::from(&config);
                     let fingerprint = RefreshFingerprint::from(&config);
-                    if last_refresh_fingerprint.as_ref() != Some(&fingerprint) {
+                    if last_refresh_fingerprint.as_ref() == Some(&fingerprint) {
+                        last_refresh_seconds = Some(refresh_seconds);
+                    } else {
                         last_refresh_fingerprint = Some(fingerprint);
                         if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), cycle.clone(), print_terminal_summary, print_compact_progress, Some(ping_cancel.clone()), false).await {
                             error!(error = %err, "refresh after config reload failed");
@@ -2471,10 +2608,17 @@ fn spawn_refresh_loop(
                             // countdown full instead of resuming a stale partial one.
                             let _ = ping_restart_tx.send(());
                         }
+                        // A fingerprint-changing edit re-fetched: re-arm full.
+                        let deadline =
+                            std::time::Instant::now() + Duration::from_secs(refresh_seconds);
+                        refresh_deadline = Some(deadline);
+                        last_refresh_seconds = Some(refresh_seconds);
+                        state.write().await.next_refresh_instant = Some(deadline);
                     }
 
                     // Always update proxy on config change — even if the refresh
                     // fingerprint hasn't changed (e.g. proxy enable/disable).
+                    // The deadline above is preserved in that case.
                     update_proxy_and_ranked(&proxy, &shared_ranked, &state, &config, true).await;
                 }
             }

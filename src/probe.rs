@@ -951,12 +951,34 @@ fn schedule_active_candidates(
 
     let has_previous =
         stop_policy.prioritize_stability && !stop_policy.previous_working_keys.is_empty();
-    source_fair_candidates(candidates, |candidate| {
+    let mut scheduled = source_fair_candidates(candidates, |candidate| {
         has_previous
             && stop_policy
                 .previous_working_keys
                 .contains(&candidate.dedup_key)
-    })
+    });
+    // Probe every previous-working config before any newcomer: the stability
+    // quorum then resolves in the earliest waves, so early-stop fires at
+    // ~top_n instead of accumulating 2x working while hunting buried previous
+    // keys across a 9k round-robin. Stable split, so source fairness is kept
+    // within each group with zero concurrency changes.
+    if has_previous {
+        let mut previous = Vec::with_capacity(scheduled.len());
+        let mut rest = Vec::with_capacity(scheduled.len());
+        for candidate in scheduled {
+            if stop_policy
+                .previous_working_keys
+                .contains(&candidate.dedup_key)
+            {
+                previous.push(candidate);
+            } else {
+                rest.push(candidate);
+            }
+        }
+        previous.append(&mut rest);
+        scheduled = previous;
+    }
+    scheduled
 }
 
 struct SourceCandidateQueue {
@@ -3099,6 +3121,40 @@ mod tests {
             names,
             ["primary-old", "backup-old", "primary-new", "backup-new"]
         );
+    }
+
+    #[test]
+    fn active_probe_schedule_probes_all_previous_before_any_newcomer() {
+        // Across many sources the round-robin alone buries previous keys
+        // between newcomers, so the stability quorum resolves late and the
+        // run accumulates ~2x top_n working. Every previous-working config
+        // must precede every newcomer (stable split keeps source fairness
+        // within each group).
+        let mut candidates = Vec::new();
+        for source in ["s1", "s2", "s3", "s4"] {
+            for name in ["new-a", "new-b", "old"] {
+                candidates.push(candidate(source, 1, &format!("{source}-{name}")));
+            }
+        }
+        let previous_working_keys = candidates
+            .iter()
+            .filter(|item| item.name.ends_with("-old"))
+            .map(|item| item.dedup_key.clone())
+            .collect::<std::collections::HashSet<_>>();
+        let policy = stop_policy(4, true, previous_working_keys);
+
+        let scheduled = schedule_active_candidates(candidates, &policy);
+        let names = scheduled
+            .iter()
+            .map(|candidate| candidate.name.as_str())
+            .collect::<Vec<_>>();
+
+        let first_new = names
+            .iter()
+            .position(|name| name.contains("new"))
+            .expect("newcomers scheduled");
+        assert!(names[..first_new].iter().all(|name| name.ends_with("-old")));
+        assert!(names[first_new..].iter().all(|name| name.contains("new")));
     }
 
     #[tokio::test]

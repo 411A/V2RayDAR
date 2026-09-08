@@ -4,29 +4,29 @@ version = "0.6.0"
 edition = "2024"
 
 [dependencies]
-anyhow = "1.0.103"
+anyhow = "1.0.104"
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "query", "tokio"] }
-base64 = "0.22.1"
+base64 = "0.23.1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
-clap = { version = "4.6.1", features = ["derive"] }
+clap = { version = "4.6.6", features = ["derive"] }
 crossterm = "0.29.0"
-futures-util = { version = "0.3.32", default-features = false, features = ["alloc"] }
+futures-util = { version = "0.3.34", default-features = false, features = ["alloc"] }
 getrandom = "0.4.3"
-maxminddb = "0.29.0"
+maxminddb = "0.31.0"
 percent-encoding = "2.3.2"
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm", "layout-cache"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "stream"] }
-rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "aws-lc-rs"] }
+rustls = { version = "0.23.44", default-features = false, features = ["std", "tls12", "aws-lc-rs"] }
 rustls-platform-verifier = "0.7"
-webpki-roots = "0.26"
-rusqlite = { version = "0.31", features = ["bundled"] }
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.150"
+webpki-roots = "1.0.9"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 serde_yaml = "0.9"
-tokio = { version = "1.52.3", features = ["fs", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+tokio = { version = "1.53.1", features = ["fs", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-unicode-width = "0.2"
+unicode-width = "0.2.2"
 url = "2.5.8"
 qrcodegen = "1.8.0"
 jpeg-encoder = "0.7.1"

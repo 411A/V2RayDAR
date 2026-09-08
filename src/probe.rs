@@ -621,6 +621,21 @@ async fn probe_active_batched(
     );
     if prepared_failed > 0 {
         send_probe_delta(progress.as_ref(), prepared_failed, 0, 0);
+        // A wall of "unsupported" with no reason is undebuggable: name the
+        // actual preparation errors (e.g. a cache full of schemes the active
+        // prover cannot build) so the next one answers itself in Live Logs.
+        let top_errors = top_preparation_errors(&prepared_ranked, 3);
+        if !top_errors.is_empty() {
+            let summary = top_errors
+                .iter()
+                .map(|(error, count)| format!("'{error}' x{count}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            send_progress(
+                progress.as_ref(),
+                format!("Preparation skipped {prepared_failed} configs; top errors: {summary}"),
+            );
+        }
     }
     let shared: SharedProbe = Arc::new(Mutex::new(SharedProbeState {
         ranked: prepared_ranked,
@@ -810,6 +825,29 @@ fn prepare_active_candidates(
         ranked: all_ranked,
         prepared_candidates,
     }
+}
+
+/// Most frequent preparation errors across failed configs, most common
+/// first (ties keep first-seen order), capped at `limit` entries.
+fn top_preparation_errors(ranked: &[RankedConfig], limit: usize) -> Vec<(String, usize)> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    let mut order: Vec<String> = Vec::new();
+    for item in ranked.iter().filter_map(|item| item.error.as_ref()) {
+        if !counts.contains_key(item) {
+            order.push(item.clone());
+        }
+        *counts.entry(item.clone()).or_default() += 1;
+    }
+    let mut grouped: Vec<(String, usize)> = order
+        .into_iter()
+        .map(|error| {
+            let count = counts.get(&error).copied().unwrap_or_default();
+            (error, count)
+        })
+        .collect();
+    grouped.sort_by(|left, right| right.1.cmp(&left.1));
+    grouped.truncate(limit);
+    grouped
 }
 
 fn normalized_outbound_key(outbound: &Value) -> String {
@@ -2602,6 +2640,39 @@ mod tests {
     use super::*;
     use crate::constants::TEST_REALITY_PUBLIC_KEY;
     use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+    fn failed_with(error: &str) -> RankedConfig {
+        let mut item = ranked("node", "vless://uuid@example.com:443", false, None);
+        item.error = Some(error.to_string());
+        item
+    }
+
+    #[test]
+    fn top_preparation_errors_groups_counts_and_caps() {
+        let entries = vec![
+            failed_with("scheme unsupported"),
+            failed_with("no host"),
+            failed_with("scheme unsupported"),
+            failed_with("no port"),
+            failed_with("scheme unsupported"),
+            failed_with("no host"),
+            ranked("ok", "vless://uuid@example.com:443", true, Some(5)),
+        ];
+        let top = top_preparation_errors(&entries, 2);
+        assert_eq!(
+            top,
+            vec![
+                ("scheme unsupported".to_string(), 3),
+                ("no host".to_string(), 2),
+            ]
+        );
+        // Entries without an error never join the ranking.
+        let clean = top_preparation_errors(
+            &[ranked("ok", "vless://uuid@example.com:443", true, Some(5))],
+            3,
+        );
+        assert!(clean.is_empty());
+    }
 
     fn ranked(name: &str, uri: &str, reachable: bool, latency_ms: Option<u128>) -> RankedConfig {
         RankedConfig {

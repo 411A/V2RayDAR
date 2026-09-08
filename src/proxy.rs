@@ -73,6 +73,22 @@ struct ClashApi {
     secret: String,
 }
 
+/// Brief shared snapshot of proxy state. The proxy mutex is released before
+/// this returns, so the result must be owned data — never hold it across
+/// network awaits (that is exactly the stall this refactor removes).
+async fn read_proxy_state<R>(proxy: &SharedProxy, read: impl FnOnce(&ProxyState) -> R) -> R {
+    let guard = proxy.lock().await;
+    let state = guard.state.read().await;
+    read(&state)
+}
+
+/// Brief exclusive access to proxy state. Same no-await-across rule as above.
+async fn write_proxy_state<R>(proxy: &SharedProxy, write: impl FnOnce(&mut ProxyState) -> R) -> R {
+    let guard = proxy.lock().await;
+    let mut state = guard.state.write().await;
+    write(&mut state)
+}
+
 struct ManagedProcess {
     child: tokio::process::Child,
     config_path: PathBuf,
@@ -128,15 +144,25 @@ impl PersistentProxy {
     /// Update the proxy with the best config from the ranked list.
     /// Takes the current `ProxyConfig` so it reacts to TUI config changes
     /// (enable/disable, port, discoverable) without restart.
-    pub async fn update(&self, config: &ProxyConfig, ranked: &[RankedConfig]) {
+    ///
+    /// `clear_blacklist` grants failed configs a fresh chance on genuinely
+    /// new data (refresh cycles). Ping cycles re-verify the same set, so
+    /// clearing there would re-arm configs the health/starvation loops just
+    /// failed over away from — flapping back onto the dead config.
+    pub async fn update(
+        &self,
+        config: &ProxyConfig,
+        ranked: &[RankedConfig],
+        clear_blacklist: bool,
+    ) {
         // Sync the latest config into state so the health loop can read it
         {
             let mut state = self.state.write().await;
             state.proxy_config = config.clone();
             state.manual_proxy_uri.clone_from(&config.manual_proxy_uri);
-            // Clear recently-failed blacklist on each refresh cycle so configs
-            // get a fresh chance to be tried after network conditions change.
-            state.failed_config_keys.clear();
+            if clear_blacklist {
+                state.failed_config_keys.clear();
+            }
         }
 
         if !config.enabled {
@@ -152,30 +178,33 @@ impl PersistentProxy {
             return;
         }
 
-        // Use manual proxy if set, otherwise auto-select the best reachable config.
-        let best = config.manual_proxy_uri.as_ref().map_or_else(
-            || ranked.iter().find(|c| c.reachable),
-            |manual_uri| ranked.iter().find(|c| c.reachable && c.uri == *manual_uri),
-        );
-
-        // When rotating_proxy is disabled and a config is already active, prefer
-        // keeping it if it's still reachable (even if it's no longer the best).
-        let best = if !config.rotating_proxy && config.manual_proxy_uri.is_none() {
-            let active_uri = {
-                let state = self.state.read().await;
-                state.active_config_uri.clone()
-            };
-            active_uri.as_ref().map_or(best, |uri| {
-                let still_reachable = ranked.iter().any(|c| c.reachable && c.uri == *uri);
-                if still_reachable {
-                    ranked.iter().find(|c| c.uri == *uri)
-                } else {
-                    best
-                }
-            })
+        // Recently failed configs stay out of auto-selection so a post-cycle
+        // update can't flap straight back onto a config failover just left.
+        // A manual pin bypasses the blacklist: explicit user choice wins.
+        let blacklisted: std::collections::HashSet<String> = if config.manual_proxy_uri.is_some() {
+            std::collections::HashSet::new()
         } else {
-            best
+            self.state
+                .read()
+                .await
+                .failed_config_keys
+                .iter()
+                .cloned()
+                .collect()
         };
+        let active_uri = {
+            let state = self.state.read().await;
+            state.active_config_uri.clone()
+        };
+        let (best, clear_stale_blacklist) =
+            select_proxy_config(config, ranked, active_uri.as_deref(), &blacklisted);
+        if clear_stale_blacklist {
+            // Everything reachable recently failed: grant one fresh chance
+            // rather than leaving the proxy with nothing to serve.
+            info!("proxy: all reachable configs blacklisted, clearing blacklist");
+            self.emit_log("proxy: blacklist cleared".into());
+            self.state.write().await.failed_config_keys.clear();
+        }
 
         let Some(best) = best else {
             if config.manual_proxy_uri.is_some() {
@@ -393,34 +422,34 @@ impl PersistentProxy {
         Ok(())
     }
 
-    pub async fn health_check(&self) -> bool {
-        if !self.is_process_alive().await {
+    /// Transfer health check through the running proxy. Takes the shared
+    /// handle (not `&self`) so callers never hold the proxy mutex across
+    /// the network awaits below — a dead proxy's sequential URL timeouts
+    /// would otherwise stall every post-cycle proxy update for minutes.
+    /// Only brief state snapshots are taken under lock.
+    pub async fn health_check(proxy: &SharedProxy) -> bool {
+        if !proxy.lock().await.is_process_alive().await {
             return false;
         }
 
-        let port = {
-            let state = self.state.read().await;
-            state.proxy_config.port
-        };
+        let port = read_proxy_state(proxy, |state| state.proxy_config.port).await;
 
         let proxy_url = format!("http://{LOCALHOST_IP}:{port}");
-        let Ok(proxy) = Proxy::all(&proxy_url) else {
+        let Ok(proxy_client) = Proxy::all(&proxy_url) else {
             warn!("proxy: invalid proxy URL for health check");
             return false;
         };
         let Ok(client) = reqwest::Client::builder()
             .timeout(PROXY_HEALTH_CHECK_TIMEOUT)
-            .proxy(proxy)
+            .proxy(proxy_client)
             .build()
         else {
             warn!("proxy: health check client build failed");
             return false;
         };
 
-        let health_url = {
-            let state = self.state.read().await;
-            state.proxy_config.health_check_url.clone()
-        };
+        let health_url =
+            read_proxy_state(proxy, |state| state.proxy_config.health_check_url.clone()).await;
 
         // Try primary URL first; if it fails, try fallback URLs
         let fallback_urls = [
@@ -450,27 +479,34 @@ impl PersistentProxy {
             any_ok
         };
 
-        let mut state = self.state.write().await;
-        state.last_health_check = Some(Instant::now());
-        state.last_health_ok = ok;
-        if ok {
-            state.consecutive_failures = 0;
-        } else {
-            state.consecutive_failures = state.consecutive_failures.saturating_add(1);
-        }
+        write_proxy_state(proxy, |state| {
+            state.last_health_check = Some(Instant::now());
+            state.last_health_ok = ok;
+            if ok {
+                state.consecutive_failures = 0;
+            } else {
+                state.consecutive_failures = state.consecutive_failures.saturating_add(1);
+            }
+        })
+        .await;
 
         ok
     }
 
-    pub async fn failover(&self, ranked: &[RankedConfig]) -> Result<()> {
-        let (current_uri, last_failover, failed_keys) = {
-            let state = self.state.read().await;
+    /// Switch away from the active config to the next best reachable one.
+    /// Takes the shared handle (not `&self`) so callers never hold the
+    /// proxy mutex across candidate restarts, transfer checks, and the
+    /// cooldown sleep — that would stall every post-cycle proxy update.
+    /// Only brief state snapshots are taken under lock.
+    pub async fn failover(proxy: &SharedProxy, ranked: &[RankedConfig]) -> Result<()> {
+        let (current_uri, last_failover, failed_keys) = read_proxy_state(proxy, |state| {
             (
                 state.active_config_uri.clone(),
                 state.last_failover,
                 state.failed_config_keys.clone(),
             )
-        };
+        })
+        .await;
 
         // Failover cooldown: wait between failovers to avoid rapid cycling
         if let Some(last) = last_failover {
@@ -497,11 +533,11 @@ impl PersistentProxy {
         // If all candidates recently failed, clear the blacklist and retry
         let candidates = if candidates.is_empty() {
             warn!("proxy: all configs recently failed, clearing blacklist");
-            self.emit_log("proxy: blacklist cleared".into());
-            {
-                let mut state = self.state.write().await;
-                state.failed_config_keys.clear();
-            }
+            proxy
+                .lock()
+                .await
+                .emit_log("proxy: blacklist cleared".into());
+            write_proxy_state(proxy, |state| state.failed_config_keys.clear()).await;
             ranked
                 .iter()
                 .filter(|c| c.reachable && current_uri.as_deref() != Some(&c.uri))
@@ -512,18 +548,20 @@ impl PersistentProxy {
 
         for candidate in candidates {
             info!(name = %candidate.name, "proxy: attempting failover");
-            if self.start_with_config(candidate).await.is_ok() && self.health_check().await {
-                let port = {
-                    let state = self.state.read().await;
-                    state.proxy_config.port
-                };
+            let started = proxy
+                .lock()
+                .await
+                .start_with_config(candidate)
+                .await
+                .is_ok();
+            if started && Self::health_check(proxy).await {
+                let port = read_proxy_state(proxy, |state| state.proxy_config.port).await;
                 info!(name = %candidate.name, "proxy: failover succeeded");
-                self.emit_log(format!(
+                proxy.lock().await.emit_log(format!(
                     "proxy: failover → {} (port {})",
                     candidate.name, port
                 ));
-                {
-                    let mut state = self.state.write().await;
+                write_proxy_state(proxy, |state| {
                     state.active_config_uri = Some(candidate.uri.clone());
                     state.active_config_name = Some(candidate.name.clone());
                     state
@@ -531,22 +569,25 @@ impl PersistentProxy {
                         .clone_from(&candidate.country_code);
                     state.consecutive_failures = 0;
                     state.last_failover = Some(Instant::now());
-                }
+                })
+                .await;
                 return Ok(());
             }
             // Mark this config as failed
-            let mut state = self.state.write().await;
-            if state.failed_config_keys.len() < PROXY_MAX_RECENTLY_FAILED_KEYS {
-                state.failed_config_keys.push(candidate.dedup_key.clone());
-            }
+            write_proxy_state(proxy, |state| {
+                if state.failed_config_keys.len() < PROXY_MAX_RECENTLY_FAILED_KEYS {
+                    state.failed_config_keys.push(candidate.dedup_key.clone());
+                }
+            })
+            .await;
         }
 
-        {
-            let mut state = self.state.write().await;
-            state.running = false;
-        }
+        write_proxy_state(proxy, |state| state.running = false).await;
 
-        self.emit_log("proxy: failover exhausted".into());
+        proxy
+            .lock()
+            .await
+            .emit_log("proxy: failover exhausted".into());
         Err(anyhow!("proxy: all failover candidates exhausted"))
     }
 
@@ -589,6 +630,57 @@ impl PersistentProxy {
             country: state.active_config_country.clone(),
         }
     }
+}
+
+/// Pure proxy target selection: best reachable config honoring the manual
+/// pin, the no-rotate keep-alive, and the recent-failure blacklist.
+///
+/// Returns the pick plus whether the blacklist went stale (everything
+/// reachable is blacklisted: the caller clears it and picks the best
+/// reachable instead of leaving the proxy with nothing to serve).
+fn select_proxy_config<'a>(
+    config: &ProxyConfig,
+    ranked: &'a [RankedConfig],
+    active_uri: Option<&str>,
+    blacklisted: &std::collections::HashSet<String>,
+) -> (Option<&'a RankedConfig>, bool) {
+    let eligible = |candidate: &RankedConfig| {
+        candidate.reachable && !blacklisted.contains(&candidate.dedup_key)
+    };
+
+    // Use manual proxy if set, otherwise auto-select the best reachable config.
+    let best = config.manual_proxy_uri.as_ref().map_or_else(
+        || ranked.iter().find(|candidate| eligible(candidate)),
+        |manual_uri| {
+            ranked
+                .iter()
+                .find(|candidate| candidate.reachable && candidate.uri == *manual_uri)
+        },
+    );
+
+    // When rotating_proxy is disabled and a config is already active, prefer
+    // keeping it if it's still reachable (even if it's no longer the best).
+    // A blacklisted active config is not keepable: failover moved away
+    // from it for a reason.
+    let best = if !config.rotating_proxy && config.manual_proxy_uri.is_none() {
+        active_uri.map_or(best, |uri| {
+            let keepable = ranked
+                .iter()
+                .any(|candidate| candidate.uri == uri && eligible(candidate));
+            if keepable {
+                ranked.iter().find(|candidate| candidate.uri == uri)
+            } else {
+                best
+            }
+        })
+    } else {
+        best
+    };
+
+    if best.is_none() && config.manual_proxy_uri.is_none() && !blacklisted.is_empty() {
+        return (ranked.iter().find(|candidate| candidate.reachable), true);
+    }
+    (best, false)
 }
 
 /// GET `url` through the proxy; true only when the response body actually
@@ -667,10 +759,9 @@ pub fn spawn_health_loop(proxy: SharedProxy, ranked: Arc<RwLock<Vec<RankedConfig
                 continue;
             }
 
-            let health_ok = {
-                let p = proxy.lock().await;
-                p.health_check().await
-            };
+            // No proxy lock is held across the transfer checks below: a dead
+            // proxy burns sequential URL timeouts and must not stall updates.
+            let health_ok = PersistentProxy::health_check(&proxy).await;
 
             if health_ok {
                 continue;
@@ -691,12 +782,13 @@ pub fn spawn_health_loop(proxy: SharedProxy, ranked: Arc<RwLock<Vec<RankedConfig
 
             warn!("proxy: health check failed, attempting failover");
             let ranked_snapshot = ranked.read().await.clone();
-            let p = proxy.lock().await;
-            if let Err(err) = p.failover(&ranked_snapshot).await {
+            if let Err(err) = PersistentProxy::failover(&proxy, &ranked_snapshot).await {
                 error!(error = %err, "proxy: failover failed");
-                p.emit_log(format!("proxy: failover failed: {err}"));
+                proxy
+                    .lock()
+                    .await
+                    .emit_log(format!("proxy: failover failed: {err}"));
             }
-            drop(p);
         }
     });
 }
@@ -881,18 +973,19 @@ async fn on_starved_connection(
         proxy.lock().await.emit_log(message.to_string());
         return;
     }
-    if proxy.lock().await.health_check().await {
+    if PersistentProxy::health_check(proxy).await {
         info!("proxy: starved connection, but the active config transfers data; keeping");
         return;
     }
     warn!("proxy: active config verified starved, attempting failover");
     let ranked_snapshot = ranked.read().await.clone();
-    let p = proxy.lock().await;
-    if let Err(err) = p.failover(&ranked_snapshot).await {
+    if let Err(err) = PersistentProxy::failover(proxy, &ranked_snapshot).await {
         error!(error = %err, "proxy: starvation failover failed");
-        p.emit_log(format!("proxy: starvation failover failed: {err}"));
+        proxy
+            .lock()
+            .await
+            .emit_log(format!("proxy: starvation failover failed: {err}"));
     }
-    drop(p);
 }
 
 #[derive(Debug, Clone)]
@@ -1109,6 +1202,138 @@ fn build_sing_box_config(
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    fn selectable(name: &str, reachable: bool) -> RankedConfig {
+        RankedConfig {
+            rank: 0,
+            stability_count: 0,
+            id: name.to_string(),
+            dedup_key: format!("{name}-key"),
+            source: "test".to_string(),
+            priority: 1,
+            protocol: "vless".to_string(),
+            name: name.to_string(),
+            endpoint: crate::model::Endpoint {
+                host: "example.com".to_string(),
+                port: 443,
+            },
+            uri: format!("vless://{name}@example.com:443"),
+            reachable,
+            validation: "active_http".to_string(),
+            latency_ms: Some(10),
+            http_status: Some(204),
+            download_mbps: None,
+            download_bytes: None,
+            error: None,
+            country_code: None,
+        }
+    }
+
+    fn auto_proxy_config() -> ProxyConfig {
+        ProxyConfig {
+            enabled: true,
+            rotating_proxy: true,
+            ..Default::default()
+        }
+    }
+
+    fn blacklist_of(keys: &[&str]) -> std::collections::HashSet<String> {
+        keys.iter().map(|key| key.to_string()).collect()
+    }
+
+    #[test]
+    fn selection_skips_blacklisted_config() {
+        // Failover just left A for dead: the next update must serve B, not
+        // flap straight back onto A.
+        let ranked = vec![selectable("a", true), selectable("b", true)];
+        let (best, clear) = select_proxy_config(
+            &auto_proxy_config(),
+            &ranked,
+            None,
+            &blacklist_of(&["a-key"]),
+        );
+        assert_eq!(best.map(|item| item.name.as_str()), Some("b"));
+        assert!(!clear);
+    }
+
+    #[test]
+    fn selection_abandons_blacklisted_active_without_rotation() {
+        // rotating_proxy=false keeps a still-reachable active config — unless
+        // failover blacklisted it, in which case it must move on.
+        let mut config = auto_proxy_config();
+        config.rotating_proxy = false;
+        let ranked = vec![selectable("a", true), selectable("b", true)];
+        let (best, _) = select_proxy_config(
+            &config,
+            &ranked,
+            Some("vless://a@example.com:443"),
+            &blacklist_of(&["a-key"]),
+        );
+        assert_eq!(best.map(|item| item.name.as_str()), Some("b"));
+    }
+
+    #[test]
+    fn selection_keeps_healthy_active_without_rotation() {
+        let mut config = auto_proxy_config();
+        config.rotating_proxy = false;
+        let ranked = vec![selectable("a", true), selectable("b", true)];
+        let (best, _) = select_proxy_config(
+            &config,
+            &ranked,
+            Some("vless://b@example.com:443"),
+            &blacklist_of(&["a-key"]),
+        );
+        assert_eq!(best.map(|item| item.name.as_str()), Some("b"));
+    }
+
+    #[test]
+    fn selection_clears_stale_blacklist_when_all_blocked() {
+        let ranked = vec![selectable("a", true), selectable("b", true)];
+        let (best, clear) = select_proxy_config(
+            &auto_proxy_config(),
+            &ranked,
+            None,
+            &blacklist_of(&["a-key", "b-key"]),
+        );
+        assert_eq!(best.map(|item| item.name.as_str()), Some("a"));
+        assert!(clear);
+    }
+
+    #[test]
+    fn selection_manual_pin_bypasses_blacklist() {
+        let mut config = auto_proxy_config();
+        config.manual_proxy_uri = Some("vless://a@example.com:443".to_string());
+        let ranked = vec![selectable("a", true), selectable("b", true)];
+        let (best, clear) = select_proxy_config(&config, &ranked, None, &blacklist_of(&["a-key"]));
+        assert_eq!(best.map(|item| item.name.as_str()), Some("a"));
+        assert!(!clear);
+    }
+
+    #[tokio::test]
+    async fn update_keeps_blacklist_on_ping_and_clears_on_refresh() {
+        // The flap guard: a ping (same set re-verified) must not re-arm the
+        // config failover just left; only a refresh (new data) clears.
+        let proxy = PersistentProxy::new(
+            ProxyConfig {
+                enabled: false,
+                ..Default::default()
+            },
+            String::new(),
+            None,
+        );
+        proxy.state.write().await.failed_config_keys = vec!["dead-key".to_string()];
+        let disabled = ProxyConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        proxy.update(&disabled, &[], false).await;
+        assert_eq!(
+            proxy.state.read().await.failed_config_keys,
+            vec!["dead-key".to_string()]
+        );
+        proxy.update(&disabled, &[], true).await;
+        assert!(proxy.state.read().await.failed_config_keys.is_empty());
+    }
 
     fn minimal_outbound() -> Value {
         json!({

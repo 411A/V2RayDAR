@@ -29,6 +29,17 @@ impl AppPaths {
         Ok(Self::from_root(root_dir, true))
     }
 
+    /// A self-contained app folder needs no `--portable` flag: an existing
+    /// data dir beside the executable, or the bundled sing-box beside it
+    /// (portable archives ship both binaries; user installs copy only the
+    /// bare executable, and dev `target/` dirs hold no sing-box either).
+    pub fn auto_detect_portable() -> bool {
+        std::env::current_exe()
+            .ok()
+            .and_then(|executable| executable.parent().map(Path::to_path_buf))
+            .is_some_and(|dir| dir_looks_portable(&dir))
+    }
+
     pub fn from_config_override(config_path: PathBuf) -> Self {
         let config_parent = config_path
             .parent()
@@ -96,6 +107,21 @@ fn installed_root_dir() -> Result<PathBuf> {
 
 fn installed_data_root(base_dir: &Path) -> PathBuf {
     base_dir.join(APP_NAME).join(APP_DATA_DIR_NAME)
+}
+
+pub fn dir_looks_portable(dir: &Path) -> bool {
+    dir.join(APP_DATA_DIR_NAME).is_dir() || bundled_sing_box_present(dir)
+}
+
+fn bundled_sing_box_present(dir: &Path) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        dir.join("sing-box.exe").is_file()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        dir.join("sing-box").is_file()
+    }
 }
 
 fn home_dir() -> Result<PathBuf> {
@@ -169,5 +195,44 @@ mod tests {
         assert_eq!(paths.root_dir, PathBuf::from(APP_DATA_DIR_NAME));
         assert_eq!(paths.cache_dir, paths.root_dir.join(CACHE_DIR_NAME));
         assert!(!paths.generated_config);
+    }
+
+    fn unique_temp_dir(case: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("v2raydar-paths-{case}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir creates");
+        dir
+    }
+
+    #[cfg(target_os = "windows")]
+    const BUNDLED_SING_BOX: &str = "sing-box.exe";
+    #[cfg(not(target_os = "windows"))]
+    const BUNDLED_SING_BOX: &str = "sing-box";
+
+    #[test]
+    fn bare_folder_is_not_portable() {
+        let dir = unique_temp_dir("bare");
+
+        assert!(!dir_looks_portable(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn folder_with_data_dir_is_portable() {
+        let dir = unique_temp_dir("data");
+        std::fs::create_dir_all(dir.join(APP_DATA_DIR_NAME)).expect("data dir creates");
+
+        assert!(dir_looks_portable(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn folder_with_bundled_sing_box_is_portable() {
+        let dir = unique_temp_dir("bundled");
+        std::fs::write(dir.join(BUNDLED_SING_BOX), b"fake").expect("marker writes");
+
+        assert!(dir_looks_portable(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

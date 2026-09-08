@@ -23,6 +23,7 @@ pub enum MainItem {
     CleanCache,
     Configurations,
     Logs,
+    QrCodes,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

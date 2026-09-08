@@ -164,7 +164,7 @@ fn open_linux(path: &Path) -> String {
     format!("Edit config manually: {}", path.display())
 }
 
-fn try_spawn(command: &str, args: &[String]) -> std::io::Result<()> {
+pub fn try_spawn(command: &str, args: &[String]) -> std::io::Result<()> {
     let mut command = Command::new(command);
     command.args(args);
     spawn_detached(&mut command)
@@ -228,6 +228,6 @@ fn command_available(command: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn path_arg(path: &Path) -> String {
+pub fn path_arg(path: &Path) -> String {
     path.display().to_string()
 }

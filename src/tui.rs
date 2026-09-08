@@ -10,7 +10,7 @@ mod input_handlers;
 mod layout;
 mod logs_panel;
 mod main_menu_panel;
-mod open_config;
+pub mod open_config;
 mod setup;
 pub mod state;
 mod subscriptions_panel;

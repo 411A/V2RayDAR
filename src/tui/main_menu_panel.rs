@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Row, Table},
 };
 
-use crate::constants::{CONFIG_FILE_NAME, CONFIG_KEYS, MAIN_ITEMS, SUBSCRIPTION_ACTIONS};
+use crate::constants::{CONFIG_FILE_NAME, CONFIG_KEYS, SUBSCRIPTION_ACTIONS, visible_main_items};
 
 use super::{
     config_editor,
@@ -40,10 +40,11 @@ pub fn draw(
 }
 
 fn draw_main(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState, focused: bool) {
+    let items = visible_main_items();
     let visible_rows = visible_row_count(area).max(1);
-    let total = MAIN_ITEMS.len();
+    let total = items.len();
     let offset = scroll_offset(state.selected_main, total, visible_rows);
-    let rows = MAIN_ITEMS
+    let rows = items
         .iter()
         .enumerate()
         .skip(offset)
@@ -75,6 +76,7 @@ fn draw_main(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState, focused: b
                 MainItem::CleanCache => ("Clean Cache", "delete cached subscription snapshots"),
                 MainItem::Configurations => ("Configurations", "enter to edit config values"),
                 MainItem::Logs => ("Live Logs", "enter to inspect refresh progress"),
+                MainItem::QrCodes => ("QR Codes: Generate & View", "enter to generate & open"),
             };
             Row::new([Cell::from(name), Cell::from(value)])
                 .style(row_style(index == state.selected_main, value))

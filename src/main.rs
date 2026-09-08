@@ -10,6 +10,7 @@ mod parser;
 mod paths;
 mod probe;
 mod proxy;
+mod qr;
 mod server;
 mod sing_box;
 mod subscription;
@@ -817,7 +818,7 @@ fn resolve_paths(cli: &Cli) -> Result<AppPaths> {
         return Ok(AppPaths::from_config_override(config_path.clone()));
     }
 
-    if cli.portable {
+    if cli.portable || AppPaths::auto_detect_portable() {
         return AppPaths::portable();
     }
 

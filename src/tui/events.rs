@@ -9,7 +9,7 @@ use tokio::sync::{RwLock, watch};
 
 use crate::{
     config::AppConfig,
-    constants::{CONFIG_KEYS, MAIN_ITEMS, SUBSCRIPTION_ACTIONS},
+    constants::{CONFIG_KEYS, SUBSCRIPTION_ACTIONS, visible_main_items},
     db::Database,
     model::RuntimeConfig,
     paths::AppPaths,
@@ -351,7 +351,7 @@ fn move_down(state: &mut TuiState) {
     match state.focus {
         FocusPanel::Menu => match state.view {
             MenuView::Main => {
-                state.selected_main = (state.selected_main + 1).min(MAIN_ITEMS.len() - 1);
+                state.selected_main = (state.selected_main + 1).min(visible_main_items().len() - 1);
             }
             MenuView::Subscriptions => {
                 state.selected_subscription =
@@ -511,7 +511,7 @@ fn activate_main(
     paths: &AppPaths,
     runtime_config: &Arc<RwLock<RuntimeConfig>>,
 ) -> Result<()> {
-    match MAIN_ITEMS[state.selected_main] {
+    match visible_main_items()[state.selected_main] {
         MainItem::OpenConfig => {
             let message = super::open_config::open(&paths.config_path);
             if message.starts_with("Edit config manually:") {
@@ -581,6 +581,15 @@ fn activate_main(
         MainItem::Logs => {
             state.view = MenuView::Logs;
             state.selected_log = 0;
+        }
+        MainItem::QrCodes => {
+            let live_config = RuntimeConfig::from(&state.editable);
+            match crate::qr::generate_and_save(&live_config, &paths.root_dir, &|port| {
+                super::firewall::allows_port(&paths.root_dir, port)
+            }) {
+                Ok(path) => state.status = crate::qr::open_image(&path),
+                Err(error) => state.status = format!("QR Codes unavailable: {error:#}"),
+            }
         }
     }
     Ok(())

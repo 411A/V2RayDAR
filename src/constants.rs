@@ -185,7 +185,7 @@ pub const WINDOWS_CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[cfg(test)]
 pub const TEST_REALITY_PUBLIC_KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
-pub const MAIN_ITEMS: [MainItem; 7] = [
+pub const MAIN_ITEMS: [MainItem; 8] = [
     MainItem::OpenConfig,
     MainItem::Sharing,
     MainItem::Proxy,
@@ -193,7 +193,23 @@ pub const MAIN_ITEMS: [MainItem; 7] = [
     MainItem::CleanCache,
     MainItem::Configurations,
     MainItem::Logs,
+    MainItem::QrCodes,
 ];
+
+/// Menu rows the user can actually reach: the QR sheet item needs a desktop
+/// image viewer, so Termux/Android hides it while everything else stays put.
+#[must_use]
+pub fn visible_main_items() -> &'static [MainItem] {
+    debug_assert!(matches!(MAIN_ITEMS.last(), Some(MainItem::QrCodes)));
+    #[cfg(target_os = "android")]
+    {
+        &MAIN_ITEMS[..MAIN_ITEMS.len() - 1]
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        &MAIN_ITEMS
+    }
+}
 pub const SUBSCRIPTION_ACTIONS: [SubscriptionAction; 6] = [
     SubscriptionAction::EditName,
     SubscriptionAction::EditUrl,

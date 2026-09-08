@@ -51,6 +51,37 @@ pub fn apply(state_dir: &Path, enabled: bool, port: u16, rule_name: &str) -> Res
     }
 }
 
+/// Read-only check: is TCP `port` currently allowed through the firewall?
+/// True when an owned rule was recorded for the port, or (on Linux) a
+/// live backend query reports the port allowed. Windows trusts the recorded
+/// rule because `apply` fails closed there; on OSes without a manageable
+/// backend (macOS) there is nothing to verify, so this returns true.
+pub fn allows_port(state_dir: &Path, port: u16) -> bool {
+    if rule_recorded(state_dir, port) {
+        return true;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        ufw_allows_port(port).unwrap_or(false) || firewalld_allows_port(port).unwrap_or(false)
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        false
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        true
+    }
+}
+
+fn rule_recorded(state_dir: &Path, port: u16) -> bool {
+    read_state(&firewall_state_path(state_dir))
+        .is_ok_and(|state| state.rules.iter().any(|rule| rule.port == port))
+}
+
 pub fn remove_owned_rules(state_dir: &Path) -> Result<Vec<String>> {
     let mut messages = Vec::new();
     let mut failures = Vec::new();
@@ -341,5 +372,48 @@ fn run(command: &str, args: &[&str]) -> Result<()> {
         Err(anyhow!(
             "firewall command failed; run as admin/root if needed"
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn unique_temp_dir(case: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("v2raydar-firewall-{case}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir creates");
+        dir
+    }
+
+    #[test]
+    fn allows_port_trusts_a_recorded_rule_without_touching_the_os() {
+        let dir = unique_temp_dir("recorded");
+        let state = serde_json::json!({
+            "app": crate::constants::APP_NAME,
+            "rules": [
+                {"backend": "windows_netsh", "port": 1, "rule_name": "test rule"},
+            ],
+        });
+        std::fs::write(
+            firewall_state_path(&dir),
+            serde_json::to_vec(&state).expect("state serializes"),
+        )
+        .expect("state writes");
+
+        assert!(allows_port(&dir, 1));
+        assert!(!allows_port(&dir, 2));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn allows_port_is_closed_without_any_rule_or_backend_hit() {
+        let dir = unique_temp_dir("empty");
+
+        assert!(!allows_port(&dir, 1));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -224,8 +224,7 @@ fn command_available(command: &str) -> bool {
     Command::new(command)
         .arg("--version")
         .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|output| output.status.success())
 }
 
 pub fn path_arg(path: &Path) -> String {

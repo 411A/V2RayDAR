@@ -79,14 +79,46 @@ struct ClashApi {
 async fn read_proxy_state<R>(proxy: &SharedProxy, read: impl FnOnce(&ProxyState) -> R) -> R {
     let guard = proxy.lock().await;
     let state = guard.state.read().await;
-    read(&state)
+    let result = read(&state);
+    drop(state);
+    drop(guard);
+    result
 }
 
 /// Brief exclusive access to proxy state. Same no-await-across rule as above.
 async fn write_proxy_state<R>(proxy: &SharedProxy, write: impl FnOnce(&mut ProxyState) -> R) -> R {
     let guard = proxy.lock().await;
     let mut state = guard.state.write().await;
-    write(&mut state)
+    let result = write(&mut state);
+    drop(state);
+    drop(guard);
+    result
+}
+
+/// Background reader forwarding sing-box stderr to the log at matching
+/// levels; abort it (via the `JoinHandle`) once the child is reaped.
+fn spawn_sing_box_stderr_reader(
+    stderr: Option<tokio::process::ChildStderr>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        if let Some(mut stderr) = stderr {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let mut reader = BufReader::new(&mut stderr).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    // Log sing-box stderr lines at appropriate levels
+                    if trimmed.contains("error") || trimmed.contains("fatal") {
+                        error!(target: "sing-box", "{trimmed}");
+                    } else if trimmed.contains("warn") {
+                        warn!(target: "sing-box", "{trimmed}");
+                    } else {
+                        info!(target: "sing-box", "{trimmed}");
+                    }
+                }
+            }
+        }
+    })
 }
 
 struct ManagedProcess {
@@ -301,6 +333,27 @@ impl PersistentProxy {
         }
     }
 
+    /// Allocate the localhost Clash API controller for one proxy start, or
+    /// `None` when unsupported/unavailable (the proxy still works, only
+    /// starvation detection stays off).
+    async fn maybe_alloc_clash_api(&self, port: u16) -> Option<ClashApi> {
+        if !clash_api_supported(&self.sing_box_path).await {
+            warn!("proxy: sing-box predates the Clash API, starvation detection disabled");
+            return None;
+        }
+        let api = alloc_controller_port(port).map(|port| ClashApi {
+            port,
+            secret: random_clash_secret(),
+        });
+        if api.is_none() {
+            warn!(
+                port,
+                "proxy: no free controller port, starvation detection disabled"
+            );
+        }
+        api
+    }
+
     async fn start_with_config(&self, config: &RankedConfig) -> Result<()> {
         self.stop().await;
 
@@ -318,22 +371,7 @@ impl PersistentProxy {
             LOCALHOST_IP
         };
 
-        let clash_api = if clash_api_supported(&self.sing_box_path).await {
-            let api = alloc_controller_port(current_config.port).map(|port| ClashApi {
-                port,
-                secret: random_clash_secret(),
-            });
-            if api.is_none() {
-                warn!(
-                    port = current_config.port,
-                    "proxy: no free controller port, starvation detection disabled"
-                );
-            }
-            api
-        } else {
-            warn!("proxy: sing-box predates the Clash API, starvation detection disabled");
-            None
-        };
+        let clash_api = self.maybe_alloc_clash_api(current_config.port).await;
         let config_json =
             build_sing_box_config(&outbound, current_config.port, listen, clash_api.as_ref());
         let config_path = write_proxy_config(&config_json).await?;
@@ -350,26 +388,7 @@ impl PersistentProxy {
             .context("failed to start sing-box proxy process")?;
 
         // Spawn background stderr reader to capture sing-box logs
-        let stderr = child.stderr.take();
-        let stderr_task = tokio::spawn(async move {
-            if let Some(mut stderr) = stderr {
-                use tokio::io::{AsyncBufReadExt, BufReader};
-                let mut reader = BufReader::new(&mut stderr).lines();
-                while let Ok(Some(line)) = reader.next_line().await {
-                    let trimmed = line.trim();
-                    if !trimmed.is_empty() {
-                        // Log sing-box stderr lines at appropriate levels
-                        if trimmed.contains("error") || trimmed.contains("fatal") {
-                            error!(target: "sing-box", "{trimmed}");
-                        } else if trimmed.contains("warn") {
-                            warn!(target: "sing-box", "{trimmed}");
-                        } else {
-                            info!(target: "sing-box", "{trimmed}");
-                        }
-                    }
-                }
-            }
-        });
+        let stderr_task = spawn_sing_box_stderr_reader(child.stderr.take());
 
         // Wait for port — if this fails, the Drop impl on ManagedProcess
         // cleans up the config file, and kill_on_drop kills the process.
@@ -510,13 +529,13 @@ impl PersistentProxy {
 
         // Failover cooldown: wait between failovers to avoid rapid cycling
         if let Some(last) = last_failover {
-            let elapsed = last.elapsed();
-            if elapsed < PROXY_FAILOVER_COOLDOWN {
+            let remaining = PROXY_FAILOVER_COOLDOWN.saturating_sub(last.elapsed());
+            if !remaining.is_zero() {
                 info!(
-                    remaining_ms = (PROXY_FAILOVER_COOLDOWN - elapsed).as_millis(),
+                    remaining_ms = remaining.as_millis(),
                     "proxy: failover cooldown active, waiting"
                 );
-                time::sleep(PROXY_FAILOVER_COOLDOWN - elapsed).await;
+                time::sleep(remaining).await;
             }
         }
 
@@ -689,9 +708,8 @@ fn select_proxy_config<'a>(
 /// via the client timeout. Status alone is never enough: false-positive
 /// configs complete handshakes and headers, then deliver nothing.
 async fn body_transfers(client: &reqwest::Client, url: &str) -> bool {
-    let resp = match client.get(url).send().await {
-        Ok(resp) => resp,
-        Err(_) => return false,
+    let Ok(resp) = client.get(url).send().await else {
+        return false;
     };
     if !(resp.status().is_success() || resp.status().as_u16() == 204) {
         return false;
@@ -864,15 +882,14 @@ pub fn spawn_starvation_loop(proxy: SharedProxy, ranked: Arc<RwLock<Vec<RankedCo
         loop {
             time::sleep(PROXY_STARVATION_POLL_INTERVAL).await;
 
-            let (running, controller, secret) = {
-                let p = proxy.lock().await;
-                let state = p.state.read().await;
+            let (running, controller, secret) = read_proxy_state(&proxy, |state| {
                 (
                     state.running,
                     state.clash_controller,
                     state.clash_secret.clone(),
                 )
-            };
+            })
+            .await;
             let (Some(addr), Some(secret)) = (controller, secret) else {
                 samples.clear();
                 reported.clear();
@@ -1110,9 +1127,15 @@ fn alloc_controller_port(proxy_port: u16) -> Option<u16> {
 /// Fresh random bearer secret for one proxy start (64 hex chars from the OS
 /// RNG). Localhost-only listener; still never logged or persisted.
 fn random_clash_secret() -> String {
+    const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut buf = [0u8; 32];
     if getrandom::fill(&mut buf).is_ok() {
-        return buf.iter().map(|b| format!("{b:02x}")).collect();
+        let mut secret = String::with_capacity(64);
+        for byte in buf {
+            secret.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
+            secret.push(char::from(HEX_DIGITS[usize::from(byte & 0x0F)]));
+        }
+        return secret;
     }
     // Practically unreachable; unique per start, localhost-only.
     format!(
@@ -1238,7 +1261,7 @@ mod tests {
     }
 
     fn blacklist_of(keys: &[&str]) -> std::collections::HashSet<String> {
-        keys.iter().map(|key| key.to_string()).collect()
+        keys.iter().map(ToString::to_string).collect()
     }
 
     #[test]
@@ -1429,7 +1452,7 @@ mod tests {
         ));
         // Young: heavy upload but not old enough.
         assert!(!connection_starved(
-            PROXY_STARVATION_MIN_AGE - Duration::from_secs(1),
+            PROXY_STARVATION_MIN_AGE.saturating_sub(Duration::from_secs(1)),
             10 * 1024 * 1024,
             0
         ));
@@ -1597,8 +1620,8 @@ mod tests {
         assert_eq!(connections[0].download, 0);
         assert!(connection_starved(
             Duration::from_secs(3600),
-            connections[0].upload.max(0) as u64,
-            connections[0].download.max(0) as u64,
+            connections[0].upload.max(0).cast_unsigned(),
+            connections[0].download.max(0).cast_unsigned(),
         ));
     }
 

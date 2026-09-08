@@ -469,6 +469,7 @@ fn example_key_order() -> ExampleKeyOrder {
 // Long by construction: one row per known setting, like the save helpers.
 #[allow(clippy::too_many_lines)]
 pub fn backfill_missing_defaults(path: &Path) -> Result<usize> {
+    static NO_KEYS: &[String] = &[];
     if path
         .extension()
         .and_then(|value| value.to_str())
@@ -483,8 +484,6 @@ pub fn backfill_missing_defaults(path: &Path) -> Result<usize> {
     let parsed: serde_yaml::Value = serde_yaml::from_str(&original)
         .with_context(|| format!("unable to parse existing config {}", path.display()))?;
     let defaults = AppConfig::default_for_first_run();
-
-    static NO_KEYS: &[String] = &[];
     let canonical = example_key_order();
 
     let mut document = YamlDocument::new(&original);
@@ -1738,13 +1737,9 @@ subscriptions:
         assert!(!saved.contains("refresh_seconds: 900"));
     }
 
-    #[test]
-    fn backfill_inserts_missing_keys_at_example_positions() {
-        // An older config missing ping_seconds, geoip_db_path,
-        // clean_offlines_after_days, and the whole proxy section.
-        let path = write_config(
-            "backfill-positions",
-            r"bind: 127.0.0.1:27141
+    // Older config missing ping_seconds, geoip_db_path,
+    // clean_offlines_after_days, and the whole proxy section.
+    const OLD_CONFIG_FIXTURE: &str = r"bind: 127.0.0.1:27141
 top_n: 20
 # Auto-refresh interval in seconds; 0 disables timer refreshes.
 refresh_seconds: 600
@@ -1807,8 +1802,13 @@ probe:
 subscriptions:
   - name: first
     url: data:,vless://uuid@example.com:443%23demo
-",
-        );
+";
+
+    #[test]
+    fn backfill_inserts_missing_keys_at_example_positions() {
+        // An older config missing ping_seconds, geoip_db_path,
+        // clean_offlines_after_days, and the whole proxy section.
+        let path = write_config("backfill-positions", OLD_CONFIG_FIXTURE);
         // 3 top-level scalars + the 6 proxy keys.
         assert_eq!(backfill_missing_defaults(&path).expect("backfill runs"), 9);
         let saved = fs::read_to_string(&path).expect("config can be read");
@@ -1969,6 +1969,13 @@ subscriptions:
         // restore the exact content order with one addition. (The
         // subscriptions list is user data, never backfilled.) If the example
         // gains a key without backfill support, its round trip fails here.
+        fn content_lines(config: &str) -> Vec<&str> {
+            config
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty() && !line.starts_with('#'))
+                .collect()
+        }
         let canonical = example_key_order();
         let pristine = {
             let path = temp_config_path("backfill-roundtrip-pristine");
@@ -1977,13 +1984,6 @@ subscriptions:
             fs::remove_file(&path).ok();
             content
         };
-        fn content_lines(config: &str) -> Vec<&str> {
-            config
-                .lines()
-                .map(str::trim)
-                .filter(|line| !line.is_empty() && !line.starts_with('#'))
-                .collect()
-        }
         let expected = content_lines(&pristine);
 
         let mut cases: Vec<(Option<String>, String)> = Vec::new();

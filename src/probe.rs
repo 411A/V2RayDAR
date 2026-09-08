@@ -77,7 +77,7 @@ fn parse_sing_box_version(output: &str) -> Option<(u32, u32, u32)> {
 ///
 /// Powers feature gates without requiring a prior probe run (TCP mode never
 /// probes, so the availability cache may be cold at proxy start).
-pub(crate) async fn sing_box_major_version(path: &str) -> Option<u32> {
+pub async fn sing_box_major_version(path: &str) -> Option<u32> {
     let output = Command::new(path)
         .arg("version")
         .stdin(Stdio::null())
@@ -611,6 +611,10 @@ impl ProbeStopSignal {
     }
 }
 
+/// Wave of sing-box batches plus the previous-working entries it carries
+/// for the stability search update.
+type ProbeWave = Vec<(usize, Vec<PreparedActiveCandidate>)>;
+
 async fn probe_active_batched(
     candidates: Vec<Candidate>,
     config: &ProbeConfig,
@@ -619,59 +623,11 @@ async fn probe_active_batched(
     cancel: Option<Arc<AtomicBool>>,
 ) -> Vec<RankedConfig> {
     let started = Instant::now();
-    let input_count = candidates.len();
-
-    let stop_policy_clone = stop_policy.clone();
-    let ActivePreparation {
-        mut prepared,
-        ranked: prepared_ranked,
-        prepared_candidates,
-    } = tokio::task::spawn_blocking(move || {
-        prepare_active_candidates(candidates, &stop_policy_clone)
-    })
-    .await
-    .expect("prepare_active_candidates panicked");
-    let prepared_failed = prepared_ranked.len();
+    let (mut prepared, prepared_ranked) =
+        prepare_batched_probe_inputs(candidates, stop_policy, progress.as_ref()).await;
 
     let process_concurrency = active_probe_process_concurrency(config.process_concurrency);
     let mut batch_sizer = ActiveBatchSizer::new(config.concurrency, config.batch_size);
-    info!(
-        input = input_count,
-        prepared = prepared_candidates,
-        test_definitions = prepared.len(),
-        parse_failed = prepared_failed,
-        batch_size = batch_sizer.current,
-        max_batch_size = batch_sizer.max,
-        process_concurrency,
-        "active probe preparation finished"
-    );
-    send_progress(
-        progress.as_ref(),
-        format!(
-            "Prepared active test: {} sing-box definitions represent {} loaded configs; {} unsupported configs skipped",
-            prepared.len(),
-            prepared_candidates,
-            prepared_failed
-        ),
-    );
-    if prepared_failed > 0 {
-        send_probe_delta(progress.as_ref(), prepared_failed, 0, 0);
-        // A wall of "unsupported" with no reason is undebuggable: name the
-        // actual preparation errors (e.g. a cache full of schemes the active
-        // prover cannot build) so the next one answers itself in Live Logs.
-        let top_errors = top_preparation_errors(&prepared_ranked, 3);
-        if !top_errors.is_empty() {
-            let summary = top_errors
-                .iter()
-                .map(|(error, count)| format!("'{error}' x{count}"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            send_progress(
-                progress.as_ref(),
-                format!("Preparation skipped {prepared_failed} configs; top errors: {summary}"),
-            );
-        }
-    }
     let shared: SharedProbe = Arc::new(Mutex::new(SharedProbeState {
         ranked: prepared_ranked,
         stop: ProbeStopState::new(&prepared, stop_policy),
@@ -684,35 +640,15 @@ async fn probe_active_batched(
     let mut batch_index = 0_usize;
     while !prepared.is_empty() && !stop.stopped() {
         let before = lock_shared(&shared).ranked.len();
-        let mut wave = Vec::new();
-        let mut wave_previous_working = 0_usize;
-        for _ in 0..process_concurrency {
-            if prepared.is_empty() || stop.stopped() {
-                break;
-            }
-            batch_index += 1;
-            let batch_len = batch_sizer.next_len(prepared.len());
-            let batch = prepared.drain(..batch_len).collect::<Vec<_>>();
-            wave_previous_working = wave_previous_working
-                .saturating_add(previous_working_entry_count(&batch, stop_policy));
-            let batch_candidates = candidate_count(&batch);
-            info!(
-                batch_index,
-                remaining = prepared.len(),
-                batch_size = batch_sizer.current,
-                entries = batch.len(),
-                candidates = batch_candidates,
-                "active probe batch queued"
-            );
-            send_progress(
-                progress.as_ref(),
-                format!(
-                    "Batch {batch_index}: testing {batch_candidates} configs ({} sing-box definitions)",
-                    batch.len()
-                ),
-            );
-            wave.push((batch_index, batch));
-        }
+        let (wave, wave_previous_working) = queue_probe_wave(
+            &mut prepared,
+            process_concurrency,
+            &batch_sizer,
+            &mut batch_index,
+            stop_policy,
+            progress.as_ref(),
+            &stop,
+        );
 
         let wave_started = Instant::now();
         let mut outcomes = stream::iter(wave.into_iter().map(|(batch_index, batch)| {
@@ -774,15 +710,127 @@ async fn probe_active_batched(
         );
     }
 
-    let mut ranked = std::mem::take(&mut lock_shared(&shared).ranked);
+    let ranked = std::mem::take(&mut lock_shared(&shared).ranked);
+    finish_batched_probe(ranked, started, config, progress.as_ref(), stop_policy).await
+}
+
+/// CPU-bound preparation (outbound building) plus its logging, lifted out
+/// of [`probe_active_batched`] so the wave loop stays readable. Returns the
+/// testable definitions alongside configs rejected before any probing.
+async fn prepare_batched_probe_inputs(
+    candidates: Vec<Candidate>,
+    stop_policy: &ProbeStopPolicy,
+    progress: Option<&UnboundedSender<ProgressEvent>>,
+) -> (Vec<PreparedActiveCandidate>, Vec<RankedConfig>) {
+    let input_count = candidates.len();
+    let stop_policy_clone = stop_policy.clone();
+    let ActivePreparation {
+        prepared,
+        ranked: prepared_ranked,
+        prepared_candidates,
+    } = tokio::task::spawn_blocking(move || {
+        prepare_active_candidates(candidates, &stop_policy_clone)
+    })
+    .await
+    .expect("prepare_active_candidates panicked");
+    let prepared_failed = prepared_ranked.len();
+    info!(
+        input = input_count,
+        prepared = prepared_candidates,
+        test_definitions = prepared.len(),
+        parse_failed = prepared_failed,
+        "active probe preparation finished"
+    );
+    send_progress(
+        progress,
+        format!(
+            "Prepared active test: {} sing-box definitions represent {} loaded configs; {} unsupported configs skipped",
+            prepared.len(),
+            prepared_candidates,
+            prepared_failed
+        ),
+    );
+    if prepared_failed > 0 {
+        send_probe_delta(progress, prepared_failed, 0, 0);
+        // A wall of "unsupported" with no reason is undebuggable: name the
+        // actual preparation errors (e.g. a cache full of schemes the active
+        // prover cannot build) so the next one answers itself in Live Logs.
+        let top_errors = top_preparation_errors(&prepared_ranked, 3);
+        if !top_errors.is_empty() {
+            let summary = top_errors
+                .iter()
+                .map(|(error, count)| format!("'{error}' x{count}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            send_progress(
+                progress,
+                format!("Preparation skipped {prepared_failed} configs; top errors: {summary}"),
+            );
+        }
+    }
+    (prepared, prepared_ranked)
+}
+
+/// Drain one wave of queued batches into `prepared`, honoring the stop
+/// signal between batches. Returns the wave plus the previous-working
+/// entries it carries for the stability search update.
+fn queue_probe_wave(
+    prepared: &mut Vec<PreparedActiveCandidate>,
+    process_concurrency: usize,
+    batch_sizer: &ActiveBatchSizer,
+    batch_index: &mut usize,
+    stop_policy: &ProbeStopPolicy,
+    progress: Option<&UnboundedSender<ProgressEvent>>,
+    stop: &ProbeStopSignal,
+) -> (ProbeWave, usize) {
+    let mut wave = Vec::new();
+    let mut wave_previous_working = 0_usize;
+    for _ in 0..process_concurrency {
+        if prepared.is_empty() || stop.stopped() {
+            break;
+        }
+        *batch_index += 1;
+        let batch_len = batch_sizer.next_len(prepared.len());
+        let batch = prepared.drain(..batch_len).collect::<Vec<_>>();
+        wave_previous_working =
+            wave_previous_working.saturating_add(previous_working_entry_count(&batch, stop_policy));
+        let batch_candidates = candidate_count(&batch);
+        info!(
+            batch_index = *batch_index,
+            remaining = prepared.len(),
+            batch_size = batch_sizer.current,
+            entries = batch.len(),
+            candidates = batch_candidates,
+            "active probe batch queued"
+        );
+        send_progress(
+            progress,
+            format!(
+                "Batch {batch_index}: testing {batch_candidates} configs ({} sing-box definitions)",
+                batch.len()
+            ),
+        );
+        wave.push((*batch_index, batch));
+    }
+    (wave, wave_previous_working)
+}
+
+/// Final tally, speedtest enrichment, and completion log for a batched run.
+async fn finish_batched_probe(
+    mut ranked: Vec<RankedConfig>,
+    started: Instant,
+    config: &ProbeConfig,
+    progress: Option<&UnboundedSender<ProgressEvent>>,
+    stop_policy: &ProbeStopPolicy,
+) -> Vec<RankedConfig> {
     info!(
         ranked = ranked.len(),
         duration_ms = started.elapsed().as_millis(),
         "active probe batches finished"
     );
-    enrich_top_speedtests(&mut ranked, config, progress.as_ref(), stop_policy).await;
+    enrich_top_speedtests(&mut ranked, config, progress, stop_policy).await;
     send_progress(
-        progress.as_ref(),
+        progress,
         format!(
             "Active test finished: {} configs checked in {}",
             ranked.len(),
@@ -880,7 +928,7 @@ fn top_preparation_errors(ranked: &[RankedConfig], limit: usize) -> Vec<(String,
             (error, count)
         })
         .collect();
-    grouped.sort_by(|left, right| right.1.cmp(&left.1));
+    grouped.sort_by_key(|item| std::cmp::Reverse(item.1));
     grouped.truncate(limit);
     grouped
 }
@@ -1196,9 +1244,7 @@ fn active_probe_http_concurrency(configured: usize, batch_entries: usize) -> usi
 }
 
 fn active_probe_process_concurrency(configured: Option<usize>) -> usize {
-    let detected = std::thread::available_parallelism()
-        .map(usize::from)
-        .unwrap_or(1);
+    let detected = std::thread::available_parallelism().map_or(1, usize::from);
     let automatic = (detected / 2).clamp(1, ACTIVE_PROBE_PROCESS_MAX_CONCURRENCY);
     configured
         .unwrap_or(automatic)
@@ -1457,7 +1503,7 @@ async fn probe_active_batch(
     let mut probe_results = stream::iter(entries.into_iter().zip(ports).map(
         |(entry, port)| async move {
             let result = probe_active_target_inner(port, config).await;
-            let bytes = result.as_ref().map(|ok| ok.bytes).unwrap_or(0);
+            let bytes = result.as_ref().map_or(0, |ok| ok.bytes);
             (ranked_configs_for_active_result(entry, result), bytes)
         },
     ))

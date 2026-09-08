@@ -423,7 +423,7 @@ mod tests {
         let now = Instant::now();
         let runtime = RuntimeView {
             refreshing: false,
-            next_refresh_instant: Some(now + Duration::from_secs(900)),
+            next_refresh_instant: Some(now + Duration::from_mins(15)),
             next_ping_instant: Some(now + Duration::from_secs(300)),
             ..RuntimeView::default()
         };
@@ -443,7 +443,7 @@ mod tests {
             refreshing: false,
             pinging: true,
             last_ping_instant: Some(started),
-            next_refresh_instant: Some(now + Duration::from_secs(900)),
+            next_refresh_instant: Some(now + Duration::from_mins(15)),
             next_ping_instant: Some(now + Duration::from_secs(300)),
             ..RuntimeView::default()
         };
@@ -560,7 +560,7 @@ mod tests {
         let now = Instant::now();
         let runtime = RuntimeView {
             refreshing: false,
-            next_refresh_instant: Some(now + Duration::from_secs(900)),
+            next_refresh_instant: Some(now + Duration::from_mins(15)),
             next_ping_instant: Some(now + Duration::from_secs(300)),
             ..RuntimeView::default()
         };

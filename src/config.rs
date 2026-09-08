@@ -532,47 +532,49 @@ pub fn is_allowed_subscription_url(url: &str) -> bool {
 /// so private `?token=` values never hit logs. Pure string ops, no DNS.
 #[must_use]
 pub fn redact_subscription_url(url: &str) -> String {
+    const MAX_LEN: usize = 120;
     let trimmed = url.trim();
     if trimmed.to_ascii_lowercase().starts_with("data:") {
         return "data:<redacted>".to_string();
     }
     // Strip userinfo: `scheme://user:pass@host/...` -> `scheme://host/...`
-    let without_userinfo = if let Some(scheme_end) = trimmed.find("://") {
-        let (scheme, rest) = trimmed.split_at(scheme_end + 3);
-        if let Some(at) = rest.find('@')
-            && let Some(slash) = rest.find('/')
-        {
-            if at < slash {
-                format!("{scheme}{}", &rest[at + 1..])
-            } else {
-                trimmed.to_string()
-            }
-        } else if rest.contains('@') && !rest.contains('/') {
-            // `host` only with userinfo, no path.
-            if let Some(at) = rest.find('@') {
-                format!("{scheme}{}", &rest[at + 1..])
-            } else {
-                trimmed.to_string()
-            }
-        } else {
-            trimmed.to_string()
-        }
-    } else {
-        trimmed.to_string()
-    };
+    let without_userinfo = trimmed.find("://").map_or_else(
+        || trimmed.to_string(),
+        |scheme_end| {
+            let (scheme, rest) = trimmed.split_at(scheme_end + 3);
+            strip_url_userinfo(scheme, rest, trimmed)
+        },
+    );
     // Strip query and fragment.
-    let mut end = without_userinfo.len();
-    if let Some(idx) = without_userinfo.find(['?', '#']) {
-        end = idx;
-    }
+    let end = without_userinfo
+        .find(['?', '#'])
+        .unwrap_or(without_userinfo.len());
     let mut redacted = without_userinfo[..end].to_string();
     // Truncate very long paths to keep logs readable.
-    const MAX_LEN: usize = 120;
     if redacted.len() > MAX_LEN {
         redacted.truncate(MAX_LEN);
         redacted.push_str("...");
     }
     redacted
+}
+
+/// Strip `user:pass@` when it precedes the first `/` (or with no path at
+/// all); otherwise return the URL unchanged.
+fn strip_url_userinfo(scheme: &str, rest: &str, trimmed: &str) -> String {
+    if let Some(at) = rest.find('@')
+        && let Some(slash) = rest.find('/')
+        && at < slash
+    {
+        return format!("{scheme}{}", &rest[at + 1..]);
+    }
+    if rest.contains('@') && !rest.contains('/') {
+        // `host` only with userinfo, no path.
+        return rest.find('@').map_or_else(
+            || trimmed.to_string(),
+            |at| format!("{scheme}{}", &rest[at + 1..]),
+        );
+    }
+    trimmed.to_string()
 }
 
 /// Restrict a config file to owner-only (0600 on Unix).

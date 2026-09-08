@@ -888,7 +888,7 @@ async fn persist_ranked_configs(
 
 /// Cycle origin marker for Recent Logs: 🤖 automatic (timer, startup,
 /// config reload), 👤 manual (TUI chord/command, CLI invocation).
-fn cycle_actor(manual: bool) -> &'static str {
+const fn cycle_actor(manual: bool) -> &'static str {
     if manual { "👤" } else { "🤖" }
 }
 
@@ -1969,7 +1969,7 @@ async fn ping_once(
             .map(|item| item.dedup_key.clone())
             .collect();
         stable_working_counts.retain(|key, _| published_keys.contains(key));
-        for item in published.iter_mut() {
+        for item in &mut published {
             if item.reachable {
                 let count = stable_working_counts
                     .entry(item.dedup_key.clone())
@@ -4770,7 +4770,7 @@ mod tests {
         }));
         let runtime_config = Arc::new(tokio::sync::RwLock::new(RuntimeConfig::from(&config)));
         let cycle = Arc::new(tokio::sync::Mutex::new(()));
-        let _guard = cycle.lock().await;
+        let guard = cycle.lock().await;
 
         let preempted = ping_once(
             &config,
@@ -4786,7 +4786,7 @@ mod tests {
         .expect("ping succeeds");
         assert!(!preempted);
         assert!(live_log_count(&state, "Manual ping skipped").await >= 1);
-        drop(_guard);
+        drop(guard);
     }
 
     #[tokio::test]

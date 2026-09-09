@@ -24,6 +24,10 @@
 </p>
 
 <p align="center">
+  <strong>只需在任何常开设备上运行一次——旧手机、电脑、树莓派或家庭服务器皆可——V2RayDAR 便会持续查找、验证最佳可用配置，并将其提供给局域网中的每台设备。它还提供标准的 SOCKS5/HTTP 代理，因此局域网中的每台设备都能使用可用的 V2Ray 连接——无需安装 V2Ray 客户端。</strong>
+</p>
+
+<p align="center">
   一款快速的 Rust CLI/TUI 工具，用于获取 V2Ray / Clash / Mihomo 订阅源，通过 <code>sing-box</code> 在真实网络中验证配置，对可用配置进行排名，并在本地订阅 URL 上重新发布最佳配置，供 v2rayN / v2rayNG / sing-box / Clash Verge / Mihomo 客户端使用。
 </p>
 

@@ -24,6 +24,10 @@
 </p>
 
 <p align="center">
+  <strong>Run it once on any always-on device — an old phone, PC, Raspberry Pi, or home server — and V2RayDAR continuously finds, verifies, and serves the best working configs to every device on your LAN. It also exposes a standard SOCKS5/HTTP proxy, so every device on your LAN gets a working V2Ray connection — no V2Ray client needed.</strong>
+</p>
+
+<p align="center">
   A fast Rust CLI/TUI that fetches V2Ray / Clash / Mihomo subscription sources, validates them through your real network with <code>sing-box</code>, ranks the configs that actually work, and re-publishes the best ones at a local subscription URL your v2rayN / v2rayNG / sing-box / Clash Verge / Mihomo client can point to.
 </p>
 

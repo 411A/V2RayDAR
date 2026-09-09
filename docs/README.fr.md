@@ -24,6 +24,10 @@
 </p>
 
 <p align="center">
+  <strong>Lancez-le une fois sur n'importe quel appareil toujours allumé — vieux téléphone, PC, Raspberry Pi ou serveur domestique — et V2RayDAR trouve, vérifie et sert en continu les meilleures configs fonctionnelles à tous les appareils de votre LAN. Il expose aussi un proxy standard SOCKS5/HTTP, donc chaque appareil de votre LAN profite d'une connexion V2Ray fonctionnelle — sans client V2Ray.</strong>
+</p>
+
+<p align="center">
   Un outil CLI/TUI rapide en Rust qui récupère les sources d'abonnement V2Ray / Clash / Mihomo, les valide via votre réseau réel avec <code>sing-box</code>, classe les configurations fonctionnelles et les republie sur une URL d'abonnement locale pour vos clients v2rayN / v2rayNG / sing-box / Clash Verge / Mihomo.
 </p>
 

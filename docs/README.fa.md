@@ -65,13 +65,21 @@
 
 &#x200F;<strong>حالت پرتابل</strong> (توصیه‌شده) — همه فایل‌ها در یک پوشه: فقط کپی و پیست کنید و Enter بزنید تا نصب تمام شود! پوشه خودکفا (<code>sing-box</code> همراه یا <code>v2raydar_data/</code> موجود در کنار فایل اجرایی) به‌طور خودکار تشخیص داده می‌شود؛ <code>--portable</code> آن را اجباری می‌کند.
 
-<div dir="ltr">
+#### Linux / macOS <img src="https://cdn.svglogos.dev/logos/linux-tux.svg" alt="Linux" width="20" height="20" align="texttop">
+
+<div dir="ltr" align="left">
 
 ```bash
-# Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh
+```
 
-# Windows
+</div>
+
+#### Windows (PowerShell) <img src="https://cdn.svglogos.dev/logos/microsoft-windows-icon.svg" alt="Windows" width="20" height="20" align="texttop">
+
+<div dir="ltr" align="left">
+
+```powershell
 irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
 ```
 
@@ -79,7 +87,7 @@ irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
 
 &#x200F;<strong>نصب کاربری</strong> — فایل باینری در <code>~/.local/bin</code>، داده‌ها در پوشه خانه:
 
-<div dir="ltr">
+<div dir="ltr" align="left">
 
 ```bash
 # Linux / macOS
@@ -92,9 +100,9 @@ irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
 
 </div>
 
-&#x200F;<strong>Android / Termux:</strong>
+#### Android / Termux <img src="https://cdn.svglogos.dev/logos/android-icon.svg" alt="Android" width="20" height="20" align="texttop">
 
-<div dir="ltr">
+<div dir="ltr" align="left">
 
 ```bash
 pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar && curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | bash && cd ~/V2RayDAR && ./v2raydar --no-tui
@@ -151,7 +159,7 @@ pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar &&
 
 ### &#x200F;حالت‌های اجرا
 
-<div dir="ltr">
+<div dir="ltr" align="left">
 
 ```bash
 v2raydar                # TUI + اندپوینت اشتراک محلی
@@ -232,6 +240,9 @@ v2raydar --uninstall    # حذف داده‌های برنامه و قوانین 
 V2RayDAR می‌تواند یک پروکسی SOCKS5/HTTP پایدار در کنار endpoint اشتراک اجرا کند. هر برنامه‌ای روی سیستم — تلگرام، مرورگرها، curl، Python — می‌تواند ترافیک را از طریق آن مسیریابی کند.
 
 **فعال‌سازی در `configs.yaml`:**
+
+<div dir="ltr" align="left">
+
 ```yaml
 proxy:
   enabled: true
@@ -239,24 +250,40 @@ proxy:
   discoverable: false   # true = دسترسی LAN + قانون فایروال
 ```
 
+</div>
+
 **استفاده محلی (روی دستگاه اجراکنندهی V2RayDAR):**
+
+<div dir="ltr" align="left">
+
 ```bash
 curl --socks5 127.0.0.1:27910 https://api.ipify.org
 ```
+
+</div>
 
 **استفاده LAN (گوشی در همان Wi-Fi):**
 1. `proxy.discoverable: true` را تنظیم کنید — V2RayDAR قانون فایروال اضافه کرده و به `0.0.0.0` متصل می‌شود.
 2. IP LAN دستگاه اجراکنندهی V2RayDAR را از پنل TUI در بخش **Network** پیدا کنید (یا `ipconfig` / `ip addr` اجرا کنید). به عنوان مثال `192.0.2.2`.
 3. **تلگرام:** `YOUR_LAN_IP` را با IP LAN واقعی خود جایگزین کنید و این URL را روی گوشی باز کنید:
 
+   <div dir="ltr" align="left">
+
    ```
    https://t.me/socks?server=YOUR_LAN_IP&port=27910
    ```
 
+   </div>
+
    به عنوان مثال، اگر IP LAN شما `192.0.2.2` باشد:
+
+   <div dir="ltr" align="left">
+
    ```
    https://t.me/socks?server=192.0.2.2&port=27910
    ```
+
+   </div>
 
    یا دستی: تلگرام → تنظیمات → داده و ذخیره‌سازی → تنظیمات پروکسی → افزودن پروکسی:
    - نوع: **SOCKS5** یا **HTTP**
@@ -295,7 +322,7 @@ curl --socks5 127.0.0.1:27910 https://api.ipify.org
 
 &#x200F;اگر این پروژه برای شما مفید بوده، می‌توانید از طریق بلاکچین TON از توسعه آن حمایت کنید:
 
-<div dir="ltr">
+<div dir="ltr" align="left">
 
 ```
 ton://transfer/TechKraken.ton

@@ -61,15 +61,28 @@
 Paste the line for your OS into a terminal and press Enter — then press Enter once more (the default Yes) and the installer finishes automatically with defaults, updating in place when already installed. Answer No for step-by-step prompts. The installer detects your platform, downloads the latest release with bundled `sing-box`, and sets everything up. Portable mode installs into `Desktop/V2RayDAR` when a Desktop folder exists, otherwise `~/V2RayDAR`. User mode installs the binary to `~/.local/bin`.
 
 **Portable** (recommended) — everything in one folder: just copy-paste & press enter until it finishes installing! A self-contained folder (bundled `sing-box` or an existing `v2raydar_data/` beside the executable) is detected automatically, so double-clicking just works — `--portable` forces it anywhere.
-```bash
-# Linux / macOS
-curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh
 
-# Windows (PowerShell)
+#### <img src="https://cdn.svglogos.dev/logos/linux-tux.svg" alt="Linux" width="20" height="20" align="texttop"> Linux / macOS
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh
+```
+
+#### <img src="https://cdn.svglogos.dev/logos/microsoft-windows-icon.svg" alt="Windows" width="20" height="20" align="texttop"> Windows (PowerShell)
+
+```powershell
 irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
 ```
 
-**User install** — binary to `~/.local/bin`, data in home:
+#### <img src="https://cdn.svglogos.dev/logos/android-icon.svg" alt="Android" width="20" height="20" align="texttop"> Android / Termux
+
+```bash
+pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar && curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | bash && cd ~/V2RayDAR && ./v2raydar --no-tui
+```
+
+#### User install
+
+Binary to `~/.local/bin`, data in home:
 ```bash
 # Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh -s -- --user
@@ -79,10 +92,6 @@ irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
 # Then choose option 2 when prompted
 ```
 
-**Android / Termux:**
-```bash
-pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar && curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | bash && cd ~/V2RayDAR && ./v2raydar --no-tui
-```
 * **Stop:** `Ctrl + C`
 * **Start:** `cd ~/V2RayDAR && ./v2raydar --no-tui`
 

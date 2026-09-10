@@ -58,11 +58,16 @@
 Вставьте строку для вашей ОС в терминал и нажмите Enter — затем ещё раз Enter (ответ по умолчанию «Да»), и установщик завершит всё автоматически с настройками по умолчанию (существующая установка обновится на месте). Ответ «Нет» — пошаговые запросы. Установочный скрипт определяет платформу, загружает последний релиз с `sing-box` и настраивает всё. Портативный режим устанавливает в `Desktop/V2RayDAR` (если есть папка рабочего стола), иначе в `~/V2RayDAR`. Пользовательский режим устанавливает бинарник в `~/.local/bin`.
 
 **Портативный режим** (рекомендуется) — все файлы в одной папке: просто скопируйте, вставьте и нажимайте Enter, пока установка не завершится! Автономная папка (приложенный `sing-box` или существующий `v2raydar_data/` рядом с исполняемым файлом) определяется автоматически — `--portable` задаёт режим явно.
-```bash
-# Linux / macOS
-curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh
 
-# Windows
+#### <img src="https://cdn.svglogos.dev/logos/linux-tux.svg" alt="Linux" width="20" height="20" align="texttop"> Linux / macOS
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh
+```
+
+#### <img src="https://cdn.svglogos.dev/logos/microsoft-windows-icon.svg" alt="Windows" width="20" height="20" align="texttop"> Windows (PowerShell)
+
+```powershell
 irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
 ```
 
@@ -76,7 +81,8 @@ irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
 # Затем выберите вариант 2 при запросе
 ```
 
-**Android / Termux:**
+#### <img src="https://cdn.svglogos.dev/logos/android-icon.svg" alt="Android" width="20" height="20" align="texttop"> Android / Termux
+
 ```bash
 pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar && curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | bash && cd ~/V2RayDAR && ./v2raydar --no-tui
 ```

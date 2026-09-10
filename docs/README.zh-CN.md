@@ -58,11 +58,16 @@
 将对应系统的命令粘贴到终端并回车——再按一次回车（默认“是”），安装程序即按默认设置自动完成（已安装则就地更新）；回答“否”则进入逐步提示。安装脚本自动检测平台，下载最新版本并附带 `sing-box`，完成全部配置。便携模式安装到 `Desktop/V2RayDAR`（若存在桌面目录），否则安装到 `~/V2RayDAR`。用户模式将二进制文件安装到 `~/.local/bin`。
 
 **便携模式**（推荐）— 所有文件在同一目录：只需复制粘贴并按回车，直到安装完成！自包含目录（可执行文件旁附带的 `sing-box` 或已有的 `v2raydar_data/`）会被自动检测；`--portable` 可强制启用。
-```bash
-# Linux / macOS
-curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh
 
-# Windows
+#### <img src="https://cdn.svglogos.dev/logos/linux-tux.svg" alt="Linux" width="20" height="20" align="texttop"> Linux / macOS
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh
+```
+
+#### <img src="https://cdn.svglogos.dev/logos/microsoft-windows-icon.svg" alt="Windows" width="20" height="20" align="texttop"> Windows (PowerShell)
+
+```powershell
 irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
 ```
 
@@ -76,7 +81,8 @@ irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
 # 然后在提示时选择选项 2
 ```
 
-**Android / Termux：**
+#### <img src="https://cdn.svglogos.dev/logos/android-icon.svg" alt="Android" width="20" height="20" align="texttop"> Android / Termux
+
 ```bash
 pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar && curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | bash && cd ~/V2RayDAR && ./v2raydar --no-tui
 ```

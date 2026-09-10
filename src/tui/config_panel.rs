@@ -112,7 +112,7 @@ pub fn draw(
         Layout::horizontal([Constraint::Percentage(44), Constraint::Percentage(56)]).areas(groups);
 
     let service_rows: Vec<(&str, String)> = vec![
-        ("bind", view.live_config.bind.to_string()),
+        ("bind", format!("http://{}", view.live_config.bind)),
         ("top_n", view.live_config.top_n.to_string()),
         ("refresh", format!("{}s", view.live_config.refresh_seconds)),
         (
@@ -187,7 +187,7 @@ fn draw_compact(frame: &mut Frame<'_>, area: Rect, view: &ConfigView) {
     let mut lines = vec![
         Line::from(vec![
             Span::styled("bind: ", Style::default().fg(Color::DarkGray)),
-            Span::raw(view.live_config.bind.to_string()),
+            Span::raw(format!("http://{}", view.live_config.bind)),
         ]),
         Line::from(vec![
             Span::styled("top_n: ", Style::default().fg(Color::DarkGray)),

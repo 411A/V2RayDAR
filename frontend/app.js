@@ -2114,7 +2114,14 @@ function goTab(name) {
   }
   const url = "/" + name + window.location.search;
   if (window.location.pathname + window.location.search !== url) {
-    window.history.pushState({ tab: name }, "", url);
+    if (window.history && typeof window.history.pushState === "function") {
+      window.history.pushState({ tab: name }, "", url);
+    } else {
+      // Pre-History-API browser: full load still lands on the right tab
+      // because the server serves the shell at every tab path.
+      window.location.assign(url);
+      return;
+    }
   }
   showTab(name);
 }

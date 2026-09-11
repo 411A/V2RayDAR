@@ -917,12 +917,9 @@ mod tests {
 
     #[test]
     fn plan_uses_proxy_fallback_when_sharing_hosts_are_empty() {
-        let planned = plan(
-            &test_config(),
-            &[],
-            Some("10.20.1.87".to_string()),
-            &|_| true,
-        );
+        let planned = plan(&test_config(), &[], Some("10.20.1.87".to_string()), &|_| {
+            true
+        });
 
         assert_eq!(planned.cards.len(), 1);
         assert_eq!(planned.cards[0].title, "TELEGRAM PROXY");

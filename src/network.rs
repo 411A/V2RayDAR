@@ -634,10 +634,7 @@ mod tests {
     fn uses_specific_lan_bind_as_discoverable_host() {
         let config = runtime_config("10.20.1.87:27141", true);
 
-        assert_eq!(
-            discoverable_hosts(&config),
-            vec!["10.20.1.87".to_string()]
-        );
+        assert_eq!(discoverable_hosts(&config), vec!["10.20.1.87".to_string()]);
     }
 
     #[test]
@@ -700,22 +697,15 @@ Wireless LAN adapter Wi-Fi:
             "2: wlan0    inet 10.20.1.87/24 brd 10.20.1.255 scope global wlan0\n",
         );
 
-        assert_eq!(
-            ips,
-            vec!["10.20.1.87".parse::<IpAddr>().expect("valid IP")]
-        );
+        assert_eq!(ips, vec!["10.20.1.87".parse::<IpAddr>().expect("valid IP")]);
     }
 
     #[test]
     fn parses_ifconfig_addr_tokens() {
-        let ips = parse_ifconfig_ips(
-            "wlan0 Link encap:Ethernet inet addr:10.20.43.1 Bcast:10.20.43.255",
-        );
+        let ips =
+            parse_ifconfig_ips("wlan0 Link encap:Ethernet inet addr:10.20.43.1 Bcast:10.20.43.255");
 
-        assert_eq!(
-            ips,
-            vec!["10.20.43.1".parse::<IpAddr>().expect("valid IP")]
-        );
+        assert_eq!(ips, vec!["10.20.43.1".parse::<IpAddr>().expect("valid IP")]);
     }
 
     #[test]
@@ -770,10 +760,7 @@ Wireless LAN adapter Wi-Fi:
              4: virbr0    inet 10.20.122.1/24 brd 10.20.122.255 scope global virbr0\n",
         );
 
-        assert_eq!(
-            ips,
-            vec!["10.20.1.87".parse::<IpAddr>().expect("valid IP")]
-        );
+        assert_eq!(ips, vec!["10.20.1.87".parse::<IpAddr>().expect("valid IP")]);
     }
 
     #[test]
@@ -787,10 +774,7 @@ Wireless LAN adapter Wi-Fi:
              \tinet 10.20.1.87  netmask 255.255.255.0\n",
         );
 
-        assert_eq!(
-            ips,
-            vec!["10.20.1.87".parse::<IpAddr>().expect("valid IP")]
-        );
+        assert_eq!(ips, vec!["10.20.1.87".parse::<IpAddr>().expect("valid IP")]);
     }
 
     #[test]

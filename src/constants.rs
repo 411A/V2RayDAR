@@ -53,6 +53,26 @@ pub const DEFAULT_PROXY_HEALTH_CHECK_URL: &str = "https://cp.cloudflare.com";
 pub const DEFAULT_PROXY_HEALTH_CHECK_INTERVAL: u64 = 60;
 pub const PROXY_MAX_CONSECUTIVE_FAILURES: u32 = 3;
 pub const PROXY_FAILOVER_COOLDOWN: Duration = Duration::from_secs(10);
+/// Minimum dwell on a freshly switched config: post-cycle updates must not
+/// flap straight onto the next-best config when rankings jitter. Failovers
+/// (proven failures) and manual pins always bypass the dwell.
+pub const PROXY_MIN_SWITCH_INTERVAL: Duration = Duration::from_secs(60);
+/// Idle-path verification uses one URL on a short budget instead of the full
+/// gauntlet: a dead proxy with nobody connected must still be caught.
+pub const PROXY_HEALTH_LIGHT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Minimum effective speed for a completed small body: a fast tiny page
+/// proves data flows (switching proxies cannot fix upstream content, and the
+/// starvation detector covers real user traffic), while a slow one cannot
+/// serve interactive apps — fail over instead of waiting for starvation.
+/// 204-empty and capped bodies always pass; incomplete bodies always fail.
+/// Adaptive: full speed while the pool is healthy, absolute minimum once
+/// every reachable config has failed (nothing works — accept anything that
+/// moves at all, never lower).
+pub const PROXY_HEALTH_FULL_BPS: u64 = 10 * 1024;
+pub const PROXY_HEALTH_MIN_BPS: u64 = 1024;
+/// A passing check slower than this logs a warning: the config works but is
+/// degrading, so the next failure reads in context instead of out of nowhere.
+pub const PROXY_SLOW_CHECK_WARN: Duration = Duration::from_secs(10);
 pub const PROXY_MAX_RECENTLY_FAILED_KEYS: usize = 50;
 pub const PROXY_STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 pub const PROXY_HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(15);

@@ -26,10 +26,12 @@ use crate::{
         LOCALHOST_IP, PROXY_CLASH_API_TIMEOUT, PROXY_CLASH_CONTROLLER_PORT_ATTEMPTS,
         PROXY_CLASH_UNREACHABLE_RETRY_POLLS, PROXY_DNS_FALLBACK, PROXY_DNS_PRIMARY,
         PROXY_FAILOVER_COOLDOWN, PROXY_HEALTH_CHECK_BODY_BYTES, PROXY_HEALTH_CHECK_TIMEOUT,
-        PROXY_MAX_CONSECUTIVE_FAILURES, PROXY_MAX_RECENTLY_FAILED_KEYS, PROXY_PORT_POLL_INTERVAL,
-        PROXY_SING_BOX_TAG_DIRECT, PROXY_SING_BOX_TAG_DNS_DIRECT, PROXY_SING_BOX_TAG_DNS_FALLBACK,
-        PROXY_SING_BOX_TAG_DNS_PROXY, PROXY_SING_BOX_TAG_INBOUND, PROXY_SING_BOX_TAG_OUTBOUND,
-        PROXY_STARTUP_TIMEOUT, PROXY_STARVATION_MIN_AGE, PROXY_STARVATION_MIN_UPLOAD_BYTES,
+        PROXY_HEALTH_FULL_BPS, PROXY_HEALTH_LIGHT_TIMEOUT, PROXY_HEALTH_MIN_BPS,
+        PROXY_MAX_CONSECUTIVE_FAILURES, PROXY_MAX_RECENTLY_FAILED_KEYS, PROXY_MIN_SWITCH_INTERVAL,
+        PROXY_PORT_POLL_INTERVAL, PROXY_SING_BOX_TAG_DIRECT, PROXY_SING_BOX_TAG_DNS_DIRECT,
+        PROXY_SING_BOX_TAG_DNS_FALLBACK, PROXY_SING_BOX_TAG_DNS_PROXY, PROXY_SING_BOX_TAG_INBOUND,
+        PROXY_SING_BOX_TAG_OUTBOUND, PROXY_SLOW_CHECK_WARN, PROXY_STARTUP_TIMEOUT,
+        PROXY_STARVATION_MIN_AGE, PROXY_STARVATION_MIN_UPLOAD_BYTES,
         PROXY_STARVATION_POLL_INTERVAL, SING_BOX_CLEANUP_TIMEOUT, SING_BOX_CONFIG_FILE_PREFIX,
     },
     model::{ProgressEvent, RankedConfig, RuntimeState},
@@ -54,6 +56,14 @@ struct ProxyState {
     last_health_check: Option<Instant>,
     last_health_ok: bool,
     last_failover: Option<Instant>,
+    /// Degraded pool: every reachable config has failed, so the floor drops
+    /// to the absolute minimum until a switch serves a new config. Never
+    /// lower — below 1KB/s nothing interactive survives anyway.
+    degraded: bool,
+    /// Last config switch (update or failover): post-cycle updates hold the
+    /// current config inside `PROXY_MIN_SWITCH_INTERVAL` instead of flapping
+    /// on ranking jitter.
+    last_switch: Option<Instant>,
     failed_config_keys: Vec<String>,
     proxy_config: ProxyConfig,
     manual_proxy_uri: Option<String>,
@@ -125,6 +135,9 @@ struct ManagedProcess {
     child: tokio::process::Child,
     config_path: PathBuf,
     stderr_task: tokio::task::JoinHandle<()>,
+    /// Spawn instant: unexpected exits log process age so crash-loops read
+    /// differently from config flaps in the log.
+    started_at: Instant,
 }
 
 impl Drop for ManagedProcess {
@@ -156,6 +169,8 @@ impl PersistentProxy {
                 last_health_check: None,
                 last_health_ok: false,
                 last_failover: None,
+                degraded: false,
+                last_switch: None,
                 failed_config_keys: Vec::new(),
                 proxy_config: config,
                 manual_proxy_uri,
@@ -181,6 +196,7 @@ impl PersistentProxy {
     /// new data (refresh cycles). Ping cycles re-verify the same set, so
     /// clearing there would re-arm configs the health/starvation loops just
     /// failed over away from — flapping back onto the dead config.
+    #[allow(clippy::too_many_lines)]
     pub async fn update(
         &self,
         config: &ProxyConfig,
@@ -232,10 +248,13 @@ impl PersistentProxy {
             select_proxy_config(config, ranked, active_uri.as_deref(), &blacklisted);
         if clear_stale_blacklist {
             // Everything reachable recently failed: grant one fresh chance
-            // rather than leaving the proxy with nothing to serve.
+            // rather than leaving the proxy with nothing to serve. The pool
+            // is degraded: drop the floor until a switch serves anew.
             info!("proxy: all reachable configs blacklisted, clearing blacklist");
             self.emit_log("proxy: blacklist cleared".into());
-            self.state.write().await.failed_config_keys.clear();
+            let mut state = self.state.write().await;
+            state.failed_config_keys.clear();
+            state.degraded = true;
         }
 
         let Some(best) = best else {
@@ -253,7 +272,22 @@ impl PersistentProxy {
             let state = self.state.read().await;
             match &state.active_config_uri {
                 None => (true, "starting"),
-                Some(uri) if uri != &best.uri => (true, "new config"),
+                Some(uri) if uri != &best.uri => {
+                    // Anti-flap dwell: rankings jitter between cycles, and
+                    // every "new config" switch drops the port for seconds.
+                    // Hold the current config inside the dwell window; proven
+                    // failures (restart/failover arms below) always bypass.
+                    // An explicit manual pin also bypasses: user choice wins.
+                    if dwell_allows(
+                        state.last_switch,
+                        Instant::now(),
+                        state.manual_proxy_uri.is_some(),
+                    ) {
+                        (true, "new config")
+                    } else {
+                        (false, "dwell")
+                    }
+                }
                 Some(_) => {
                     let running = state.running;
                     let failures = state.consecutive_failures;
@@ -271,6 +305,12 @@ impl PersistentProxy {
         };
 
         if !should_switch {
+            if reason == "dwell" {
+                info!(
+                    name = %best.name,
+                    "proxy: rankings changed but switched recently; holding current config"
+                );
+            }
             return;
         }
 
@@ -293,11 +333,17 @@ impl PersistentProxy {
             best.name, config.port
         ));
 
+        let switched = active_uri.as_deref() != Some(best.uri.as_str());
         let mut state = self.state.write().await;
         state.active_config_uri = Some(best.uri.clone());
         state.active_config_name = Some(best.name.clone());
         state.active_config_country.clone_from(&best.country_code);
         state.consecutive_failures = 0;
+        state.last_switch = Some(Instant::now());
+        if switched {
+            // A new config means fresh hope: back to the full floor.
+            state.degraded = false;
+        }
     }
 
     /// Check if the managed sing-box process is still alive.
@@ -313,8 +359,10 @@ impl PersistentProxy {
             Ok(Some(status)) => {
                 // Process exited — capture stderr before cleanup
                 let stderr_msg = read_child_stderr(&mut managed.child).await;
+                let age = managed.started_at.elapsed();
                 warn!(
                     status = %status,
+                    age_secs = age.as_secs(),
                     stderr = stderr_msg.as_deref().unwrap_or("(no output)"),
                     "proxy: sing-box process exited"
                 );
@@ -407,6 +455,7 @@ impl PersistentProxy {
             child,
             config_path,
             stderr_task,
+            started_at: Instant::now(),
         };
 
         let (controller, secret) = clash_api
@@ -447,6 +496,17 @@ impl PersistentProxy {
     /// would otherwise stall every post-cycle proxy update for minutes.
     /// Only brief state snapshots are taken under lock.
     pub async fn health_check(proxy: &SharedProxy) -> bool {
+        Self::health_check_with(proxy, PROXY_HEALTH_CHECK_TIMEOUT, false).await
+    }
+
+    /// Idle-path verification: the primary URL on a short budget. A dead
+    /// proxy with nobody connected must still be caught — but it must not
+    /// burn the full five-URL gauntlet every interval while idle.
+    pub async fn health_check_light(proxy: &SharedProxy) -> bool {
+        Self::health_check_with(proxy, PROXY_HEALTH_LIGHT_TIMEOUT, true).await
+    }
+
+    async fn health_check_with(proxy: &SharedProxy, timeout: Duration, light: bool) -> bool {
         if !proxy.lock().await.is_process_alive().await {
             return false;
         }
@@ -459,7 +519,7 @@ impl PersistentProxy {
             return false;
         };
         let Ok(client) = reqwest::Client::builder()
-            .timeout(PROXY_HEALTH_CHECK_TIMEOUT)
+            .timeout(timeout)
             .proxy(proxy_client)
             .build()
         else {
@@ -467,28 +527,31 @@ impl PersistentProxy {
             return false;
         };
 
-        let health_url =
-            read_proxy_state(proxy, |state| state.proxy_config.health_check_url.clone()).await;
-
-        // Try primary URL first; if it fails, try fallback URLs
-        let fallback_urls = [
-            "https://1.1.1.1",
-            "https://cloudflare.com",
-            "https://api.ipify.org?format=json",
-            "https://httpbin.org/ip",
-        ];
-
-        let ok = if body_transfers(&client, &health_url).await {
-            true
+        let (health_url, degraded) = read_proxy_state(proxy, |state| {
+            (state.proxy_config.health_check_url.clone(), state.degraded)
+        })
+        .await;
+        // Adaptive floor: full speed while the pool is healthy, absolute
+        // minimum once everything reachable has failed.
+        let floor_bps = if degraded {
+            PROXY_HEALTH_MIN_BPS
         } else {
-            // Primary failed - try fallbacks
-            let mut any_ok = false;
-            for fallback in &fallback_urls {
-                if body_transfers(&client, fallback).await {
-                    any_ok = true;
-                    break;
-                }
-            }
+            PROXY_HEALTH_FULL_BPS
+        };
+
+        // Race the primary against page-sized fallbacks: first success wins
+        // within one timeout budget instead of five sequential ones. The
+        // tiny-JSON responders are out — they can never clear a speed floor,
+        // so racing them only burns connections.
+        // Light (idle) mode probes the primary alone on a short budget.
+        let fallback_urls = ["https://1.1.1.1", "https://cloudflare.com"];
+        let started = Instant::now();
+        let ok = if light {
+            body_transfers(&client, &health_url, floor_bps).await
+        } else {
+            let mut urls = vec![health_url.as_str()];
+            urls.extend_from_slice(&fallback_urls);
+            let any_ok = any_transfers(&client, &urls, floor_bps).await;
             if !any_ok {
                 warn!(
                     primary = %health_url,
@@ -497,6 +560,15 @@ impl PersistentProxy {
             }
             any_ok
         };
+        if ok {
+            let elapsed = started.elapsed();
+            if elapsed >= PROXY_SLOW_CHECK_WARN {
+                warn!(
+                    elapsed_secs = elapsed.as_secs(),
+                    "proxy: health check passed but slow — config degrading"
+                );
+            }
+        }
 
         write_proxy_state(proxy, |state| {
             state.last_health_check = Some(Instant::now());
@@ -512,12 +584,115 @@ impl PersistentProxy {
         ok
     }
 
+    /// Shared failure path for the health loop's full and light checks:
+    /// a pinned config stays loud, otherwise the post-check failure count
+    /// decides between waiting and failing over. Returns true when a
+    /// failover was attempted (so the loop can resync the snapshot).
+    async fn on_health_failure(
+        proxy: &SharedProxy,
+        ranked: &Arc<RwLock<Vec<RankedConfig>>>,
+        runtime: &Arc<RwLock<RuntimeState>>,
+        manual: Option<String>,
+    ) -> bool {
+        if manual.is_some() {
+            warn!(
+                "proxy: health check failed on a manually pinned config; staying (clear the pin to auto-failover)"
+            );
+            proxy.lock().await.emit_log(
+                "proxy: health fail on manual pin; staying (clear the pin to auto-failover)".into(),
+            );
+            return false;
+        }
+
+        // The count below is post-check (health_check_with just updated it),
+        // so exactly PROXY_MAX_CONSECUTIVE_FAILURES failures trip failover —
+        // no extra interval burned on a snapshot taken before the check ran.
+        let failures = read_proxy_state(proxy, |state| state.consecutive_failures).await;
+        if !failover_tripped(failures) {
+            warn!(
+                failures = failures,
+                max = PROXY_MAX_CONSECUTIVE_FAILURES,
+                "proxy: health check failed, waiting for more failures before failover"
+            );
+            proxy.lock().await.emit_log(format!(
+                "proxy: health fail {failures}/{PROXY_MAX_CONSECUTIVE_FAILURES}"
+            ));
+            return false;
+        }
+
+        warn!("proxy: health check failed, attempting failover");
+        if let Err(err) = Self::failover(proxy, ranked).await {
+            error!(error = %err, "proxy: failover failed");
+            proxy
+                .lock()
+                .await
+                .emit_log(format!("proxy: failover failed: {err}"));
+        }
+        sync_runtime_proxy_snapshot(proxy, runtime).await;
+        true
+    }
+
+    /// Revive a proxy that stopped itself: after an exhausted failover sets
+    /// `running = false`, both loops skip forever — a dead-end latch only a
+    /// cycle would clear, minutes later. When the feature is still enabled
+    /// and the pool has anything reachable, try to serve again right away.
+    async fn revive_if_enabled(proxy: &SharedProxy, ranked: &Arc<RwLock<Vec<RankedConfig>>>) {
+        let (enabled, proxy_config, active_uri, blacklisted) = read_proxy_state(proxy, |state| {
+            (
+                state.proxy_config.enabled,
+                state.proxy_config.clone(),
+                state.active_config_uri.clone(),
+                state
+                    .failed_config_keys
+                    .iter()
+                    .cloned()
+                    .collect::<HashSet<String>>(),
+            )
+        })
+        .await;
+        if !enabled {
+            return;
+        }
+        let ranked_snapshot = ranked.read().await.clone();
+        let (best, _) = select_proxy_config(
+            &proxy_config,
+            &ranked_snapshot,
+            active_uri.as_deref(),
+            &blacklisted,
+        );
+        let Some(best) = best else {
+            return;
+        };
+        info!(name = %best.name, "proxy: attempting revival after stopped failover");
+        let started = proxy.lock().await.start_with_config(best).await.is_ok();
+        if !started {
+            warn!(name = %best.name, "proxy: revival failed, will retry next interval");
+            return;
+        }
+        proxy.lock().await.emit_log(format!(
+            "proxy: revived → {} (port {})",
+            best.name, proxy_config.port
+        ));
+        write_proxy_state(proxy, |state| {
+            state.active_config_uri = Some(best.uri.clone());
+            state.active_config_name = Some(best.name.clone());
+            state.active_config_country.clone_from(&best.country_code);
+            state.consecutive_failures = 0;
+            state.last_switch = Some(Instant::now());
+            // Revival is fresh hope by definition: back to the full floor.
+            state.degraded = false;
+        })
+        .await;
+    }
     /// Switch away from the active config to the next best reachable one.
     /// Takes the shared handle (not `&self`) so callers never hold the
     /// proxy mutex across candidate restarts, transfer checks, and the
     /// cooldown sleep — that would stall every post-cycle proxy update.
     /// Only brief state snapshots are taken under lock.
-    pub async fn failover(proxy: &SharedProxy, ranked: &[RankedConfig]) -> Result<()> {
+    pub async fn failover(
+        proxy: &SharedProxy,
+        ranked: &Arc<RwLock<Vec<RankedConfig>>>,
+    ) -> Result<()> {
         let (current_uri, last_failover, failed_keys) = read_proxy_state(proxy, |state| {
             (
                 state.active_config_uri.clone(),
@@ -539,8 +714,11 @@ impl PersistentProxy {
             }
         }
 
+        // Re-read the pool after the cooldown: minutes may have passed and a
+        // cycle may have published fresher truth meanwhile.
+        let ranked_snapshot = ranked.read().await.clone();
         // Try configs that haven't failed recently
-        let candidates: Vec<&RankedConfig> = ranked
+        let candidates: Vec<&RankedConfig> = ranked_snapshot
             .iter()
             .filter(|c| {
                 c.reachable
@@ -556,8 +734,14 @@ impl PersistentProxy {
                 .lock()
                 .await
                 .emit_log("proxy: blacklist cleared".into());
-            write_proxy_state(proxy, |state| state.failed_config_keys.clear()).await;
-            ranked
+            // Degraded pool: nothing reachable survived, so drop the floor
+            // to the absolute minimum until a switch serves a new config.
+            write_proxy_state(proxy, |state| {
+                state.failed_config_keys.clear();
+                state.degraded = true;
+            })
+            .await;
+            ranked_snapshot
                 .iter()
                 .filter(|c| c.reachable && current_uri.as_deref() != Some(&c.uri))
                 .collect()
@@ -588,6 +772,9 @@ impl PersistentProxy {
                         .clone_from(&candidate.country_code);
                     state.consecutive_failures = 0;
                     state.last_failover = Some(Instant::now());
+                    state.last_switch = Some(Instant::now());
+                    // A new config means fresh hope: back to the full floor.
+                    state.degraded = false;
                 })
                 .await;
                 return Ok(());
@@ -703,20 +890,114 @@ fn select_proxy_config<'a>(
 }
 
 /// GET `url` through the proxy; true only when the response body actually
-/// transfers: the stream completes, or yields plenty (short-circuits huge
-/// bodies). A stall anywhere — connect, handshake, headers, mid-body — fails
-/// via the client timeout. Status alone is never enough: false-positive
-/// configs complete handshakes and headers, then deliver nothing.
-async fn body_transfers(client: &reqwest::Client, url: &str) -> bool {
+/// transfers at or above `floor_bps`. A stall anywhere — connect, handshake,
+/// headers, mid-body — fails via the client timeout. Status alone is never
+/// enough: false-positive configs complete handshakes and headers, then
+/// deliver nothing — or a tiny page with a clean EOF on a link too slow for
+/// real apps. Empty 204s (connectivity proven, nothing to carry) and capped
+/// bodies always pass.
+async fn body_transfers(client: &reqwest::Client, url: &str, floor_bps: u64) -> bool {
+    let outcome = transfer_outcome(client, url).await;
+    transfer_ok(outcome, floor_bps)
+}
+
+/// Measurable result of one transfer attempt, so the pass rule stays a pure
+/// function under test.
+#[derive(Debug, Clone, Copy)]
+struct TransferOutcome {
+    status_ok: bool,
+    empty_status: bool,
+    received: u64,
+    complete: bool,
+    elapsed: Duration,
+}
+
+impl TransferOutcome {
+    const fn idle() -> Self {
+        Self {
+            status_ok: false,
+            empty_status: false,
+            received: 0,
+            complete: false,
+            elapsed: Duration::ZERO,
+        }
+    }
+}
+
+async fn transfer_outcome(client: &reqwest::Client, url: &str) -> TransferOutcome {
+    let started = Instant::now();
     let Ok(resp) = client.get(url).send().await else {
-        return false;
+        return TransferOutcome::idle();
     };
-    if !(resp.status().is_success() || resp.status().as_u16() == 204) {
-        return false;
+    let status = resp.status();
+    if !(status.is_success() || status.as_u16() == 204) {
+        return TransferOutcome::idle();
     }
     let (received, complete) =
         accumulate_limited(resp.bytes_stream(), PROXY_HEALTH_CHECK_BODY_BYTES).await;
-    complete || received >= PROXY_HEALTH_CHECK_BODY_BYTES
+    TransferOutcome {
+        status_ok: true,
+        empty_status: status.as_u16() == 204,
+        received,
+        complete,
+        elapsed: started.elapsed(),
+    }
+}
+
+/// Pure pass rule with an explicit speed floor: empty-status with clean EOF,
+/// capped volume, or a complete body delivered at or above `floor_bps`.
+/// Sub-second deliveries always pass (anything that fast proves flow); slower
+/// ones must clear the floor. Tiny fast pages pass by design — the proxy
+/// moved them, so switching cannot help, and the starvation detector owns
+/// real user traffic. Slow trickles fail instead of choking apps silently.
+const fn transfer_ok(outcome: TransferOutcome, floor_bps: u64) -> bool {
+    if !outcome.status_ok {
+        return false;
+    }
+    if outcome.received >= PROXY_HEALTH_CHECK_BODY_BYTES {
+        return true;
+    }
+    if !outcome.complete {
+        return false;
+    }
+    if outcome.empty_status {
+        return true;
+    }
+    outcome.received >= floor_bps * outcome.elapsed.as_secs()
+}
+
+/// Race several URLs through one client: first success wins. A dead proxy
+/// used to burn sequential per-URL timeouts (5 × 15s); racing bounds every
+/// check by a single timeout instead.
+async fn any_transfers(client: &reqwest::Client, urls: &[&str], floor_bps: u64) -> bool {
+    let mut pending: Vec<_> = urls
+        .iter()
+        .map(|url| Box::pin(body_transfers(client, url, floor_bps)))
+        .collect();
+    while !pending.is_empty() {
+        let (ok, _index, rest) = futures_util::future::select_all(pending).await;
+        if ok {
+            return true;
+        }
+        pending = rest;
+    }
+    false
+}
+
+/// Post-check failure count trips failover at exactly
+/// `PROXY_MAX_CONSECUTIVE_FAILURES` — no extra interval burned on a snapshot
+/// taken before the check ran.
+const fn failover_tripped(failures: u32) -> bool {
+    failures >= PROXY_MAX_CONSECUTIVE_FAILURES
+}
+
+/// Anti-flap dwell: a "new config" switch inside the dwell window is held
+/// unless the user pinned explicitly. Restarts and failovers bypass.
+fn dwell_allows(last_switch: Option<Instant>, now: Instant, pinned: bool) -> bool {
+    if pinned {
+        return true;
+    }
+    last_switch.is_none_or(|switched| now.duration_since(switched) >= PROXY_MIN_SWITCH_INTERVAL)
 }
 
 /// Drain a byte stream up to `cap`, returning `(received, complete)`.
@@ -768,12 +1049,11 @@ pub fn spawn_health_loop(
 
         loop {
             // Read interval from state — reactive to config changes
-            let (running, consecutive_failures, interval, controller, secret, manual) = {
+            let (running, interval, controller, secret, manual) = {
                 let p = proxy.lock().await;
                 let state = p.state.read().await;
                 let result = (
                     state.running,
-                    state.consecutive_failures,
                     state.proxy_config.health_check_interval_seconds,
                     state.clash_controller,
                     state.clash_secret.clone(),
@@ -797,73 +1077,48 @@ pub fn spawn_health_loop(
             time::sleep(Duration::from_secs(last_interval)).await;
 
             if !running {
+                // Failover-exhausted dead end: revive while enabled instead
+                // of skipping until the next cycle, minutes later.
+                PersistentProxy::revive_if_enabled(&proxy, &ranked).await;
                 continue;
             }
 
             // Idle users must never trigger a switch: failover is driven by
             // real user traffic (the starvation detector), not by background
-            // probes. When the Clash controller is available, skip the
-            // transfer health check entirely while no user connections exist.
-            // A manually pinned config never auto-switches either — it only
-            // gets loud log lines from the starvation path.
-            if let (Some(addr), Some(secret)) = (controller, secret) {
+            // probes. When the Clash controller is available, an empty
+            // connection table gets the cheap single-URL verification
+            // instead of the full gauntlet — a dead proxy with nobody
+            // connected must still be caught. A manually pinned config never
+            // auto-switches either — it only gets loud log lines from the
+            // starvation path.
+            // No proxy lock is held across the transfer checks below: a dead
+            // proxy burns URL timeouts and must not stall updates.
+            let idle = if let (Some(addr), Some(secret)) = (controller, secret) {
                 match fetch_clash_connections(addr, &secret).await {
-                    Ok(connections) => {
-                        if connections.is_empty() {
-                            continue;
-                        }
-                    }
+                    Ok(connections) => connections.is_empty(),
                     Err(err) => {
                         warn!(
                             error = %err,
                             "proxy: clash API unreachable, falling back to transfer health check"
                         );
+                        false
                     }
                 }
-            }
+            } else {
+                false
+            };
 
-            // No proxy lock is held across the transfer checks below: a dead
-            // proxy burns sequential URL timeouts and must not stall updates.
-            let health_ok = PersistentProxy::health_check(&proxy).await;
+            let health_ok = if idle {
+                PersistentProxy::health_check_light(&proxy).await
+            } else {
+                PersistentProxy::health_check(&proxy).await
+            };
 
             if health_ok {
                 continue;
             }
 
-            if manual.is_some() {
-                warn!(
-                    "proxy: health check failed on a manually pinned config; staying (clear the pin to auto-failover)"
-                );
-                proxy.lock().await.emit_log(
-                    "proxy: health fail on manual pin; staying (clear the pin to auto-failover)"
-                        .into(),
-                );
-                continue;
-            }
-
-            if consecutive_failures < PROXY_MAX_CONSECUTIVE_FAILURES {
-                let next = consecutive_failures + 1;
-                warn!(
-                    failures = next,
-                    max = PROXY_MAX_CONSECUTIVE_FAILURES,
-                    "proxy: health check failed, waiting for more failures before failover"
-                );
-                proxy.lock().await.emit_log(format!(
-                    "proxy: health fail {next}/{PROXY_MAX_CONSECUTIVE_FAILURES}"
-                ));
-                continue;
-            }
-
-            warn!("proxy: health check failed, attempting failover");
-            let ranked_snapshot = ranked.read().await.clone();
-            if let Err(err) = PersistentProxy::failover(&proxy, &ranked_snapshot).await {
-                error!(error = %err, "proxy: failover failed");
-                proxy
-                    .lock()
-                    .await
-                    .emit_log(format!("proxy: failover failed: {err}"));
-            }
-            sync_runtime_proxy_snapshot(&proxy, &runtime).await;
+            PersistentProxy::on_health_failure(&proxy, &ranked, &runtime, manual).await;
         }
     });
 }
@@ -1007,7 +1262,15 @@ pub fn spawn_starvation_loop(
                     sample.download,
                 ) {
                     reported.insert(conn.id.clone());
-                    on_starved_connection(&proxy, &ranked, &conn.id, sample.upload, &runtime).await;
+                    let retry_allowed =
+                        on_starved_connection(&proxy, &ranked, &conn.id, sample.upload, &runtime)
+                            .await;
+                    if retry_allowed {
+                        // The failover itself failed: let this connection
+                        // retrigger once the pool recovers instead of going
+                        // silent for the rest of its lifetime.
+                        reported.remove(&conn.id);
+                    }
                     // One trigger per poll: a failover restarts the process,
                     // so the rest of this snapshot is already stale.
                     break;
@@ -1023,13 +1286,18 @@ pub fn spawn_starvation_loop(
 /// check and fail over to the next best config when it carries nothing.
 /// A manually pinned config is verified the same way but never auto-switched:
 /// it stays with a loud log so the user can pick another proxy themselves.
+/// Returns true when the caller should clear the per-connection latch (the
+/// failover itself failed, so the same connection may legitimately retrigger
+/// once the pool recovers). Every other outcome stays latched: a healthy
+/// config means the connection — not the proxy — is at fault, and a pin
+/// means the user must act.
 async fn on_starved_connection(
     proxy: &SharedProxy,
     ranked: &Arc<RwLock<Vec<RankedConfig>>>,
     conn_id: &str,
     upload: u64,
     runtime: &Arc<RwLock<RuntimeState>>,
-) {
+) -> bool {
     warn!(
         connection = %conn_id,
         upload_bytes = upload,
@@ -1043,7 +1311,7 @@ async fn on_starved_connection(
     // what happens on failure (loud stay, no auto-switch).
     if PersistentProxy::health_check(proxy).await {
         info!("proxy: starved connection, but the active config transfers data; keeping");
-        return;
+        return false;
     }
     let manual = proxy
         .lock()
@@ -1057,18 +1325,20 @@ async fn on_starved_connection(
         let message = "proxy: manually pinned config verified starved; staying (clear the pin to auto-failover)";
         warn!("{message}");
         proxy.lock().await.emit_log(message.to_string());
-        return;
+        return false;
     }
     warn!("proxy: active config verified starved, attempting failover");
-    let ranked_snapshot = ranked.read().await.clone();
-    if let Err(err) = PersistentProxy::failover(proxy, &ranked_snapshot).await {
+    if let Err(err) = PersistentProxy::failover(proxy, ranked).await {
         error!(error = %err, "proxy: starvation failover failed");
         proxy
             .lock()
             .await
             .emit_log(format!("proxy: starvation failover failed: {err}"));
+        sync_runtime_proxy_snapshot(proxy, runtime).await;
+        return true;
     }
     sync_runtime_proxy_snapshot(proxy, runtime).await;
+    false
 }
 
 #[derive(Debug, Clone)]
@@ -1717,6 +1987,362 @@ mod tests {
                 .await
                 .expect("no hang");
         assert!(result.is_err());
+    }
+
+    /// Raw HTTP stub: replays one canned response per connection, with an
+    /// optional pre-response delay and an optional truncate-and-hang (send
+    /// only the first N bytes, then hold the socket open forever).
+    struct MockHttp {
+        addr: SocketAddr,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl MockHttp {
+        async fn start(response: Vec<u8>, delay: Duration, send_bytes: Option<usize>) -> Self {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .expect("mock binds");
+            let addr = listener.local_addr().expect("mock addr");
+            let task = tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                while let Ok((mut stream, _)) = listener.accept().await {
+                    let response = response.clone();
+                    tokio::spawn(async move {
+                        let mut head = vec![0u8; 1024];
+                        let _ = stream.read(&mut head).await;
+                        if !delay.is_zero() {
+                            tokio::time::sleep(delay).await;
+                        }
+                        let end = send_bytes.unwrap_or(response.len()).min(response.len());
+                        let _ = stream.write_all(&response[..end]).await;
+                        if end < response.len() {
+                            futures_util::future::pending::<()>().await;
+                        }
+                    });
+                }
+            });
+            Self { addr, task }
+        }
+
+        fn url(&self) -> String {
+            format!("http://{}/", self.addr)
+        }
+    }
+
+    impl Drop for MockHttp {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    fn test_client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .expect("client builds")
+    }
+
+    fn outcome(
+        status_ok: bool,
+        empty_status: bool,
+        received: u64,
+        complete: bool,
+        elapsed_secs: u64,
+    ) -> TransferOutcome {
+        TransferOutcome {
+            status_ok,
+            empty_status,
+            received,
+            complete,
+            elapsed: Duration::from_secs(elapsed_secs),
+        }
+    }
+
+    #[test]
+    fn transfer_ok_passes_empty_204_and_capped_bodies() {
+        assert!(transfer_ok(
+            outcome(true, true, 0, true, 0),
+            PROXY_HEALTH_FULL_BPS
+        ));
+        assert!(transfer_ok(
+            outcome(true, false, 2048, true, 0),
+            PROXY_HEALTH_FULL_BPS
+        ));
+        assert!(transfer_ok(
+            outcome(true, false, PROXY_HEALTH_CHECK_BODY_BYTES, false, 9),
+            PROXY_HEALTH_FULL_BPS
+        ));
+    }
+
+    #[test]
+    fn transfer_ok_judges_small_bodies_by_speed_not_size() {
+        // Fast tiny page: data flows, so the proxy is exonerated no matter
+        // the size — switching cannot fix upstream content.
+        assert!(transfer_ok(
+            outcome(true, false, 512, true, 0),
+            PROXY_HEALTH_FULL_BPS
+        ));
+        // Same page delivered slowly: unusable for interactive apps.
+        assert!(!transfer_ok(
+            outcome(true, false, 512, true, 3),
+            PROXY_HEALTH_FULL_BPS
+        ));
+        assert!(!transfer_ok(
+            outcome(true, false, 5000, true, 1),
+            PROXY_HEALTH_FULL_BPS
+        ));
+        // Boundary: exactly the floor passes.
+        assert!(transfer_ok(
+            outcome(true, false, PROXY_HEALTH_FULL_BPS, true, 1),
+            PROXY_HEALTH_FULL_BPS
+        ));
+        assert!(!transfer_ok(
+            outcome(true, false, 16, false, 0),
+            PROXY_HEALTH_FULL_BPS
+        ));
+        assert!(!transfer_ok(
+            outcome(false, false, 4096, true, 0),
+            PROXY_HEALTH_FULL_BPS
+        ));
+    }
+
+    #[test]
+    fn transfer_ok_degraded_floor_accepts_slow_links() {
+        // Degraded pool (nothing else works): a 2KB/s link passes the
+        // absolute minimum instead of churning failovers.
+        assert!(transfer_ok(
+            outcome(true, false, 2048, true, 1),
+            PROXY_HEALTH_MIN_BPS
+        ));
+        // ... but below 1KB/s nothing interactive survives: still fails.
+        assert!(!transfer_ok(
+            outcome(true, false, 512, true, 3),
+            PROXY_HEALTH_MIN_BPS
+        ));
+        // And the same link fails the full floor.
+        assert!(!transfer_ok(
+            outcome(true, false, 2048, true, 1),
+            PROXY_HEALTH_FULL_BPS
+        ));
+    }
+
+    #[test]
+    fn failover_trips_at_exactly_max_failures() {
+        assert!(!failover_tripped(0));
+        assert!(!failover_tripped(PROXY_MAX_CONSECUTIVE_FAILURES - 1));
+        assert!(failover_tripped(PROXY_MAX_CONSECUTIVE_FAILURES));
+        assert!(failover_tripped(PROXY_MAX_CONSECUTIVE_FAILURES + 1));
+    }
+
+    #[test]
+    fn dwell_holds_recent_switches_unless_pinned() {
+        let now = Instant::now();
+        assert!(dwell_allows(None, now, false));
+        let recent = now.checked_sub(Duration::from_secs(10)).expect("time");
+        assert!(!dwell_allows(Some(recent), now, false));
+        assert!(dwell_allows(Some(recent), now, true));
+        let old = now
+            .checked_sub(PROXY_MIN_SWITCH_INTERVAL + Duration::from_secs(1))
+            .expect("time");
+        assert!(dwell_allows(Some(old), now, false));
+    }
+
+    #[tokio::test]
+    async fn transfer_outcome_passes_204_empty() {
+        let mock = MockHttp::start(
+            b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n".to_vec(),
+            Duration::ZERO,
+            None,
+        )
+        .await;
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(10),
+            transfer_outcome(&test_client(), &mock.url()),
+        )
+        .await
+        .expect("no hang");
+        assert!(transfer_ok(outcome, PROXY_HEALTH_FULL_BPS));
+    }
+
+    #[tokio::test]
+    async fn transfer_outcome_passes_fast_tiny_complete_200() {
+        // Instant 5 bytes: data flows, so size alone never fails it.
+        let mock = MockHttp::start(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello".to_vec(),
+            Duration::ZERO,
+            None,
+        )
+        .await;
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(10),
+            transfer_outcome(&test_client(), &mock.url()),
+        )
+        .await
+        .expect("no hang");
+        assert!(transfer_ok(outcome, PROXY_HEALTH_FULL_BPS));
+    }
+
+    #[tokio::test]
+    async fn transfer_outcome_rejects_slow_tiny_complete_200() {
+        // Same 5 bytes after a 2s stall (~2 B/s): unusable, must fail.
+        let mock = MockHttp::start(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello".to_vec(),
+            Duration::from_secs(2),
+            None,
+        )
+        .await;
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(10),
+            transfer_outcome(&test_client(), &mock.url()),
+        )
+        .await
+        .expect("no hang");
+        assert!(!transfer_ok(outcome, PROXY_HEALTH_FULL_BPS));
+    }
+
+    #[tokio::test]
+    async fn transfer_outcome_short_circuits_huge_hanging_body() {
+        // 256KB arrive, then the socket hangs forever: success must return
+        // at the cap without waiting for EOF or the client timeout.
+        let cap = usize::try_from(PROXY_HEALTH_CHECK_BODY_BYTES).expect("cap fits pointer");
+        let header =
+            b"HTTP/1.1 200 OK\r\nContent-Length: 10000000\r\nConnection: close\r\n\r\n".to_vec();
+        let body = vec![b'x'; cap + 1024];
+        let mut response = header.clone();
+        response.extend_from_slice(&body);
+        let mock = MockHttp::start(response, Duration::ZERO, Some(header.len() + cap)).await;
+        let started = Instant::now();
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(10),
+            transfer_outcome(&test_client(), &mock.url()),
+        )
+        .await
+        .expect("no hang");
+        assert!(transfer_ok(outcome, PROXY_HEALTH_FULL_BPS));
+        assert!(
+            started.elapsed() < Duration::from_secs(9),
+            "cap short-circuit must beat the client timeout"
+        );
+    }
+
+    #[tokio::test]
+    async fn any_transfers_races_slow_urls() {
+        // Two URLs stall 3s each, then serve 64KB (~21KB/s, clears the
+        // floor): sequential code would take 6s+; the race must finish near
+        // a single delay.
+        let slow_body =
+            b"HTTP/1.1 200 OK\r\nContent-Length: 65536\r\nConnection: close\r\n\r\n".to_vec();
+        let mut slow_body = slow_body;
+        slow_body.extend(std::iter::repeat_n(b'y', 65536));
+        let slow_a = MockHttp::start(slow_body.clone(), Duration::from_secs(3), None).await;
+        let slow_b = MockHttp::start(slow_body, Duration::from_secs(3), None).await;
+        let url_a = slow_a.url();
+        let url_b = slow_b.url();
+        let refs = [url_a.as_str(), url_b.as_str()];
+        let started = Instant::now();
+        let ok = tokio::time::timeout(
+            Duration::from_secs(10),
+            any_transfers(&test_client(), &refs, PROXY_HEALTH_FULL_BPS),
+        )
+        .await
+        .expect("no hang");
+        assert!(ok);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "race must beat the sequential sum"
+        );
+    }
+
+    #[tokio::test]
+    async fn any_transfers_false_only_when_all_fail() {
+        let dead_a = "http://127.0.0.1:1/".to_string();
+        let dead_b = "http://127.0.0.1:2/".to_string();
+        let refs = [dead_a.as_str(), dead_b.as_str()];
+        let ok = tokio::time::timeout(
+            Duration::from_secs(10),
+            any_transfers(&test_client(), &refs, PROXY_HEALTH_FULL_BPS),
+        )
+        .await
+        .expect("no hang");
+        assert!(!ok);
+    }
+
+    #[tokio::test]
+    async fn revive_stays_stopped_without_pool_or_when_disabled() {
+        // Hermetic: bogus sing-box path, so any start attempt fails fast
+        // with no network and no process.
+        let proxy = PersistentProxy::new(
+            ProxyConfig {
+                enabled: false,
+                ..Default::default()
+            },
+            String::new(),
+            None,
+        );
+        let proxy = Arc::new(Mutex::new(proxy));
+        let ranked = Arc::new(RwLock::new(vec![selectable("a", true)]));
+        // Disabled: no attempt, still stopped.
+        PersistentProxy::revive_if_enabled(&proxy, &ranked).await;
+        assert!(!read_proxy_state(&proxy, |state| state.running).await);
+
+        let proxy = PersistentProxy::new(
+            ProxyConfig {
+                enabled: true,
+                ..Default::default()
+            },
+            String::new(),
+            None,
+        );
+        let proxy = Arc::new(Mutex::new(proxy));
+        // Enabled but nothing reachable: no attempt, still stopped.
+        let empty = Arc::new(RwLock::new(vec![selectable("a", false)]));
+        PersistentProxy::revive_if_enabled(&proxy, &empty).await;
+        assert!(!read_proxy_state(&proxy, |state| state.running).await);
+        // Enabled with a pool but no binary: attempt fails fast, stays
+        // stopped without hanging the loop.
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            PersistentProxy::revive_if_enabled(&proxy, &ranked),
+        )
+        .await
+        .expect("no hang");
+        assert!(!read_proxy_state(&proxy, |state| state.running).await);
+    }
+
+    #[tokio::test]
+    async fn update_stale_clear_marks_pool_degraded() {
+        // Everything reachable blacklisted: update clears and stamps the
+        // pool degraded (start itself fails here — no binary — but the flag
+        // must already be set before the attempt).
+        let proxy = PersistentProxy::new(auto_proxy_config(), String::new(), None);
+        proxy.state.write().await.failed_config_keys = vec!["a-key".to_string()];
+        let ranked = vec![selectable("a", true)];
+        proxy.update(&auto_proxy_config(), &ranked, false).await;
+        let degraded = proxy.state.read().await.degraded;
+        assert!(degraded);
+    }
+
+    #[tokio::test]
+    async fn failover_clear_marks_pool_degraded() {
+        // Same via the failover path: exhausted pool clears and degrades.
+        // The lone candidate cannot start (no binary), so failover errors —
+        // the flag must survive the failure.
+        let proxy = Arc::new(Mutex::new(PersistentProxy::new(
+            auto_proxy_config(),
+            String::new(),
+            None,
+        )));
+        proxy.lock().await.state.write().await.failed_config_keys = vec!["a-key".to_string()];
+        let ranked = Arc::new(RwLock::new(vec![selectable("a", true)]));
+        let result = tokio::time::timeout(
+            Duration::from_secs(15),
+            PersistentProxy::failover(&proxy, &ranked),
+        )
+        .await
+        .expect("no hang");
+        assert!(result.is_err());
+        let degraded = proxy.lock().await.state.read().await.degraded;
+        assert!(degraded);
     }
 
     #[test]

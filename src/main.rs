@@ -16,6 +16,7 @@ mod sing_box;
 mod subscription;
 mod terminal;
 mod tui;
+mod web;
 
 use std::{
     cmp::Ordering,
@@ -241,6 +242,8 @@ async fn main() -> Result<()> {
 
     let state = Arc::new(RwLock::new(RuntimeState::default()));
     let runtime_config = Arc::new(RwLock::new(RuntimeConfig::from(&config)));
+    let subscriptions: crate::server::SharedSubscriptions =
+        Arc::new(RwLock::new(config.subscriptions.clone()));
 
     let db_path = paths.root_dir.join(DB_FILE_NAME);
     let database = Arc::new(
@@ -388,15 +391,28 @@ async fn main() -> Result<()> {
         ping_cancel,
         cli.no_tui && !cli.verbose,
     );
-    spawn_config_watcher(paths.config_path.clone(), config.bind, config_tx.clone());
+    spawn_config_watcher(
+        paths.config_path.clone(),
+        config.bind,
+        config_tx.clone(),
+        subscriptions.clone(),
+    );
 
     let result = if cli.no_tui {
         // No TUI owns the senders headless; hold them so trigger channels stay open.
         let _manual_triggers = (refresh_trigger_tx, ping_trigger_tx);
-        serve(config.bind, state, runtime_config).await
+        serve(
+            config.bind,
+            state,
+            runtime_config,
+            subscriptions,
+            paths.root_dir.clone(),
+        )
+        .await
     } else {
+        let data_dir = paths.root_dir.clone();
         tokio::select! {
-            result = serve(config.bind, state.clone(), runtime_config.clone()) => result,
+            result = serve(config.bind, state.clone(), runtime_config.clone(), subscriptions.clone(), data_dir) => result,
             result = tui::run(config, paths, state, runtime_config, database.clone(), config_tx, refresh_trigger_tx, ping_trigger_tx) => result,
         }
     };
@@ -1416,6 +1432,7 @@ async fn refresh_once(
         pinging: progress_state.pinging,
         next_ping_instant: progress_state.next_ping_instant,
         last_ping_instant: progress_state.last_ping_instant,
+        last_ping_at: previous_before_refresh.last_ping_at.clone(),
         total_candidates: fetched_count,
         tested_candidates: carry
             .as_ref()
@@ -2109,6 +2126,8 @@ async fn set_next_ping_deadline(state: &Arc<RwLock<RuntimeState>>, ping_seconds:
     } else {
         state.next_ping_instant =
             Some(std::time::Instant::now() + Duration::from_secs(ping_seconds));
+        // Wall anchor for the web countdown (monotonic instants don't serialize).
+        state.last_ping_at = Some(Utc::now().to_rfc3339());
     }
 }
 /// Run one ping cycle and publish its results — unless a refresh preempted
@@ -2249,7 +2268,12 @@ fn spawn_ping_loop(
                 let deadline = now + Duration::from_secs(ping_seconds);
                 next_deadline = Some(deadline);
                 last_interval = Some(ping_seconds);
-                state.write().await.next_ping_instant = Some(deadline);
+                {
+                    let mut runtime = state.write().await;
+                    runtime.next_ping_instant = Some(deadline);
+                    // Wall anchor for the web countdown (instants don't serialize).
+                    runtime.last_ping_at = Some(Utc::now().to_rfc3339());
+                }
             }
             let wait = next_deadline.map_or_else(
                 || Duration::from_secs(ping_seconds),
@@ -2280,7 +2304,12 @@ fn spawn_ping_loop(
                         std::time::Instant::now() + Duration::from_secs(ping_seconds);
                     next_deadline = Some(deadline);
                     last_interval = Some(ping_seconds);
-                    state.write().await.next_ping_instant = Some(deadline);
+                    {
+                        let mut runtime = state.write().await;
+                        runtime.next_ping_instant = Some(deadline);
+                        // Wall anchor for the web countdown (instants don't serialize).
+                        runtime.last_ping_at = Some(Utc::now().to_rfc3339());
+                    }
                 }
                 trigger = trigger_rx.recv() => {
                     if trigger.is_none() {
@@ -2321,7 +2350,12 @@ fn spawn_ping_loop(
                         std::time::Instant::now() + Duration::from_secs(ping_seconds);
                     next_deadline = Some(deadline);
                     last_interval = Some(ping_seconds);
-                    state.write().await.next_ping_instant = Some(deadline);
+                    {
+                        let mut runtime = state.write().await;
+                        runtime.next_ping_instant = Some(deadline);
+                        // Wall anchor for the web countdown (instants don't serialize).
+                        runtime.last_ping_at = Some(Utc::now().to_rfc3339());
+                    }
                 }
                 changed = config_rx.changed() => {
                     if changed.is_err() {
@@ -2343,7 +2377,12 @@ fn spawn_ping_loop(
                         std::time::Instant::now() + Duration::from_secs(ping_seconds);
                     next_deadline = Some(deadline);
                     last_interval = Some(ping_seconds);
-                    state.write().await.next_ping_instant = Some(deadline);
+                    {
+                        let mut runtime = state.write().await;
+                        runtime.next_ping_instant = Some(deadline);
+                        // Wall anchor for the web countdown (instants don't serialize).
+                        runtime.last_ping_at = Some(Utc::now().to_rfc3339());
+                    }
                 }
             }
         }
@@ -2714,6 +2753,7 @@ fn spawn_config_watcher(
     config_path: PathBuf,
     initial_bind: std::net::SocketAddr,
     config_tx: watch::Sender<AppConfig>,
+    subscriptions: crate::server::SharedSubscriptions,
 ) {
     tokio::spawn(async move {
         let mut last_modified = modified_time(&config_path).await.ok();
@@ -2747,6 +2787,10 @@ fn spawn_config_watcher(
                         );
                     }
 
+                    // Keep the read-only subscriptions endpoint live: file
+                    // edits and in-app saves both flow through this file, so
+                    // watcher-sync covers every reload path.
+                    *subscriptions.write().await = config.subscriptions.clone();
                     if config_tx.send(config).is_err() {
                         return;
                     }

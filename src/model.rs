@@ -73,6 +73,12 @@ pub struct RuntimeState {
     /// Start of the current (or most recent) ping cycle.
     #[serde(skip)]
     pub last_ping_instant: Option<Instant>,
+    /// Wall-time twin of the most recent ping-deadline (re)arm, RFC3339 UTC.
+    /// The monotonic `next_ping_instant` never crosses serialization, so the
+    /// web summary ships this instead: ping countdown = anchor + interval.
+    /// Stamped everywhere the deadline is (re)armed; carried over wholesale
+    /// by refresh rebuilds like every other ping field.
+    pub last_ping_at: Option<String>,
     pub refresh_duration_ms: Option<u128>,
     pub refreshing: bool,
     pub pinging: bool,

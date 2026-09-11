@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result};
 use axum::{
@@ -6,9 +6,10 @@ use axum::{
     extract::{ConnectInfo, Query, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use chrono::Utc;
 use serde::Deserialize;
 use tokio::{
     net::TcpListener,
@@ -18,22 +19,42 @@ use tokio::{
 use tracing::{info, warn};
 
 use crate::{
+    config::SubscriptionSource,
     constants::{SUBSCRIPTION_READY_POLL, SUBSCRIPTION_READY_WAIT},
     model::{RuntimeConfig, RuntimeState},
     network::primary_lan_ip,
 };
 
-type SharedState = Arc<RwLock<RuntimeState>>;
+pub type SharedState = Arc<RwLock<RuntimeState>>;
 type SharedConfig = Arc<RwLock<RuntimeConfig>>;
+pub type SharedSubscriptions = Arc<RwLock<Vec<SubscriptionSource>>>;
 
 #[derive(Clone)]
-struct HttpState {
-    runtime: SharedState,
-    config: SharedConfig,
+pub struct HttpState {
+    pub runtime: SharedState,
+    pub config: SharedConfig,
+    pub subscriptions: SharedSubscriptions,
+    pub data_dir: PathBuf,
+    /// Server start (RFC3339 UTC), captured once per process in [`serve`].
+    /// Powers the dashboard "Running For" clock; refresh cycles rebuild
+    /// `RuntimeState` wholesale, so per-process truth lives here instead.
+    pub started: String,
 }
 
-pub async fn serve(bind: SocketAddr, runtime: SharedState, config: SharedConfig) -> Result<()> {
-    let state = HttpState { runtime, config };
+pub async fn serve(
+    bind: SocketAddr,
+    runtime: SharedState,
+    config: SharedConfig,
+    subscriptions: SharedSubscriptions,
+    data_dir: PathBuf,
+) -> Result<()> {
+    let state = HttpState {
+        runtime,
+        config,
+        subscriptions,
+        data_dir,
+        started: Utc::now().to_rfc3339(),
+    };
     let router = router(state.clone());
 
     tokio::select! {
@@ -49,6 +70,27 @@ fn router(state: HttpState) -> Router {
         .route("/subscription", get(subscription))
         .route("/subscription.txt", get(subscription_txt))
         .route("/mihomo.yaml", get(mihomo_yaml))
+        .route("/", get(crate::web::dashboard))
+        // Clean tab paths serve the same shell; the bundled UI reads the
+        // path and opens the matching tab (History API routing, no `#`).
+        // Same auth as `/`: loopback always, LAN only with sharing (+ token).
+        .route("/overview", get(crate::web::dashboard))
+        .route("/configs", get(crate::web::dashboard))
+        .route("/subscriptions", get(crate::web::dashboard))
+        .route("/settings", get(crate::web::dashboard))
+        .route("/proxy", get(crate::web::dashboard))
+        .route("/logs", get(crate::web::dashboard))
+        .route("/share", get(crate::web::dashboard))
+        .route("/style.css", get(crate::web::dashboard_css))
+        .route("/app.js", get(crate::web::dashboard_js))
+        .route("/qr.js", get(crate::web::dashboard_qr))
+        .route("/favicon.ico", get(crate::web::favicon))
+        .route("/api/summary", get(crate::web::api_summary))
+        .route("/api/subscriptions", get(crate::web::api_subscriptions))
+        .route("/api/config", get(crate::web::api_config))
+        .route("/api/events", get(crate::web::api_events))
+        .route("/api/qr/generate", post(crate::web::api_qr_generate))
+        .route("/api/qr.jpg", get(crate::web::api_qr_image))
         .with_state(state)
 }
 
@@ -135,8 +177,8 @@ async fn health() -> &'static str {
 }
 
 #[derive(Debug, Deserialize)]
-struct AuthQuery {
-    token: Option<String>,
+pub struct AuthQuery {
+    pub token: Option<String>,
 }
 
 async fn results(
@@ -185,7 +227,7 @@ async fn mihomo_yaml(
 
 /// Extract `Authorization: Bearer <token>` without extra I/O.
 /// Accepts `Bearer`/`bearer`; returns the trimmed token or `None`.
-fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+pub fn bearer_token(headers: &HeaderMap) -> Option<&str> {
     let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
     let token = value
         .strip_prefix("Bearer ")
@@ -306,7 +348,7 @@ fn subscription_body(runtime: &RuntimeState, config: &RuntimeConfig) -> String {
 // `axum::Response` is large by framework design; this error path only runs
 // on auth failures, so boxing it would add indirection for no benefit.
 #[allow(clippy::result_large_err)]
-async fn authorize(
+pub async fn authorize(
     state: &HttpState,
     remote_addr: SocketAddr,
     token: Option<&str>,
@@ -377,7 +419,7 @@ fn authorize_request(
 
 #[cfg(test)]
 mod tests {
-    use std::{net::SocketAddr, sync::Arc};
+    use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
     use axum::body::to_bytes;
     use tokio::sync::RwLock;
@@ -544,6 +586,9 @@ mod tests {
         let state = HttpState {
             runtime: Arc::new(RwLock::new(runtime)),
             config: Arc::new(RwLock::new(config)),
+            subscriptions: Arc::new(RwLock::new(Vec::new())),
+            data_dir: PathBuf::from("v2raydar_data"),
+            started: "2026-01-01T00:00:00+00:00".to_string(),
         };
 
         let response =

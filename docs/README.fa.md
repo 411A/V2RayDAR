@@ -47,6 +47,14 @@
   <img src="../assets/Windows_TUI_v0.6.0.png" alt="Windows TUI" width="100%">
 </p>
 
+## &#x200F;🌐 پیش‌نمایش وب (بتا)
+
+&#x200F;پس از اجرای برنامه، نشانی <code>http://127.0.0.1:27141</code> &#x200F;را در مرورگر باز کنید تا داشبورد زنده (بتا) را ببینید؛ برخی قابلیت‌ها فعلاً فقط در TUI هستند.
+
+<p align="center">
+  <img src="../assets/Frontend_v0.6.1.png" alt="Web Interface" width="100%">
+</p>
+
 ## &#x200F;🤔 چرا V2RayDAR
 
 - &#x200F;دریافت همزمان اشتراک‌ها از تعداد نامحدودی منابع.

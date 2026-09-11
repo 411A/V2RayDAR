@@ -277,10 +277,15 @@ With the default bind address, V2RayDAR serves these URLs:
 | `http://127.0.0.1:27141/mihomo.yaml` | Full Mihomo YAML config with proxies, proxy-groups, and rules (raw). |
 | `http://127.0.0.1:27141/results` | JSON runtime state, diagnostics, errors, logs, and ranked configs. |
 | `http://127.0.0.1:27141/health` | `ok` health response. |
+| `http://127.0.0.1:27141/` (plus `/overview`, `/configs`, … tab paths) | Built-in web dashboard (beta). |
 
 `/subscription` and `/subscription.txt` wait up to 20 seconds during an active refresh so clients have a chance to receive early working results instead of an empty feed. `/mihomo.yaml` behaves the same way.
 
 Local loopback requests are always allowed. LAN requests to `/subscription`, `/subscription.txt`, `/mihomo.yaml`, and `/results` are blocked unless `sharing.enabled` is true; `/health` is only a reachability check.
+
+### Local web dashboard (beta)
+
+The same bind address also serves a built-in offline dashboard at `/` (`/overview`, `/configs`, …), live over SSE with polling fallback under the same endpoint auth; mutations are still TUI-only.
 
 ## Client Setup
 

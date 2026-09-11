@@ -41,6 +41,14 @@
   <img src="../assets/Windows_TUI_v0.6.0.png" alt="Windows TUI" width="100%">
 </p>
 
+## 🌐 Web 预览（测试版）
+
+启动应用后，在浏览器中打开 http://127.0.0.1:27141 进入实时仪表盘（测试版，部分操作仍需使用 TUI）。
+
+<p align="center">
+  <img src="../assets/Frontend_v0.6.1.png" alt="Web Interface" width="100%">
+</p>
+
 ## 🤔 为什么选择 V2RayDAR
 
 - 并行获取任意数量的订阅源。

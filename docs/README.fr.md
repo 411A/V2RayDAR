@@ -41,6 +41,14 @@
   <img src="../assets/Windows_TUI_v0.6.0.png" alt="Windows TUI" width="100%">
 </p>
 
+## 🌐 Aperçu Web (Bêta)
+
+Après avoir démarré l'application, ouvrez http://127.0.0.1:27141 dans votre navigateur pour le tableau de bord en direct (bêta ; certaines actions restent réservées au TUI).
+
+<p align="center">
+  <img src="../assets/Frontend_v0.6.1.png" alt="Web Interface" width="100%">
+</p>
+
 ## 🤔 Pourquoi V2RayDAR
 
 - Récupère les abonnements en parallèle depuis un nombre illimité de sources.

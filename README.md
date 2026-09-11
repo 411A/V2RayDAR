@@ -41,6 +41,14 @@
   <img src="assets/Windows_TUI_v0.6.0.png" alt="Windows TUI" width="100%">
 </p>
 
+## 🌐 Web Preview (Beta)
+
+After starting the app, open http://127.0.0.1:27141 in your browser for the live dashboard (beta; some actions are still TUI-only).
+
+<p align="center">
+  <img src="assets/Frontend_v0.6.1.png" alt="Web Interface" width="100%">
+</p>
+
 ## 🤔 Why V2RayDAR
 
 - Pulls subscriptions in parallel from any number of sources you list.

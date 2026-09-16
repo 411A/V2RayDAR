@@ -852,6 +852,7 @@ mod tests {
             proxy_enabled: true,
             proxy_port: 27_910,
             proxy_discoverable: true,
+            proxy_manual_uri: None,
         }
     }
 

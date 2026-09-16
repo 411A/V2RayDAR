@@ -1618,6 +1618,11 @@ struct FeedFingerprint {
     /// manual ping re-arms the full countdown with no count change.
     finished_at: Option<String>,
     ping_at: Option<String>,
+    /// Proxy state rides the delta too: a pin from either UI (dashboard or
+    /// TUI) must confirm live on the other side instead of waiting for the
+    /// next full snapshot that may never come on a quiet feed.
+    proxy_running: bool,
+    proxy_active_uri: Option<String>,
 }
 
 impl FeedFingerprint {
@@ -1630,6 +1635,8 @@ impl FeedFingerprint {
             pinging: runtime.pinging,
             finished_at: runtime.refresh_finished_at.clone(),
             ping_at: runtime.last_ping_at.clone(),
+            proxy_running: runtime.proxy_running,
+            proxy_active_uri: runtime.proxy_active_uri.clone(),
         }
     }
 }
@@ -1680,6 +1687,11 @@ async fn feed_task(runtime: SharedState, tx: UnboundedSender<Result<Event, Infal
                 "refresh_duration_ms": snapshot.refresh_duration_ms,
                 "fetch_errors": snapshot.fetch_errors,
                 "last_ping_at": snapshot.last_ping_at,
+                "proxy_running": snapshot.proxy_running,
+                "proxy_active_config": snapshot.proxy_active_config,
+                "proxy_active_uri": snapshot.proxy_active_uri,
+                "proxy_port": snapshot.proxy_port,
+                "proxy_discoverable": snapshot.proxy_discoverable,
             });
             if let Ok(event) = Event::default().event("probe-delta").json_data(delta)
                 && tx.send(Ok(event)).is_err()
@@ -1741,8 +1753,9 @@ mod tests {
 
     use super::{
         DASHBOARD_ASSET_BUDGET_BYTES, DASHBOARD_CSS, DASHBOARD_HTML, DASHBOARD_JS, DASHBOARD_QR,
-        FAVICON_SVG, config_response, events_response, favicon, qr_generate_response,
-        qr_image_response, static_response, subscriptions_response, summary_response,
+        FAVICON_SVG, FeedFingerprint, config_response, events_response, favicon,
+        qr_generate_response, qr_image_response, static_response, subscriptions_response,
+        summary_response,
     };
     use crate::{
         constants::{DEFAULT_BIND, LOCALHOST_IP},
@@ -1803,6 +1816,7 @@ mod tests {
             proxy_enabled: false,
             proxy_port: 27910,
             proxy_discoverable: false,
+            proxy_manual_uri: None,
         };
         HttpState {
             runtime: Arc::new(RwLock::new(runtime)),
@@ -1829,6 +1843,30 @@ mod tests {
             ping_tx: None,
             database: None,
         }
+    }
+
+    #[test]
+    fn feed_fingerprint_retrips_on_proxy_switch() {
+        // A pin from either UI must push a live probe-delta: without the
+        // proxy fields in the fingerprint the dashboard's Pending… button
+        // would wait for a full snapshot that never comes on a quiet feed.
+        let idle = FeedFingerprint::of(&RuntimeState::default());
+        let switched = RuntimeState {
+            proxy_running: true,
+            proxy_active_uri: Some("vless://uuid@example.com:443#node".to_string()),
+            ..RuntimeState::default()
+        };
+        assert_ne!(idle, FeedFingerprint::of(&switched));
+
+        let unpinned = RuntimeState {
+            proxy_running: true,
+            proxy_active_uri: None,
+            ..RuntimeState::default()
+        };
+        assert_ne!(
+            FeedFingerprint::of(&switched),
+            FeedFingerprint::of(&unpinned)
+        );
     }
 
     #[test]

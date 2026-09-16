@@ -20,6 +20,7 @@ test.beforeEach(() => {
   stub.sharingPosts = 0;
   stub.proxySelectBodies = [];
   stub.proxyActiveUri = null;
+  stub.applyProxyOnSelect = true;
 });
 
 test("proxy mode + sharing buttons POST once and lock in-flight", async ({ page }) => {
@@ -104,6 +105,32 @@ test("detail popup light-dismisses on outside click/tap", async ({ page }) => {
   // Top-left corner is outside the centered dialog (backdrop).
   await page.mouse.click(5, 5);
   await expect(page.locator("#dlg-detail")).not.toHaveAttribute("open", "");
+});
+
+test("slow proxy switch confirms via live probe-delta (no stuck Pending)", async ({ page }) => {
+  // The reported bug: the 1.5 s resync fires before a slow switch lands,
+  // and nothing afterwards ever delivered the confirmation.
+  stub.applyProxyOnSelect = false;
+  await page.goto(base + "/configs");
+  await page.locator("#cfg-body tr").first().getByRole("button", { name: "Use" }).click();
+  const pending = page.locator("#cfg-body tr").first().getByRole("button", { name: "Pending…" });
+  await expect(pending).toBeVisible();
+  await page.waitForTimeout(2200);
+  await expect(pending).toBeVisible();
+  // The switch lands minutes later: a live probe-delta confirms it.
+  const uri = stub.proxySelectBodies[stub.proxySelectBodies.length - 1].uri;
+  stub.proxyActiveUri = uri;
+  stub.emit("probe-delta", {
+    refreshing: false,
+    pinging: false,
+    proxy_running: true,
+    proxy_active_config: "e2e-node-0",
+    proxy_active_uri: uri,
+    proxy_port: 27910,
+    proxy_discoverable: false,
+  });
+  await expect(page.locator("#cfg-body tr").first().getByRole("button", { name: "Active" })).toBeVisible({ timeout: 5000 });
+  stub.applyProxyOnSelect = true;
 });
 
 test("per-config QR dialog renders on canvas; copy buttons exist", async ({ page }) => {

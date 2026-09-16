@@ -161,6 +161,10 @@ pub struct RuntimeConfig {
     pub proxy_enabled: bool,
     pub proxy_port: u16,
     pub proxy_discoverable: bool,
+    /// Pinned config URI (`None` = auto-select). Carried so the TUI can
+    /// adopt pins made from the dashboard (which live-pushes without
+    /// touching the file the TUI edits from).
+    pub proxy_manual_uri: Option<String>,
 }
 
 impl RuntimeConfig {

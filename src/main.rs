@@ -320,31 +320,43 @@ async fn main() -> Result<()> {
         });
     }
 
-    // Re-apply owned firewall rules at startup so the recorded state can
-    // never drift from the enabled features: a moved/deleted state file
+    // Re-apply owned firewall rules in the background so the recorded state
+    // can never drift from the enabled features: a moved/deleted state file
     // (e.g. the portable-path migration) used to drop the subscription card
     // from the QR sheet while the proxy card self-healed below.
-    if config.sharing.enabled
-        && let Err(err) = crate::tui::firewall::apply(
-            &paths.root_dir,
-            true,
-            config.bind.port(),
-            constants::FIREWALL_RULE_NAME,
-        )
+    // Backgrounded on purpose: each backend call shells out (netsh on
+    // Windows) and can stall for seconds, and nothing below — including the
+    // HTTP listener the dashboard needs — may wait for it. Failures only
+    // warn; the Proxy/Share toggles re-apply on every change anyway.
     {
-        tracing::warn!(error = %err, "failed to add subscription firewall rule");
-    }
+        let root_dir = paths.root_dir.clone();
+        let bind_port = config.bind.port();
+        let sharing_enabled = config.sharing.enabled;
+        let proxy_lan = config.proxy.enabled && config.proxy.discoverable;
+        let proxy_port = config.proxy.port;
+        tokio::task::spawn_blocking(move || {
+            if sharing_enabled
+                && let Err(err) = crate::tui::firewall::apply(
+                    &root_dir,
+                    true,
+                    bind_port,
+                    constants::FIREWALL_RULE_NAME,
+                )
+            {
+                tracing::warn!(error = %err, "failed to add subscription firewall rule");
+            }
 
-    if config.proxy.enabled
-        && config.proxy.discoverable
-        && let Err(err) = crate::tui::firewall::apply(
-            &paths.root_dir,
-            true,
-            config.proxy.port,
-            constants::FIREWALL_PROXY_RULE_NAME,
-        )
-    {
-        tracing::warn!(error = %err, "failed to add proxy firewall rule");
+            if proxy_lan
+                && let Err(err) = crate::tui::firewall::apply(
+                    &root_dir,
+                    true,
+                    proxy_port,
+                    constants::FIREWALL_PROXY_RULE_NAME,
+                )
+            {
+                tracing::warn!(error = %err, "failed to add proxy firewall rule");
+            }
+        });
     }
 
     proxy::spawn_health_loop(shared.clone(), shared_ranked.clone(), state.clone());
@@ -3087,6 +3099,7 @@ impl From<&AppConfig> for RuntimeConfig {
             proxy_enabled: config.proxy.enabled,
             proxy_port: config.proxy.port,
             proxy_discoverable: config.proxy.discoverable,
+            proxy_manual_uri: config.proxy.manual_proxy_uri.clone(),
         }
     }
 }

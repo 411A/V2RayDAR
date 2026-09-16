@@ -83,6 +83,12 @@ pub async fn run(
             {
                 tui.proxy_pending_uri = None;
             }
+            // Adopt pins made from the dashboard (live-pushed, never written
+            // to the file this copy edits from).
+            tui.sync_external_proxy_pin(
+                config.proxy_manual_uri.clone(),
+                runtime_snapshot.proxy_active_uri.as_deref(),
+            );
             // Snapshot cycle flags for the sync key handler (manual triggers).
             tui.refresh_busy = runtime_snapshot.refreshing;
             tui.ping_busy = runtime_snapshot.pinging;

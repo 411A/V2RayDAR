@@ -26,6 +26,12 @@ function makeElement(tag = "div") {
     open: false,
     classList: {
       _s: new Set(),
+      add(...ks) {
+        for (const k of ks) this._s.add(k);
+      },
+      remove(...ks) {
+        for (const k of ks) this._s.delete(k);
+      },
       toggle(k, f) {
         if (f) this._s.add(k);
         else this._s.delete(k);
@@ -175,7 +181,7 @@ const EXPORT_HOOK = `;globalThis.__v2 = {
   applyRanked, renderOvConfigs, renderConfigs, pingSub, refreshStatus,
   renderStats, fmtClock, fmtStamp, fmtDuration, fmtAgo,
   openDetail, wireRowDialog, selectProxy, toggleProxy,
-  proxyRowState, syncProxyPending,
+  proxyRowState, syncProxyPending, applyProbeDelta, settleProxyPending,
 };`;
 
 /** Evaluate the real frontend/app.js in a stub DOM and return its internals. */

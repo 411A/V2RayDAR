@@ -210,6 +210,23 @@ impl TuiState {
         }
     }
 
+    /// Adopt a proxy pin made from another UI (the dashboard live-pushes
+    /// through the same channel but never touches the file this copy edits
+    /// from). Without this the dashboard pin would stay invisible here and
+    /// the next TUI save would clobber it back. A local in-flight pin wins
+    /// until the proxy confirms the other value — then the confirmed value
+    /// wins and the stale pending clears, so the two writers never fight.
+    pub fn sync_external_proxy_pin(&mut self, manual: Option<String>, active: Option<&str>) {
+        if self.editable.proxy.manual_proxy_uri == manual {
+            return;
+        }
+        if self.proxy_pending_uri.is_some() && active != manual.as_deref() {
+            return;
+        }
+        self.proxy_pending_uri = None;
+        self.editable.proxy.manual_proxy_uri = manual;
+    }
+
     pub fn selected_subscription_mut(&mut self) -> Option<&mut crate::config::SubscriptionSource> {
         let index = self.selected_subscription_index()?;
         self.editable.subscriptions.get_mut(index)

@@ -69,6 +69,7 @@ function snapshot(extra = {}) {
  * Mutable `stub` handle lets specs flip busy flags and inspect POST counters.
  */
 export function createStub() {
+  const sseClients = new Set();
   const stub = {
     refreshPosts: 0,
     pingPosts: 0,
@@ -80,6 +81,17 @@ export function createStub() {
     sharingPosts: 0,
     proxySelectBodies: [],
     proxyActiveUri: null,
+    applyProxyOnSelect: true,
+    emit: (event, data) => {
+      const payload = typeof data === "string" ? data : JSON.stringify(data);
+      for (const res of [...sseClients]) {
+        try {
+          res.write(`event: ${event}\ndata: ${payload}\n\n`);
+        } catch {
+          sseClients.delete(res);
+        }
+      }
+    },
     subAddBodies: [],
     subPatch: [],
     subToggle: [],
@@ -157,6 +169,7 @@ export function createStub() {
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
       });
+      sseClients.add(res);
       const s = snapshot({ refreshing: stub.busyRefreshing, pinging: stub.busyPinging, fetch_errors: stub.fetchErrors, proxy_active_uri: stub.proxyActiveUri });
       res.write(`event: hello\ndata: ${JSON.stringify({ snapshot: s })}\n\n`);
       if (stub.rankedPush) {
@@ -176,7 +189,10 @@ export function createStub() {
           clearInterval(timer);
         }
       }, 15000);
-      req.on("close", () => clearInterval(timer));
+      req.on("close", () => {
+        clearInterval(timer);
+        sseClients.delete(res);
+      });
       return;
     }
     if (req.method === "POST" && p === "/api/refresh") {
@@ -276,7 +292,11 @@ export function createStub() {
       stub.proxySelectBodies.push(body);
       // Emulate the server applying the switch: the next snapshot carries
       // it as proxy_active_uri, confirming the client's pending state.
-      stub.proxyActiveUri = body && body.uri !== undefined ? body.uri : stub.proxyActiveUri;
+      // Tests can disable this to simulate a slow switch confirmed later
+      // via an explicit probe-delta push.
+      if (stub.applyProxyOnSelect) {
+        stub.proxyActiveUri = body && body.uri !== undefined ? body.uri : stub.proxyActiveUri;
+      }
       json(res, 200, { ok: true, status: "Proxy switch requested.", dirty: false });
       return;
     }

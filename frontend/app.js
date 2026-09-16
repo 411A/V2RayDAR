@@ -854,6 +854,23 @@ function applyProbeDelta(text) {
   if (Array.isArray(d.fetch_errors)) {
     state.snapshot.fetch_errors = d.fetch_errors;
   }
+  // Live proxy state (pins from either UI, failovers, mode changes): merge
+  // and refresh the proxy surfaces only when something actually moved.
+  let proxyChanged = false;
+  for (const k of ["proxy_running", "proxy_active_config", "proxy_active_uri",
+    "proxy_port", "proxy_discoverable"]) {
+    if (typeof d[k] !== "undefined" && state.snapshot[k] !== d[k]) {
+      state.snapshot[k] = d[k];
+      proxyChanged = true;
+    }
+  }
+  const wasPending = state.proxyPendingUri;
+  syncProxyPending();
+  if (proxyChanged || (wasPending !== undefined && state.proxyPendingUri === undefined)) {
+    renderOvConfigs();
+    renderConfigs();
+    renderProxyTab();
+  }
   renderStats();
   renderFetchErrors();
 }
@@ -1616,12 +1633,39 @@ async function selectProxy(uri) {
     toast(subMessage(r, "Proxy switch requested — confirming…"), "good");
     setStatus(subMessage(r, "Proxy switch requested."));
     window.setTimeout(() => void loadResults(), 1500);
+    // Safety net: a switch can take a while (proxy restart) or never land
+    // (proxy off, start failure). If this exact request is still unconfirmed
+    // after 10 s, resync once more and say so instead of Pending… forever.
+    const waiting = uri;
+    window.setTimeout(() => {
+      if (state.proxyPendingUri === waiting) {
+        void settleProxyPending();
+      }
+    }, 10000);
     return;
   }
   state.proxyPendingUri = undefined;
   renderConfigs();
   renderOvConfigs();
   toast(subMessage(r, "Proxy switch failed (HTTP " + r.status + ")."), "bad");
+}
+
+/// Settle an unconfirmed proxy switch: resync once, and if the server still
+/// has not applied it, drop the Pending… lock and say why it may be stuck
+/// (proxy off, switch failure) instead of leaving the button wedged.
+async function settleProxyPending() {
+  if (state.proxyPendingUri === undefined) {
+    return;
+  }
+  const ok = await loadResults();
+  if (!ok || state.proxyPendingUri === undefined) {
+    return;
+  }
+  state.proxyPendingUri = undefined;
+  renderConfigs();
+  renderOvConfigs();
+  toast("Proxy switch not confirmed — the proxy may be off or the switch failed. See the Proxy tab.", "bad");
+  setStatus("Proxy switch unconfirmed — see the Proxy tab.");
 }
 
 async function copyText(text, okMsg) {

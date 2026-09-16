@@ -745,6 +745,61 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_pin_adopted_when_tui_idle() {
+        let (mut state, _tx, _runtime) = state_with_found(PROXY_URI);
+        assert!(state.editable.proxy.manual_proxy_uri.is_none());
+
+        state.sync_external_proxy_pin(Some(PROXY_URI.to_string()), None);
+        assert_eq!(
+            state.editable.proxy.manual_proxy_uri.as_deref(),
+            Some(PROXY_URI)
+        );
+        assert!(state.proxy_pending_uri.is_none());
+
+        // Already in sync: no-op, status-worthy nothing.
+        state.sync_external_proxy_pin(Some(PROXY_URI.to_string()), Some(PROXY_URI));
+        assert_eq!(
+            state.editable.proxy.manual_proxy_uri.as_deref(),
+            Some(PROXY_URI)
+        );
+    }
+
+    #[test]
+    fn dashboard_unpin_adopted_when_tui_idle() {
+        let (mut state, _tx, _runtime) = state_with_found(PROXY_URI);
+        state.editable.proxy.manual_proxy_uri = Some(PROXY_URI.to_string());
+
+        state.sync_external_proxy_pin(None, None);
+        assert!(state.editable.proxy.manual_proxy_uri.is_none());
+    }
+
+    #[test]
+    fn local_pending_wins_until_proxy_confirms_other_value() {
+        let (mut state, tx, runtime) = state_with_found(PROXY_URI);
+        set_found_as_proxy(&mut state, 0, &tx, &runtime);
+        assert_eq!(state.proxy_pending_uri.as_deref(), Some(PROXY_URI));
+
+        // Dashboard pins elsewhere while ours is unconfirmed: keep ours.
+        state.sync_external_proxy_pin(Some("vless://other@example.com:443".to_string()), None);
+        assert_eq!(
+            state.editable.proxy.manual_proxy_uri.as_deref(),
+            Some(PROXY_URI)
+        );
+        assert_eq!(state.proxy_pending_uri.as_deref(), Some(PROXY_URI));
+
+        // Proxy confirms the dashboard value: adopt it, drop stale pending.
+        state.sync_external_proxy_pin(
+            Some("vless://other@example.com:443".to_string()),
+            Some("vless://other@example.com:443"),
+        );
+        assert_eq!(
+            state.editable.proxy.manual_proxy_uri.as_deref(),
+            Some("vless://other@example.com:443")
+        );
+        assert!(state.proxy_pending_uri.is_none());
+    }
+
+    #[test]
     fn manual_refresh_refused_while_busy() {
         let (mut state, _tx, _runtime) = state_with_found(PROXY_URI);
         state.refresh_busy = true;

@@ -478,6 +478,60 @@ describe("proxy row state tracks pending → active (TUI parity)", () => {
   });
 });
 
+describe("live probe-delta confirms proxy switches", () => {
+  const URI = "vless://uuid@x.example.com:443#node-x";
+  const snap = () => ({
+    refreshing: false,
+    pinging: false,
+    total_candidates: 0,
+    tested_candidates: 0,
+    reachable_candidates: 0,
+    fetch_bytes: 0,
+    ranked: [],
+    fetch_errors: [],
+    proxy_running: false,
+    proxy_active_config: null,
+    proxy_active_uri: null,
+    proxy_port: 27910,
+    proxy_discoverable: false,
+  });
+
+  it("merges proxy fields and clears the pending lock", () => {
+    api.state.snapshot = snap();
+    api.state.proxyPendingUri = URI;
+    api.applyProbeDelta(JSON.stringify({
+      proxy_running: true,
+      proxy_active_uri: URI,
+      proxy_active_config: "node-x",
+      proxy_port: 27910,
+      proxy_discoverable: false,
+    }));
+    assert.equal(api.state.snapshot.proxy_active_uri, URI);
+    assert.equal(api.state.proxyPendingUri, undefined);
+    assert.equal(api.proxyRowState(URI), "active");
+  });
+
+  it("leaves non-proxy rendering alone when proxy is unchanged", () => {
+    api.state.snapshot = snap();
+    api.state.proxyPendingUri = undefined;
+    api.applyProbeDelta(JSON.stringify({ tested: 5, working: 1 }));
+    assert.equal(api.state.snapshot.tested_candidates, 5);
+    assert.equal(api.state.snapshot.proxy_active_uri, null);
+  });
+
+  it("settle clears a never-confirmed switch with a warning", async () => {
+    api.state.snapshot = snap();
+    api.state.proxyPendingUri = URI;
+    sandbox.fetch = async () => (
+      { status: 200, async text() { return JSON.stringify(api.state.snapshot); } }
+    );
+    await api.settleProxyPending();
+    assert.equal(api.state.proxyPendingUri, undefined);
+    const toasts = sandbox.__elements.get("toasts").children;
+    assert.ok(toasts.some((t) => t.textContent.includes("not confirmed")));
+  });
+});
+
 describe("proxy select: explicit null unpins (live-push only)", () => {
   it("selectProxy(null) POSTs {uri:null}", async () => {
     const bodies = [];

@@ -514,6 +514,7 @@ mod tests {
             proxy_enabled: false,
             proxy_port: 27910,
             proxy_discoverable: false,
+            proxy_manual_uri: None,
         }
     }
 

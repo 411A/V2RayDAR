@@ -79,6 +79,27 @@ test("fetch errors render headline + cause on two lines", async ({ page }) => {
   stub.fetchErrors = [];
 });
 
+test("language flag sits left of ? and announces English-only", async ({ page }) => {
+  await page.goto(base + "/overview");
+  const flag = page.locator("#btn-lang");
+  const keys = page.locator("#btn-keys");
+  await expect(flag).toBeVisible();
+  // Inlined GB mark (vector, no external asset) with an English label.
+  expect(await flag.locator("svg").count()).toBe(1);
+  await expect(flag).toHaveAttribute("aria-label", "Language: English");
+  // Immediately left of the ? button in the same action row.
+  const order = await page.evaluate(() => {
+    const f = document.getElementById("btn-lang").getBoundingClientRect();
+    const k = document.getElementById("btn-keys").getBoundingClientRect();
+    return { flagRight: f.right, keysLeft: k.left, sameRow: Math.abs(f.top - k.top) < 4 };
+  });
+  expect(order.sameRow).toBe(true);
+  expect(order.flagRight).toBeLessThanOrEqual(order.keysLeft);
+  // Single language for now: clicking says so instead of switching.
+  await flag.click();
+  await expect(page.locator("#toasts .toast").last()).toContainText("English is the only language");
+});
+
 test("legacy #/tab bookmarks replace-redirect with token preserved", async ({ page }) => {
   await page.goto(base + "/overview?token=abc#/configs");
   // Boot reads the hash and replace-redirects to the clean path (token kept).

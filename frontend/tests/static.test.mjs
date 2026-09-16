@@ -10,13 +10,14 @@ const dir = path.resolve(here, "..");
 const read = (f) => fs.readFileSync(path.join(dir, f), "utf8");
 
 describe("frontend static gates (PLAN §5 + TODO global gates)", () => {
-  it("node --check passes for app.js and qr.js", () => {
+  it("node --check passes for app.js, i18n.js and qr.js", () => {
     execFileSync(process.execPath, ["--check", path.join(dir, "app.js")]);
+    execFileSync(process.execPath, ["--check", path.join(dir, "i18n.js")]);
     execFileSync(process.execPath, ["--check", path.join(dir, "qr.js")]);
   });
 
   it("zero console.*/innerHTML/eval/Function/new-function sinks", () => {
-    for (const f of ["app.js", "qr.js"]) {
+    for (const f of ["app.js", "i18n.js", "qr.js"]) {
       const src = read(f);
       assert.ok(!/console\.(log|debug|info|warn|error)/.test(src), `${f} must not call console.*`);
       assert.ok(!/\.innerHTML\s*=/.test(src), `${f} must not use innerHTML`);
@@ -56,12 +57,13 @@ describe("frontend static gates (PLAN §5 + TODO global gates)", () => {
     assert.deepEqual(missing, [], `missing ids: ${missing.join(", ")}`);
   });
 
-  it("payload budget: HTML+CSS+JS+QR ≤ 153600 bytes (PLAN §5)", () => {
+  it("payload budget: HTML+CSS+JS+i18n+QR ≤ 179200 bytes (PLAN §5)", () => {
     const total =
       fs.statSync(path.join(dir, "index.html")).size +
       fs.statSync(path.join(dir, "style.css")).size +
       fs.statSync(path.join(dir, "app.js")).size +
+      fs.statSync(path.join(dir, "i18n.js")).size +
       fs.statSync(path.join(dir, "qr.js")).size;
-    assert.ok(total <= 153_600, `payload ${total} bytes exceeds 153600`);
+    assert.ok(total <= 179_200, `payload ${total} bytes exceeds 179200`);
   });
 });

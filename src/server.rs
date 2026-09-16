@@ -106,6 +106,7 @@ fn router(state: HttpState) -> Router {
         .route("/share", get(crate::web::dashboard))
         .route("/style.css", get(crate::web::dashboard_css))
         .route("/app.js", get(crate::web::dashboard_js))
+        .route("/i18n.js", get(crate::web::dashboard_i18n))
         .route("/qr.js", get(crate::web::dashboard_qr))
         .route("/favicon.ico", get(crate::web::favicon))
         .route("/api/summary", get(crate::web::api_summary))

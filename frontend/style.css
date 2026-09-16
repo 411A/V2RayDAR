@@ -289,6 +289,14 @@ kbd,
   font-weight: 700;
 }
 
+/* Language flag (GB.svg inlined in index.html): same box as the `?` key. */
+.btn.flag svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+  border-radius: 2px;
+}
+
 .theme-switch,
 .seg-switch {
   display: inline-flex;

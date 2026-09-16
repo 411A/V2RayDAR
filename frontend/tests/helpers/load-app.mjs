@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const FRONTEND_DIR = path.resolve(here, "..", "..");
 export const APP_JS = path.join(FRONTEND_DIR, "app.js");
+export const I18N_JS = path.join(FRONTEND_DIR, "i18n.js");
 
 function makeElement(tag = "div") {
   const listeners = new Map();
@@ -112,7 +113,7 @@ export function makeSandbox(overrides = {}) {
     "dlg-sub-priority", "dlg-sub-enabled", "dlg-sub-ok", "dlg-detail",
     "dlg-detail-title", "dlg-detail-kv", "dlg-detail-copy", "dlg-detail-close",
     "dlg-qr", "dlg-qr-title", "qr-canvas", "qr-hint", "dlg-qr-close",
-    "dlg-keys", "dlg-keys-title", "dlg-keys-close", "btn-keys",
+    "dlg-keys", "dlg-keys-title", "dlg-keys-close", "btn-keys", "btn-lang",
     "theme-system", "theme-light", "theme-dark",
   ]) {
     getOrCreate(id);
@@ -178,7 +179,8 @@ export function makeSandbox(overrides = {}) {
 }
 
 const EXPORT_HOOK = `;globalThis.__v2 = {
-  state, refreshBusy, pingBusy, updateCycleButtons, triggerCycle, wire,
+  state, t, applyI18nStatic, setLanguage, loadLanguage,
+  refreshBusy, pingBusy, updateCycleButtons, triggerCycle, wire,
   openSubDialog, submitSubDialog, selectProxy, subToggle, subDelete, subEdit,
   flagFor, apiPath, subMessage, maskedHost, currentTab, showTab, goTab,
   saveNow, fetchJson, toast, setStatus, setDirty, renderStats, loadResults,
@@ -190,10 +192,11 @@ const EXPORT_HOOK = `;globalThis.__v2 = {
   tickClock, uptimeText,
 };`;
 
-/** Evaluate the real frontend/app.js in a stub DOM and return its internals. */
+/** Evaluate the real frontend (i18n.js first, then app.js) in a stub DOM. */
 export function loadApp(sandbox = makeSandbox()) {
+  const i18n = fs.readFileSync(I18N_JS, "utf8");
   const src = fs.readFileSync(APP_JS, "utf8");
   const ctx = vm.createContext(sandbox);
-  vm.runInContext(src + EXPORT_HOOK, ctx, { filename: "app.js" });
+  vm.runInContext(i18n + src + EXPORT_HOOK, ctx, { filename: "app+i18n.js" });
   return { ctx, api: ctx.__v2, sandbox };
 }

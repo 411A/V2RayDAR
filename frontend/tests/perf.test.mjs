@@ -12,11 +12,11 @@ describe("frontend performance budgets (PLAN §5)", () => {
   it("initial payload stays small enough for one loopback RTT", () => {
     const sizes = {};
     let total = 0;
-    for (const f of ["index.html", "style.css", "app.js", "qr.js"]) {
+    for (const f of ["index.html", "style.css", "app.js", "i18n.js", "qr.js"]) {
       sizes[f] = fs.statSync(path.join(dir, f)).size;
       total += sizes[f];
     }
-    assert.ok(total <= 153_600, `total ${total} > 153600: ${JSON.stringify(sizes)}`);
+    assert.ok(total <= 179_200, `total ${total} > 179200: ${JSON.stringify(sizes)}`);
     assert.ok(sizes["app.js"] <= 120_000, `app.js ${sizes["app.js"]} too large for weak devices`);
   });
 

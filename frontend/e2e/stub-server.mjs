@@ -153,6 +153,11 @@ export function createStub() {
       res.end(fs.readFileSync(path.join(FRONTEND, "qr.js")));
       return;
     }
+    if (req.method === "GET" && p === "/i18n.js") {
+      res.writeHead(200, { "Content-Type": MIME[".js"] });
+      res.end(fs.readFileSync(path.join(FRONTEND, "i18n.js")));
+      return;
+    }
     if (req.method === "GET" && p === "/favicon.ico") {
       res.writeHead(200, { "Content-Type": MIME[".svg"] });
       res.end("<svg xmlns='http://www.w3.org/2000/svg'></svg>");

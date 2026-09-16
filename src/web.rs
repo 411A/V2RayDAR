@@ -44,6 +44,8 @@ const DASHBOARD_HTML: &str = include_str!("../frontend/index.html");
 const DASHBOARD_CSS: &str = include_str!("../frontend/style.css");
 /// Embedded dashboard script (vanilla JS, same-origin API calls only).
 const DASHBOARD_JS: &str = include_str!("../frontend/app.js");
+/// Embedded dashboard strings (single i18n table, English default).
+const DASHBOARD_I18N: &str = include_str!("../frontend/i18n.js");
 /// Embedded QR encoder (single-file MIT library, no network use).
 const DASHBOARD_QR: &str = include_str!("../frontend/qr.js");
 /// Radar-mark favicon (static SVG, zero sensitivity — served ungated like
@@ -59,9 +61,10 @@ const FAVICON_SVG: &str = concat!(
 );
 
 /// Budget from PLAN.md §5: the whole initial payload must fit one loopback
-/// exchange and stay usable on low-end phones.
+/// exchange and stay usable on low-end phones. Raised 150 → 175 KiB for the
+/// unified i18n table + HTML bindings (user text, not bloat — still one RTT).
 #[cfg(test)]
-const DASHBOARD_ASSET_BUDGET_BYTES: usize = 153_600;
+const DASHBOARD_ASSET_BUDGET_BYTES: usize = 179_200;
 /// Feed diff cadence: matches the dashboard's ≤1 Hz ranked refresh.
 const FEED_TICK: Duration = Duration::from_secs(2);
 /// SSE heartbeat so idle connections survive NATs/proxies.
@@ -125,6 +128,24 @@ pub async fn dashboard_js(
         remote_addr,
         token,
         DASHBOARD_JS,
+        "text/javascript; charset=utf-8",
+    )
+    .await
+}
+
+/// `GET /i18n.js` — dashboard strings (must load before `/app.js`).
+pub async fn dashboard_i18n(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    ConnectInfo(remote_addr): ConnectInfo<std::net::SocketAddr>,
+) -> Response {
+    let token = query.token.as_deref().or_else(|| bearer_token(&headers));
+    static_response(
+        &state,
+        remote_addr,
+        token,
+        DASHBOARD_I18N,
         "text/javascript; charset=utf-8",
     )
     .await
@@ -1788,8 +1809,8 @@ mod tests {
     use tokio::sync::RwLock;
 
     use super::{
-        DASHBOARD_ASSET_BUDGET_BYTES, DASHBOARD_CSS, DASHBOARD_HTML, DASHBOARD_JS, DASHBOARD_QR,
-        FAVICON_SVG, FeedFingerprint, config_response, events_response, favicon,
+        DASHBOARD_ASSET_BUDGET_BYTES, DASHBOARD_CSS, DASHBOARD_HTML, DASHBOARD_I18N, DASHBOARD_JS,
+        DASHBOARD_QR, FAVICON_SVG, FeedFingerprint, config_response, events_response, favicon,
         qr_generate_response, qr_image_response, static_response, subscriptions_response,
         summary_response,
     };
@@ -1907,22 +1928,27 @@ mod tests {
 
     #[test]
     fn dashboard_assets_fit_payload_budget_and_stay_self_contained() {
-        let total =
-            DASHBOARD_HTML.len() + DASHBOARD_CSS.len() + DASHBOARD_JS.len() + DASHBOARD_QR.len();
+        let total = DASHBOARD_HTML.len()
+            + DASHBOARD_CSS.len()
+            + DASHBOARD_JS.len()
+            + DASHBOARD_I18N.len()
+            + DASHBOARD_QR.len();
         assert!(
             total <= DASHBOARD_ASSET_BUDGET_BYTES,
             "dashboard payload {total} exceeds {DASHBOARD_ASSET_BUDGET_BYTES}"
         );
         assert!(DASHBOARD_HTML.contains("<!DOCTYPE html>"));
         assert!(DASHBOARD_HTML.contains("v2raydar-theme"));
+        assert!(DASHBOARD_HTML.contains("/i18n.js"));
         assert!(DASHBOARD_CSS.contains("prefers-color-scheme"));
         assert!(DASHBOARD_JS.contains("EventSource"));
+        assert!(DASHBOARD_I18N.contains("I18N_STRINGS"));
         assert!(DASHBOARD_QR.contains("QREncode"));
         assert!(FAVICON_SVG.contains("<svg"));
         // Bare "http" substrings are fine (the UI builds loopback URLs like
         // "http://" + host at runtime); what must never appear is a remote
         // *reference* that would fetch off-device.
-        for asset in [DASHBOARD_HTML, DASHBOARD_CSS, DASHBOARD_JS] {
+        for asset in [DASHBOARD_HTML, DASHBOARD_CSS, DASHBOARD_JS, DASHBOARD_I18N] {
             assert!(!asset.contains("innerHTML"), "DOM injection sink");
             for snippet in [
                 "src=\"http",

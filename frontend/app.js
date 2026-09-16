@@ -120,11 +120,11 @@ function toast(message, kind) {
   while (box.children.length >= MAX_TOASTS) {
     box.removeChild(box.firstChild);
   }
-  const t = el("div", message, "toast" + (kind ? " " + kind : ""));
-  box.appendChild(t);
+  const node = el("div", message, "toast" + (kind ? " " + kind : ""));
+  box.appendChild(node);
   window.setTimeout(() => {
-    if (t.parentNode === box) {
-      box.removeChild(t);
+    if (node.parentNode === box) {
+      box.removeChild(node);
     }
   }, TOAST_MS);
 }
@@ -139,14 +139,14 @@ function setStatus(message) {
 function setDirty(dirty) {
   const pill = $("status-dirty");
   if (pill) {
-    pill.textContent = dirty ? "unsaved changes" : "saved";
+    pill.textContent = dirty ? t("dirtyUnsaved") : t("dirtySaved");
     pill.classList.toggle("warn", dirty);
     pill.classList.toggle("good", !dirty);
   }
   const btn = $("btn-save");
   if (btn) {
     btn.disabled = !dirty;
-    btn.textContent = dirty ? "Save now" : "Save (no changes)";
+    btn.textContent = dirty ? t("btnSaveNow") : t("btnSaveClean");
   }
 }
 
@@ -293,26 +293,26 @@ function fmtAgo(iso) {
   if (!iso) {
     return "—";
   }
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) {
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) {
     return "—";
   }
-  const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
   if (s < 10) {
-    return "just now";
+    return t("justNow");
   }
   if (s < 60) {
-    return s + "s ago";
+    return t("secAgo", { s });
   }
   const m = Math.floor(s / 60);
   if (m < 60) {
-    return m + "m ago";
+    return t("minAgo", { m });
   }
   const h = Math.floor(m / 60);
   if (h < 48) {
-    return h + "h ago";
+    return t("hrAgo", { h });
   }
-  return Math.floor(h / 24) + "d ago";
+  return t("dayAgo", { d: Math.floor(h / 24) });
 }
 
 /// Human-friendly elapsed time for "took …": whole units, never fractional
@@ -374,11 +374,11 @@ function uptimeText() {
   if (!state.startedAt) {
     return "—";
   }
-  const t = Date.parse(state.startedAt);
-  if (Number.isNaN(t)) {
+  const ms = Date.parse(state.startedAt);
+  if (Number.isNaN(ms)) {
     return "—";
   }
-  return fmtHMS((Date.now() - t) / 1000);
+  return fmtHMS((Date.now() - ms) / 1000);
 }
 
 /// Second line of the Refresh card: live ping countdown under `fetch in`,
@@ -392,13 +392,13 @@ function uptimeText() {
 function pingSub() {
   const s = state.snapshot;
   if (s && s.pinging) {
-    return "ping running…";
+    return t("pingRunning");
   }
   if (!state.hasSummaryApi) {
     return "";
   }
   if (state.pingSeconds <= 0) {
-    return "ping off";
+    return t("pingOff");
   }
   if (s && s.refreshing) {
     return "";
@@ -409,9 +409,9 @@ function pingSub() {
   const anchor = s && s.last_ping_at ? Date.parse(s.last_ping_at) : NaN;
   if (Number.isNaN(anchor)) {
     // Old server (or no arm yet): static interval until the anchor arrives.
-    return "ping every " + state.pingSeconds + "s";
+    return t("pingEvery", { s: state.pingSeconds });
   }
-  return "ping in " + fmtCountdown(Math.max(0, anchor + state.pingSeconds * 1000 - Date.now()));
+  return t("pingIn", { countdown: fmtCountdown(Math.max(0, anchor + state.pingSeconds * 1000 - Date.now())) });
 }
 
 /// First line of the Refresh card (mirrors the TUI's fetch line).
@@ -422,17 +422,17 @@ function refreshVal() {
   }
   if (s.refreshing) {
     const start = s.refresh_started_at ? Date.parse(s.refresh_started_at) : NaN;
-    return "running" + (Number.isNaN(start) ? "" : " " + fmtHMS((Date.now() - start) / 1000));
+    return t("cycleRunning") + (Number.isNaN(start) ? "" : " " + fmtHMS((Date.now() - start) / 1000));
   }
   if (!state.hasSummaryApi || state.refreshSeconds <= 0) {
-    return state.hasSummaryApi ? "manual" : "—";
+    return state.hasSummaryApi ? t("refreshManual") : "—";
   }
   const finSrc = s.refresh_finished_at || s.last_refresh;
   const fin = finSrc ? Date.parse(finSrc) : NaN;
   if (Number.isNaN(fin)) {
     return "—";
   }
-  return "fetch in " + fmtCountdown(Math.max(0, fin + state.refreshSeconds * 1000 - Date.now()));
+  return t("fetchIn", { countdown: fmtCountdown(Math.max(0, fin + state.refreshSeconds * 1000 - Date.now())) });
 }
 
 function refreshStatus() {
@@ -464,15 +464,11 @@ function updateCycleButtons() {
   const pBusy = pingBusy();
   if (rb) {
     rb.disabled = rBusy;
-    rb.title = rBusy
-      ? "A refresh is already running — wait for it to finish"
-      : "Trigger a manual refresh (same as Ctrl+R in the TUI)";
+    rb.title = rBusy ? t("btnRefreshBusy") : t("btnRefreshTitle");
   }
   if (pb) {
     pb.disabled = pBusy;
-    pb.title = pBusy
-      ? "A cycle is already running — wait for it to finish"
-      : "Re-ping cached configs (same as Ctrl+P in the TUI)";
+    pb.title = pBusy ? t("btnPingBusy") : t("btnPingTitle");
   }
 }
 
@@ -480,7 +476,7 @@ function lastUpdateAgo() {
   if (state.snapshot && state.snapshot.last_refresh) {
     return fmtAgo(state.snapshot.last_refresh);
   }
-  return "the last update";
+  return t("lastUpdateFallback");
 }
 
 function maskedHost(endpoint) {
@@ -508,9 +504,9 @@ function setConn(connState, detail) {
   if (box) {
     box.setAttribute("data-state", connState);
   }
-  const label = connState === "online" ? "connected" : connState === "locked" ? "locked" : "offline";
+  const label = connState === "online" ? t("connConnected") : connState === "locked" ? t("connLocked") : t("connOffline");
   $("conn-state").textContent = detail ? label + " · " + detail : label;
-  $("conn-bind").textContent = window.location.host || "local";
+  $("conn-bind").textContent = window.location.host || t("connLocal");
 }
 
 /* Single atomic feed-state transition: state.feed + pill + banner + footer.
@@ -522,62 +518,60 @@ function setFeedStatus(feed, opts) {
   const o = opts || {};
   state.feed = feed;
   if (feed === "live") {
-    setConn("online", "live feed");
+    setConn("online", t("feedLive"));
     hideBanner();
-    setStatus(o.status || "Live — receiving real-time updates.");
+    setStatus(o.status || t("statusLive"));
     return;
   }
   if (feed === "polling") {
-    const detail = o.detail || "poll 10 s";
+    const detail = o.detail || t("feedPoll10");
     setConn("online", detail);
     hideBanner();
     if (o.status) {
       setStatus(o.status);
-    } else if (detail === "poll 2 s") {
-      setStatus("Polling summary every 2 s.");
+    } else if (detail === t("feedPoll2")) {
+      setStatus(t("statusPoll2"));
     } else {
-      setStatus("Last update " + lastUpdateAgo() + " · polling every 10 s (no live feed on this server).");
+      setStatus(t("statusPoll10", { ago: lastUpdateAgo() }));
     }
     return;
   }
   if (feed === "locked") {
     const sharingOff = o.lockKind === "sharing";
-    setConn("locked", sharingOff ? "LAN sharing off" : "token required");
+    setConn("locked", sharingOff ? t("lockSharingOff") : t("lockTokenRequired"));
     showBanner(
-      "Access denied",
-      sharingOff
-        ? "LAN sharing is disabled on this instance. Enable sharing in the TUI or open the dashboard on the device itself."
-        : "This instance requires a token. Open the dashboard URL that includes ?token=… (same token as the subscription URL).",
+      t("lockTitle"),
+      sharingOff ? t("lockSharingBody") : t("lockTokenBody"),
       false
     );
-    setStatus(o.status || "Locked.");
+    setStatus(o.status || t("statusLocked"));
     return;
   }
   if (feed === "boot") {
-    setConn("offline", "connecting");
+    setConn("offline", t("connConnecting"));
     hideBanner();
-    setStatus("Connecting…");
+    setStatus(t("statusConnecting"));
     return;
   }
-  setConn("offline", o.connDetail || "server unreachable");
+  setConn("offline", o.connDetail || t("connUnreachable"));
   if (o.bannerTitle !== undefined || o.bannerText !== undefined) {
-    showBanner(o.bannerTitle || "Connection lost", o.bannerText || "", o.retry !== false);
+    showBanner(o.bannerTitle || t("bannerConnLost"), o.bannerText || "", o.retry !== false);
   } else if (state.snapshot) {
     showBanner(
-      "Connection lost",
-      "Lost contact with the instance. Showing data from " + lastUpdateAgo() + ". Retrying automatically.",
+      t("bannerConnLost"),
+      t("bannerConnLostBody", { ago: lastUpdateAgo() }),
       true
     );
   } else {
-    showBanner("Server unreachable", "Could not reach the V2RayDAR instance. Is it running?", true);
+    showBanner(t("bannerUnreachable"), t("bannerUnreachableBody"), true);
   }
-  setStatus(o.status || "Offline — retrying automatically.");
+  setStatus(o.status || t("statusOffline"));
 }
 
 async function loadResults() {
   const r = await fetchJson("/results");
   if (r.status === 0) {
-    setFeedStatus("offline", { connDetail: "server unreachable" });
+    setFeedStatus("offline", { connDetail: t("connUnreachable") });
     return false;
   }
   if (r.status === 401 || r.status === 403) {
@@ -586,10 +580,10 @@ async function loadResults() {
   }
   if (r.status !== 200 || !r.data) {
     setFeedStatus("offline", {
-      connDetail: "HTTP " + r.status,
-      bannerTitle: "Unexpected response",
-      bannerText: "GET /results returned HTTP " + r.status + ".",
-      status: "Unexpected response.",
+      connDetail: t("httpStatus", { status: r.status }),
+      bannerTitle: t("bannerUnexpected"),
+      bannerText: t("bannerUnexpectedBody", { status: r.status }),
+      status: t("statusUnexpected"),
     });
     return false;
   }
@@ -600,7 +594,7 @@ async function loadResults() {
   if (state.feed !== "live" && state.feed !== "polling") {
     // Fresh data but no transport yet — the caller (boot/retry/reconnect)
     // upgrades to live or polling immediately; never leave a stale banner.
-    setFeedStatus("polling", { detail: "poll 10 s" });
+    setFeedStatus("polling", { detail: t("feedPoll10") });
   }
   return true;
 }
@@ -633,7 +627,7 @@ function connectFeed() {
   sse.addEventListener("probe-delta", (ev) => applyProbeDelta(ev.data));
   sse.addEventListener("ranked", (ev) => applyRanked(ev.data));
   sse.addEventListener("config-changed", () => {
-    toast("Configuration changed on the server — resyncing.", "good");
+    toast(t("configChanged"), "good");
     void loadResults();
     void loadOvConfig();
   });
@@ -649,10 +643,10 @@ function connectFeed() {
       startPolling(false);
     } else {
       setFeedStatus("offline", {
-        connDetail: "feed lost",
-        bannerTitle: "Live feed lost",
-        bannerText: "Reconnecting automatically…",
-        status: "Reconnecting…",
+        connDetail: t("connFeedLost"),
+        bannerTitle: t("bannerFeedLost"),
+        bannerText: t("bannerFeedLostBody"),
+        status: t("statusReconnecting"),
       });
       window.setTimeout(() => {
         void loadResults().then((ok) => {
@@ -671,24 +665,24 @@ function startPolling(summaryAvailable) {
   stopPolling();
   const useSummary = summaryAvailable;
   const tick = async () => {
-    if (useSummary) {
+      if (useSummary) {
       const r = await fetchJson("/api/summary");
       if (r.status === 200 && r.data) {
-        setFeedStatus("polling", { detail: "poll 2 s" });
+        setFeedStatus("polling", { detail: t("feedPoll2") });
         applySummary(r.data);
         return;
       }
     }
     const ok = await loadResults();
     if (ok) {
-      setFeedStatus("polling", { detail: "poll 10 s" });
+      setFeedStatus("polling", { detail: t("feedPoll10") });
     }
   };
   const checkSummary = async () => {
     const r = await fetchJson("/api/summary");
     if (r.status === 200 && r.data) {
       state.hasSummaryApi = true;
-      setFeedStatus("polling", { detail: "poll 2 s" });
+      setFeedStatus("polling", { detail: t("feedPoll2") });
       applySummary(r.data);
       state.pollTimer = window.setInterval(tickSummary, POLL_SUMMARY_MS);
     } else {
@@ -705,7 +699,7 @@ function startPolling(summaryAvailable) {
       stopPolling();
       const ok = await loadResults();
       if (ok) {
-        setFeedStatus("polling", { detail: "poll 10 s" });
+        setFeedStatus("polling", { detail: t("feedPoll10") });
       }
       state.pollTimer = window.setInterval(tick, ok ? POLL_RESULTS_MS : POLL_RESULTS_MS);
     }
@@ -966,7 +960,7 @@ function renderStats() {
   }
   const s = state.snapshot;
   if (!s) {
-    box.appendChild(statCard("Status", "no data"));
+    box.appendChild(statCard("Status", t("statusNoData")));
     updateCycleButtons();
     return;
   }
@@ -975,7 +969,7 @@ function renderStats() {
   const rs = refreshStatus();
   const ago = fmtAgo(s.last_refresh);
   const took = s.refresh_duration_ms !== null && s.refresh_duration_ms !== undefined
-    ? " · took " + fmtDuration(s.refresh_duration_ms)
+    ? t("tookMs", { dur: fmtDuration(s.refresh_duration_ms) })
     : "";
   // Like the TUI (which clears the duration when a cycle starts), the Last
   // scan badge reads "—" while a refresh runs — the stamp underneath is
@@ -987,13 +981,13 @@ function renderStats() {
   // TUI top-strip parity: Running For / Refresh / Last Scan / Fetched /
   // Failed / Working / Sub Usage. Seven tight badges share one row (narrow
   // viewports scroll horizontally instead of wrapping or overflowing).
-  box.appendChild(statCard("Running For", uptimeText(), state.startedAt ? "Started: " + fmtClock(state.startedAt) : "", null, "stat-running", null, state.startedAt ? "Started: " + fmtStamp(state.startedAt) : ""));
-  box.appendChild(statCard("Refresh", rs.val, rs.sub, null, "stat-refresh-val", "stat-refresh-sub"));
-  box.appendChild(statCard("Last scan", scanVal, scanSub, null, null, null, scanHint));
-  box.appendChild(statCard("Fetched", String(s.total_candidates || 0)));
-  box.appendChild(statCard("Failed", String(failed), "of " + tested + " tested"));
-  box.appendChild(statCard("Working", String(s.reachable_candidates || 0)));
-  box.appendChild(statCard("Sub usage", fmtBytes(s.fetch_bytes)));
+  box.appendChild(statCard(t("cardRunningFor"), uptimeText(), state.startedAt ? t("startedAt", { time: fmtClock(state.startedAt) }) : "", null, "stat-running", null, state.startedAt ? t("startedAt", { time: fmtStamp(state.startedAt) }) : ""));
+  box.appendChild(statCard(t("cardRefresh"), rs.val, rs.sub, null, "stat-refresh-val", "stat-refresh-sub"));
+  box.appendChild(statCard(t("cardLastScan"), scanVal, scanSub, null, null, null, scanHint));
+  box.appendChild(statCard(t("cardFetched"), String(s.total_candidates || 0)));
+  box.appendChild(statCard(t("cardFailed"), String(failed), t("failedOfTested", { tested })));
+  box.appendChild(statCard(t("cardWorking"), String(s.reachable_candidates || 0)));
+  box.appendChild(statCard(t("cardSubUsage"), fmtBytes(s.fetch_bytes)));
   updateCycleButtons();
 }
 
@@ -1043,13 +1037,13 @@ function startClock() {
 function proxyPill(running, uri) {
   const pill = el("span", null, "pill");
   if (running && uri) {
-    pill.textContent = "running";
+    pill.textContent = t("pillRunning");
     pill.classList.add("good");
   } else if (running) {
-    pill.textContent = "running (no config)";
+    pill.textContent = t("pillRunningBare");
     pill.classList.add("warn");
   } else {
-    pill.textContent = "off";
+    pill.textContent = t("pillOff");
   }
   return pill;
 }
@@ -1062,7 +1056,7 @@ function renderOvLogs() {
   }
   const lines = state.logLines.slice(-5);
   if (lines.length === 0) {
-    const li = el("li", "No log lines yet — they appear while a cycle runs.", "muted");
+    const li = el("li", t("ovLogsEmpty"), "muted");
     list.appendChild(li);
     return;
   }
@@ -1103,7 +1097,7 @@ function renderOvConfigs() {
     }
     tr.appendChild(el("td", c.rank !== undefined ? String(c.rank) : "—"));
     const nameTd = document.createElement("td");
-    nameTd.appendChild(el("strong", c.name || "(unnamed)"));
+    nameTd.appendChild(el("strong", c.name || t("unnamed")));
     tr.appendChild(nameTd);
     tr.appendChild(el("td", fmtLatency(c.latency_ms)));
     wireRowDialog(tr, c);
@@ -1116,7 +1110,7 @@ function renderOvConfigs() {
 /// and never open the dialog.
 function wireRowDialog(tr, c) {
   tr.tabIndex = 0;
-  tr.title = "Show config details, QR code and proxy actions";
+  tr.title = t("rowOpenTip");
   tr.addEventListener("click", (ev) => {
     if (ev.target && ev.target.closest && ev.target.closest("button")) {
       return;
@@ -1158,9 +1152,7 @@ function renderOvConfig() {
   const cfg = state.ovConfig;
   if (!cfg) {
     note.hidden = false;
-    note.textContent = state.hasSummaryApi === false
-      ? "Configuration needs a newer server — see the Settings tab."
-      : "Loading configuration…";
+    note.textContent = state.hasSummaryApi === false ? t("ovCfgOld") : t("ovCfgLoading");
     return;
   }
   note.hidden = true;
@@ -1190,16 +1182,16 @@ function renderOvConfig() {
   const proxyLan = get("proxy.discoverable") === "true";
   let proxyText;
   if (!proxyOn) {
-    proxyText = "off";
+    proxyText = t("pillOff");
   } else if (proxyPort) {
-    proxyText = "yes http://" + window.location.hostname + ":" + proxyPort + (proxyLan ? " (LAN)" : " (local)");
+    proxyText = t("yes") + " http://" + window.location.hostname + ":" + proxyPort + (proxyLan ? t("ovProxyLan") : t("ovProxyLocal"));
   } else {
-    proxyText = "yes";
+    proxyText = t("yes");
   }
   ovConfigRow(net, "proxy", proxyText);
   if (svc.children.length === 0 && net.children.length === 0) {
     note.hidden = false;
-    note.textContent = "No configuration rows served — see the Settings tab.";
+    note.textContent = t("ovCfgNone");
   }
 }
 
@@ -1230,9 +1222,9 @@ async function loadOvConfig() {
 function endpointItems() {
   const origin = window.location.origin;
   const items = [
-    ["Subscription (auto)", origin + "/subscription"],
-    ["Subscription (plain)", origin + "/subscription.txt"],
-    ["Mihomo YAML", origin + "/mihomo.yaml"],
+    [t("epAuto"), origin + "/subscription"],
+    [t("epPlain"), origin + "/subscription.txt"],
+    [t("epMihomo"), origin + "/mihomo.yaml"],
   ];
   // Same link the QR sheet encodes (qr.rs `telegram_proxy_url`): shown under
   // the same conditions as the sheet's proxy card (proxy LAN-enabled).
@@ -1240,9 +1232,9 @@ function endpointItems() {
   // exact QR link; the firewall check stays server-side with the sheet.
   const tg = telegramProxyUrl();
   if (tg) {
-    items.push(["Telegram proxy", tg]);
+    items.push([t("epTelegram"), tg]);
   }
-  items.push(["Health", origin + "/health"]);
+  items.push([t("epHealth"), origin + "/health"]);
   return items;
 }
 
@@ -1274,9 +1266,9 @@ function renderEndpoints() {
     const code = el("code", url);
     code.title = url;
     li.appendChild(code);
-    const btn = el("button", "Copy", "btn small");
+    const btn = el("button", t("btnCopy"), "btn small");
     btn.type = "button";
-    btn.addEventListener("click", () => void copyText(url, "Endpoint URL copied."));
+    btn.addEventListener("click", () => void copyText(url, t("epCopied")));
     li.appendChild(btn);
     list.appendChild(li);
   }
@@ -1300,9 +1292,9 @@ function renderFetchErrors() {
     return;
   }
   card.hidden = false;
-  $("fetch-errors-sub").textContent =
-    errors.length + (errors.length === 1 ? " source" : " sources") +
-    " failed to download (fetch problems — different from probe failures above)";
+  $("fetch-errors-sub").textContent = errors.length === 1
+    ? t("fetchErrSub1", { n: errors.length })
+    : t("fetchErrSubN", { n: errors.length });
   const groups = new Map();
   for (const e of errors.slice(0, 60)) {
     groups.set(e, (groups.get(e) || 0) + 1);
@@ -1319,7 +1311,7 @@ function renderFetchErrors() {
     const details = document.createElement("details");
     details.className = "more";
     const summary = document.createElement("summary");
-    summary.textContent = "Show " + (lines.length - SHOWN) + " more";
+    summary.textContent = t("showMore", { n: lines.length - SHOWN });
     details.appendChild(summary);
     const rest = document.createElement("ul");
     rest.className = "mono-list";
@@ -1373,8 +1365,11 @@ function renderConfigs() {
   const limited = state.rowLimit > 0 && matched > state.rowLimit;
   $("cfg-count").textContent = total === 0
     ? ""
-    : "Showing " + rows.length + " of " + total + " ranked configs" +
-      (limited ? " (limit " + state.rowLimit + ")" : "") + ".";
+    : t("cfgCount", {
+      n: rows.length,
+      total,
+      limit: limited ? t("cfgLimit", { limit: state.rowLimit }) : "",
+    });
   $("cfg-empty").hidden = rows.length !== 0;
 
   let maxLat = 1;
@@ -1395,7 +1390,7 @@ function renderConfigs() {
     tr.appendChild(el("td", c.rank !== undefined ? String(c.rank) : "—"));
 
     const nameTd = document.createElement("td");
-    nameTd.appendChild(el("strong", c.name || "(unnamed)"));
+    nameTd.appendChild(el("strong", c.name || t("unnamed")));
     if (c.source) {
       nameTd.appendChild(el("div", c.source, "muted"));
     }
@@ -1438,21 +1433,21 @@ function renderConfigs() {
     const actTd = document.createElement("td");
     const wrap = el("span", null, "row-actions");
     const rowState = proxyRowState(c.uri);
-    const useBtn = el("button", rowState === "active" ? "Active" : rowState === "pending" ? "Pending…" : "Use", "btn small");
+    const useBtn = el("button", rowState === "active" ? t("useActive") : rowState === "pending" ? t("usePending") : t("useIdle"), "btn small");
     useBtn.type = "button";
     useBtn.disabled = rowState === "pending";
     useBtn.title = rowState === "active"
-      ? "This config is the active proxy — click to unpin (auto-select)"
+      ? t("tipActiveProxy")
       : rowState === "pending"
-        ? "Confirming the proxy switch — the server has not caught up yet"
-        : "Pin this config as the proxy (same as Enter in the TUI)";
+        ? t("tipPendingProxy")
+        : t("tipPinProxy");
     useBtn.addEventListener("click", () => void toggleProxy(c.uri));
-    const copyBtn = el("button", "Copy", "btn small");
+    const copyBtn = el("button", t("btnCopy"), "btn small");
     copyBtn.type = "button";
-    copyBtn.addEventListener("click", () => void copyText(c.uri || "", "Config link copied."));
-    const qrBtn = el("button", "QR", "btn small");
+    copyBtn.addEventListener("click", () => void copyText(c.uri || "", t("linkCopied")));
+    const qrBtn = el("button", t("btnQR"), "btn small");
     qrBtn.type = "button";
-    qrBtn.title = "Show the QR code for this config (scan with a phone)";
+    qrBtn.title = t("tipQrRow");
     qrBtn.addEventListener("click", () => openQr(c));
     wrap.appendChild(useBtn);
     wrap.appendChild(copyBtn);
@@ -1468,7 +1463,7 @@ function renderConfigs() {
 
 function openDetail(c) {
   state.detailUri = c.uri || "";
-  $("dlg-detail-title").textContent = "Config detail";
+  $("dlg-detail-title").textContent = t("dlgDetail");
   const kv = $("dlg-detail-kv");
   while (kv.firstChild) {
     kv.removeChild(kv.firstChild);
@@ -1476,24 +1471,24 @@ function openDetail(c) {
   const ccFlag = flagFor(c.country_code);
   const ccUp = ccFlag ? String(c.country_code).toUpperCase() : "";
   const pairs = [
-    ["Name", c.name || "(unnamed)"],
-    ["Rank", c.rank !== undefined ? String(c.rank) : "—"],
-    ["Protocol", c.protocol || "—"],
-    ["Endpoint", maskedHost(c.endpoint)],
-    ["Source", c.source || "—"],
-    ["Reachable", c.reachable ? "yes" : "no"],
-    ["Stability", c.stability_count ? "×" + c.stability_count : "—"],
-    ["Validation", c.validation || "—"],
-    ["Latency", fmtLatency(c.latency_ms)],
-    ["HTTP status", c.http_status !== null && c.http_status !== undefined ? String(c.http_status) : "—"],
-    ["Speed", c.download_mbps !== null && c.download_mbps !== undefined ? Number(c.download_mbps).toFixed(2) + " Mbps" : "—"],
-    ["Country", ccFlag ? ccFlag : "—"],
-    ["Error", c.error || "—"],
+    [t("fName"), c.name || t("unnamed")],
+    [t("fRank"), c.rank !== undefined ? String(c.rank) : "—"],
+    [t("fProtocol"), c.protocol || "—"],
+    [t("fEndpoint"), maskedHost(c.endpoint)],
+    [t("fSource"), c.source || "—"],
+    [t("fReachable"), c.reachable ? t("yes") : t("no")],
+    [t("fStability"), c.stability_count ? "×" + c.stability_count : "—"],
+    [t("fValidation"), c.validation || "—"],
+    [t("fLatency"), fmtLatency(c.latency_ms)],
+    [t("fHttp"), c.http_status !== null && c.http_status !== undefined ? String(c.http_status) : "—"],
+    [t("fSpeed"), c.download_mbps !== null && c.download_mbps !== undefined ? Number(c.download_mbps).toFixed(2) + t("speedUnit") : "—"],
+    [t("fCountry"), ccFlag ? ccFlag : "—"],
+    [t("fError"), c.error || "—"],
   ];
   for (const [k, v] of pairs) {
     kv.appendChild(el("dt", k));
     const dd = el("dd", v);
-    if (k === "Country" && ccFlag) {
+    if (k === t("fCountry") && ccFlag) {
       dd.title = ccUp;
       dd.setAttribute("role", "img");
       dd.setAttribute("aria-label", ccUp);
@@ -1513,8 +1508,8 @@ function openDetail(c) {
   const useBtn = $("dlg-detail-use");
   const detailState = proxyRowState(c.uri);
   useBtn.disabled = detailState !== "idle";
-  useBtn.textContent = detailState === "active" ? "Active proxy" : detailState === "pending" ? "Pending…" : "Use as proxy";
-  useBtn.title = detailState === "active" ? "This config is the active proxy — click to unpin (auto-select)" : "";
+  useBtn.textContent = detailState === "active" ? t("btnActiveProxy") : detailState === "pending" ? t("usePending") : t("btnUseAsProxy");
+  useBtn.title = detailState === "active" ? t("tipActiveProxy") : "";
   const dlg = $("dlg-detail");
   if (typeof dlg.showModal === "function") {
     dlg.showModal();
@@ -1524,13 +1519,13 @@ function openDetail(c) {
 function openQr(c) {
   const uri = c.uri || "";
   if (!uri) {
-    toast("No link to encode for this row.", "bad");
+    toast(t("qrNoLink"), "bad");
     return;
   }
   // Kept in a JS variable only — the full link is passed to the encoder
   // and painted to canvas, never written into the DOM as text.
   state.qrUri = uri;
-  $("dlg-qr-title").textContent = "QR — " + (c.name || "(unnamed)");
+  $("dlg-qr-title").textContent = t("qrTitlePrefix", { name: c.name || t("unnamed") });
   if (!drawQr(uri)) {
     return;
   }
@@ -1544,7 +1539,7 @@ function drawQr(text, canvasId, silent) {
   const canvas = $(canvasId || "qr-canvas");
   if (typeof QREncode === "undefined" || !QREncode) {
     if (!silent) {
-      toast("QR encoder failed to load (qr.js missing).", "bad");
+      toast(t("qrEncoderMissing"), "bad");
     }
     return false;
   }
@@ -1553,7 +1548,7 @@ function drawQr(text, canvasId, silent) {
     model = QREncode.encode(text, QREncode.CorrectLevel.M);
   } catch (err) {
     if (!silent) {
-      toast("Link is too long for a QR code.", "bad");
+      toast(t("qrTooLong"), "bad");
     }
     return false;
   }
@@ -1620,7 +1615,7 @@ async function toggleProxy(uri) {
     return;
   }
   if (state.proxyPendingUri !== undefined) {
-    toast("Proxy switch already in flight — try again in a moment.", "bad");
+    toast(t("proxyInflight"), "bad");
     return;
   }
   const s = state.snapshot;
@@ -1638,18 +1633,18 @@ async function selectProxy(uri) {
   if (uri === null) {
     /* unpin path continues below */
   } else if (!uri) {
-    toast("No link to pin for this row.", "bad");
+    toast(t("noLink"), "bad");
     return;
   }
   const body = uri === null ? { uri: null } : { uri };
   const r = await fetchJson("/api/proxy/select", { method: "POST", body });
   if (r.status === 404) {
-    toast("Proxy-select API is not on this server version yet — use the TUI.", "bad");
+    toast(t("proxySelectOld"), "bad");
     clearProxyPending();
     return;
   }
   if (r.status === 0) {
-    toast("Server unreachable.", "bad");
+    toast(t("unreachable"), "bad");
     clearProxyPending();
     return;
   }
@@ -1661,8 +1656,8 @@ async function selectProxy(uri) {
     renderConfigs();
     renderOvConfigs();
     renderProxyTab();
-    toast(subMessage(r, "Proxy switch requested — confirming…"), "good");
-    setStatus(subMessage(r, "Proxy switch requested."));
+    toast(subMessage(r, t("proxyRequested")), "good");
+    setStatus(subMessage(r, t("proxyRequestedShort")));
     window.setTimeout(() => void loadResults(), 1500);
     // Safety net: a switch can take a while (proxy restart) or never land
     // (proxy off, start failure). If this exact request is still unconfirmed
@@ -1676,7 +1671,7 @@ async function selectProxy(uri) {
     return;
   }
   clearProxyPending();
-  toast(subMessage(r, "Proxy switch failed (HTTP " + r.status + ")."), "bad");
+  toast(subMessage(r, t("proxyFailed", { status: r.status })), "bad");
 }
 
 /// Settle an unconfirmed proxy switch: resync once, and if the server still
@@ -1691,13 +1686,13 @@ async function settleProxyPending() {
     return;
   }
   clearProxyPending();
-  toast("Proxy switch not confirmed — the proxy may be off or the switch failed. See the Proxy tab.", "bad");
-  setStatus("Proxy switch unconfirmed — see the Proxy tab.");
+  toast(t("proxyUnconfirmed"), "bad");
+  setStatus(t("proxyUnconfirmedShort"));
 }
 
 async function copyText(text, okMsg) {
   if (!text) {
-    toast("Nothing to copy.", "bad");
+    toast(t("copyNothing"), "bad");
     return;
   }
   try {
@@ -1719,9 +1714,9 @@ async function copyText(text, okMsg) {
     ta.select();
     const done = document.execCommand("copy");
     document.body.removeChild(ta);
-    toast(done ? okMsg : "Copy failed — select the text manually.", done ? "good" : "bad");
+    toast(done ? okMsg : t("copyManual"), done ? "good" : "bad");
   } catch (err) {
-    toast("Copy failed in this browser.", "bad");
+    toast(t("copyFailed"), "bad");
   }
 }
 
@@ -1755,7 +1750,7 @@ function renderLogs() {
 /// time — rapid clicks collapse like every other manual trigger.
 async function setProxyMode(mode) {
   if (state.proxyModeInflight) {
-    toast("Proxy switch already in flight — try again in a moment.", "bad");
+    toast(t("proxyInflight"), "bad");
     return;
   }
   state.proxyModeInflight = true;
@@ -1763,19 +1758,19 @@ async function setProxyMode(mode) {
   try {
     const r = await fetchJson("/api/proxy/mode", { method: "POST", body: { mode } });
     if (r.status === 404) {
-      toast("Proxy API is not on this server version yet — use the TUI.", "bad");
+      toast(t("proxyModeOld"), "bad");
       return;
     }
     if (r.status === 0) {
-      toast("Server unreachable.", "bad");
+      toast(t("unreachable"), "bad");
       return;
     }
     if (r.status >= 200 && r.status < 300) {
-      toast(subMessage(r, "Proxy mode set."), "good");
+      toast(subMessage(r, t("proxyModeSet")), "good");
       window.setTimeout(() => void loadResults(), 1200);
       return;
     }
-    toast(subMessage(r, "Proxy switch failed (HTTP " + r.status + ")."), "bad");
+    toast(subMessage(r, t("proxyFailed", { status: r.status })), "bad");
   } finally {
     state.proxyModeInflight = false;
     updateProxyModeButtons();
@@ -1826,20 +1821,20 @@ function renderProxyTab() {
     pillSlot.removeChild(pillSlot.firstChild);
   }
   if (!s) {
-    pillSlot.textContent = "unknown";
+    pillSlot.textContent = t("proxyUnknown");
     kvFill($("proxy-kv"), []);
     updateProxyModeButtons();
     return;
   }
   pillSlot.appendChild(proxyPill(s.proxy_running, s.proxy_active_uri));
   kvFill($("proxy-kv"), [
-    ["Running", s.proxy_running ? "yes" : "no"],
-    ["Active config", s.proxy_active_config || "—"],
-    ["Port", s.proxy_port !== null && s.proxy_port !== undefined ? String(s.proxy_port) : "—"],
-    ["LAN discoverable", s.proxy_discoverable ? "yes" : "no"],
-    ["Working pool", String(s.reachable_candidates || 0)],
+    [t("kvRunning"), s.proxy_running ? t("yes") : t("no")],
+    [t("kvActiveConfig"), s.proxy_active_config || "—"],
+    [t("kvPort"), s.proxy_port !== null && s.proxy_port !== undefined ? String(s.proxy_port) : "—"],
+    [t("kvLan"), s.proxy_discoverable ? t("yes") : t("no")],
+    [t("kvPool"), String(s.reachable_candidates || 0)],
   ]);
-  $("proxy-manual").textContent = s.proxy_active_uri ? "Active link held by the server (full URI never rendered — use Copy on its row to export)." : "none pinned";
+  $("proxy-manual").textContent = s.proxy_active_uri ? t("proxyManualHeld") : t("proxyNonePinned");
   // Locked while an unpin is in flight (snapshot still shows the old pin
   // until the server confirms), so rapid clicks cannot stack duplicate
   // unpin POSTs; a pin in flight keeps it clickable to cancel the pin.
@@ -1858,19 +1853,17 @@ function renderShare() {
     const code = el("code", url);
     code.title = url;
     li.appendChild(code);
-    const btn = el("button", "Copy", "btn small");
+    const btn = el("button", t("btnCopy"), "btn small");
     btn.type = "button";
-    btn.addEventListener("click", () => void copyText(url, "Subscription URL copied."));
+    btn.addEventListener("click", () => void copyText(url, t("subUrlCopied")));
     li.appendChild(btn);
     list.appendChild(li);
   }
-  $("share-hint").textContent = getToken()
-    ? "This page URL carries a token, so these links work for LAN clients too (same token model as the TUI subscription URL)."
-    : "On this device no token is needed (loopback bypass). LAN clients need sharing enabled — and the token appended if the server requires one.";
+  $("share-hint").textContent = getToken() ? t("shareHintToken") : t("shareHintLocal");
   const img = $("qr-img");
   const note = $("qr-note");
   img.hidden = true;
-  note.textContent = "Loading QR…";
+  note.textContent = t("qrLoading");
   loadQrImage();
 }
 
@@ -1880,11 +1873,11 @@ async function loadQrImage() {
   img.hidden = true;
   if ($("panel-share").hidden) {
     // Cheap path: don't probe a file nobody is looking at.
-    note.textContent = "Open this tab to view the QR sheet.";
+    note.textContent = t("qrOpenTab");
     return;
   }
   if (state.hasSummaryApi === false) {
-    note.textContent = "The QR sheet needs a newer server — per-config QR buttons still work.";
+    note.textContent = t("qrNeedsServer");
     return;
   }
   if (state.qrKnown === null) {
@@ -1897,15 +1890,15 @@ async function loadQrImage() {
     } else {
       state.hasSummaryApi = false;
       state.qrKnown = false;
-      note.textContent = "The QR sheet needs a newer server — per-config QR buttons still work.";
+      note.textContent = t("qrNeedsServer");
       return;
     }
   }
   if (!state.qrKnown) {
-    note.textContent = "No QR image yet — press Generate QR (requires LAN sharing).";
+    note.textContent = t("qrNoneYet");
     return;
   }
-  note.textContent = "Loading QR…";
+  note.textContent = t("qrLoading");
   // fetch (not `new Image()`): failures stay silent promise rejections.
   // The bytes travel once: the blob URL below reuses this same response.
   fetch(apiPath("/api/qr.jpg"), { headers: { Accept: "image/jpeg" } }).then(
@@ -1940,10 +1933,10 @@ async function loadQrImage() {
       state.qrObjectUrl = url;
       img.src = url;
       img.hidden = false;
-      note.textContent = "Scan with your phone to add the LAN subscription.";
+      note.textContent = t("qrScanHint");
     }
   ).catch(() => {
-    note.textContent = "No QR image yet — press Generate QR (requires LAN sharing).";
+    note.textContent = t("qrNoneYet");
   });
 }
 
@@ -1958,7 +1951,7 @@ async function renderOvQr() {
     return;
   }
   if (state.hasSummaryApi === false) {
-    note.textContent = "The QR sheet needs a newer server — per-config QR buttons still work.";
+    note.textContent = t("qrNeedsServer");
     return;
   }
   if (state.qrKnown === null) {
@@ -1986,7 +1979,7 @@ async function renderOvQr() {
     const wasShown = ovQrShown();
     state.ovQrLoaded = false;
     img.hidden = true;
-    note.textContent = "No QR image yet — press Generate QR Code (requires LAN sharing).";
+    note.textContent = t("qrNoneYetOv");
     if (wasShown) {
       renderOvConfigs();
     }
@@ -1995,7 +1988,7 @@ async function renderOvQr() {
   if (state.ovQrLoaded && !img.hidden) {
     return;
   }
-  note.textContent = "Loading QR…";
+  note.textContent = t("qrLoading");
   // fetch (not `new Image()`): failures stay silent promise rejections.
   fetch(apiPath("/api/qr.jpg"), { headers: { Accept: "image/jpeg" } }).then(
     (res) => {
@@ -2032,14 +2025,14 @@ async function renderOvQr() {
       img.src = url;
       img.hidden = false;
       state.ovQrLoaded = true;
-      note.textContent = "Scan with your phone to add the LAN subscription.";
+      note.textContent = t("qrScanHint");
       renderOvConfigs();
     }
   ).catch(() => {
     const wasShown = ovQrShown();
     state.ovQrLoaded = false;
     img.hidden = true;
-    note.textContent = "No QR image yet — press Generate QR Code (requires LAN sharing).";
+    note.textContent = t("qrNoneYetOv");
     if (wasShown) {
       renderOvConfigs();
     }
@@ -2056,17 +2049,17 @@ async function generateQr() {
   try {
     const r = await fetchJson("/api/qr/generate", { method: "POST", body: {} });
     if (r.status === 404) {
-      toast("QR API is not on this server version yet.", "bad");
+      toast(t("qrApiOld"), "bad");
       return;
     }
     if (r.status === 0) {
-      toast("Server unreachable.", "bad");
+      toast(t("unreachable"), "bad");
       return;
     }
     if (r.status >= 200 && r.status < 300 && r.data) {
       const skipped = Array.isArray(r.data.skipped) ? r.data.skipped : [];
-      const base = r.data.message || (r.data.ok ? "QR generated." : "QR unavailable.");
-      const shown = skipped.length > 0 ? base + " Skipped: " + skipped.join("; ") : base;
+      const base = r.data.message || (r.data.ok ? t("qrGenerated") : t("qrUnavailable"));
+      const shown = skipped.length > 0 ? base + t("qrSkipped", { list: skipped.join("; ") }) : base;
       toast(shown, r.data.ok ? "good" : "bad");
       state.hasSummaryApi = true;
       state.qrKnown = !!r.data.ok;
@@ -2077,7 +2070,7 @@ async function generateQr() {
       }
       return;
     }
-    toast("QR generation failed (HTTP " + r.status + ").", "bad");
+    toast(t("qrFailed", { status: r.status }), "bad");
   } finally {
     btn.disabled = false;
     if (btnOv) {
@@ -2094,7 +2087,7 @@ async function loadSubscriptions() {
   if (r.status === 200 && r.data && Array.isArray(r.data.list)) {
     state.subs = { list: r.data.list, dirty: !!r.data.dirty };
     setDirty(!!r.data.dirty);
-    note.textContent = r.data.list.length + " subscription(s) on the server.";
+    note.textContent = t("subCount", { n: r.data.list.length });
     renderSubs();
     return;
   }
@@ -2102,8 +2095,8 @@ async function loadSubscriptions() {
   setDirty(false);
   renderSubs();
   note.textContent = r.status === 404
-    ? "Subscription management API is not on this server version yet — manage subscriptions from the TUI or configs.yaml."
-    : "Could not load subscriptions (HTTP " + r.status + ").";
+    ? t("subApiOld")
+    : t("subLoadFailed", { status: r.status });
 }
 
 function renderSubs() {
@@ -2122,13 +2115,13 @@ function renderSubs() {
     tgl.className = "btn small";
     tgl.textContent = sub.enabled ? "✅" : "❌";
     tgl.setAttribute("aria-pressed", sub.enabled ? "true" : "false");
-    tgl.setAttribute("aria-label", "Toggle " + (sub.name || ("subscription " + (i + 1))));
+    tgl.setAttribute("aria-label", t("toggleSub", { name: sub.name || t("subFallback", { i: i + 1 }) }));
     tgl.addEventListener("click", () => void subToggle(i));
     onTd.appendChild(tgl);
     tr.appendChild(onTd);
 
     tr.appendChild(el("td", sub.priority !== undefined ? String(sub.priority) : "—"));
-    tr.appendChild(el("td", sub.name || ("subscription " + (i + 1))));
+    tr.appendChild(el("td", sub.name || t("subFallback", { i: i + 1 })));
 
     const urlTd = document.createElement("td");
     urlTd.appendChild(el("code", redactUrl(sub.url || "")));
@@ -2136,10 +2129,10 @@ function renderSubs() {
 
     const actTd = document.createElement("td");
     const wrap = el("span", null, "row-actions");
-    const editBtn = el("button", "Edit", "btn small");
+    const editBtn = el("button", t("btnEdit"), "btn small");
     editBtn.type = "button";
     editBtn.addEventListener("click", () => void subEdit(i));
-    const delBtn = el("button", "Delete", "btn small");
+    const delBtn = el("button", t("btnDelete"), "btn small");
     delBtn.type = "button";
     delBtn.addEventListener("click", () => void subDelete(i));
     wrap.appendChild(editBtn);
@@ -2177,36 +2170,36 @@ function subMessage(r, fallback) {
 async function subToggle(i) {
   const r = await fetchJson("/api/subscriptions/" + i + "/toggle", { method: "POST", body: {} });
   if (r.status === 404) {
-    toast("Subscription API is not on this server version yet.", "bad");
+    toast(t("subApiOldShort"), "bad");
     return;
   }
   if (r.status >= 200 && r.status < 300) {
-    toast(subMessage(r, "Toggled."), "good");
+    toast(subMessage(r, t("toggled")), "good");
     setDirty(false);
     void loadSubscriptions();
     return;
   }
-  toast(subMessage(r, "Toggle failed (HTTP " + r.status + ")."), "bad");
+  toast(subMessage(r, t("toggleFailed", { status: r.status })), "bad");
 }
 
 async function subDelete(i) {
   const sub = state.subs && state.subs.list[i];
-  const label = (sub && sub.name) || ("subscription " + (i + 1));
-  if (!window.confirm("Delete subscription \"" + label + "\"?")) {
+  const label = (sub && sub.name) || t("subFallback", { i: i + 1 });
+  if (!window.confirm(t("confirmDelete", { name: label }))) {
     return;
   }
   const r = await fetchJson("/api/subscriptions/" + i, { method: "DELETE" });
   if (r.status === 404) {
-    toast("Subscription API is not on this server version yet.", "bad");
+    toast(t("subApiOldShort"), "bad");
     return;
   }
   if (r.status >= 200 && r.status < 300) {
-    toast(subMessage(r, "Deleted."), "good");
+    toast(subMessage(r, t("deleted")), "good");
     setDirty(false);
     void loadSubscriptions();
     return;
   }
-  toast(subMessage(r, "Delete failed (HTTP " + r.status + ")."), "bad");
+  toast(subMessage(r, t("deleteFailed", { status: r.status })), "bad");
 }
 
 function subEdit(i) {
@@ -2219,8 +2212,8 @@ function subEdit(i) {
 
 function openSubDialog(preset, index) {
   state.editingSub = (index === undefined || index === null) ? null : index;
-  $("dlg-sub-title").textContent = preset ? "Edit subscription" : "Add subscription";
-  $("dlg-sub-ok").textContent = preset ? "Save" : "Add";
+  $("dlg-sub-title").textContent = preset ? t("dlgEditSub") : t("dlgAddSub");
+  $("dlg-sub-ok").textContent = preset ? t("btnSave") : t("btnAdd");
   $("dlg-sub-url").value = (preset && preset.url) || "";
   $("dlg-sub-name").value = (preset && preset.name) || "";
   $("dlg-sub-priority").value = (preset && preset.priority !== undefined) ? String(preset.priority) : "100";
@@ -2239,7 +2232,7 @@ async function submitSubDialog() {
     enabled: $("dlg-sub-enabled").checked,
   };
   if (!payload.url || !payload.name) {
-    toast("URL and name are required.", "bad");
+    toast(t("subRequired"), "bad");
     return;
   }
   const editing = state.editingSub;
@@ -2247,17 +2240,17 @@ async function submitSubDialog() {
     ? await fetchJson("/api/subscriptions", { method: "POST", body: payload })
     : await fetchJson("/api/subscriptions/" + editing, { method: "PATCH", body: payload });
   if (r.status === 404) {
-    toast("Subscription API is not on this server version yet.", "bad");
+    toast(t("subApiOldShort"), "bad");
     return;
   }
   if (r.status >= 200 && r.status < 300) {
     state.editingSub = null;
-    toast(subMessage(r, editing === null ? "Added." : "Saved."), "good");
+    toast(subMessage(r, editing === null ? t("added") : t("saved")), "good");
     setDirty(false);
     void loadSubscriptions();
     return;
   }
-  toast(subMessage(r, (editing === null ? "Add" : "Save") + " failed (HTTP " + r.status + ")."), "bad");
+  toast(subMessage(r, editing === null ? t("addFailed", { status: r.status }) : t("saveFailed", { status: r.status })), "bad");
 }
 
 /* ---------- settings tab (progressive) ---------- */
@@ -2272,10 +2265,10 @@ async function loadSettings() {
   if (r.status === 200 && r.data && Array.isArray(r.data.groups)) {
     state.settings = r.data;
     setDirty(!!r.data.dirty);
-    note.textContent = "Click a value to edit it (same validators as the TUI). Changes stay in memory until saved.";
+    note.textContent = t("setHint");
     for (const g of r.data.groups) {
       const card = el("section", null, "set-group");
-      card.appendChild(el("h3", g.title || "Settings"));
+      card.appendChild(el("h3", g.title || t("setFallback")));
       for (const k of g.keys || []) {
         const row = document.createElement("div");
         row.className = "set-row";
@@ -2283,7 +2276,7 @@ async function loadSettings() {
         const val = el("span", k.value !== undefined ? String(k.value) : "—", "val");
         val.tabIndex = 0;
         val.setAttribute("role", "button");
-        val.title = "Click to edit";
+        val.title = t("tipEditSetting");
         val.addEventListener("click", () => editSetting(k.key, val));
         val.addEventListener("keydown", (ev) => {
           if (ev.key === "Enter" || ev.key === " ") {
@@ -2303,8 +2296,8 @@ async function loadSettings() {
   }
   state.settings = null;
   note.textContent = r.status === 404
-    ? "Settings API is not on this server version yet — edit settings from the TUI Configurations screen or configs.yaml."
-    : "Could not load settings (HTTP " + r.status + ").";
+    ? t("setApiOld")
+    : t("setLoadFailed", { status: r.status });
 }
 
 function editSetting(key, valNode) {
@@ -2312,7 +2305,7 @@ function editSetting(key, valNode) {
   const input = document.createElement("input");
   input.type = "text";
   input.value = current === "—" ? "" : current;
-  input.setAttribute("aria-label", "New value for " + key);
+  input.setAttribute("aria-label", t("ariaNewValue", { key }));
   valNode.textContent = "";
   valNode.appendChild(input);
   input.focus();
@@ -2326,17 +2319,17 @@ function editSetting(key, valNode) {
     }
     const r = await fetchJson("/api/config", { method: "PATCH", body: { key, value: v } });
     if (r.status === 404) {
-      toast("Settings API is not on this server version yet.", "bad");
+      toast(t("setApiOldShort"), "bad");
       return;
     }
     if (r.status >= 200 && r.status < 300) {
-      toast(subMessage(r, "Saved."), "good");
+      toast(subMessage(r, t("saved")), "good");
       setDirty(!!(r.data && r.data.dirty));
       void loadOvConfig();
       return;
     }
-    const msg = (r.data && (r.data.status || r.data.message)) || ("HTTP " + r.status);
-    toast("Rejected: " + msg, "bad");
+    const msg = (r.data && (r.data.status || r.data.message)) || t("httpStatus", { status: r.status });
+    toast(t("rejected", { msg }), "bad");
   };
   input.addEventListener("keydown", (ev) => {
     if (ev.key === "Enter") {
@@ -2358,9 +2351,7 @@ async function triggerCycle(kind) {
   // rapid clicks, keyboard repeats, and phone double-taps collapse to one.
   if (kind === "refresh" ? refreshBusy() : pingBusy()) {
     toast(
-      kind === "refresh"
-        ? "Refresh already running — wait for it to finish."
-        : "A cycle is already running — try again when it finishes.",
+      kind === "refresh" ? t("trigRefreshBusy") : t("trigCycleBusy"),
       "bad"
     );
     updateCycleButtons();
@@ -2372,15 +2363,15 @@ async function triggerCycle(kind) {
   try {
     const r = await fetchJson(path, { method: "POST", body: {} });
     if (r.status === 404) {
-      toast("Manual " + kind + " needs a newer server (no " + path + " route yet).", "bad");
-      setStatus("Manual " + kind + " unavailable on this server.");
+      toast(t("trigNeedsServer", { kind, path }), "bad");
+      setStatus(t("trigUnavailable", { kind }));
       return;
     }
     if (r.status === 409) {
       // Backend confirms busy (system cycle won the race after our guard):
       // resync so buttons/countdown reflect the running cycle immediately.
       toast(
-        (r.data && r.data.status) || "A cycle is already running — try again when it finishes.",
+        (r.data && r.data.status) || t("trigCycleBusy"),
         "bad"
       );
       void loadResults();
@@ -2388,13 +2379,13 @@ async function triggerCycle(kind) {
     }
     if (r.status === 503) {
       toast(
-        (r.data && r.data.status) || ("Manual " + kind + " unavailable on this server."),
+        (r.data && r.data.status) || t("trigUnavailable", { kind }),
         "bad"
       );
       return;
     }
     if (r.status === 0) {
-      toast("Server unreachable.", "bad");
+      toast(t("unreachable"), "bad");
       return;
     }
     if (r.status >= 200 && r.status < 300) {
@@ -2408,12 +2399,12 @@ async function triggerCycle(kind) {
         }
         renderStats();
       }
-      toast((r.data && r.data.status) || (kind === "refresh" ? "Refresh triggered." : "Ping triggered."), "good");
-      setStatus("Manual " + kind + " triggered — watch Overview.");
+      toast((r.data && r.data.status) || (kind === "refresh" ? t("trigRefreshDone") : t("trigPingDone")), "good");
+      setStatus(t("trigWatch", { kind }));
       window.setTimeout(() => void loadResults(), 1200);
       return;
     }
-    toast("Trigger failed (HTTP " + r.status + ").", "bad");
+    toast(t("trigFailed", { status: r.status }), "bad");
   } finally {
     state.cycleInflight[kind] = false;
     updateCycleButtons();
@@ -2423,17 +2414,17 @@ async function triggerCycle(kind) {
 async function saveNow() {
   const r = await fetchJson("/api/save", { method: "POST", body: {} });
   if (r.status === 404) {
-    toast("Save API is not on this server version yet.", "bad");
+    toast(t("saveApiOld"), "bad");
     return;
   }
   if (r.status >= 200 && r.status < 300) {
     setDirty(false);
-    toast("Saved.", "good");
-    setStatus("Saved.");
+    toast(t("saved"), "good");
+    setStatus(t("saved"));
     void loadOvConfig();
     return;
   }
-  toast("Save failed (HTTP " + r.status + ").", "bad");
+  toast(t("saveFailed", { status: r.status }), "bad");
 }
 
 /* ---------- tabs / routing (clean paths, History API) ---------- */
@@ -2569,6 +2560,8 @@ function wire() {
     return;
   }
   state.wired = true;
+  loadLanguage();
+  applyI18nStatic(document);
   $("btn-refresh").addEventListener("click", () => void triggerCycle("refresh"));
   $("btn-ping").addEventListener("click", () => void triggerCycle("ping"));
   $("banner-retry").addEventListener("click", () => {
@@ -2634,12 +2627,16 @@ function wire() {
   $("btn-log-clear").addEventListener("click", () => {
     state.logLines = [];
     renderLogs();
-    toast("Log view cleared (server logs untouched).", "good");
+    toast(t("logCleared"), "good");
+  });
+
+  $("btn-lang").addEventListener("click", () => {
+    toast(t("langOnly"));
   });
 
   $("btn-sub-add").addEventListener("click", () => {
     if (!state.subs) {
-      toast("Subscription API is not on this server version yet.", "bad");
+      toast(t("subApiOldShort"), "bad");
       return;
     }
     openSubDialog(null, null);
@@ -2667,9 +2664,9 @@ function wire() {
       renderProxyTab();
       void selectProxy(null);
     } else if (state.proxyPendingUri !== undefined) {
-      toast("Proxy switch already in flight — try again in a moment.", "bad");
+      toast(t("proxyInflight"), "bad");
     } else {
-      toast("No manual config pinned.", "bad");
+      toast(t("noPin"), "bad");
     }
   });
   $("btn-sharing").addEventListener("click", async (ev) => {
@@ -2678,15 +2675,15 @@ function wire() {
     try {
       const r = await fetchJson("/api/sharing", { method: "POST", body: {} });
       if (r.status === 404) {
-        toast("Sharing API is not on this server version yet — use the TUI.", "bad");
+        toast(t("sharingOld"), "bad");
         return;
       }
       if (r.status >= 200 && r.status < 300) {
-        toast(subMessage(r, "Sharing toggled."), "good");
+        toast(subMessage(r, t("sharingToggled")), "good");
         window.setTimeout(() => void loadResults(), 1200);
         return;
       }
-      toast(subMessage(r, "Sharing toggle failed (HTTP " + r.status + ")."), "bad");
+      toast(subMessage(r, t("sharingFailed", { status: r.status })), "bad");
     } finally {
       btn.disabled = false;
     }
@@ -2706,10 +2703,10 @@ function wire() {
       }
     });
   }
-  $("dlg-detail-copy").addEventListener("click", () => void copyText(state.detailUri, "Config link copied."));
+  $("dlg-detail-copy").addEventListener("click", () => void copyText(state.detailUri, t("linkCopied")));
   $("dlg-detail-use").addEventListener("click", () => {
     if (!state.detailUri) {
-      toast("No link to pin for this config.", "bad");
+      toast(t("noLink"), "bad");
       return;
     }
     $("dlg-detail").close();

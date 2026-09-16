@@ -93,4 +93,41 @@ describe("frontend i18n: one unified strings file, English default", () => {
     assert.equal(api.t("langAria"), "Language: English");
     assert.equal(api.setLanguage("xx"), false);
   });
+
+  it("language menu toggles, EN sticks, others toast coming-soon", () => {
+    const { api, sandbox } = loadApp();
+    const menu = sandbox.__elements.get("lang-menu");
+    assert.equal(menu.hidden, false); // stub default; wire() owns the real state
+    api.toggleLangMenu();
+    assert.equal(menu.hidden, true);
+    api.toggleLangMenu();
+    assert.equal(menu.hidden, false);
+    assert.equal(api.closeLangMenu(), true);
+    assert.equal(menu.hidden, true);
+    assert.equal(api.closeLangMenu(), false);
+    // Non-English: toast names the language, English stays.
+    api.selectLang("ir");
+    const toasts = sandbox.__elements.get("toasts");
+    const last = toasts.children[toasts.children.length - 1];
+    assert.match(last.textContent, /Persian is coming soon/);
+    assert.equal(api.t("btnRefresh"), "Refresh");
+    // Unknown codes are ignored silently.
+    api.selectLang("xx");
+    // Menu rows cover every LANG in order (EN, IR, CN, FR, RU).
+    const html = fs.readFileSync(path.join(FRONTEND_DIR, "index.html"), "utf8");
+    const rows = [...html.matchAll(/data-lang="([a-z]+)"/g)].map((m) => m[1]);
+    assert.deepEqual(rows, ["en", "ir", "cn", "fr", "ru"]);
+  });
+
+  it("every ./assets/*.svg referenced in index.html exists on disk", () => {
+    const html = read("index.html");
+    const refs = new Set([...html.matchAll(/\.\/assets\/([A-Za-z0-9._-]+)/g)].map((m) => m[1]));
+    assert.ok(refs.size >= 5, `expected 5+ flag refs, found ${refs.size}`);
+    for (const f of refs) {
+      assert.ok(
+        fs.existsSync(path.join(FRONTEND_DIR, "assets", f)),
+        `missing frontend/assets/${f}`,
+      );
+    }
+  });
 });

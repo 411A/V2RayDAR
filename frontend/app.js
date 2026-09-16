@@ -161,6 +161,60 @@ function hideBanner() {
   $("banner").hidden = true;
 }
 
+/* ---------- language menu ---------- */
+
+/// Language codes in menu order (EN, IR, CN, FR, RU); only `en` has strings
+/// so far — the rest toast "coming soon" and keep English.
+const LANGS = ["en", "ir", "cn", "fr", "ru"];
+
+function langNameKey(code) {
+  return { en: "langEN", ir: "langIR", cn: "langCN", fr: "langFR", ru: "langRU" }[code] || "langEN";
+}
+
+function syncLangMenu() {
+  const menu = $("lang-menu");
+  if (!menu || !menu.querySelectorAll) {
+    return;
+  }
+  const items = menu.querySelectorAll('button[data-lang]');
+  for (let i = 0; i < items.length; i += 1) {
+    items[i].setAttribute("aria-checked", String(items[i].getAttribute("data-lang") === i18nLang));
+  }
+}
+
+function toggleLangMenu() {
+  const menu = $("lang-menu");
+  if (!menu) {
+    return;
+  }
+  menu.hidden = !menu.hidden;
+  $("btn-lang").setAttribute("aria-expanded", String(!menu.hidden));
+}
+
+function closeLangMenu() {
+  const menu = $("lang-menu");
+  if (!menu || menu.hidden) {
+    return false;
+  }
+  menu.hidden = true;
+  $("btn-lang").setAttribute("aria-expanded", "false");
+  return true;
+}
+
+function selectLang(code) {
+  if (!LANGS.includes(code)) {
+    return;
+  }
+  if (code !== "en") {
+    toast(t("langSoon", { lang: t(langNameKey(code)) }));
+    closeLangMenu();
+    return;
+  }
+  setLanguage("en");
+  syncLangMenu();
+  closeLangMenu();
+}
+
 /* ---------- theme ---------- */
 
 function applyTheme(mode) {
@@ -2518,6 +2572,9 @@ function typingTarget() {
 
 function onKey(ev) {
   if (ev.key === "Escape") {
+    if (closeLangMenu()) {
+      return;
+    }
     for (const id of ["dlg-sub", "dlg-detail", "dlg-qr", "dlg-keys"]) {
       const d = $(id);
       if (d.open) {
@@ -2562,6 +2619,7 @@ function wire() {
   state.wired = true;
   loadLanguage();
   applyI18nStatic(document);
+  syncLangMenu();
   $("btn-refresh").addEventListener("click", () => void triggerCycle("refresh"));
   $("btn-ping").addEventListener("click", () => void triggerCycle("ping"));
   $("banner-retry").addEventListener("click", () => {
@@ -2630,8 +2688,27 @@ function wire() {
     toast(t("logCleared"), "good");
   });
 
-  $("btn-lang").addEventListener("click", () => {
-    toast(t("langOnly"));
+  $("btn-lang").addEventListener("click", () => toggleLangMenu());
+  const menu = $("lang-menu");
+  if (menu) {
+    menu.addEventListener("click", (ev) => {
+      const btn = ev.target && ev.target.closest ? ev.target.closest("button[data-lang]") : null;
+      if (btn) {
+        selectLang(btn.getAttribute("data-lang"));
+      }
+    });
+  }
+  // Light-dismiss like the dialogs: anything outside menu + button closes.
+  document.addEventListener("click", (ev) => {
+    const m = $("lang-menu");
+    if (!m || m.hidden) {
+      return;
+    }
+    const tgt = ev.target;
+    if (tgt && tgt.closest && (tgt.closest("#lang-menu") || tgt.closest("#btn-lang"))) {
+      return;
+    }
+    closeLangMenu();
   });
 
   $("btn-sub-add").addEventListener("click", () => {

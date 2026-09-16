@@ -79,13 +79,16 @@ test("fetch errors render headline + cause on two lines", async ({ page }) => {
   stub.fetchErrors = [];
 });
 
-test("language flag sits left of ? and announces English-only", async ({ page }) => {
+test("language flag sits left of ? with a real file and a 5-flag menu", async ({ page }) => {
   await page.goto(base + "/overview");
   const flag = page.locator("#btn-lang");
   const keys = page.locator("#btn-keys");
   await expect(flag).toBeVisible();
-  // Inlined GB mark (vector, no external asset) with an English label.
-  expect(await flag.locator("svg").count()).toBe(1);
+  // Real file (replaceable in frontend/assets/), rendered wide, labelled.
+  const img = flag.locator("img.flag-img");
+  expect(await img.getAttribute("src")).toBe("./assets/GB.svg");
+  const box = await img.boundingBox();
+  expect(box.width).toBeGreaterThan(box.height);
   await expect(flag).toHaveAttribute("aria-label", "Language: English");
   // Immediately left of the ? button in the same action row.
   const order = await page.evaluate(() => {
@@ -95,9 +98,30 @@ test("language flag sits left of ? and announces English-only", async ({ page })
   });
   expect(order.sameRow).toBe(true);
   expect(order.flagRight).toBeLessThanOrEqual(order.keysLeft);
-  // Single language for now: clicking says so instead of switching.
+  // Menu opens with EN, IR, CN, FR, RU in order, English pressed.
   await flag.click();
-  await expect(page.locator("#toasts .toast").last()).toContainText("English is the only language");
+  const menu = page.locator("#lang-menu");
+  await expect(menu).toBeVisible();
+  const codes = await menu.locator("button[data-lang]").evaluateAll((els) =>
+    els.map((el) => el.getAttribute("data-lang")),
+  );
+  expect(codes).toEqual(["en", "ir", "cn", "fr", "ru"]);
+  await expect(menu.locator('button[data-lang="en"]')).toHaveAttribute("aria-checked", "true");
+  // Every row loads its flag file with no distortion (cover-crop, not stretch).
+  for (const c of ["GB", "IR", "CN", "FR", "RU"]) {
+    const r = await page.request.get(`${base}/assets/${c}.svg`);
+    expect(r.status()).toBe(200);
+    expect(r.headers()["content-type"]).toContain("image/svg+xml");
+  }
+  const fit = await menu.locator("img.flag-img").first().evaluate((el) => getComputedStyle(el).objectFit);
+  expect(fit).toBe("cover");
+  // Non-English stays English with a coming-soon toast; menu closes.
+  await menu.locator('button[data-lang="ir"]').click();
+  await expect(page.locator("#toasts .toast").last()).toContainText("Persian is coming soon");
+  await expect(menu).toBeHidden();
+  // Unknown asset names 404 (whitelist, no traversal).
+  const bad = await page.request.get(`${base}/assets/EVIL.svg`);
+  expect(bad.status()).toBe(404);
 });
 
 test("legacy #/tab bookmarks replace-redirect with token preserved", async ({ page }) => {

@@ -289,12 +289,71 @@ kbd,
   font-weight: 700;
 }
 
-/* Language flag (GB.svg inlined in index.html): same box as the `?` key. */
-.btn.flag svg {
+/* Language flag (inlined vectors, 3:2 like real flags): a touch wider than
+ * the square `?` key so the ratio reads correctly. */
+.btn.flag {
+  padding-inline: 0.45rem;
+}
+/* Flag files are square SVGs; the fixed wide box with cover-crop keeps the
+ * button ratio flag-like (3:2) without ever stretching the artwork. */
+.flag-img {
   display: block;
-  width: 18px;
-  height: 18px;
+  width: 26px;
+  height: 17px;
+  object-fit: cover;
   border-radius: 2px;
+}
+
+/* Language menu: drops down from the flag, anchored to the action row. */
+.top-actions {
+  position: relative;
+}
+.lang-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 11rem;
+  padding: 0.35rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
+}
+.lang-menu[hidden] {
+  display: none;
+}
+.lang-menu button {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  width: 100%;
+  padding: 0.35rem 0.5rem;
+  background: none;
+  border: 0;
+  border-radius: 7px;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-align: start;
+}
+.lang-menu button:hover {
+  background: var(--hover);
+}
+.lang-menu button[aria-checked="true"] {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+.lang-code {
+  font-weight: 700;
+  font-size: 0.8rem;
+}
+.lang-name {
+  color: var(--muted);
+  font-size: 0.8rem;
 }
 
 .theme-switch,

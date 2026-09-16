@@ -158,6 +158,18 @@ export function createStub() {
       res.end(fs.readFileSync(path.join(FRONTEND, "i18n.js")));
       return;
     }
+    if (req.method === "GET" && p.startsWith("/assets/")) {
+      // Mirror the backend whitelist: flag SVGs only, no traversal.
+      const name = p.slice("/assets/".length);
+      if (/^(GB|IR|CN|FR|RU)\.svg$/.test(name)) {
+        res.writeHead(200, { "Content-Type": MIME[".svg"] });
+        res.end(fs.readFileSync(path.join(FRONTEND, "assets", name)));
+      } else {
+        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("unknown asset");
+      }
+      return;
+    }
     if (req.method === "GET" && p === "/favicon.ico") {
       res.writeHead(200, { "Content-Type": MIME[".svg"] });
       res.end("<svg xmlns='http://www.w3.org/2000/svg'></svg>");

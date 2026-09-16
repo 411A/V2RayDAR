@@ -46,6 +46,13 @@ const DASHBOARD_CSS: &str = include_str!("../frontend/style.css");
 const DASHBOARD_JS: &str = include_str!("../frontend/app.js");
 /// Embedded dashboard strings (single i18n table, English default).
 const DASHBOARD_I18N: &str = include_str!("../frontend/i18n.js");
+/// Language flags served as real files (`/assets/*.svg`), so a flag can be
+/// swapped by replacing one SVG — no code or markup change needed.
+const FLAG_GB: &str = include_str!("../frontend/assets/GB.svg");
+const FLAG_IR: &str = include_str!("../frontend/assets/IR.svg");
+const FLAG_CN: &str = include_str!("../frontend/assets/CN.svg");
+const FLAG_FR: &str = include_str!("../frontend/assets/FR.svg");
+const FLAG_RU: &str = include_str!("../frontend/assets/RU.svg");
 /// Embedded QR encoder (single-file MIT library, no network use).
 const DASHBOARD_QR: &str = include_str!("../frontend/qr.js");
 /// Radar-mark favicon (static SVG, zero sensitivity — served ungated like
@@ -167,6 +174,34 @@ pub async fn dashboard_qr(
         "text/javascript; charset=utf-8",
     )
     .await
+}
+
+/// `GET /assets/{file}` — language flag SVGs. Whitelisted by name (never a
+/// raw path: no traversal, no surprises); same auth as the dashboard shell.
+pub async fn dashboard_flag(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    ConnectInfo(remote_addr): ConnectInfo<std::net::SocketAddr>,
+    Path(file): Path<String>,
+) -> Response {
+    let body = match file.as_str() {
+        "GB.svg" => FLAG_GB,
+        "IR.svg" => FLAG_IR,
+        "CN.svg" => FLAG_CN,
+        "FR.svg" => FLAG_FR,
+        "RU.svg" => FLAG_RU,
+        _ => {
+            return (
+                StatusCode::NOT_FOUND,
+                [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                "unknown asset",
+            )
+                .into_response();
+        }
+    };
+    let token = query.token.as_deref().or_else(|| bearer_token(&headers));
+    static_response(&state, remote_addr, token, body, "image/svg+xml").await
 }
 
 /// `GET /favicon.ico` — radar mark. Public by design (see [`FAVICON_SVG`]).
@@ -1810,9 +1845,9 @@ mod tests {
 
     use super::{
         DASHBOARD_ASSET_BUDGET_BYTES, DASHBOARD_CSS, DASHBOARD_HTML, DASHBOARD_I18N, DASHBOARD_JS,
-        DASHBOARD_QR, FAVICON_SVG, FeedFingerprint, config_response, events_response, favicon,
-        qr_generate_response, qr_image_response, static_response, subscriptions_response,
-        summary_response,
+        DASHBOARD_QR, FAVICON_SVG, FLAG_CN, FLAG_FR, FLAG_GB, FLAG_IR, FLAG_RU, FeedFingerprint,
+        config_response, events_response, favicon, qr_generate_response, qr_image_response,
+        static_response, subscriptions_response, summary_response,
     };
     use crate::{
         constants::{DEFAULT_BIND, LOCALHOST_IP},
@@ -1948,6 +1983,19 @@ mod tests {
         // Bare "http" substrings are fine (the UI builds loopback URLs like
         // "http://" + host at runtime); what must never appear is a remote
         // *reference* that would fetch off-device.
+        // Flag files are real SVGs served on demand (not in the payload sum):
+        // they must still be self-contained vectors, never remote refs.
+        for asset in [FLAG_GB, FLAG_IR, FLAG_CN, FLAG_FR, FLAG_RU] {
+            assert!(asset.contains("<svg"), "flag must be an SVG file");
+            // Same remote-reference bar as the shell (`xmlns="http://…"` is
+            // fine — it is a namespace, not a fetch).
+            for snippet in ["src=\"http", "href=\"http", "url(http", "@import"] {
+                assert!(
+                    !asset.contains(snippet),
+                    "flag must not reference anything remote"
+                );
+            }
+        }
         for asset in [DASHBOARD_HTML, DASHBOARD_CSS, DASHBOARD_JS, DASHBOARD_I18N] {
             assert!(!asset.contains("innerHTML"), "DOM injection sink");
             for snippet in [
@@ -1994,6 +2042,49 @@ mod tests {
             .await
             .expect("body reads");
         assert!(body.starts_with(b"/*"), "vendored encoder header");
+    }
+
+    #[tokio::test]
+    async fn dashboard_flag_serves_whitelisted_svgs_and_404s_the_rest() {
+        use super::dashboard_flag;
+        let state = http_state(RuntimeState::default(), false);
+        for file in ["GB.svg", "IR.svg", "CN.svg", "FR.svg", "RU.svg"] {
+            let (headers, query, connect) = no_auth();
+            let response = dashboard_flag(
+                axum::extract::State(state.clone()),
+                headers,
+                query,
+                connect,
+                axum::extract::Path(file.to_string()),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK, "{file} must serve");
+            assert_eq!(
+                response.headers().get(header::CONTENT_TYPE),
+                Some(&HeaderValue::from_static("image/svg+xml"))
+            );
+            let body = to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body reads");
+            let text = std::str::from_utf8(&body).expect("body is utf-8");
+            assert!(text.contains("<svg"), "{file} must be an SVG file");
+        }
+        for file in ["EVIL.svg", "../app.js", "GB.svg/"] {
+            let (headers, query, connect) = no_auth();
+            let response = dashboard_flag(
+                axum::extract::State(state.clone()),
+                headers,
+                query,
+                connect,
+                axum::extract::Path(file.to_string()),
+            )
+            .await;
+            assert_eq!(
+                response.status(),
+                StatusCode::NOT_FOUND,
+                "{file} must not serve"
+            );
+        }
     }
 
     #[tokio::test]

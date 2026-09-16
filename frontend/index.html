@@ -79,7 +79,14 @@
         <button type="button" class="seg" id="theme-light" aria-pressed="false" data-i18n-title="themeLightTitle" title="Always use the light theme"><span data-i18n="themeLight">Light</span></button>
         <button type="button" class="seg" id="theme-dark" aria-pressed="false" data-i18n-title="themeDarkTitle" title="Always use the dark theme"><span data-i18n="themeDark">Dark</span></button>
       </div>
-      <button type="button" class="btn icon-only flag" id="btn-lang" data-i18n-aria="langAria" data-i18n-title="langTitle" aria-label="Language: English" title="Language: English (more languages later)"><svg width="18" height="18" viewBox="0 0 36 36" aria-hidden="true"><rect width="36" height="36" fill="#00247D"/><path d="M0 0l36 36M36 0L0 36" stroke="#fff" stroke-width="7"/><path d="M0 0l36 36M36 0L0 36" stroke="#CF1B2B" stroke-width="2.4"/><path d="M18 0v36M0 18h36" stroke="#fff" stroke-width="12"/><path d="M18 0v36M0 18h36" stroke="#CF1B2B" stroke-width="7"/></svg></button>
+      <button type="button" class="btn icon-only flag" id="btn-lang" data-i18n-aria="langAria" data-i18n-title="langTitle" aria-label="Language: English" title="Change language" aria-haspopup="menu" aria-expanded="false"><img class="flag-img" src="./assets/GB.svg" alt="" width="26" height="17"></button>
+      <div class="lang-menu" id="lang-menu" role="menu" data-i18n-aria="langMenuAria" aria-label="Choose language" hidden>
+        <button type="button" role="menuitemradio" aria-checked="true" data-lang="en"><img class="flag-img" src="./assets/GB.svg" alt="" width="26" height="17"><span class="lang-code">EN</span><span class="lang-name" data-i18n="langEN">English</span></button>
+        <button type="button" role="menuitemradio" aria-checked="false" data-lang="ir"><img class="flag-img" src="./assets/IR.svg" alt="" width="26" height="17"><span class="lang-code">IR</span><span class="lang-name" data-i18n="langIR">Persian</span></button>
+        <button type="button" role="menuitemradio" aria-checked="false" data-lang="cn"><img class="flag-img" src="./assets/CN.svg" alt="" width="26" height="17"><span class="lang-code">CN</span><span class="lang-name" data-i18n="langCN">Chinese</span></button>
+        <button type="button" role="menuitemradio" aria-checked="false" data-lang="fr"><img class="flag-img" src="./assets/FR.svg" alt="" width="26" height="17"><span class="lang-code">FR</span><span class="lang-name" data-i18n="langFR">French</span></button>
+        <button type="button" role="menuitemradio" aria-checked="false" data-lang="ru"><img class="flag-img" src="./assets/RU.svg" alt="" width="26" height="17"><span class="lang-code">RU</span><span class="lang-name" data-i18n="langRU">Russian</span></button>
+      </div>
       <button type="button" class="btn icon-only" id="btn-keys" data-i18n-aria="keysAria" data-i18n-title="keysTitle" aria-label="Show keyboard shortcuts" title="Keyboard shortcuts (?)">?</button>
     </div>
   </header>

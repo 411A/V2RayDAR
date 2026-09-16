@@ -114,6 +114,7 @@ export function makeSandbox(overrides = {}) {
     "dlg-detail-title", "dlg-detail-kv", "dlg-detail-copy", "dlg-detail-close",
     "dlg-qr", "dlg-qr-title", "qr-canvas", "qr-hint", "dlg-qr-close",
     "dlg-keys", "dlg-keys-title", "dlg-keys-close", "btn-keys", "btn-lang",
+    "lang-menu",
     "theme-system", "theme-light", "theme-dark",
   ]) {
     getOrCreate(id);
@@ -180,6 +181,7 @@ export function makeSandbox(overrides = {}) {
 
 const EXPORT_HOOK = `;globalThis.__v2 = {
   state, t, applyI18nStatic, setLanguage, loadLanguage,
+  toggleLangMenu, selectLang, closeLangMenu,
   refreshBusy, pingBusy, updateCycleButtons, triggerCycle, wire,
   openSubDialog, submitSubDialog, selectProxy, subToggle, subDelete, subEdit,
   flagFor, apiPath, subMessage, maskedHost, currentTab, showTab, goTab,

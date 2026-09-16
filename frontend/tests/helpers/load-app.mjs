@@ -173,6 +173,7 @@ const EXPORT_HOOK = `;globalThis.__v2 = {
   flagFor, apiPath, subMessage, maskedHost, currentTab, showTab, goTab,
   saveNow, fetchJson, toast, setStatus, setDirty, renderStats, loadResults,
   applyRanked, renderOvConfigs, renderConfigs, pingSub, refreshStatus,
+  renderStats, fmtClock, fmtStamp, fmtDuration, fmtAgo,
 };`;
 
 /** Evaluate the real frontend/app.js in a stub DOM and return its internals. */

@@ -270,7 +270,21 @@ function fmtStamp(iso) {
   }
   const pad = (n) => String(n).padStart(2, "0");
   return d.getFullYear() + "/" + pad(d.getMonth() + 1) + "/" + pad(d.getDate()) +
-    " " + pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds());
+    " " + fmtClock(iso);
+}
+
+/// Clock time only (`HH:MM:SS`): one-line badge text where the full stamp
+/// would wrap mid-value. Pair with a `fmtStamp` tooltip carrying the date.
+function fmtClock(iso) {
+  if (!iso) {
+    return "—";
+  }
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) {
+    return "—";
+  }
+  const pad = (n) => String(n).padStart(2, "0");
+  return pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds());
 }
 
 function fmtAgo(iso) {
@@ -299,21 +313,30 @@ function fmtAgo(iso) {
   return Math.floor(h / 24) + "d ago";
 }
 
+/// Human-friendly elapsed time for "took …": whole units, never fractional
+/// minutes (`2m 48s`, not `2.8 min`).
 function fmtDuration(ms) {
   if (ms === null || ms === undefined) {
     return "—";
   }
-  const v = Number(ms);
-  if (!Number.isFinite(v)) {
+  const n = Number(ms);
+  if (!Number.isFinite(n)) {
     return "—";
   }
+  const v = Math.max(0, n);
   if (v < 1000) {
     return Math.round(v) + " ms";
   }
-  if (v < 60000) {
+  const totalSeconds = Math.round(v / 1000);
+  if (totalSeconds < 60) {
     return (v / 1000).toFixed(1) + " s";
   }
-  return (v / 60000).toFixed(1) + " min";
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) {
+    return minutes + "m " + seconds + "s";
+  }
+  return Math.floor(minutes / 60) + "h " + (minutes % 60) + "m";
 }
 
 function truncate(text, max) {
@@ -884,20 +907,26 @@ function renderAll() {
 }
 
 /// Stat badge: title on top, value in the middle, sub-line at the bottom.
-/// The card is `min-inline-size: 0` with wrapping values — nothing may stick
-/// out of the border at any viewport width.
-function statCard(label, value, sub, valueCls, valueId, subId) {
+/// The card is `min-inline-size: 0` with one-line ellipsis subs — nothing
+/// may stick out of the border at any viewport width.
+function statCard(label, value, sub, valueCls, valueId, subId, hint) {
   const p = el("p", null, "stat card");
   p.appendChild(el("span", label, "stat-label"));
   const v = el("span", value, "stat-value" + (valueCls ? " " + valueCls : ""));
   if (valueId) {
     v.id = valueId;
   }
+  if (hint) {
+    v.title = hint;
+  }
   p.appendChild(v);
   if (sub) {
     const s = el("span", sub, "stat-sub");
     if (subId) {
       s.id = subId;
+    }
+    if (hint) {
+      s.title = hint;
     }
     p.appendChild(s);
   } else if (subId) {
@@ -929,9 +958,9 @@ function renderStats() {
   // TUI top-strip parity: Running For / Refresh / Last Scan / Fetched /
   // Failed / Working / Sub Usage. Seven tight badges share one row (narrow
   // viewports scroll horizontally instead of wrapping or overflowing).
-  box.appendChild(statCard("Running For", uptimeText(), state.startedAt ? "Started: " + fmtStamp(state.startedAt) : "", null, "stat-running"));
+  box.appendChild(statCard("Running For", uptimeText(), state.startedAt ? "Started: " + fmtClock(state.startedAt) : "", null, "stat-running", null, state.startedAt ? "Started: " + fmtStamp(state.startedAt) : ""));
   box.appendChild(statCard("Refresh", rs.val, rs.sub, null, "stat-refresh-val", "stat-refresh-sub"));
-  box.appendChild(statCard("Last scan", fmtStamp(s.last_refresh), ago + took, "stamp"));
+  box.appendChild(statCard("Last scan", fmtClock(s.last_refresh), ago + took, null, null, null, fmtStamp(s.last_refresh)));
   box.appendChild(statCard("Fetched", String(s.total_candidates || 0)));
   box.appendChild(statCard("Failed", String(failed), "of " + tested + " tested"));
   box.appendChild(statCard("Working", String(s.reachable_candidates || 0)));

@@ -471,6 +471,8 @@ main {
 .stat {
   margin: 0;
   min-inline-size: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .stat .stat-label {
@@ -489,16 +491,16 @@ main {
   font-variant-numeric: tabular-nums;
 }
 
-.stat .stat-value.stamp {
-  font-size: 0.85rem;
-  letter-spacing: -0.01em;
-}
-
 .stat .stat-sub {
   display: block;
   color: var(--muted);
-  font-size: 0.72rem;
-  overflow-wrap: anywhere;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-block-start: auto;
+  padding-block-start: 0.15rem;
 }
 
 .two-col {

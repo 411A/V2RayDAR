@@ -27,6 +27,18 @@ test("dashboard boots with zero console/page/network errors", async ({ page }) =
   await page.goto(base + "/overview");
   await expect(page.locator("#stat-cards .card")).toHaveCount(7);
   await expect(page.locator("#ov-cfg-body tr")).toHaveCount(2);
+  // No badge text may stick out of its card border (subs are one-line
+  // ellipsis, values are short clock/count strings).
+  const overflows = await page.$$eval("#stat-cards .card", (cards) =>
+    cards.map((c) => c.scrollWidth - c.clientWidth),
+  );
+  expect(overflows.every((d) => d <= 1)).toBe(true);
+  // Every sub-line sits on the same bottom baseline (flex-pinned).
+  const bottoms = await page.$$eval("#stat-cards .stat-sub", (subs) =>
+    subs.map((s) => Math.round(s.getBoundingClientRect().bottom)),
+  );
+  expect(bottoms.length).toBeGreaterThan(0);
+  expect(Math.max(...bottoms) - Math.min(...bottoms)).toBeLessThanOrEqual(1);
   expect(errors).toEqual([]);
 });
 

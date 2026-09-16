@@ -302,6 +302,59 @@ describe("overview top-configs stretches while the QR is shown", () => {
   });
 });
 
+describe("stat badges stay one-line with full stamps in tooltips", () => {
+  it("fmtClock renders HH:MM:SS, fmtStamp keeps the date", () => {
+    assert.match(api.fmtClock("2026-09-16T13:03:47+00:00"), /^\d\d:\d\d:\d\d$/);
+    assert.equal(api.fmtClock(""), "—");
+    assert.equal(api.fmtClock("bogus"), "—");
+    assert.match(api.fmtStamp("2026-09-16T13:03:47+00:00"), /^2026\/09\/16 \d\d:\d\d:\d\d$/);
+  });
+
+  it("renderStats uses clock-only badge text with dated tooltips", () => {
+    api.state.hasSummaryApi = true;
+    api.state.refreshSeconds = 300;
+    api.state.pingSeconds = 0;
+    api.state.startedAt = "2026-09-16T13:03:47+00:00";
+    api.state.snapshot = {
+      refreshing: false,
+      pinging: false,
+      total_candidates: 9482,
+      tested_candidates: 550,
+      reachable_candidates: 41,
+      fetch_bytes: 6081740,
+      last_refresh: "2026-09-16T13:03:40+00:00",
+      refresh_duration_ms: 33400,
+      ranked: [],
+      fetch_errors: [],
+      proxy_running: false,
+    };
+    api.renderStats();
+    const cards = sandbox.__elements.get("stat-cards").children;
+    assert.equal(cards.length, 7);
+    const text = (i) => cards[i].children.map((c) => c.textContent).join("|");
+    // Running For: uptime value + short "Started: HH:MM:SS" sub, no date inline.
+    assert.match(text(0), /^Running For\|.*\|Started: \d\d:\d\d:\d\d$/);
+    assert.ok(!text(0).includes("/"));
+    // Last scan: clock-only value (never wraps mid-stamp), date in the title.
+    assert.match(text(2), /^Last scan\|\d\d:\d\d:\d\d\|/);
+    const valueNode = cards[2].children[1];
+    assert.match(valueNode.title, /^2026\/09\/16 \d\d:\d\d:\d\d$/);
+  });
+});
+
+describe("fmtDuration uses whole units, never fractional minutes", () => {
+  it("renders ms, seconds, minutes+seconds, hours+minutes", () => {
+    assert.equal(api.fmtDuration(null), "—");
+    assert.equal(api.fmtDuration("bogus"), "—");
+    assert.equal(api.fmtDuration(850), "850 ms");
+    assert.equal(api.fmtDuration(30600), "30.6 s");
+    assert.equal(api.fmtDuration(168000), "2m 48s");
+    assert.equal(api.fmtDuration(59999), "1m 0s");
+    assert.equal(api.fmtDuration(60000), "1m 0s");
+    assert.equal(api.fmtDuration(3720000), "1h 2m");
+  });
+});
+
 describe("proxy select: explicit null unpins (live-push only)", () => {
   it("selectProxy(null) POSTs {uri:null}", async () => {
     const bodies = [];

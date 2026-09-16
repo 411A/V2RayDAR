@@ -399,20 +399,24 @@ async fn main() -> Result<()> {
     );
 
     let result = if cli.no_tui {
-        // No TUI owns the senders headless; hold them so trigger channels stay open.
-        let _manual_triggers = (refresh_trigger_tx, ping_trigger_tx);
         serve(
             config.bind,
             state,
             runtime_config,
             subscriptions,
             paths.root_dir.clone(),
+            paths.config_path.clone(),
+            Some(config_tx),
+            Some(refresh_trigger_tx),
+            Some(ping_trigger_tx),
+            Some(database.clone()),
         )
         .await
     } else {
         let data_dir = paths.root_dir.clone();
+        let config_path = paths.config_path.clone();
         tokio::select! {
-            result = serve(config.bind, state.clone(), runtime_config.clone(), subscriptions.clone(), data_dir) => result,
+            result = serve(config.bind, state.clone(), runtime_config.clone(), subscriptions.clone(), data_dir, config_path, Some(config_tx.clone()), Some(refresh_trigger_tx.clone()), Some(ping_trigger_tx.clone()), Some(database.clone())) => result,
             result = tui::run(config, paths, state, runtime_config, database.clone(), config_tx, refresh_trigger_tx, ping_trigger_tx) => result,
         }
     };

@@ -6,7 +6,7 @@ use axum::{
     extract::{ConnectInfo, Query, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, patch, post},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chrono::Utc;
@@ -39,14 +39,32 @@ pub struct HttpState {
     /// Powers the dashboard "Running For" clock; refresh cycles rebuild
     /// `RuntimeState` wholesale, so per-process truth lives here instead.
     pub started: String,
+    /// Live `configs.yaml` path for dashboard mutations (immediate-save).
+    pub config_path: PathBuf,
+    /// Live config broadcast (same channel the TUI pushes through).
+    /// `None` in unit tests; mutations then report unavailable.
+    pub config_tx: Option<tokio::sync::watch::Sender<crate::config::AppConfig>>,
+    /// Manual cycle triggers (same channels the TUI fires through).
+    /// `None` in unit tests; refresh/ping then report unavailable.
+    pub refresh_tx: Option<tokio::sync::mpsc::UnboundedSender<()>>,
+    pub ping_tx: Option<tokio::sync::mpsc::UnboundedSender<()>>,
+    /// Database handle for cache maintenance (`POST /api/cache/clean`).
+    /// `None` in unit tests.
+    pub database: Option<std::sync::Arc<crate::db::Database>>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn serve(
     bind: SocketAddr,
     runtime: SharedState,
     config: SharedConfig,
     subscriptions: SharedSubscriptions,
     data_dir: PathBuf,
+    config_path: PathBuf,
+    config_tx: Option<tokio::sync::watch::Sender<crate::config::AppConfig>>,
+    refresh_tx: Option<tokio::sync::mpsc::UnboundedSender<()>>,
+    ping_tx: Option<tokio::sync::mpsc::UnboundedSender<()>>,
+    database: Option<std::sync::Arc<crate::db::Database>>,
 ) -> Result<()> {
     let state = HttpState {
         runtime,
@@ -54,6 +72,11 @@ pub async fn serve(
         subscriptions,
         data_dir,
         started: Utc::now().to_rfc3339(),
+        config_path,
+        config_tx,
+        refresh_tx,
+        ping_tx,
+        database,
     };
     let router = router(state.clone());
 
@@ -86,11 +109,32 @@ fn router(state: HttpState) -> Router {
         .route("/qr.js", get(crate::web::dashboard_qr))
         .route("/favicon.ico", get(crate::web::favicon))
         .route("/api/summary", get(crate::web::api_summary))
-        .route("/api/subscriptions", get(crate::web::api_subscriptions))
-        .route("/api/config", get(crate::web::api_config))
+        .route(
+            "/api/subscriptions",
+            get(crate::web::api_subscriptions).post(crate::web::api_subscriptions_add),
+        )
+        .route(
+            "/api/config",
+            get(crate::web::api_config).patch(crate::web::api_config_patch),
+        )
         .route("/api/events", get(crate::web::api_events))
         .route("/api/qr/generate", post(crate::web::api_qr_generate))
         .route("/api/qr.jpg", get(crate::web::api_qr_image))
+        .route("/api/refresh", post(crate::web::api_refresh))
+        .route("/api/ping", post(crate::web::api_ping))
+        .route(
+            "/api/subscriptions/{index}",
+            patch(crate::web::api_subscriptions_patch).delete(crate::web::api_subscriptions_delete),
+        )
+        .route(
+            "/api/subscriptions/{index}/toggle",
+            post(crate::web::api_subscriptions_toggle),
+        )
+        .route("/api/save", post(crate::web::api_save))
+        .route("/api/proxy/select", post(crate::web::api_proxy_select))
+        .route("/api/proxy/mode", post(crate::web::api_proxy_mode))
+        .route("/api/sharing", post(crate::web::api_sharing))
+        .route("/api/cache/clean", post(crate::web::api_cache_clean))
         .with_state(state)
 }
 
@@ -425,8 +469,8 @@ mod tests {
     use tokio::sync::RwLock;
 
     use super::{
-        HttpState, authorize_request, bearer_token, bind_error_context, subscription_response,
-        tokens_equal,
+        HttpState, authorize_request, bearer_token, bind_error_context, router,
+        subscription_response, tokens_equal,
     };
     use crate::{
         constants::{
@@ -571,6 +615,26 @@ mod tests {
         assert!(message.contains("127.0.0.1:27141"));
     }
 
+    #[test]
+    fn router_merges_read_and_mutation_methods_without_panic() {
+        // Guards the merged GET+POST / GET+PATCH registrations: axum panics
+        // at startup on conflicting method routes, so just building proves
+        // the dashboard mutation API wires up.
+        let state = HttpState {
+            runtime: Arc::new(RwLock::new(RuntimeState::default())),
+            config: Arc::new(RwLock::new(runtime_config(false, false))),
+            subscriptions: Arc::new(RwLock::new(Vec::new())),
+            data_dir: PathBuf::from("v2raydar_data"),
+            started: "2026-01-01T00:00:00+00:00".to_string(),
+            config_path: PathBuf::from("v2raydar_data/configs.yaml"),
+            config_tx: None,
+            refresh_tx: None,
+            ping_tx: None,
+            database: None,
+        };
+        let _ = router(state);
+    }
+
     #[tokio::test]
     async fn subscription_serves_live_ranked_state_during_refresh() {
         let runtime = RuntimeState {
@@ -589,6 +653,11 @@ mod tests {
             subscriptions: Arc::new(RwLock::new(Vec::new())),
             data_dir: PathBuf::from("v2raydar_data"),
             started: "2026-01-01T00:00:00+00:00".to_string(),
+            config_path: PathBuf::from("v2raydar_data/configs.yaml"),
+            config_tx: None,
+            refresh_tx: None,
+            ping_tx: None,
+            database: None,
         };
 
         let response =

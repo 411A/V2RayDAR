@@ -1,3 +1,7 @@
 /target
 /dist
 v2raydar_data/
+frontend/node_modules/
+frontend/test-results/
+frontend/playwright-report/
+frontend/blob-report/

@@ -22,14 +22,14 @@ use std::{
 
 use axum::{
     Json,
-    extract::{ConnectInfo, Query, State},
+    extract::{ConnectInfo, Path, Query, State},
     http::{HeaderMap, StatusCode, header},
     response::{
         IntoResponse, Response,
         sse::{Event, KeepAlive, Sse},
     },
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::{
@@ -758,6 +758,801 @@ async fn qr_image_response(
     }
 }
 
+/// Small `{ok, status, dirty}` envelope shared by every mutation endpoint.
+/// `status` reuses the TUI footer wording verbatim so docs transfer; `dirty`
+/// is always `false` — the dashboard persists immediately (no TUI-style
+/// two-step save), so the Save bar never arms.
+#[derive(Debug, Clone, Serialize)]
+struct MutationResult {
+    ok: bool,
+    status: String,
+    dirty: bool,
+}
+
+fn mutation_ok(status: impl Into<String>) -> Response {
+    Json(MutationResult {
+        ok: true,
+        status: status.into(),
+        dirty: false,
+    })
+    .into_response()
+}
+
+fn mutation_error(status: StatusCode, message: impl Into<String>) -> Response {
+    (
+        status,
+        Json(MutationResult {
+            ok: false,
+            status: message.into(),
+            dirty: false,
+        }),
+    )
+        .into_response()
+}
+
+/// `POST /api/refresh` — queue one manual refresh (re-fetch subscriptions).
+/// Mirrors the TUI `trigger_refresh`: refused with `409` while a refresh is
+/// already running (a running ping is preempted instead — never a refusal).
+/// The loops coalesce duplicates, so this sends at most one trigger.
+pub async fn api_refresh(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    ConnectInfo(remote_addr): ConnectInfo<std::net::SocketAddr>,
+) -> Response {
+    let token = query.token.as_deref().or_else(|| bearer_token(&headers));
+    if let Err(response) = authorize(&state, remote_addr, token).await {
+        return response;
+    }
+    if state.runtime.read().await.refreshing {
+        return mutation_error(StatusCode::CONFLICT, "Refresh already running");
+    }
+    state.refresh_tx.as_ref().map_or_else(
+        || {
+            mutation_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Manual refresh unavailable",
+            )
+        },
+        |tx| {
+            let _ = tx.send(());
+            mutation_ok("Manual refresh started")
+        },
+    )
+}
+
+/// `POST /api/ping` — queue one manual re-ping of the cached configs.
+/// Mirrors the TUI `trigger_ping`: refused with `409` while any cycle (fetch
+/// or ping) is running so results can't be overwritten mid-flight.
+pub async fn api_ping(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    ConnectInfo(remote_addr): ConnectInfo<std::net::SocketAddr>,
+) -> Response {
+    let token = query.token.as_deref().or_else(|| bearer_token(&headers));
+    if let Err(response) = authorize(&state, remote_addr, token).await {
+        return response;
+    }
+    {
+        let runtime = state.runtime.read().await;
+        if runtime.refreshing || runtime.pinging {
+            return mutation_error(StatusCode::CONFLICT, "A cycle is already running");
+        }
+    }
+    state.ping_tx.as_ref().map_or_else(
+        || mutation_error(StatusCode::SERVICE_UNAVAILABLE, "Manual ping unavailable"),
+        |tx| {
+            let _ = tx.send(());
+            mutation_ok("Manual ping started")
+        },
+    )
+}
+
+/// New subscription payload (`POST /api/subscriptions`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct SubscriptionAdd {
+    url: String,
+    name: String,
+    #[serde(default = "default_sub_priority")]
+    priority: u32,
+    #[serde(default = "default_sub_enabled")]
+    enabled: bool,
+}
+
+const fn default_sub_priority() -> u32 {
+    100
+}
+
+const fn default_sub_enabled() -> bool {
+    true
+}
+
+/// Partial subscription edit (`PATCH /api/subscriptions/:index`).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct SubscriptionPatch {
+    url: Option<String>,
+    name: Option<String>,
+    priority: Option<u32>,
+    enabled: Option<bool>,
+}
+
+/// Settings edit (`PATCH /api/config`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConfigPatch {
+    key: String,
+    value: String,
+}
+
+/// Proxy pin/unpin (`POST /api/proxy/select`).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ProxySelect {
+    uri: Option<String>,
+}
+
+/// Cache clean confirm (`POST /api/cache/clean`).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct CacheClean {
+    #[serde(default)]
+    confirm: String,
+}
+
+// `axum::Response` is large by framework design; these helpers only run on
+// mutation paths, so boxing would add indirection for no benefit.
+#[allow(clippy::result_large_err)]
+fn validate_subscription(url: &str, name: &str) -> Result<(), Response> {
+    if name.trim().is_empty() {
+        return Err(mutation_error(
+            StatusCode::BAD_REQUEST,
+            "Subscription name cannot be empty",
+        ));
+    }
+    if name.len() > 120 {
+        return Err(mutation_error(
+            StatusCode::BAD_REQUEST,
+            "Subscription name is too long (max 120)",
+        ));
+    }
+    if !crate::config::is_allowed_subscription_url(url) {
+        return Err(mutation_error(
+            StatusCode::BAD_REQUEST,
+            "Unsupported subscription URL scheme (use http(s), data, file, or a local path)",
+        ));
+    }
+    Ok(())
+}
+
+#[allow(clippy::result_large_err)]
+fn load_disk_config(state: &HttpState) -> Result<crate::config::AppConfig, Response> {
+    crate::config::AppConfig::load(&state.config_path).map_err(|error| {
+        mutation_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Unable to read config: {error}"),
+        )
+    })
+}
+
+/// Persist `cfg` to `configs.yaml` and push it live (watcher broadcast +
+/// shared snapshots) so the dashboard sees the change without waiting for
+/// the 1 s file watcher. Immediate-save: no dirty flag, ever.
+#[allow(clippy::result_large_err)]
+async fn persist_config(state: &HttpState, cfg: &crate::config::AppConfig) -> Result<(), Response> {
+    let path = state.config_path.clone();
+    let snapshot = cfg.clone();
+    tokio::task::spawn_blocking(move || crate::tui::util::save_config(&path, &snapshot))
+        .await
+        .map_err(|error| {
+            mutation_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Save task failed: {error}"),
+            )
+        })?
+        .map_err(|error| {
+            mutation_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Unable to save config: {error}"),
+            )
+        })?;
+    *state.subscriptions.write().await = cfg.subscriptions.clone();
+    *state.config.write().await = crate::model::RuntimeConfig::from(cfg);
+    if let Some(tx) = state.config_tx.as_ref() {
+        let _ = tx.send(cfg.clone());
+    }
+    Ok(())
+}
+
+/// Push an in-memory-only config (proxy select): live broadcast + runtime
+/// snapshot, never touches the file — same as the TUI `Enter` row action.
+async fn push_live_config(state: &HttpState, cfg: &crate::config::AppConfig) {
+    *state.config.write().await = crate::model::RuntimeConfig::from(cfg);
+    if let Some(tx) = state.config_tx.as_ref() {
+        let _ = tx.send(cfg.clone());
+    }
+}
+
+/// `POST /api/subscriptions` — add one subscription (immediate-save).
+pub async fn api_subscriptions_add(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    ConnectInfo(remote_addr): ConnectInfo<std::net::SocketAddr>,
+    Json(body): Json<SubscriptionAdd>,
+) -> Response {
+    let token = query.token.as_deref().or_else(|| bearer_token(&headers));
+    if let Err(response) = authorize(&state, remote_addr, token).await {
+        return response;
+    }
+    if state.config_tx.is_none() {
+        return mutation_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Subscription API unavailable",
+        );
+    }
+    let url = body.url.trim().to_string();
+    let name = body.name.trim().to_string();
+    if let Err(response) = validate_subscription(&url, &name) {
+        return response;
+    }
+    let mut cfg = match load_disk_config(&state) {
+        Ok(cfg) => cfg,
+        Err(response) => return response,
+    };
+    cfg.subscriptions.push(crate::config::SubscriptionSource {
+        name: name.clone(),
+        url,
+        enabled: body.enabled,
+        priority: body.priority,
+    });
+    if let Err(response) = persist_config(&state, &cfg).await {
+        return response;
+    }
+    mutation_ok(format!("Added {name}"))
+}
+
+/// `PATCH /api/subscriptions/:index` — edit one subscription (immediate-save).
+pub async fn api_subscriptions_patch(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    ConnectInfo(remote_addr): ConnectInfo<std::net::SocketAddr>,
+    Path(index): Path<usize>,
+    Json(body): Json<SubscriptionPatch>,
+) -> Response {
+    let token = query.token.as_deref().or_else(|| bearer_token(&headers));
+    if let Err(response) = authorize(&state, remote_addr, token).await {
+        return response;
+    }
+    if state.config_tx.is_none() {
+        return mutation_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Subscription API unavailable",
+        );
+    }
+    let mut cfg = match load_disk_config(&state) {
+        Ok(cfg) => cfg,
+        Err(response) => return response,
+    };
+    let Some(entry) = cfg.subscriptions.get_mut(index) else {
+        return mutation_error(StatusCode::NOT_FOUND, "No subscription at that index");
+    };
+    let mut next = entry.clone();
+    if let Some(url) = body.url {
+        next.url = url.trim().to_string();
+    }
+    if let Some(name) = body.name {
+        next.name = name.trim().to_string();
+    }
+    if let Some(priority) = body.priority {
+        next.priority = priority;
+    }
+    if let Some(enabled) = body.enabled {
+        next.enabled = enabled;
+    }
+    if let Err(response) = validate_subscription(&next.url, &next.name) {
+        return response;
+    }
+    let name = next.name.clone();
+    *entry = next;
+    if let Err(response) = persist_config(&state, &cfg).await {
+        return response;
+    }
+    mutation_ok(format!("Updated {name}"))
+}
+
+/// `POST /api/subscriptions/:index/toggle` — flip enabled (immediate-save).
+pub async fn api_subscriptions_toggle(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    ConnectInfo(remote_addr): ConnectInfo<std::net::SocketAddr>,
+    Path(index): Path<usize>,
+) -> Response {
+    let token = query.token.as_deref().or_else(|| bearer_token(&headers));
+    if let Err(response) = authorize(&state, remote_addr, token).await {
+        return response;
+    }
+    if state.config_tx.is_none() {
+        return mutation_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Subscription API unavailable",
+        );
+    }
+    let mut cfg = match load_disk_config(&state) {
+        Ok(cfg) => cfg,
+        Err(response) => return response,
+    };
+    let Some(entry) = cfg.subscriptions.get_mut(index) else {
+        return mutation_error(StatusCode::NOT_FOUND, "No subscription at that index");
+    };
+    entry.enabled = !entry.enabled;
+    let message = format!(
+        "{} is now {}",
+        entry.name,
+        if entry.enabled { "enabled" } else { "disabled" }
+    );
+    if let Err(response) = persist_config(&state, &cfg).await {
+        return response;
+    }
+    mutation_ok(message)
+}
+
+/// `DELETE /api/subscriptions/:index` — remove one subscription (immediate-save).
+pub async fn api_subscriptions_delete(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    ConnectInfo(remote_addr): ConnectInfo<std::net::SocketAddr>,
+    Path(index): Path<usize>,
+) -> Response {
+    let token = query.token.as_deref().or_else(|| bearer_token(&headers));
+    if let Err(response) = authorize(&state, remote_addr, token).await {
+        return response;
+    }
+    if state.config_tx.is_none() {
+        return mutation_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Subscription API unavailable",
+        );
+    }
+    let mut cfg = match load_disk_config(&state) {
+        Ok(cfg) => cfg,
+        Err(response) => return response,
+    };
+    if index >= cfg.subscriptions.len() {
+        return mutation_error(StatusCode::NOT_FOUND, "No subscription at that index");
+    }
+    let removed = cfg.subscriptions.remove(index);
+    if let Err(response) = persist_config(&state, &cfg).await {
+        return response;
+    }
+    mutation_ok(format!("Deleted {}", removed.name))
+}
+
+fn parse_bool(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" | "on" | "yes" | "1" => Some(true),
+        "false" | "off" | "no" | "0" => Some(false),
+        _ => None,
+    }
+}
+
+fn parse_positive<T>(raw: &str) -> Option<T>
+where
+    T: std::str::FromStr + PartialOrd + From<u8>,
+{
+    let parsed = raw.trim().parse::<T>().ok()?;
+    if parsed > T::from(0) {
+        Some(parsed)
+    } else {
+        None
+    }
+}
+
+/// Apply one web settings key to `cfg`. Mirrors the TUI
+/// `config_editor::apply` validators for the keys the dashboard serves;
+/// derived/read-only rows are refused with a human reason.
+fn apply_web_setting(
+    cfg: &mut crate::config::AppConfig,
+    key: &str,
+    raw: &str,
+) -> Result<(), String> {
+    let value = raw.trim();
+    if apply_connection_setting(cfg, key, value)? {
+        return Ok(());
+    }
+    if apply_fetch_setting(cfg, key, value)? {
+        return Ok(());
+    }
+    if apply_probe_setting(cfg, key, value)? {
+        return Ok(());
+    }
+    if apply_sharing_proxy_setting(cfg, key, value)? {
+        return Ok(());
+    }
+    Err(match key {
+        "probe.speedtest_enabled" => {
+            "probe.speedtest_enabled is derived from probe.download_url; edit configs.yaml directly"
+                .to_string()
+        }
+        "subscription_count" | "enabled_subscription_count" => format!("{key} is read-only"),
+        _ => format!("unknown key: {key}"),
+    })
+}
+
+/// Connection-group keys; returns `Ok(false)` when `key` belongs elsewhere.
+fn apply_connection_setting(
+    cfg: &mut crate::config::AppConfig,
+    key: &str,
+    value: &str,
+) -> Result<bool, String> {
+    match key {
+        "bind" => {
+            cfg.bind = value
+                .parse::<std::net::SocketAddr>()
+                .map_err(|_| "bind must be host:port, e.g. 127.0.0.1:27141".to_string())?;
+        }
+        "top_n" => {
+            cfg.top_n =
+                parse_positive(value).ok_or_else(|| "top_n must be greater than 0".to_string())?;
+        }
+        "refresh_seconds" => {
+            cfg.refresh_seconds = value
+                .parse::<u64>()
+                .map_err(|_| "refresh_seconds must be a number".to_string())?;
+        }
+        "ping_seconds" => {
+            cfg.ping_seconds = value
+                .parse::<u64>()
+                .map_err(|_| "ping_seconds must be a number".to_string())?;
+        }
+        "encoded_subscription" => {
+            cfg.encoded_subscription =
+                parse_bool(value).ok_or_else(|| "expected true/false".to_string())?;
+        }
+        "prioritize_stability" => {
+            cfg.prioritize_stability =
+                parse_bool(value).ok_or_else(|| "expected true/false".to_string())?;
+        }
+        "return_configs_asap" => {
+            cfg.return_configs_asap =
+                parse_bool(value).ok_or_else(|| "expected true/false".to_string())?;
+        }
+        "scan_all_configs" => {
+            cfg.scan_all_configs =
+                parse_bool(value).ok_or_else(|| "expected true/false".to_string())?;
+        }
+        _ => return Ok(false),
+    }
+    Ok(true)
+}
+
+/// Fetch-group keys; returns `Ok(false)` when `key` belongs elsewhere.
+fn apply_fetch_setting(
+    cfg: &mut crate::config::AppConfig,
+    key: &str,
+    value: &str,
+) -> Result<bool, String> {
+    match key {
+        "fetch_timeout_ms" => {
+            cfg.fetch_timeout_ms = parse_positive(value)
+                .ok_or_else(|| "fetch_timeout_ms must be greater than 0".to_string())?;
+        }
+        "fetch_concurrency" => {
+            cfg.fetch_concurrency = parse_positive(value)
+                .ok_or_else(|| "fetch_concurrency must be greater than 0".to_string())?;
+        }
+        "max_subscription_bytes" => {
+            cfg.max_subscription_bytes = parse_positive(value)
+                .ok_or_else(|| "max_subscription_bytes must be greater than 0".to_string())?;
+        }
+        _ => return Ok(false),
+    }
+    Ok(true)
+}
+
+/// Probe-group keys; returns `Ok(false)` when `key` belongs elsewhere.
+fn apply_probe_setting(
+    cfg: &mut crate::config::AppConfig,
+    key: &str,
+    value: &str,
+) -> Result<bool, String> {
+    match key {
+        "probe.mode" => {
+            cfg.probe.mode = match value.to_ascii_lowercase().as_str() {
+                "active" => crate::config::ProbeMode::Active,
+                "tcp" => crate::config::ProbeMode::Tcp,
+                _ => return Err("probe.mode must be active or tcp".to_string()),
+            };
+        }
+        "probe.concurrency" => {
+            cfg.probe.concurrency = parse_positive(value)
+                .ok_or_else(|| "probe.concurrency must be greater than 0".to_string())?;
+        }
+        "probe.batch_size" => {
+            cfg.probe.batch_size = match value.to_ascii_lowercase().as_str() {
+                "" | "auto" | "off" | "none" | "null" => None,
+                _ => Some(
+                    parse_positive(value)
+                        .ok_or_else(|| "probe.batch_size must be a number or auto".to_string())?,
+                ),
+            };
+        }
+        "probe.active_timeout_ms" => {
+            cfg.probe.active_timeout_ms = parse_positive(value)
+                .ok_or_else(|| "probe.active_timeout_ms must be greater than 0".to_string())?;
+        }
+        "probe.startup_timeout_ms" => {
+            cfg.probe.startup_timeout_ms = parse_positive(value)
+                .ok_or_else(|| "probe.startup_timeout_ms must be greater than 0".to_string())?;
+        }
+        "probe.test_url" => {
+            if value.is_empty() {
+                return Err("probe.test_url cannot be empty".to_string());
+            }
+            cfg.probe.test_url = value.to_string();
+        }
+        "probe.accepted_statuses" => {
+            cfg.probe.accepted_statuses = parse_status_list(value)?;
+        }
+        "probe.download_bytes_limit" => {
+            cfg.probe.download_bytes_limit = parse_positive(value)
+                .ok_or_else(|| "probe.download_bytes_limit must be greater than 0".to_string())?;
+        }
+        _ => return Ok(false),
+    }
+    Ok(true)
+}
+
+fn parse_status_list(value: &str) -> Result<Vec<u16>, String> {
+    let inner = value.strip_prefix('[').unwrap_or(value);
+    let inner = inner.strip_suffix(']').unwrap_or(inner);
+    let parsed = inner
+        .split(',')
+        .map(|part| part.trim().parse::<u16>())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| "accepted_statuses must be HTTP codes 100..599".to_string())?;
+    if parsed.is_empty() || !parsed.iter().all(|status| (100..=599).contains(status)) {
+        return Err("accepted_statuses must be HTTP codes 100..599".to_string());
+    }
+    Ok(parsed)
+}
+
+/// Sharing/proxy-group keys; returns `Ok(false)` when `key` belongs elsewhere.
+fn apply_sharing_proxy_setting(
+    cfg: &mut crate::config::AppConfig,
+    key: &str,
+    value: &str,
+) -> Result<bool, String> {
+    match key {
+        "sharing.enabled" => {
+            cfg.sharing.enabled =
+                parse_bool(value).ok_or_else(|| "expected true/false".to_string())?;
+        }
+        "sharing.require_token" => {
+            cfg.sharing.require_token =
+                parse_bool(value).ok_or_else(|| "expected true/false".to_string())?;
+        }
+        "sharing.token" => {
+            cfg.sharing.token = crate::config::normalize_sharing_token(value);
+        }
+        "proxy.enabled" => {
+            cfg.proxy.enabled =
+                parse_bool(value).ok_or_else(|| "expected true/false".to_string())?;
+        }
+        "proxy.port" => {
+            cfg.proxy.port = parse_positive(value)
+                .ok_or_else(|| "proxy.port must be greater than 0".to_string())?;
+        }
+        "proxy.discoverable" => {
+            cfg.proxy.discoverable =
+                parse_bool(value).ok_or_else(|| "expected true/false".to_string())?;
+        }
+        _ => return Ok(false),
+    }
+    Ok(true)
+}
+
+/// `PATCH /api/config` — edit one setting (immediate-save, TUI validators).
+pub async fn api_config_patch(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    ConnectInfo(remote_addr): ConnectInfo<std::net::SocketAddr>,
+    Json(body): Json<ConfigPatch>,
+) -> Response {
+    let token = query.token.as_deref().or_else(|| bearer_token(&headers));
+    if let Err(response) = authorize(&state, remote_addr, token).await {
+        return response;
+    }
+    if state.config_tx.is_none() {
+        return mutation_error(StatusCode::SERVICE_UNAVAILABLE, "Settings API unavailable");
+    }
+    let mut cfg = match load_disk_config(&state) {
+        Ok(cfg) => cfg,
+        Err(response) => return response,
+    };
+    if let Err(message) = apply_web_setting(&mut cfg, body.key.trim(), &body.value) {
+        return mutation_error(StatusCode::BAD_REQUEST, message);
+    }
+    if let Err(response) = persist_config(&state, &cfg).await {
+        return response;
+    }
+    mutation_ok(format!("Updated {}", body.key.trim()))
+}
+
+/// `POST /api/save` — compatibility no-op: the dashboard persists
+/// immediately, so there is never anything to flush. Always succeeds so the
+/// Save bar (and older UI builds) never 404.
+pub async fn api_save(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    ConnectInfo(remote_addr): ConnectInfo<std::net::SocketAddr>,
+) -> Response {
+    let token = query.token.as_deref().or_else(|| bearer_token(&headers));
+    if let Err(response) = authorize(&state, remote_addr, token).await {
+        return response;
+    }
+    mutation_ok("Saved")
+}
+
+/// `POST /api/proxy/select` — pin (`{uri}`) or unpin (`{uri: null}`) a manual
+/// proxy. Live-push only, never writes the file (same as TUI `Enter`).
+pub async fn api_proxy_select(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    ConnectInfo(remote_addr): ConnectInfo<std::net::SocketAddr>,
+    Json(body): Json<ProxySelect>,
+) -> Response {
+    let token = query.token.as_deref().or_else(|| bearer_token(&headers));
+    if let Err(response) = authorize(&state, remote_addr, token).await {
+        return response;
+    }
+    let Some(tx) = state.config_tx.as_ref() else {
+        return mutation_error(StatusCode::SERVICE_UNAVAILABLE, "Proxy API unavailable");
+    };
+    let mut cfg = tx.borrow().clone();
+    if let Some(uri) = body.uri {
+        let uri = uri.trim().to_string();
+        if uri.is_empty() {
+            cfg.proxy.manual_proxy_uri = None;
+        } else {
+            cfg.proxy.manual_proxy_uri = Some(uri);
+        }
+    } else {
+        cfg.proxy.manual_proxy_uri = None;
+    }
+    push_live_config(&state, &cfg).await;
+    if cfg.proxy.manual_proxy_uri.is_some() {
+        mutation_ok("Proxy set to config")
+    } else {
+        mutation_ok("Proxy: auto-select (manual cleared)")
+    }
+}
+
+/// `POST /api/proxy/mode` — cycle Off → Local → LAN (same as the TUI row).
+/// Immediate-save + live-push; firewall message rides along like the TUI.
+pub async fn api_proxy_mode(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    ConnectInfo(remote_addr): ConnectInfo<std::net::SocketAddr>,
+) -> Response {
+    let token = query.token.as_deref().or_else(|| bearer_token(&headers));
+    if let Err(response) = authorize(&state, remote_addr, token).await {
+        return response;
+    }
+    if state.config_tx.is_none() {
+        return mutation_error(StatusCode::SERVICE_UNAVAILABLE, "Proxy API unavailable");
+    }
+    let mut cfg = match load_disk_config(&state) {
+        Ok(cfg) => cfg,
+        Err(response) => return response,
+    };
+    if !cfg.proxy.enabled {
+        cfg.proxy.enabled = true;
+        cfg.proxy.discoverable = false;
+    } else if !cfg.proxy.discoverable {
+        cfg.proxy.discoverable = true;
+    } else {
+        cfg.proxy.enabled = false;
+        cfg.proxy.discoverable = false;
+    }
+    if let Err(response) = persist_config(&state, &cfg).await {
+        return response;
+    }
+    let firewall_message = crate::tui::firewall::apply(
+        &state.data_dir,
+        cfg.proxy.discoverable,
+        cfg.proxy.port,
+        crate::constants::FIREWALL_PROXY_RULE_NAME,
+    )
+    .unwrap_or_else(|error| format!("firewall update failed: {error}"));
+    mutation_ok(format!(
+        "Proxy {} ({})",
+        if !cfg.proxy.enabled {
+            "off"
+        } else if cfg.proxy.discoverable {
+            "LAN"
+        } else {
+            "local"
+        },
+        firewall_message
+    ))
+}
+
+/// `POST /api/sharing` — toggle LAN sharing (same save + live-push +
+/// firewall as the TUI row).
+pub async fn api_sharing(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    ConnectInfo(remote_addr): ConnectInfo<std::net::SocketAddr>,
+) -> Response {
+    let token = query.token.as_deref().or_else(|| bearer_token(&headers));
+    if let Err(response) = authorize(&state, remote_addr, token).await {
+        return response;
+    }
+    if state.config_tx.is_none() {
+        return mutation_error(StatusCode::SERVICE_UNAVAILABLE, "Sharing API unavailable");
+    }
+    let mut cfg = match load_disk_config(&state) {
+        Ok(cfg) => cfg,
+        Err(response) => return response,
+    };
+    cfg.sharing.enabled = !cfg.sharing.enabled;
+    if let Err(response) = persist_config(&state, &cfg).await {
+        return response;
+    }
+    let firewall_message = crate::tui::firewall::apply(
+        &state.data_dir,
+        cfg.sharing.enabled,
+        cfg.bind.port(),
+        crate::constants::FIREWALL_RULE_NAME,
+    )
+    .unwrap_or_else(|error| format!("firewall update failed: {error}"));
+    mutation_ok(format!(
+        "Sharing {} ({})",
+        if cfg.sharing.enabled { "on" } else { "off" },
+        firewall_message
+    ))
+}
+
+/// `POST /api/cache/clean` — clear the probe database (`{confirm: "DELETE"}`).
+/// Same typed-confirm gate as the TUI; runs off-thread like the TUI handler.
+pub async fn api_cache_clean(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    ConnectInfo(remote_addr): ConnectInfo<std::net::SocketAddr>,
+    Json(body): Json<CacheClean>,
+) -> Response {
+    let token = query.token.as_deref().or_else(|| bearer_token(&headers));
+    if let Err(response) = authorize(&state, remote_addr, token).await {
+        return response;
+    }
+    if body.confirm.trim() != "DELETE" {
+        return mutation_error(StatusCode::BAD_REQUEST, "Type DELETE to clean cache");
+    }
+    let Some(database) = state.database.clone() else {
+        return mutation_error(StatusCode::SERVICE_UNAVAILABLE, "Cache API unavailable");
+    };
+    let Ok(cleaned) = tokio::task::spawn_blocking(move || database.delete_all()).await else {
+        return mutation_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Clean cache failed: task interrupted",
+        );
+    };
+    match cleaned {
+        Ok(()) => mutation_ok("Clean cache finished: database cleared"),
+        Err(error) => mutation_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Clean cache failed: {error}"),
+        ),
+    }
+}
+
 /// `GET /api/events` — server-sent-events live feed (`hello` snapshot, then
 /// `probe-delta` / `ranked` / `log` diffs). Falls back to 503 when the feed
 /// cap is hit; the UI then polls `/api/summary` instead.
@@ -1028,6 +1823,11 @@ mod tests {
             ])),
             data_dir: temp_data_dir("state"),
             started: "2026-01-01T00:00:00+00:00".to_string(),
+            config_path: temp_data_dir("cfg").join("configs.yaml"),
+            config_tx: None,
+            refresh_tx: None,
+            ping_tx: None,
+            database: None,
         }
     }
 
@@ -1465,5 +2265,290 @@ mod tests {
             .await
             .expect("body reads");
         assert_eq!(body.to_vec(), bytes);
+    }
+
+    /// Test-only [`HttpState`] with live trigger channels and a real
+    /// `configs.yaml` on disk, so mutation handlers run end to end.
+    fn mutation_state(
+        runtime: RuntimeState,
+    ) -> (
+        HttpState,
+        tokio::sync::mpsc::UnboundedReceiver<()>,
+        tokio::sync::mpsc::UnboundedReceiver<()>,
+        tokio::sync::watch::Receiver<crate::config::AppConfig>,
+    ) {
+        let dir = temp_data_dir("mutation");
+        let config_path = dir.join("configs.yaml");
+        crate::config::AppConfig::write_default(&config_path).expect("seed config writes");
+        let (config_tx, config_rx) = tokio::sync::watch::channel(
+            crate::config::AppConfig::load(&config_path).expect("seed loads"),
+        );
+        let (refresh_tx, refresh_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (ping_tx, ping_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut state = http_state(runtime, false);
+        state.config_path = config_path;
+        state.config_tx = Some(config_tx);
+        state.refresh_tx = Some(refresh_tx);
+        state.ping_tx = Some(ping_tx);
+        (state, refresh_rx, ping_rx, config_rx)
+    }
+
+    fn no_auth() -> (
+        axum::http::HeaderMap,
+        axum::extract::Query<crate::server::AuthQuery>,
+        axum::extract::ConnectInfo<SocketAddr>,
+    ) {
+        (
+            axum::http::HeaderMap::new(),
+            axum::extract::Query(crate::server::AuthQuery { token: None }),
+            axum::extract::ConnectInfo(loopback()),
+        )
+    }
+
+    #[tokio::test]
+    async fn refresh_conflicts_while_refresh_running_and_never_sends() {
+        let (state, mut refresh_rx, _ping_rx, _config_rx) = mutation_state(RuntimeState {
+            refreshing: true,
+            ..RuntimeState::default()
+        });
+        let (headers, query, connect) = no_auth();
+        let response =
+            super::api_refresh(axum::extract::State(state), headers, query, connect).await;
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(
+            refresh_rx.try_recv().is_err(),
+            "a refused refresh must not reach the backend loop"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_sends_exactly_one_trigger_when_idle() {
+        let (state, mut refresh_rx, _ping_rx, _config_rx) = mutation_state(RuntimeState::default());
+        let (headers, query, connect) = no_auth();
+        let response =
+            super::api_refresh(axum::extract::State(state), headers, query, connect).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(refresh_rx.try_recv().is_ok(), "one trigger fires");
+        assert!(
+            refresh_rx.try_recv().is_err(),
+            "no duplicate trigger is queued"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_unavailable_without_trigger_channel() {
+        let state = http_state(RuntimeState::default(), false);
+        let (headers, query, connect) = no_auth();
+        let response =
+            super::api_refresh(axum::extract::State(state), headers, query, connect).await;
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn ping_conflicts_while_any_cycle_runs_and_never_sends() {
+        for runtime in [
+            RuntimeState {
+                refreshing: true,
+                ..RuntimeState::default()
+            },
+            RuntimeState {
+                pinging: true,
+                ..RuntimeState::default()
+            },
+        ] {
+            let (state, _refresh_rx, mut ping_rx, _config_rx) = mutation_state(runtime);
+            let (headers, query, connect) = no_auth();
+            let response =
+                super::api_ping(axum::extract::State(state), headers, query, connect).await;
+
+            assert_eq!(response.status(), StatusCode::CONFLICT);
+            assert!(
+                ping_rx.try_recv().is_err(),
+                "a refused ping must not reach the backend loop"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn ping_sends_exactly_one_trigger_when_idle() {
+        let (state, _refresh_rx, mut ping_rx, _config_rx) = mutation_state(RuntimeState::default());
+        let (headers, query, connect) = no_auth();
+        let response = super::api_ping(axum::extract::State(state), headers, query, connect).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(ping_rx.try_recv().is_ok(), "one trigger fires");
+        assert!(
+            ping_rx.try_recv().is_err(),
+            "no duplicate trigger is queued"
+        );
+    }
+
+    #[tokio::test]
+    async fn subscriptions_add_persists_and_pushes_live() {
+        let (state, _refresh_rx, _ping_rx, mut config_rx) = mutation_state(RuntimeState::default());
+        let (headers, query, connect) = no_auth();
+        let response = super::api_subscriptions_add(
+            axum::extract::State(state.clone()),
+            headers,
+            query,
+            connect,
+            axum::Json(super::SubscriptionAdd {
+                url: "https://example.com/new.txt".to_string(),
+                name: "new".to_string(),
+                priority: 5,
+                enabled: true,
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let disk = crate::config::AppConfig::load(&state.config_path).expect("config reloads");
+        assert!(
+            disk.subscriptions
+                .iter()
+                .any(|source| source.name == "new" && source.priority == 5),
+            "new subscription persists to configs.yaml"
+        );
+        assert!(
+            state
+                .subscriptions
+                .read()
+                .await
+                .iter()
+                .any(|source| source.name == "new"),
+            "shared snapshot updates without waiting for the watcher"
+        );
+        config_rx.changed().await.expect("live broadcast fires");
+        assert!(
+            config_rx
+                .borrow()
+                .subscriptions
+                .iter()
+                .any(|source| source.name == "new"),
+            "refresh/ping loops see the new subscription"
+        );
+    }
+
+    #[tokio::test]
+    async fn subscriptions_reject_unsupported_url_scheme() {
+        let (state, _refresh_rx, _ping_rx, _config_rx) = mutation_state(RuntimeState::default());
+        let (headers, query, connect) = no_auth();
+        let response = super::api_subscriptions_add(
+            axum::extract::State(state),
+            headers,
+            query,
+            connect,
+            axum::Json(super::SubscriptionAdd {
+                url: "gopher://example.com/sub".to_string(),
+                name: "bad".to_string(),
+                priority: 5,
+                enabled: true,
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn config_patch_rejects_unknown_and_read_only_keys() {
+        let (state, _refresh_rx, _ping_rx, _config_rx) = mutation_state(RuntimeState::default());
+        for key in [
+            "nope.not_a_key",
+            "subscription_count",
+            "probe.speedtest_enabled",
+        ] {
+            let (headers, query, connect) = no_auth();
+            let response = super::api_config_patch(
+                axum::extract::State(state.clone()),
+                headers,
+                query,
+                connect,
+                axum::Json(super::ConfigPatch {
+                    key: key.to_string(),
+                    value: "1".to_string(),
+                }),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "key: {key}");
+        }
+    }
+
+    #[tokio::test]
+    async fn config_patch_applies_validated_value_live() {
+        let (state, _refresh_rx, _ping_rx, _config_rx) = mutation_state(RuntimeState::default());
+        let (headers, query, connect) = no_auth();
+        let response = super::api_config_patch(
+            axum::extract::State(state.clone()),
+            headers,
+            query,
+            connect,
+            axum::Json(super::ConfigPatch {
+                key: "top_n".to_string(),
+                value: "25".to_string(),
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let disk = crate::config::AppConfig::load(&state.config_path).expect("config reloads");
+        assert_eq!(disk.top_n, 25);
+        assert_eq!(state.config.read().await.top_n, 25);
+    }
+
+    #[test]
+    fn web_setting_validators_mirror_tui_rules() {
+        let mut cfg = crate::config::AppConfig::default_for_first_run();
+        assert!(super::apply_web_setting(&mut cfg, "top_n", "10").is_ok());
+        assert_eq!(cfg.top_n, 10);
+        assert!(super::apply_web_setting(&mut cfg, "top_n", "0").is_err());
+        assert!(super::apply_web_setting(&mut cfg, "probe.mode", "tcp").is_ok());
+        assert!(super::apply_web_setting(&mut cfg, "probe.mode", "carrier-pigeon").is_err());
+        assert!(
+            super::apply_web_setting(&mut cfg, "probe.accepted_statuses", "[204, 200]").is_ok()
+        );
+        assert_eq!(cfg.probe.accepted_statuses, vec![204, 200]);
+        assert!(super::apply_web_setting(&mut cfg, "probe.accepted_statuses", "204,200").is_ok());
+        assert!(super::apply_web_setting(&mut cfg, "probe.accepted_statuses", "999").is_err());
+        assert!(super::apply_web_setting(&mut cfg, "unknown.key", "1").is_err());
+    }
+
+    #[tokio::test]
+    async fn proxy_select_pins_live_without_touching_disk() {
+        let (state, _refresh_rx, _ping_rx, mut config_rx) = mutation_state(RuntimeState::default());
+        let before = std::fs::read_to_string(&state.config_path).expect("config reads");
+        let (headers, query, connect) = no_auth();
+        let uri = "vless://uuid@example.com:443?security=tls#Node".to_string();
+        let response = super::api_proxy_select(
+            axum::extract::State(state.clone()),
+            headers,
+            query,
+            connect,
+            axum::Json(super::ProxySelect {
+                uri: Some(uri.clone()),
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        config_rx.changed().await.expect("live broadcast fires");
+        assert_eq!(
+            config_rx.borrow().proxy.manual_proxy_uri.as_deref(),
+            Some(uri.as_str())
+        );
+        let after = std::fs::read_to_string(&state.config_path).expect("config reads");
+        assert_eq!(before, after, "proxy select never writes the file");
+    }
+
+    #[tokio::test]
+    async fn save_is_a_compatible_no_op() {
+        let state = http_state(RuntimeState::default(), false);
+        let (headers, query, connect) = no_auth();
+        let response = super::api_save(axum::extract::State(state), headers, query, connect).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }

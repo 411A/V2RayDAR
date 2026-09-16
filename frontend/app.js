@@ -51,6 +51,9 @@ const state = {
   rowLimit: 0, // 0 = All; otherwise 25 | 50 | 100
   logFilter: "",
   follow: true,
+  wired: false, // wire() runs once; boot() may re-enter via Retry
+  cycleInflight: { refresh: false, ping: false }, // POST in flight (buttons locked)
+  editingSub: null, // subscription index being edited, null = adding
 };
 
 function el(tag, text, className) {
@@ -353,10 +356,14 @@ function uptimeText() {
   return fmtHMS((Date.now() - t) / 1000);
 }
 
-/// Second line of the Refresh card: live ping countdown, same shape as the
-/// fetch line above it. Anchored at the server's last deadline (re)arm, so it
-/// ticks down in real time via the 1s ticker and survives idle stretches with
-/// no feed traffic — exactly like `refreshVal`.
+/// Second line of the Refresh card: live ping countdown under `fetch in`,
+/// same shape as the fetch line above it. Anchored at the server's last
+/// deadline (re)arm, so it ticks down in real time via the 1s ticker and
+/// survives idle stretches with no feed traffic — exactly like `refreshVal`.
+/// Hidden while refreshing (a fetch already probes everything, so there is
+/// no ping countdown to show) and when the ping cadence equals the refresh
+/// cadence (a fetch on the same timer revalidates everything, so a separate
+/// ping line would only duplicate it — same as the TUI's top bar).
 function pingSub() {
   const s = state.snapshot;
   if (s && s.pinging) {
@@ -368,8 +375,11 @@ function pingSub() {
   if (state.pingSeconds <= 0) {
     return "ping off";
   }
+  if (s && s.refreshing) {
+    return "";
+  }
   if (state.refreshSeconds > 0 && state.pingSeconds === state.refreshSeconds) {
-    return "ping with refresh";
+    return "";
   }
   const anchor = s && s.last_ping_at ? Date.parse(s.last_ping_at) : NaN;
   if (Number.isNaN(anchor)) {
@@ -402,6 +412,43 @@ function refreshVal() {
 
 function refreshStatus() {
   return { val: refreshVal(), sub: pingSub() };
+}
+
+/// True while a refresh cycle runs (system or manual): the next manual
+/// refresh must not be sent at all (same refusal as the TUI's
+/// "Refresh already running").
+function refreshBusy() {
+  const s = state.snapshot;
+  return !!((s && s.refreshing) || state.cycleInflight.refresh);
+}
+
+/// True while any cycle runs: the next manual ping must not be sent at all
+/// (same refusal as the TUI's "A cycle is already running").
+function pingBusy() {
+  const s = state.snapshot;
+  return !!((s && (s.refreshing || s.pinging)) || state.cycleInflight.ping);
+}
+
+/// Lock the Refresh/Ping buttons to match backend busy state. Called on every
+/// render path so a system-started cycle disables manual triggers even though
+/// the user never clicked: no click while busy may reach the network.
+function updateCycleButtons() {
+  const rb = $("btn-refresh");
+  const pb = $("btn-ping");
+  const rBusy = refreshBusy();
+  const pBusy = pingBusy();
+  if (rb) {
+    rb.disabled = rBusy;
+    rb.title = rBusy
+      ? "A refresh is already running — wait for it to finish"
+      : "Trigger a manual refresh (same as Ctrl+R in the TUI)";
+  }
+  if (pb) {
+    pb.disabled = pBusy;
+    pb.title = pBusy
+      ? "A cycle is already running — wait for it to finish"
+      : "Re-ping cached configs (same as Ctrl+P in the TUI)";
+  }
 }
 
 function lastUpdateAgo() {
@@ -790,6 +837,7 @@ function applyRanked(text) {
     return;
   }
   state.snapshot.ranked = Array.isArray(d) ? d : d.ranked || state.snapshot.ranked;
+  renderOvConfigs();
   renderConfigs();
   renderShare();
 }
@@ -868,6 +916,7 @@ function renderStats() {
   const s = state.snapshot;
   if (!s) {
     box.appendChild(statCard("Status", "no data"));
+    updateCycleButtons();
     return;
   }
   const failed = Math.max(0, (s.tested_candidates || 0) - (s.reachable_candidates || 0));
@@ -887,6 +936,7 @@ function renderStats() {
   box.appendChild(statCard("Failed", String(failed), "of " + tested + " tested"));
   box.appendChild(statCard("Working", String(s.reachable_candidates || 0)));
   box.appendChild(statCard("Sub usage", fmtBytes(s.fetch_bytes)));
+  updateCycleButtons();
 }
 
 /// Wall-clock-aligned live ticker: uptime + countdowns only. A plain
@@ -1413,11 +1463,15 @@ function drawQr(text) {
 }
 
 async function selectProxy(uri) {
-  if (!uri) {
+  // Explicit `null` unpins back to auto-select (same as the TUI toggle-off).
+  if (uri === null) {
+    /* unpin path continues below */
+  } else if (!uri) {
     toast("No link to pin for this row.", "bad");
     return;
   }
-  const r = await fetchJson("/api/proxy/select", { method: "POST", body: { uri } });
+  const body = uri === null ? { uri: null } : { uri };
+  const r = await fetchJson("/api/proxy/select", { method: "POST", body });
   if (r.status === 404) {
     toast("Proxy-select API is not on this server version yet — use the TUI.", "bad");
     return;
@@ -1427,12 +1481,12 @@ async function selectProxy(uri) {
     return;
   }
   if (r.status >= 200 && r.status < 300) {
-    toast("Proxy switch requested — confirming…", "good");
-    setStatus("Proxy switch requested.");
+    toast(subMessage(r, "Proxy switch requested — confirming…"), "good");
+    setStatus(subMessage(r, "Proxy switch requested."));
     window.setTimeout(() => void loadResults(), 1500);
     return;
   }
-  toast("Proxy switch failed (HTTP " + r.status + ").", "bad");
+  toast(subMessage(r, "Proxy switch failed (HTTP " + r.status + ")."), "bad");
 }
 
 async function copyText(text, okMsg) {
@@ -1718,7 +1772,11 @@ async function renderOvQr() {
 
 async function generateQr() {
   const btn = $("btn-qr-generate");
+  const btnOv = $("btn-qr-generate-ov");
   btn.disabled = true;
+  if (btnOv) {
+    btnOv.disabled = true;
+  }
   try {
     const r = await fetchJson("/api/qr/generate", { method: "POST", body: {} });
     if (r.status === 404) {
@@ -1746,6 +1804,9 @@ async function generateQr() {
     toast("QR generation failed (HTTP " + r.status + ").", "bad");
   } finally {
     btn.disabled = false;
+    if (btnOv) {
+      btnOv.disabled = false;
+    }
   }
 }
 
@@ -1783,7 +1844,7 @@ function renderSubs() {
     const tgl = document.createElement("button");
     tgl.type = "button";
     tgl.className = "btn small";
-    tgl.textContent = sub.enabled ? "On" : "Off";
+    tgl.textContent = sub.enabled ? "✅" : "❌";
     tgl.setAttribute("aria-pressed", sub.enabled ? "true" : "false");
     tgl.setAttribute("aria-label", "Toggle " + (sub.name || ("subscription " + (i + 1))));
     tgl.addEventListener("click", () => void subToggle(i));
@@ -1833,6 +1894,10 @@ function redactUrl(url) {
   }
 }
 
+function subMessage(r, fallback) {
+  return (r.data && r.data.status) || fallback;
+}
+
 async function subToggle(i) {
   const r = await fetchJson("/api/subscriptions/" + i + "/toggle", { method: "POST", body: {} });
   if (r.status === 404) {
@@ -1840,25 +1905,32 @@ async function subToggle(i) {
     return;
   }
   if (r.status >= 200 && r.status < 300) {
-    toast("Toggled. Remember to Save.", "good");
+    toast(subMessage(r, "Toggled."), "good");
+    setDirty(false);
     void loadSubscriptions();
     return;
   }
-  toast("Toggle failed (HTTP " + r.status + ").", "bad");
+  toast(subMessage(r, "Toggle failed (HTTP " + r.status + ")."), "bad");
 }
 
 async function subDelete(i) {
+  const sub = state.subs && state.subs.list[i];
+  const label = (sub && sub.name) || ("subscription " + (i + 1));
+  if (!window.confirm("Delete subscription \"" + label + "\"?")) {
+    return;
+  }
   const r = await fetchJson("/api/subscriptions/" + i, { method: "DELETE" });
   if (r.status === 404) {
     toast("Subscription API is not on this server version yet.", "bad");
     return;
   }
   if (r.status >= 200 && r.status < 300) {
-    toast("Deleted. Remember to Save.", "good");
+    toast(subMessage(r, "Deleted."), "good");
+    setDirty(false);
     void loadSubscriptions();
     return;
   }
-  toast("Delete failed (HTTP " + r.status + ").", "bad");
+  toast(subMessage(r, "Delete failed (HTTP " + r.status + ")."), "bad");
 }
 
 function subEdit(i) {
@@ -1866,11 +1938,13 @@ function subEdit(i) {
   if (!sub) {
     return;
   }
-  openSubDialog(sub);
+  openSubDialog(sub, i);
 }
 
-function openSubDialog(preset) {
+function openSubDialog(preset, index) {
+  state.editingSub = (index === undefined || index === null) ? null : index;
   $("dlg-sub-title").textContent = preset ? "Edit subscription" : "Add subscription";
+  $("dlg-sub-ok").textContent = preset ? "Save" : "Add";
   $("dlg-sub-url").value = (preset && preset.url) || "";
   $("dlg-sub-name").value = (preset && preset.name) || "";
   $("dlg-sub-priority").value = (preset && preset.priority !== undefined) ? String(preset.priority) : "100";
@@ -1892,17 +1966,22 @@ async function submitSubDialog() {
     toast("URL and name are required.", "bad");
     return;
   }
-  const r = await fetchJson("/api/subscriptions", { method: "POST", body: payload });
+  const editing = state.editingSub;
+  const r = editing === null
+    ? await fetchJson("/api/subscriptions", { method: "POST", body: payload })
+    : await fetchJson("/api/subscriptions/" + editing, { method: "PATCH", body: payload });
   if (r.status === 404) {
     toast("Subscription API is not on this server version yet.", "bad");
     return;
   }
   if (r.status >= 200 && r.status < 300) {
-    toast("Added. Remember to Save.", "good");
+    state.editingSub = null;
+    toast(subMessage(r, editing === null ? "Added." : "Saved."), "good");
+    setDirty(false);
     void loadSubscriptions();
     return;
   }
-  toast("Add failed (HTTP " + r.status + ").", "bad");
+  toast(subMessage(r, (editing === null ? "Add" : "Save") + " failed (HTTP " + r.status + ")."), "bad");
 }
 
 /* ---------- settings tab (progressive) ---------- */
@@ -1975,11 +2054,12 @@ function editSetting(key, valNode) {
       return;
     }
     if (r.status >= 200 && r.status < 300) {
-      toast("Saved in memory. Remember to Save.", "good");
-      setDirty(true);
+      toast(subMessage(r, "Saved."), "good");
+      setDirty(!!(r.data && r.data.dirty));
+      void loadOvConfig();
       return;
     }
-    const msg = r.data && r.data.message ? r.data.message : "HTTP " + r.status;
+    const msg = (r.data && (r.data.status || r.data.message)) || ("HTTP " + r.status);
     toast("Rejected: " + msg, "bad");
   };
   input.addEventListener("keydown", (ev) => {
@@ -1997,11 +2077,23 @@ function editSetting(key, valNode) {
 /* ---------- actions ---------- */
 
 async function triggerCycle(kind) {
+  // Frontend guard first: while any relevant cycle runs (system or manual)
+  // the request must never leave the browser — same wording as the TUI so
+  // rapid clicks, keyboard repeats, and phone double-taps collapse to one.
+  if (kind === "refresh" ? refreshBusy() : pingBusy()) {
+    toast(
+      kind === "refresh"
+        ? "Refresh already running — wait for it to finish."
+        : "A cycle is already running — try again when it finishes.",
+      "bad"
+    );
+    updateCycleButtons();
+    return;
+  }
   const path = kind === "refresh" ? "/api/refresh" : "/api/ping";
-  const btn = kind === "refresh" ? $("btn-refresh") : $("btn-ping");
-  btn.disabled = true;
+  state.cycleInflight[kind] = true;
+  updateCycleButtons();
   try {
-    // Preferred: dedicated trigger endpoint (lands with the backend phases).
     const r = await fetchJson(path, { method: "POST", body: {} });
     if (r.status === 404) {
       toast("Manual " + kind + " needs a newer server (no " + path + " route yet).", "bad");
@@ -2009,7 +2101,20 @@ async function triggerCycle(kind) {
       return;
     }
     if (r.status === 409) {
-      toast("A cycle is already running — try again when it finishes.", "bad");
+      // Backend confirms busy (system cycle won the race after our guard):
+      // resync so buttons/countdown reflect the running cycle immediately.
+      toast(
+        (r.data && r.data.status) || "A cycle is already running — try again when it finishes.",
+        "bad"
+      );
+      void loadResults();
+      return;
+    }
+    if (r.status === 503) {
+      toast(
+        (r.data && r.data.status) || ("Manual " + kind + " unavailable on this server."),
+        "bad"
+      );
       return;
     }
     if (r.status === 0) {
@@ -2017,14 +2122,25 @@ async function triggerCycle(kind) {
       return;
     }
     if (r.status >= 200 && r.status < 300) {
-      toast(kind === "refresh" ? "Refresh triggered." : "Ping triggered.", "good");
+      // Optimistic lock: mark the cycle running now so the very next click
+      // (before SSE/probe-delta arrives) still refuses without a request.
+      if (state.snapshot) {
+        if (kind === "refresh") {
+          state.snapshot.refreshing = true;
+        } else {
+          state.snapshot.pinging = true;
+        }
+        renderStats();
+      }
+      toast((r.data && r.data.status) || (kind === "refresh" ? "Refresh triggered." : "Ping triggered."), "good");
       setStatus("Manual " + kind + " triggered — watch Overview.");
       window.setTimeout(() => void loadResults(), 1200);
       return;
     }
     toast("Trigger failed (HTTP " + r.status + ").", "bad");
   } finally {
-    btn.disabled = false;
+    state.cycleInflight[kind] = false;
+    updateCycleButtons();
   }
 }
 
@@ -2171,6 +2287,12 @@ function onKey(ev) {
 /* ---------- boot ---------- */
 
 function wire() {
+  // boot() re-enters via "Retry now": wiring twice would double every
+  // listener and fire duplicate POSTs per click — wire exactly once.
+  if (state.wired) {
+    return;
+  }
+  state.wired = true;
   $("btn-refresh").addEventListener("click", () => void triggerCycle("refresh"));
   $("btn-ping").addEventListener("click", () => void triggerCycle("ping"));
   $("banner-retry").addEventListener("click", () => {
@@ -2244,7 +2366,7 @@ function wire() {
       toast("Subscription API is not on this server version yet.", "bad");
       return;
     }
-    openSubDialog(null);
+    openSubDialog(null, null);
   });
   $("dlg-sub-form").addEventListener("submit", (ev) => {
     if (ev.submitter && ev.submitter.value === "ok") {
@@ -2257,39 +2379,51 @@ function wire() {
     void loadSettings();
   });
 
-  $("btn-proxy-mode").addEventListener("click", async () => {
-    const r = await fetchJson("/api/proxy/mode", { method: "POST", body: {} });
-    if (r.status === 404) {
-      toast("Proxy API is not on this server version yet — use the TUI.", "bad");
-      return;
+  $("btn-proxy-mode").addEventListener("click", async (ev) => {
+    const btn = ev.currentTarget;
+    btn.disabled = true;
+    try {
+      const r = await fetchJson("/api/proxy/mode", { method: "POST", body: {} });
+      if (r.status === 404) {
+        toast("Proxy API is not on this server version yet — use the TUI.", "bad");
+        return;
+      }
+      if (r.status >= 200 && r.status < 300) {
+        toast(subMessage(r, "Proxy mode cycled."), "good");
+        window.setTimeout(() => void loadResults(), 1200);
+        return;
+      }
+      toast(subMessage(r, "Proxy switch failed (HTTP " + r.status + ")."), "bad");
+    } finally {
+      btn.disabled = false;
     }
-    if (r.status >= 200 && r.status < 300) {
-      const msg = r.data && r.data.message ? r.data.message : "Proxy mode cycled.";
-      toast(msg, "good");
-      window.setTimeout(() => void loadResults(), 1200);
-      return;
-    }
-    toast("Proxy switch failed (HTTP " + r.status + ").", "bad");
   });
   $("btn-proxy-unpin").addEventListener("click", () => {
     const s = state.snapshot;
     if (s && s.proxy_active_uri) {
-      void selectProxy(s.proxy_active_uri);
+      void selectProxy(null);
+    } else {
+      toast("No manual config pinned.", "bad");
     }
   });
-  $("btn-sharing").addEventListener("click", async () => {
-    const r = await fetchJson("/api/sharing", { method: "POST", body: {} });
-    if (r.status === 404) {
-      toast("Sharing API is not on this server version yet — use the TUI.", "bad");
-      return;
+  $("btn-sharing").addEventListener("click", async (ev) => {
+    const btn = ev.currentTarget;
+    btn.disabled = true;
+    try {
+      const r = await fetchJson("/api/sharing", { method: "POST", body: {} });
+      if (r.status === 404) {
+        toast("Sharing API is not on this server version yet — use the TUI.", "bad");
+        return;
+      }
+      if (r.status >= 200 && r.status < 300) {
+        toast(subMessage(r, "Sharing toggled."), "good");
+        window.setTimeout(() => void loadResults(), 1200);
+        return;
+      }
+      toast(subMessage(r, "Sharing toggle failed (HTTP " + r.status + ")."), "bad");
+    } finally {
+      btn.disabled = false;
     }
-    if (r.status >= 200 && r.status < 300) {
-      const msg = r.data && r.data.message ? r.data.message : "Sharing toggled.";
-      toast(msg, "good");
-      window.setTimeout(() => void loadResults(), 1200);
-      return;
-    }
-    toast("Sharing toggle failed (HTTP " + r.status + ").", "bad");
   });
   $("btn-qr-generate").addEventListener("click", () => void generateQr());
   $("btn-qr-generate-ov").addEventListener("click", () => void generateQr());

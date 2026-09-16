@@ -957,6 +957,12 @@ impl YamlDocument {
         if current.len() == previous.len().saturating_add(1)
             && let Some(index) = inserted_subscription_index(previous, current)
         {
+            // A flow-style empty section (`subscriptions: []`, `null`, …)
+            // parses to zero items but still carries an inline value on the
+            // header line. Appending the new block after it would emit
+            // invalid YAML (`subscriptions: []` followed by `- …`), so
+            // normalize the header to a bare `section:` first.
+            self.clear_inline_section_value("subscriptions");
             let insert_at = ranges
                 .get(index)
                 .map(|(start, _, _)| *start)
@@ -1087,6 +1093,30 @@ impl YamlDocument {
             .collect();
 
         Some(ranges)
+    }
+
+    /// Replace a `section: <inline>` header (`[]`, `null`, `~`, …) with a
+    /// bare `section:` line so block items can be appended underneath.
+    /// Headers that already carry an empty (block) value — and trailing
+    /// `# comments` — are left untouched.
+    fn clear_inline_section_value(&mut self, section: &str) {
+        let Some(start) = self.find_top_level_key(section) else {
+            return;
+        };
+        let line = self.lines[start].clone();
+        let Some((_, value)) = line.split_once(':') else {
+            return;
+        };
+        let inline = value
+            .split_once(" #")
+            .map_or(value, |(before, _)| before)
+            .trim();
+        if inline.is_empty() {
+            return;
+        }
+        let indent = leading_whitespace(&line);
+        let comment = inline_comment(&line).unwrap_or_default();
+        self.lines[start] = format!("{indent}{section}:{comment}");
     }
 
     fn append_section(&mut self, replacement: Vec<String>) {
@@ -1614,6 +1644,44 @@ subscriptions:
         assert!(saved.contains("    enabled: true # keep first comment"));
         assert!(saved.contains("  - name: second"));
         assert!(saved.contains("    priority: 2"));
+        assert!(saved.contains("  accepted_statuses: [204, 200]"));
+    }
+
+    #[test]
+    fn yaml_save_inserts_first_subscription_into_flow_empty_section() {
+        // `subscriptions: []` parses to zero items but keeps an inline
+        // value on the header line; appending the new block after it used
+        // to emit invalid YAML (`subscriptions: []` followed by `- …`),
+        // breaking every later config load (dashboard add, then delete).
+        let path = write_config(
+            "flow-empty",
+            "bind: 127.0.0.1:27141\ntop_n: 10\n\nprobe:\n  accepted_statuses: [204, 200]\n\nsubscriptions: []\n",
+        );
+        let mut config = AppConfig::load(&path).expect("config loads");
+        assert!(config.subscriptions.is_empty());
+        config.subscriptions.push(SubscriptionSource {
+            name: "first".to_string(),
+            url: "data:,vless://first@example.com:443%23demo".to_string(),
+            enabled: true,
+            priority: 1,
+        });
+
+        save_config(&path, &config).expect("config saves");
+        let saved = fs::read_to_string(&path).expect("config can be read");
+        let reloaded = AppConfig::load(&path).expect("saved config reloads");
+        fs::remove_file(&path).ok();
+
+        assert_eq!(reloaded.subscriptions.len(), 1);
+        assert_eq!(reloaded.subscriptions[0].name, "first");
+        assert!(
+            saved.contains("subscriptions:\n"),
+            "header normalized: {saved}"
+        );
+        assert!(
+            !saved.contains("subscriptions: []"),
+            "no stale flow marker: {saved}"
+        );
+        assert!(saved.contains("  - name: first"));
         assert!(saved.contains("  accepted_statuses: [204, 200]"));
     }
 

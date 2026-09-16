@@ -52,6 +52,21 @@ test("deep link opens the right tab; back button returns", async ({ page }) => {
   await expect(page.locator("#panel-proxy")).toBeVisible();
 });
 
+test("fetch errors render headline + cause on two lines", async ({ page }) => {
+  stub.fetchErrors = [
+    "failed to fetch subscription 'src-7':\nHTTP status client error (404 Not Found) for url (https://example.com/gone.txt)",
+  ];
+  await page.goto(base + "/overview");
+  const card = page.locator("#fetch-errors-card");
+  await expect(card).toBeVisible();
+  const item = page.locator("#fetch-errors li").first();
+  await expect(item).toContainText("failed to fetch subscription 'src-7':");
+  await expect(item).toContainText("HTTP status client error (404 Not Found)");
+  // The embedded newline must survive HTML whitespace collapsing.
+  expect(await item.evaluate((el) => getComputedStyle(el).whiteSpace)).toBe("pre-wrap");
+  stub.fetchErrors = [];
+});
+
 test("legacy #/tab bookmarks replace-redirect with token preserved", async ({ page }) => {
   await page.goto(base + "/overview?token=abc#/configs");
   // Boot reads the hash and replace-redirects to the clean path (token kept).

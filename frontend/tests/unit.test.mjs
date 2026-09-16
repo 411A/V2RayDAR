@@ -268,6 +268,40 @@ describe("refresh badge second line: ping countdown under fetch", () => {
   });
 });
 
+describe("overview top-configs stretches while the QR is shown", () => {
+  const rows = (n) =>
+    Array.from({ length: n }, (_, i) => ({
+      rank: i + 1,
+      name: "n" + i,
+      reachable: true,
+      uri: "vless://" + i,
+      latency_ms: 10,
+      endpoint: { host: "h", port: 443 },
+    }));
+
+  it("shows 8 normally, up to 15 with the QR image on screen", () => {
+    api.state.snapshot = { ranked: rows(20), proxy_active_uri: null };
+    const img = sandbox.__elements.get("ov-qr-img");
+    img.hidden = true;
+    api.state.ovQrLoaded = false;
+    api.renderOvConfigs();
+    assert.equal(sandbox.__elements.get("ov-cfg-body").children.length, 8);
+    img.hidden = false;
+    api.state.ovQrLoaded = true;
+    api.renderOvConfigs();
+    assert.equal(sandbox.__elements.get("ov-cfg-body").children.length, 15);
+  });
+
+  it("caps at the available rows either way", () => {
+    api.state.snapshot = { ranked: rows(5), proxy_active_uri: null };
+    const img = sandbox.__elements.get("ov-qr-img");
+    img.hidden = false;
+    api.state.ovQrLoaded = true;
+    api.renderOvConfigs();
+    assert.equal(sandbox.__elements.get("ov-cfg-body").children.length, 5);
+  });
+});
+
 describe("proxy select: explicit null unpins (live-push only)", () => {
   it("selectProxy(null) POSTs {uri:null}", async () => {
     const bodies = [];

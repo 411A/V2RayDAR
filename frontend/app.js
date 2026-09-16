@@ -1012,7 +1012,16 @@ function renderOvLogs() {
   }
 }
 
-/// Overview "Top configs": first 8 reachable, compact (TUI found-panel slice).
+/// True while the overview QR image is actually on screen (loaded for the
+/// current sheet and unhidden). The Endpoints column then grows tall, so
+/// Top configs stretches to match instead of leaving a gap underneath.
+function ovQrShown() {
+  return !!(state.ovQrLoaded && !$("ov-qr-img").hidden);
+}
+
+/// Overview "Top configs": first 8 reachable, compact (TUI found-panel
+/// slice) — up to 15 while the overview QR image is shown, filling the
+/// taller Endpoints column instead of leaving a gap below the table.
 function renderOvConfigs() {
   const body = $("ov-cfg-body");
   while (body.firstChild) {
@@ -1020,7 +1029,7 @@ function renderOvConfigs() {
   }
   const s = state.snapshot;
   const rows = s && Array.isArray(s.ranked)
-    ? s.ranked.filter((c) => c.reachable).slice(0, 8)
+    ? s.ranked.filter((c) => c.reachable).slice(0, ovQrShown() ? 15 : 8)
     : [];
   $("ov-cfg-empty").hidden = rows.length !== 0;
   const activeUri = s && s.proxy_active_uri ? s.proxy_active_uri : "";
@@ -1716,9 +1725,13 @@ async function renderOvQr() {
     }
   }
   if (!state.qrKnown) {
+    const wasShown = ovQrShown();
     state.ovQrLoaded = false;
     img.hidden = true;
     note.textContent = "No QR image yet — press Generate QR Code (requires LAN sharing).";
+    if (wasShown) {
+      renderOvConfigs();
+    }
     return;
   }
   if (state.ovQrLoaded && !img.hidden) {
@@ -1762,11 +1775,16 @@ async function renderOvQr() {
       img.hidden = false;
       state.ovQrLoaded = true;
       note.textContent = "Scan with your phone to add the LAN subscription.";
+      renderOvConfigs();
     }
   ).catch(() => {
+    const wasShown = ovQrShown();
     state.ovQrLoaded = false;
     img.hidden = true;
     note.textContent = "No QR image yet — press Generate QR Code (requires LAN sharing).";
+    if (wasShown) {
+      renderOvConfigs();
+    }
   });
 }
 

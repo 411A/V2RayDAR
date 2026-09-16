@@ -593,6 +593,7 @@ main {
   border-radius: 6px;
   padding: 0.35rem 0.55rem;
   overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 details.more {

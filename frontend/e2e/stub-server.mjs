@@ -75,6 +75,7 @@ export function createStub() {
     refreshDelayMs: 0,
     pingDelayMs: 0,
     rankedPush: null,
+    fetchErrors: [],
     proxyModePosts: 0,
     sharingPosts: 0,
     proxySelectBodies: [],
@@ -141,11 +142,11 @@ export function createStub() {
       return;
     }
     if (req.method === "GET" && p === "/results") {
-      json(res, 200, snapshot({ refreshing: stub.busyRefreshing, pinging: stub.busyPinging }));
+      json(res, 200, snapshot({ refreshing: stub.busyRefreshing, pinging: stub.busyPinging, fetch_errors: stub.fetchErrors }));
       return;
     }
     if (req.method === "GET" && p === "/api/summary") {
-      const s = snapshot({ refreshing: stub.busyRefreshing, pinging: stub.busyPinging });
+      const s = snapshot({ refreshing: stub.busyRefreshing, pinging: stub.busyPinging, fetch_errors: stub.fetchErrors });
       json(res, 200, { ...s, qr_available: false, refresh_seconds: 60, ping_seconds: 300 });
       return;
     }
@@ -155,7 +156,7 @@ export function createStub() {
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
       });
-      const s = snapshot({ refreshing: stub.busyRefreshing, pinging: stub.busyPinging });
+      const s = snapshot({ refreshing: stub.busyRefreshing, pinging: stub.busyPinging, fetch_errors: stub.fetchErrors });
       res.write(`event: hello\ndata: ${JSON.stringify({ snapshot: s })}\n\n`);
       if (stub.rankedPush) {
         const rows = stub.rankedPush;
@@ -304,3 +305,4 @@ export function createStub() {
 
   return { stub, server };
 }
+

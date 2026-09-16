@@ -226,14 +226,20 @@ where
             }
             Err(err) => {
                 report_subscription_bytes(err.bytes_read, report_bytes).await;
-                warn!(error = %err.error, "subscription fetch failed");
+                let message = fetch_error_message(&source.name, &err.error, &source.url);
+                warn!(error = %message, "subscription fetch failed");
                 send_progress(
                     context.progress.as_ref(),
-                    format!("Subscription fetch failed: {}", err.error),
+                    format!("Subscription fetch failed:\n{message}"),
                 );
-                let error = err.error.to_string();
-                errors.push(error.clone());
-                failures.push((index, FetchFailure { source, error }));
+                errors.push(message.clone());
+                failures.push((
+                    index,
+                    FetchFailure {
+                        source,
+                        error: message,
+                    },
+                ));
             }
         }
     }
@@ -265,6 +271,27 @@ where
     if bytes > 0 {
         report_bytes(bytes).await;
     }
+}
+
+/// Render a fetch failure for `errors`/`fetch_errors` consumers (logs, TUI,
+/// dashboard) on two lines: the subscription headline, then the WHY
+/// (timeout, DNS failure, HTTP status, oversized body…) from the full anyhow
+/// chain. The request URL is redacted: HTTP errors echo it and it may carry
+/// `?token=` or userinfo.
+fn fetch_error_message(name: &str, error: &anyhow::Error, source_url: &str) -> String {
+    let chained = format!("{error:#}");
+    let headline = format!("failed to fetch subscription '{name}'");
+    let detail: &str = chained
+        .strip_prefix(headline.as_str())
+        .map_or(chained.as_str(), |tail| {
+            tail.strip_prefix(": ").unwrap_or(tail)
+        });
+    let detail = if source_url.is_empty() {
+        detail.to_string()
+    } else {
+        detail.replace(source_url, &redact_subscription_url(source_url))
+    };
+    format!("{headline}:\n{detail}")
 }
 
 type FetchResult<T> = std::result::Result<T, FetchError>;
@@ -564,5 +591,35 @@ mod tests {
         assert!(is_http_url("http://example.com"));
         assert!(!is_http_url("data:,test"));
         assert!(!is_http_url("file:///path"));
+    }
+
+    #[test]
+    fn fetch_error_message_splits_headline_and_redacts_url() {
+        let url = "https://user:pass@example.com/sub?token=secret#frag";
+        let error = anyhow!("operation timed out")
+            .context(format!("error sending request for url ({url})"))
+            .context("failed to fetch subscription 'demo'");
+        let message = fetch_error_message("demo", &error, url);
+
+        assert_eq!(
+            message,
+            "failed to fetch subscription 'demo':\nerror sending request for url (https://example.com/sub): operation timed out"
+        );
+        assert!(!message.contains("secret"), "token leaked: {message}");
+        assert!(!message.contains("user:pass"), "userinfo leaked: {message}");
+        assert!(!message.contains("#frag"), "fragment leaked: {message}");
+    }
+
+    #[test]
+    fn fetch_error_message_without_url_shows_chain_verbatim() {
+        let error = anyhow!("permission denied")
+            .context("unable to read local subscription file /tmp/sub.txt")
+            .context("failed to fetch subscription 'local'");
+        let message = fetch_error_message("local", &error, "/tmp/sub.txt");
+
+        assert_eq!(
+            message,
+            "failed to fetch subscription 'local':\nunable to read local subscription file /tmp/sub.txt: permission denied"
+        );
     }
 }

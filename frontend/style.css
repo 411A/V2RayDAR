@@ -318,10 +318,15 @@ kbd,
   gap: 2px;
   min-width: 11rem;
   padding: 0.35rem;
-  background: var(--panel);
+  /* Glassy but readable: solid fallback first, then a translucent blur
+   * where supported (never the transparent mess of a missing variable). */
+  background: var(--bg-raised);
+  background: color-mix(in srgb, var(--bg-raised) 86%, transparent);
+  -webkit-backdrop-filter: blur(14px) saturate(1.3);
+  backdrop-filter: blur(14px) saturate(1.3);
   border: 1px solid var(--border);
   border-radius: 10px;
-  box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.28);
 }
 .lang-menu[hidden] {
   display: none;
@@ -341,15 +346,11 @@ kbd,
   text-align: start;
 }
 .lang-menu button:hover {
-  background: var(--hover);
+  background: var(--accent-soft);
 }
 .lang-menu button[aria-checked="true"] {
   outline: 1px solid var(--accent);
   outline-offset: -1px;
-}
-.lang-code {
-  font-weight: 700;
-  font-size: 0.8rem;
 }
 .lang-name {
   color: var(--muted);

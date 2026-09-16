@@ -115,9 +115,20 @@ test("language flag sits left of ? with a real file and a 5-flag menu", async ({
   }
   const fit = await menu.locator("img.flag-img").first().evaluate((el) => getComputedStyle(el).objectFit);
   expect(fit).toBe("cover");
+  // Native language names, no country codes.
+  const names = await menu.locator(".lang-name").evaluateAll((els) => els.map((el) => el.textContent));
+  expect(names).toEqual(["English", "فارسی", "中文", "Français", "Русский"]);
+  expect(await menu.locator(".lang-code").count()).toBe(0);
+  // Glassy but opaque: page content must not bleed through the menu.
+  const alpha = await menu.evaluate((el) => {
+    const bg = getComputedStyle(el).backgroundColor;
+    const m = bg.match(/[\d.]+(?=\))/g);
+    return m ? Number(m[m.length - 1]) : 0;
+  });
+  expect(alpha).toBeGreaterThanOrEqual(0.8);
   // Non-English stays English with a coming-soon toast; menu closes.
   await menu.locator('button[data-lang="ir"]').click();
-  await expect(page.locator("#toasts .toast").last()).toContainText("Persian is coming soon");
+  await expect(page.locator("#toasts .toast").last()).toContainText("فارسی is coming soon");
   await expect(menu).toBeHidden();
   // Unknown asset names 404 (whitelist, no traversal).
   const bad = await page.request.get(`${base}/assets/EVIL.svg`);

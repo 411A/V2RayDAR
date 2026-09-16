@@ -109,7 +109,7 @@ describe("frontend i18n: one unified strings file, English default", () => {
     api.selectLang("ir");
     const toasts = sandbox.__elements.get("toasts");
     const last = toasts.children[toasts.children.length - 1];
-    assert.match(last.textContent, /Persian is coming soon/);
+    assert.match(last.textContent, /is coming soon/);
     assert.equal(api.t("btnRefresh"), "Refresh");
     // Unknown codes are ignored silently.
     api.selectLang("xx");

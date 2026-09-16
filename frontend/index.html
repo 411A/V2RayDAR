@@ -242,8 +242,12 @@
       <div class="panel-head">
         <h2>Persistent proxy</h2>
         <div class="panel-tools">
-          <button type="button" class="btn primary" id="btn-proxy-mode">Cycle mode</button>
-          <button type="button" class="btn danger" id="btn-proxy-unpin" disabled>Unpin manual config</button>
+          <div class="seg-switch" role="group" aria-label="Proxy mode">
+            <button type="button" class="seg" id="proxy-off" aria-pressed="false" title="Turn the proxy off (same as the TUI proxy row).">Off</button>
+            <button type="button" class="seg" id="proxy-local" aria-pressed="false" title="Serve the proxy on this device only — loopback, nothing exposed to the network.">Local</button>
+            <button type="button" class="seg" id="proxy-lan" aria-pressed="false" title="Share the proxy with your local network (binds the LAN IP, firewall rule applied).">LAN</button>
+          </div>
+          <button type="button" class="btn danger" id="btn-proxy-unpin" disabled title="Clear the pinned config so the proxy auto-selects the best working config (same as Enter on the active row in the TUI).">Unpin manual config</button>
         </div>
       </div>
       <div class="two-col">

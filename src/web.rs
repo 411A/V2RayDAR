@@ -1431,33 +1431,70 @@ pub async fn api_proxy_select(
     }
 }
 
-/// `POST /api/proxy/mode` — cycle Off → Local → LAN (same as the TUI row).
+/// Requested proxy mode (`POST /api/proxy/mode`): `None`/empty keeps the
+/// legacy Off → Local → LAN cycle (same as the TUI row).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ProxyMode {
+    #[serde(default)]
+    pub mode: Option<String>,
+}
+
+/// `POST /api/proxy/mode` — set `{"mode": "off"|"local"|"lan"}` directly,
+/// or cycle Off → Local → LAN when omitted (same as the TUI row).
 /// Immediate-save + live-push; firewall message rides along like the TUI.
 pub async fn api_proxy_mode(
     State(state): State<HttpState>,
     headers: HeaderMap,
     Query(query): Query<AuthQuery>,
     ConnectInfo(remote_addr): ConnectInfo<std::net::SocketAddr>,
+    Json(body): Json<ProxyMode>,
 ) -> Response {
     let token = query.token.as_deref().or_else(|| bearer_token(&headers));
     if let Err(response) = authorize(&state, remote_addr, token).await {
         return response;
     }
-    if state.config_tx.is_none() {
+    let Some(tx) = state.config_tx.as_ref() else {
         return mutation_error(StatusCode::SERVICE_UNAVAILABLE, "Proxy API unavailable");
-    }
-    let mut cfg = match load_disk_config(&state) {
-        Ok(cfg) => cfg,
-        Err(response) => return response,
     };
-    if !cfg.proxy.enabled {
-        cfg.proxy.enabled = true;
-        cfg.proxy.discoverable = false;
-    } else if !cfg.proxy.discoverable {
-        cfg.proxy.discoverable = true;
-    } else {
-        cfg.proxy.enabled = false;
-        cfg.proxy.discoverable = false;
+    // Base the toggle on the live config, not the disk file: a manual pin
+    // is live-pushed only (never written), and rebuilding from disk here
+    // would silently drop it from both the file and the runtime.
+    let mut cfg = tx.borrow().clone();
+    match body
+        .mode
+        .as_deref()
+        .map(|mode| mode.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        None | Some("") => {
+            if !cfg.proxy.enabled {
+                cfg.proxy.enabled = true;
+                cfg.proxy.discoverable = false;
+            } else if !cfg.proxy.discoverable {
+                cfg.proxy.discoverable = true;
+            } else {
+                cfg.proxy.enabled = false;
+                cfg.proxy.discoverable = false;
+            }
+        }
+        Some("off") => {
+            cfg.proxy.enabled = false;
+            cfg.proxy.discoverable = false;
+        }
+        Some("local") => {
+            cfg.proxy.enabled = true;
+            cfg.proxy.discoverable = false;
+        }
+        Some("lan") => {
+            cfg.proxy.enabled = true;
+            cfg.proxy.discoverable = true;
+        }
+        Some(other) => {
+            return mutation_error(
+                StatusCode::BAD_REQUEST,
+                format!("Unknown proxy mode '{other}' (use off, local, or lan)"),
+            );
+        }
     }
     if let Err(response) = persist_config(&state, &cfg).await {
         return response;
@@ -1494,13 +1531,12 @@ pub async fn api_sharing(
     if let Err(response) = authorize(&state, remote_addr, token).await {
         return response;
     }
-    if state.config_tx.is_none() {
+    let Some(tx) = state.config_tx.as_ref() else {
         return mutation_error(StatusCode::SERVICE_UNAVAILABLE, "Sharing API unavailable");
-    }
-    let mut cfg = match load_disk_config(&state) {
-        Ok(cfg) => cfg,
-        Err(response) => return response,
     };
+    // Live base, same as the proxy toggle: rebuilding from disk would drop
+    // a live-only manual pin.
+    let mut cfg = tx.borrow().clone();
     cfg.sharing.enabled = !cfg.sharing.enabled;
     if let Err(response) = persist_config(&state, &cfg).await {
         return response;
@@ -2579,6 +2615,107 @@ mod tests {
         );
         let after = std::fs::read_to_string(&state.config_path).expect("config reads");
         assert_eq!(before, after, "proxy select never writes the file");
+    }
+
+    #[tokio::test]
+    async fn proxy_mode_and_sharing_preserve_live_pin() {
+        // A manual pin is live-only (never written). Toggling proxy mode or
+        // sharing rebuilt the config from disk and silently dropped it from
+        // both the file and the runtime; both toggles now build on live.
+        let (state, _refresh_rx, _ping_rx, mut config_rx) = mutation_state(RuntimeState::default());
+        let uri = "vless://uuid@example.com:443?security=tls#Node".to_string();
+        let (headers, query, connect) = no_auth();
+        let response = super::api_proxy_select(
+            axum::extract::State(state.clone()),
+            headers,
+            query,
+            connect,
+            axum::Json(super::ProxySelect {
+                uri: Some(uri.clone()),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        config_rx.changed().await.expect("pin broadcast fires");
+
+        let (headers, query, connect) = no_auth();
+        let response = super::api_proxy_mode(
+            axum::extract::State(state.clone()),
+            headers,
+            query,
+            connect,
+            axum::Json(super::ProxyMode { mode: None }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        config_rx.changed().await.expect("mode broadcast fires");
+        assert_eq!(
+            config_rx.borrow().proxy.manual_proxy_uri.as_deref(),
+            Some(uri.as_str()),
+            "proxy mode toggle keeps the live pin"
+        );
+        assert!(config_rx.borrow().proxy.enabled);
+
+        let (headers, query, connect) = no_auth();
+        let response =
+            super::api_sharing(axum::extract::State(state.clone()), headers, query, connect).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        config_rx.changed().await.expect("sharing broadcast fires");
+        assert_eq!(
+            config_rx.borrow().proxy.manual_proxy_uri.as_deref(),
+            Some(uri.as_str()),
+            "sharing toggle keeps the live pin"
+        );
+        assert!(config_rx.borrow().sharing.enabled);
+    }
+
+    async fn call_proxy_mode(
+        state: &HttpState,
+        config_rx: &mut tokio::sync::watch::Receiver<crate::config::AppConfig>,
+        mode: Option<&str>,
+    ) -> (axum::http::StatusCode, crate::config::AppConfig) {
+        let (headers, query, connect) = no_auth();
+        let response = super::api_proxy_mode(
+            axum::extract::State(state.clone()),
+            headers,
+            query,
+            connect,
+            axum::Json(super::ProxyMode {
+                mode: mode.map(str::to_string),
+            }),
+        )
+        .await;
+        let status = response.status();
+        if status == StatusCode::OK {
+            // persist_config broadcasts every accepted change.
+            config_rx.changed().await.expect("mode broadcast fires");
+        }
+        (status, config_rx.borrow().clone())
+    }
+
+    #[tokio::test]
+    async fn proxy_mode_sets_directly_rejects_unknown_and_cycles_legacy() {
+        let (state, _refresh_rx, _ping_rx, mut config_rx) = mutation_state(RuntimeState::default());
+
+        let (status, config) = call_proxy_mode(&state, &mut config_rx, Some("lan")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(config.proxy.enabled && config.proxy.discoverable);
+
+        let (status, config) = call_proxy_mode(&state, &mut config_rx, Some("local")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(config.proxy.enabled && !config.proxy.discoverable);
+
+        let (status, config) = call_proxy_mode(&state, &mut config_rx, Some("  OFF ")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!config.proxy.enabled && !config.proxy.discoverable);
+
+        let (status, _) = call_proxy_mode(&state, &mut config_rx, Some("turbo")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // Omitted mode keeps the legacy Off → Local → LAN cycle.
+        let (status, config) = call_proxy_mode(&state, &mut config_rx, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(config.proxy.enabled && !config.proxy.discoverable);
     }
 
     #[tokio::test]

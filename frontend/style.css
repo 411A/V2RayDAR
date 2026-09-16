@@ -289,11 +289,17 @@ kbd,
   font-weight: 700;
 }
 
-.theme-switch {
+.theme-switch,
+.seg-switch {
   display: inline-flex;
   border: 1px solid var(--border);
   border-radius: 8px;
   overflow: hidden;
+}
+
+.seg:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .seg {

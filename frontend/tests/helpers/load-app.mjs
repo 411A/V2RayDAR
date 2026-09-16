@@ -58,10 +58,13 @@ function makeElement(tag = "div") {
       listeners.get(t).push(fn);
     },
     removeEventListener() {},
-    setAttribute() {},
-    getAttribute() {
-      return null;
+    setAttribute(k, v) {
+      el.__attrs.set(String(k), String(v));
     },
+    getAttribute(k) {
+      return el.__attrs.has(String(k)) ? el.__attrs.get(String(k)) : null;
+    },
+    __attrs: new Map(),
     querySelector() {
       return null;
     },
@@ -100,7 +103,8 @@ export function makeSandbox(overrides = {}) {
     "ov-config-note", "ov-logs", "fetch-errors-card", "fetch-errors-sub",
     "fetch-errors", "cfg-search", "cfg-reachable-only", "cfg-limit", "cfg-count",
     "cfg-body", "cfg-empty", "btn-sub-add", "sub-note", "sub-body", "sub-empty",
-    "settings-note", "settings-groups", "btn-settings-reload", "btn-proxy-mode",
+    "settings-note", "settings-groups", "btn-settings-reload", "proxy-off",
+    "proxy-local", "proxy-lan",
     "btn-proxy-unpin", "proxy-pill", "proxy-kv", "proxy-manual", "log-filter",
     "log-follow", "btn-log-clear", "log-list", "log-empty", "btn-sharing",
     "share-list", "share-hint", "qr-img", "qr-note", "btn-qr-generate",
@@ -182,6 +186,8 @@ const EXPORT_HOOK = `;globalThis.__v2 = {
   renderStats, fmtClock, fmtStamp, fmtDuration, fmtAgo,
   openDetail, wireRowDialog, selectProxy, toggleProxy,
   proxyRowState, syncProxyPending, applyProbeDelta, settleProxyPending,
+  setProxyMode, proxyMode, updateProxyModeButtons,
+  tickClock, uptimeText,
 };`;
 
 /** Evaluate the real frontend/app.js in a stub DOM and return its internals. */

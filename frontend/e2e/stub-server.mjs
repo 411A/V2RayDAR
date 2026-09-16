@@ -78,6 +78,10 @@ export function createStub() {
     rankedPush: null,
     fetchErrors: [],
     proxyModePosts: 0,
+    proxyModeBodies: [],
+    proxyModeDelayMs: 0,
+    proxyEnabled: false,
+    proxyDiscoverable: false,
     sharingPosts: 0,
     proxySelectBodies: [],
     proxyActiveUri: null,
@@ -155,12 +159,12 @@ export function createStub() {
       return;
     }
     if (req.method === "GET" && p === "/results") {
-      json(res, 200, snapshot({ refreshing: stub.busyRefreshing, pinging: stub.busyPinging, fetch_errors: stub.fetchErrors, proxy_active_uri: stub.proxyActiveUri }));
+      json(res, 200, snapshot({ refreshing: stub.busyRefreshing, pinging: stub.busyPinging, fetch_errors: stub.fetchErrors, proxy_active_uri: stub.proxyActiveUri, proxy_running: stub.proxyEnabled, proxy_discoverable: stub.proxyDiscoverable }));
       return;
     }
     if (req.method === "GET" && p === "/api/summary") {
-      const s = snapshot({ refreshing: stub.busyRefreshing, pinging: stub.busyPinging, fetch_errors: stub.fetchErrors, proxy_active_uri: stub.proxyActiveUri });
-      json(res, 200, { ...s, qr_available: false, refresh_seconds: 60, ping_seconds: 300 });
+      const s = snapshot({ refreshing: stub.busyRefreshing, pinging: stub.busyPinging, fetch_errors: stub.fetchErrors, proxy_active_uri: stub.proxyActiveUri, proxy_running: stub.proxyEnabled, proxy_discoverable: stub.proxyDiscoverable });
+      json(res, 200, { ...s, qr_available: false, refresh_seconds: 60, ping_seconds: 300, started_at: "2026-09-16T10:00:00+00:00" });
       return;
     }
     if (req.method === "GET" && p === "/api/events") {
@@ -170,7 +174,7 @@ export function createStub() {
         Connection: "keep-alive",
       });
       sseClients.add(res);
-      const s = snapshot({ refreshing: stub.busyRefreshing, pinging: stub.busyPinging, fetch_errors: stub.fetchErrors, proxy_active_uri: stub.proxyActiveUri });
+      const s = snapshot({ refreshing: stub.busyRefreshing, pinging: stub.busyPinging, fetch_errors: stub.fetchErrors, proxy_active_uri: stub.proxyActiveUri, proxy_running: stub.proxyEnabled, proxy_discoverable: stub.proxyDiscoverable });
       res.write(`event: hello\ndata: ${JSON.stringify({ snapshot: s })}\n\n`);
       if (stub.rankedPush) {
         const rows = stub.rankedPush;
@@ -301,8 +305,37 @@ export function createStub() {
       return;
     }
     if (req.method === "POST" && p === "/api/proxy/mode") {
+      const body = await readBody(req);
       stub.proxyModePosts += 1;
-      json(res, 200, { ok: true, status: "Proxy mode cycled.", dirty: false });
+      if (stub.proxyModeDelayMs) {
+        await new Promise((r) => setTimeout(r, stub.proxyModeDelayMs));
+      }
+      stub.proxyModeBodies.push(body);
+      // Direct set when the client names a mode, legacy cycle otherwise —
+      // the next snapshot reflects it, pressing the live segment.
+      const mode = body && typeof body.mode === "string" ? body.mode.trim().toLowerCase() : "";
+      if (mode === "off") {
+        stub.proxyEnabled = false;
+        stub.proxyDiscoverable = false;
+      } else if (mode === "local") {
+        stub.proxyEnabled = true;
+        stub.proxyDiscoverable = false;
+      } else if (mode === "lan") {
+        stub.proxyEnabled = true;
+        stub.proxyDiscoverable = true;
+      } else if (mode !== "") {
+        json(res, 400, { ok: false, status: `Unknown proxy mode '${body.mode}' (use off, local, or lan)`, dirty: false });
+        return;
+      } else if (!stub.proxyEnabled) {
+        stub.proxyEnabled = true;
+        stub.proxyDiscoverable = false;
+      } else if (!stub.proxyDiscoverable) {
+        stub.proxyDiscoverable = true;
+      } else {
+        stub.proxyEnabled = false;
+        stub.proxyDiscoverable = false;
+      }
+      json(res, 200, { ok: true, status: "Proxy mode set.", dirty: false });
       return;
     }
     if (req.method === "POST" && p === "/api/sharing") {
@@ -330,5 +363,6 @@ export function createStub() {
 
   return { stub, server };
 }
+
 
 

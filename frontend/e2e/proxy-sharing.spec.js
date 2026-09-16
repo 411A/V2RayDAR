@@ -17,18 +17,38 @@ test.afterAll(async () => {
 
 test.beforeEach(() => {
   stub.proxyModePosts = 0;
+  stub.proxyModeBodies = [];
+  stub.proxyModeDelayMs = 0;
+  stub.proxyEnabled = false;
+  stub.proxyDiscoverable = false;
   stub.sharingPosts = 0;
   stub.proxySelectBodies = [];
   stub.proxyActiveUri = null;
   stub.applyProxyOnSelect = true;
 });
 
-test("proxy mode + sharing buttons POST once and lock in-flight", async ({ page }) => {
+test("proxy mode segments set directly, collapse in flight, reflect state", async ({ page }) => {
   await page.goto(base + "/proxy");
-  await page.click("#btn-proxy-mode");
+  await expect(page.locator("#proxy-off")).toHaveAttribute("aria-pressed", "true");
+  await page.click("#proxy-lan");
   await expect.poll(() => stub.proxyModePosts).toBe(1);
-  await expect(page.locator("#btn-proxy-mode")).toBeEnabled(); // unlocked after finish
+  expect(stub.proxyModeBodies[0]).toEqual({ mode: "lan" });
+  // The resync presses the live segment; buttons unlock after finish.
+  await expect(page.locator("#proxy-lan")).toHaveAttribute("aria-pressed", "true", { timeout: 8000 });
+  await expect(page.locator("#proxy-off")).toHaveAttribute("aria-pressed", "false");
 
+  // Rapid re-clicks while in flight collapse to the first POST.
+  stub.proxyModePosts = 0;
+  stub.proxyModeBodies = [];
+  stub.proxyModeDelayMs = 400;
+  await Promise.all(Array.from({ length: 3 }, () => page.click("#proxy-off")));
+  await page.waitForTimeout(600);
+  expect(stub.proxyModePosts).toBe(1);
+  expect(stub.proxyModeBodies[0]).toEqual({ mode: "off" });
+  stub.proxyModeDelayMs = 0;
+});
+
+test("sharing button POSTs and locks in-flight", async ({ page }) => {
   await page.goto(base + "/share");
   await Promise.all(Array.from({ length: 3 }, () => page.click("#btn-sharing")));
   // In-flight lock: rapid clicks while disabled collapse (≥1, never 3).
@@ -54,11 +74,25 @@ test("Use-as-proxy pins a config; proxy tab unpin sends {uri:null}", async ({ pa
   await expect(page.locator("#btn-proxy-unpin")).toBeDisabled({ timeout: 8000 });
 });
 
+test("rapid double unpin collapses to a single POST", async ({ page }) => {
+  await page.goto(base + "/configs");
+  await page.locator("#cfg-body tr").first().getByRole("button", { name: "Use" }).click();
+  await expect.poll(() => stub.proxySelectBodies.length).toBe(1);
+  await page.goto(base + "/proxy");
+  await expect(page.locator("#btn-proxy-unpin")).toBeEnabled({ timeout: 8000 });
+  // Synthetic double click: the synchronous lock refuses the second one.
+  await page.locator("#btn-proxy-unpin").dispatchEvent("click");
+  await page.locator("#btn-proxy-unpin").dispatchEvent("click");
+  await page.waitForTimeout(400);
+  expect(stub.proxySelectBodies.length).toBe(2);
+});
+
 test("overview row click opens detail popup with QR and proxy action", async ({ page }) => {
   await page.goto(base + "/overview");
   await page.locator("#ov-cfg-body tr").first().locator("td").nth(1).click();
   await expect(page.locator("#dlg-detail")).toHaveAttribute("open", "");
-  await expect(page.locator("#dlg-detail-title")).toContainText("e2e-node-0");
+  await expect(page.locator("#dlg-detail-title")).toHaveText("Config detail");
+  await expect(page.locator("#dlg-detail-kv")).toContainText("e2e-node-0");
   const pixels = await page.evaluate(() => {
     const c = document.getElementById("dlg-detail-qr");
     const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
@@ -79,7 +113,8 @@ test("configs row click opens detail popup; Detail button is gone", async ({ pag
   await expect(page.locator("#cfg-body").getByRole("button", { name: "Detail" })).toHaveCount(0);
   await page.locator("#cfg-body tr").first().locator("td").nth(1).click();
   await expect(page.locator("#dlg-detail")).toHaveAttribute("open", "");
-  await expect(page.locator("#dlg-detail-title")).toContainText("e2e-node-0");
+  await expect(page.locator("#dlg-detail-title")).toHaveText("Config detail");
+  await expect(page.locator("#dlg-detail-kv")).toContainText("e2e-node-0");
   await page.click("#dlg-detail-close");
 });
 
@@ -155,3 +190,4 @@ test("full URIs never appear in the DOM by default", async ({ page }) => {
   const html = await page.content();
   expect(html).not.toContain("vless://uuid@");
 });
+

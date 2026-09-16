@@ -340,6 +340,30 @@ describe("stat badges stay one-line with full stamps in tooltips", () => {
     const valueNode = cards[2].children[1];
     assert.match(valueNode.title, /^2026\/09\/16 \d\d:\d\d:\d\d$/);
   });
+
+  it("Last scan reads — while a refresh runs (TUI parity)", () => {
+    api.state.hasSummaryApi = true;
+    api.state.refreshSeconds = 300;
+    api.state.pingSeconds = 0;
+    api.state.startedAt = "2026-09-16T13:03:47+00:00";
+    api.state.snapshot = {
+      refreshing: true,
+      pinging: false,
+      total_candidates: 9482,
+      tested_candidates: 550,
+      reachable_candidates: 41,
+      fetch_bytes: 6081740,
+      last_refresh: "2026-09-16T13:03:40+00:00",
+      refresh_duration_ms: 33400,
+      ranked: [],
+      fetch_errors: [],
+      proxy_running: false,
+    };
+    api.renderStats();
+    const cards = sandbox.__elements.get("stat-cards").children;
+    const text = cards[2].children.map((c) => c.textContent).join("|");
+    assert.equal(text, "Last scan|—");
+  });
 });
 
 describe("fmtDuration uses whole units, never fractional minutes", () => {
@@ -370,6 +394,7 @@ describe("config detail popup (row click)", () => {
     country_code: "DE",
     error: null,
     download_mbps: null,
+    stability_count: 3,
   };
 
   it("openDetail fills facts, stores the link, hides QR without encoder", () => {
@@ -378,8 +403,11 @@ describe("config detail popup (row click)", () => {
     const dlg = sandbox.__elements.get("dlg-detail");
     assert.equal(dlg.open, true);
     assert.equal(api.state.detailUri, row.uri);
-    assert.equal(sandbox.__elements.get("dlg-detail-title").textContent, "Config detail — node-x");
-    assert.ok(sandbox.__elements.get("dlg-detail-kv").children.length > 0);
+    assert.equal(sandbox.__elements.get("dlg-detail-title").textContent, "Config detail");
+    const kvText = sandbox.__elements.get("dlg-detail-kv").children.map((c) => c.textContent).join("|");
+    assert.ok(kvText.includes("Name|node-x"), "name renders inside the popup: " + kvText);
+    assert.ok(kvText.includes("Reachable|yes|Stability|×3"),
+      "stability follows Reachable like the configs tab: " + kvText);
     // No QREncode in the sandbox: QR block hides instead of erroring.
     assert.equal(sandbox.__elements.get("dlg-detail-qr-wrap").hidden, true);
     const useBtn = sandbox.__elements.get("dlg-detail-use");
@@ -448,7 +476,7 @@ describe("proxy row state tracks pending → active (TUI parity)", () => {
     assert.equal(api.proxyRowState(URI), "active");
   });
 
-  it("toggleProxy unpins the confirmed-active config, re-affirms while pending", async () => {
+  it("toggleProxy unpins the confirmed-active config, refuses while in flight", async () => {
     const posts = [];
     sandbox.fetch = async (url, init) => {
       posts.push(JSON.parse(init.body));
@@ -461,9 +489,36 @@ describe("proxy row state tracks pending → active (TUI parity)", () => {
     assert.deepEqual(posts[posts.length - 1], { uri: null });
     assert.equal(api.state.proxyPendingUri, null);
 
-    // Still pending (server has not caught up): re-affirm the pin.
+    // Unpin still in flight: further clicks are refused, never stacked.
+    await api.toggleProxy(URI);
+    assert.equal(posts.length, 1);
+
+    // Server confirms the unpin (snapshot clears): pinning works again.
+    api.state.snapshot = { proxy_active_uri: null, ranked: [], proxy_running: false };
+    api.syncProxyPending();
+    assert.equal(api.state.proxyPendingUri, undefined);
     await api.toggleProxy(URI);
     assert.deepEqual(posts[posts.length - 1], { uri: URI });
+    assert.equal(posts.length, 2);
+  });
+
+  it("same-tick double toggleProxy sends exactly one POST", async () => {
+    let posts = 0;
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    sandbox.fetch = async () => {
+      posts += 1;
+      await gate;
+      return { status: 200, async text() { return '{"ok":true}'; } };
+    };
+    api.state.snapshot = { proxy_active_uri: null, ranked: [], proxy_running: false };
+    api.state.proxyPendingUri = undefined;
+    const uri = "vless://uuid@x.example.com:443#node-x";
+    const a = api.toggleProxy(uri);
+    const b = api.toggleProxy(uri);
+    release();
+    await Promise.all([a, b]);
+    assert.equal(posts, 1);
   });
 
   it("selectProxy sets the optimistic pending lock immediately", async () => {
@@ -529,6 +584,78 @@ describe("live probe-delta confirms proxy switches", () => {
     assert.equal(api.state.proxyPendingUri, undefined);
     const toasts = sandbox.__elements.get("toasts").children;
     assert.ok(toasts.some((t) => t.textContent.includes("not confirmed")));
+  });
+});
+
+describe("proxy mode segmented control", () => {
+  it("posts the chosen mode and locks in flight", async () => {
+    const posts = [];
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    sandbox.fetch = async (url, init) => {
+      posts.push(JSON.parse(init.body));
+      await gate;
+      return { status: 200, async text() { return '{"ok":true,"status":"Proxy local.","dirty":false}'; } };
+    };
+    api.state.snapshot = { proxy_running: false, proxy_discoverable: false };
+    const p = api.setProxyMode("local");
+    assert.equal(sandbox.__elements.get("proxy-off").disabled, true);
+    assert.equal(sandbox.__elements.get("proxy-lan").disabled, true);
+    release();
+    await p;
+    assert.deepEqual(posts, [{ mode: "local" }]);
+    assert.equal(sandbox.__elements.get("proxy-off").disabled, false);
+  });
+
+  it("concurrent sets collapse to one POST", async () => {
+    let posts = 0;
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    sandbox.fetch = async () => {
+      posts += 1;
+      await gate;
+      return { status: 200, async text() { return '{"ok":true}'; } };
+    };
+    api.state.snapshot = { proxy_running: false, proxy_discoverable: false };
+    const a = api.setProxyMode("lan");
+    const b = api.setProxyMode("lan");
+    release();
+    await Promise.all([a, b]);
+    assert.equal(posts, 1);
+  });
+
+  it("pressed follows the live snapshot (off when not running)", () => {
+    const pressed = () => ["off", "local", "lan"].filter((m) =>
+      sandbox.__elements.get("proxy-" + m).getAttribute("aria-pressed") === "true");
+    api.state.proxyModeInflight = false;
+    api.state.snapshot = { proxy_running: false, proxy_discoverable: false };
+    api.updateProxyModeButtons();
+    assert.deepEqual(pressed(), ["off"]);
+    api.state.snapshot = { proxy_running: true, proxy_discoverable: false };
+    api.updateProxyModeButtons();
+    assert.deepEqual(pressed(), ["local"]);
+    api.state.snapshot = { proxy_running: true, proxy_discoverable: true };
+    api.updateProxyModeButtons();
+    assert.deepEqual(pressed(), ["lan"]);
+  });
+});
+
+describe("running-for clock pauses while offline", () => {
+  it("tickClock freezes badges on offline, advances on live", () => {
+    api.state.startedAt = new Date(Date.now() - 3600_000).toISOString();
+    api.state.snapshot = { refreshing: false, pinging: false };
+    api.state.hasSummaryApi = true;
+    api.state.refreshSeconds = 0;
+    api.state.pingSeconds = 0;
+    const node = sandbox.document.getElementById("stat-running");
+
+    api.state.feed = "offline";
+    api.tickClock();
+    assert.equal(node.textContent, "");
+
+    api.state.feed = "live";
+    api.tickClock();
+    assert.match(node.textContent, /^\d\d:\d\d:\d\d$/);
   });
 });
 

@@ -64,6 +64,8 @@ test("buttons disable while a system cycle runs; clicks send nothing", async ({ 
   // Disabled buttons cannot be clicked at all — counters stay at zero.
   await expect(stub.refreshPosts).toBe(0);
   await expect(stub.pingPosts).toBe(0);
+  // Like the TUI, Last scan reads — until the running cycle finishes.
+  await expect(page.locator("#stat-cards .card").nth(2).locator(".stat-value")).toHaveText("—");
 });
 
 test("keyboard trigger while busy is refused in-browser with TUI wording", async ({ page }) => {

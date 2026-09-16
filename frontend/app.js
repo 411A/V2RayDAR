@@ -54,6 +54,7 @@ const state = {
   wired: false, // wire() runs once; boot() may re-enter via Retry
   cycleInflight: { refresh: false, ping: false }, // POST in flight (buttons locked)
   proxyPendingUri: undefined, // proxy switch requested but not yet confirmed (undefined = none; null = unpin in flight)
+  proxyModeInflight: false, // mode POST in flight (segmented buttons locked)
   editingSub: null, // subscription index being edited, null = adding
 };
 
@@ -976,12 +977,19 @@ function renderStats() {
   const took = s.refresh_duration_ms !== null && s.refresh_duration_ms !== undefined
     ? " · took " + fmtDuration(s.refresh_duration_ms)
     : "";
+  // Like the TUI (which clears the duration when a cycle starts), the Last
+  // scan badge reads "—" while a refresh runs — the stamp underneath is
+  // stale until the cycle finishes.
+  const scanRunning = !!s.refreshing;
+  const scanVal = scanRunning ? "—" : fmtClock(s.last_refresh);
+  const scanSub = scanRunning ? "" : ago + took;
+  const scanHint = scanRunning ? "" : fmtStamp(s.last_refresh);
   // TUI top-strip parity: Running For / Refresh / Last Scan / Fetched /
   // Failed / Working / Sub Usage. Seven tight badges share one row (narrow
   // viewports scroll horizontally instead of wrapping or overflowing).
   box.appendChild(statCard("Running For", uptimeText(), state.startedAt ? "Started: " + fmtClock(state.startedAt) : "", null, "stat-running", null, state.startedAt ? "Started: " + fmtStamp(state.startedAt) : ""));
   box.appendChild(statCard("Refresh", rs.val, rs.sub, null, "stat-refresh-val", "stat-refresh-sub"));
-  box.appendChild(statCard("Last scan", fmtClock(s.last_refresh), ago + took, null, null, null, fmtStamp(s.last_refresh)));
+  box.appendChild(statCard("Last scan", scanVal, scanSub, null, null, null, scanHint));
   box.appendChild(statCard("Fetched", String(s.total_candidates || 0)));
   box.appendChild(statCard("Failed", String(failed), "of " + tested + " tested"));
   box.appendChild(statCard("Working", String(s.reachable_candidates || 0)));
@@ -997,7 +1005,10 @@ function renderStats() {
 /// second boundary, so ticker and renders always agree to the second.
 /// Writes are change-guarded: identical text never touches the DOM.
 function tickClock() {
-  if (state.snapshot) {
+  // While offline the server is gone: freeze the clock on the last known
+  // values instead of counting up from a stale anchor. Reconnecting resumes
+  // from the fresh snapshot (catching up honestly in one step).
+  if (state.snapshot && state.feed !== "offline") {
     setText($("stat-running"), uptimeText());
     const rs = refreshStatus();
     setText($("stat-refresh-val"), rs.val);
@@ -1457,7 +1468,7 @@ function renderConfigs() {
 
 function openDetail(c) {
   state.detailUri = c.uri || "";
-  $("dlg-detail-title").textContent = "Config detail — " + (c.name || "(unnamed)");
+  $("dlg-detail-title").textContent = "Config detail";
   const kv = $("dlg-detail-kv");
   while (kv.firstChild) {
     kv.removeChild(kv.firstChild);
@@ -1465,11 +1476,13 @@ function openDetail(c) {
   const ccFlag = flagFor(c.country_code);
   const ccUp = ccFlag ? String(c.country_code).toUpperCase() : "";
   const pairs = [
+    ["Name", c.name || "(unnamed)"],
     ["Rank", c.rank !== undefined ? String(c.rank) : "—"],
     ["Protocol", c.protocol || "—"],
     ["Endpoint", maskedHost(c.endpoint)],
     ["Source", c.source || "—"],
     ["Reachable", c.reachable ? "yes" : "no"],
+    ["Stability", c.stability_count ? "×" + c.stability_count : "—"],
     ["Validation", c.validation || "—"],
     ["Latency", fmtLatency(c.latency_ms)],
     ["HTTP status", c.http_status !== null && c.http_status !== undefined ? String(c.http_status) : "—"],
@@ -1586,20 +1599,38 @@ function syncProxyPending() {
   }
 }
 
+/// Drop the optimistic lock and repaint the proxy surfaces (failures,
+/// settle timeouts, stale locks).
+function clearProxyPending() {
+  state.proxyPendingUri = undefined;
+  renderConfigs();
+  renderOvConfigs();
+  renderProxyTab();
+}
+
 /// Row/dialog proxy action with TUI `Enter` toggle semantics: clicking the
-/// confirmed-active config (nothing in flight) unpins back to auto-select
-/// instead of re-firing a no-op pin. While a switch is still in flight the
-/// click (re-)pins the row: re-affirming a pending pin, superseding another
-/// row's pin, or cancelling a pending unpin.
+/// confirmed-active config unpins back to auto-select instead of re-firing
+/// a no-op pin. The optimistic lock is set synchronously (like
+/// `cycleInflight`), so same-tick double clicks collapse to one POST and
+/// further clicks while a switch runs are refused with a toast instead of
+/// stacking duplicate pins.
 async function toggleProxy(uri) {
-  const s = state.snapshot;
-  const activeUri = s && s.proxy_active_uri;
-  const confirmedActive = !!(uri && activeUri && uri === activeUri);
-  if (confirmedActive && state.proxyPendingUri === undefined) {
-    await selectProxy(null);
+  if (!uri) {
+    await selectProxy(uri);
     return;
   }
-  await selectProxy(uri);
+  if (state.proxyPendingUri !== undefined) {
+    toast("Proxy switch already in flight — try again in a moment.", "bad");
+    return;
+  }
+  const s = state.snapshot;
+  const activeUri = s && s.proxy_active_uri;
+  const unpin = !!(activeUri && uri === activeUri);
+  state.proxyPendingUri = unpin ? null : uri;
+  renderConfigs();
+  renderOvConfigs();
+  renderProxyTab();
+  await selectProxy(unpin ? null : uri);
 }
 
 async function selectProxy(uri) {
@@ -1614,22 +1645,22 @@ async function selectProxy(uri) {
   const r = await fetchJson("/api/proxy/select", { method: "POST", body });
   if (r.status === 404) {
     toast("Proxy-select API is not on this server version yet — use the TUI.", "bad");
+    clearProxyPending();
     return;
   }
   if (r.status === 0) {
     toast("Server unreachable.", "bad");
-    state.proxyPendingUri = undefined;
-    renderConfigs();
-    renderOvConfigs();
+    clearProxyPending();
     return;
   }
   if (r.status >= 200 && r.status < 300) {
-    // Optimistic pending lock: the button flips to Pending… now so the
-    // very next click (before the 1.5 s resync confirms) re-affirms or
-    // toggles instead of firing a duplicate pin.
+    // Re-affirm the lock set synchronously by the caller (idempotent):
+    // the button already shows Pending… so clicks during the 1.5 s
+    // confirmation window are refused instead of duplicating the pin.
     state.proxyPendingUri = uri;
     renderConfigs();
     renderOvConfigs();
+    renderProxyTab();
     toast(subMessage(r, "Proxy switch requested — confirming…"), "good");
     setStatus(subMessage(r, "Proxy switch requested."));
     window.setTimeout(() => void loadResults(), 1500);
@@ -1644,9 +1675,7 @@ async function selectProxy(uri) {
     }, 10000);
     return;
   }
-  state.proxyPendingUri = undefined;
-  renderConfigs();
-  renderOvConfigs();
+  clearProxyPending();
   toast(subMessage(r, "Proxy switch failed (HTTP " + r.status + ")."), "bad");
 }
 
@@ -1661,9 +1690,7 @@ async function settleProxyPending() {
   if (!ok || state.proxyPendingUri === undefined) {
     return;
   }
-  state.proxyPendingUri = undefined;
-  renderConfigs();
-  renderOvConfigs();
+  clearProxyPending();
   toast("Proxy switch not confirmed — the proxy may be off or the switch failed. See the Proxy tab.", "bad");
   setStatus("Proxy switch unconfirmed — see the Proxy tab.");
 }
@@ -1724,6 +1751,62 @@ function renderLogs() {
   }
 }
 
+/// Set the proxy mode directly (Off/Local/LAN). One switch in flight at a
+/// time — rapid clicks collapse like every other manual trigger.
+async function setProxyMode(mode) {
+  if (state.proxyModeInflight) {
+    toast("Proxy switch already in flight — try again in a moment.", "bad");
+    return;
+  }
+  state.proxyModeInflight = true;
+  updateProxyModeButtons();
+  try {
+    const r = await fetchJson("/api/proxy/mode", { method: "POST", body: { mode } });
+    if (r.status === 404) {
+      toast("Proxy API is not on this server version yet — use the TUI.", "bad");
+      return;
+    }
+    if (r.status === 0) {
+      toast("Server unreachable.", "bad");
+      return;
+    }
+    if (r.status >= 200 && r.status < 300) {
+      toast(subMessage(r, "Proxy mode set."), "good");
+      window.setTimeout(() => void loadResults(), 1200);
+      return;
+    }
+    toast(subMessage(r, "Proxy switch failed (HTTP " + r.status + ")."), "bad");
+  } finally {
+    state.proxyModeInflight = false;
+    updateProxyModeButtons();
+  }
+}
+
+/// Current proxy mode from the live snapshot (`off` when not running —
+/// same reading as the status pill), pressed into the segmented control.
+function proxyMode() {
+  const s = state.snapshot;
+  if (!s || !s.proxy_running) {
+    return "off";
+  }
+  return s.proxy_discoverable ? "lan" : "local";
+}
+
+/// Lock the mode segments in flight, press the live mode otherwise. Called
+/// on every proxy-tab render so a change from any UI (or the resync after
+/// our own POST) reflects within one render.
+function updateProxyModeButtons() {
+  const mode = proxyMode();
+  for (const m of ["off", "local", "lan"]) {
+    const b = $("proxy-" + m);
+    if (!b) {
+      continue;
+    }
+    b.disabled = state.proxyModeInflight;
+    b.setAttribute("aria-pressed", String(m === mode));
+  }
+}
+
 /* ---------- proxy / share tabs ---------- */
 
 function kvFill(box, pairs) {
@@ -1745,6 +1828,7 @@ function renderProxyTab() {
   if (!s) {
     pillSlot.textContent = "unknown";
     kvFill($("proxy-kv"), []);
+    updateProxyModeButtons();
     return;
   }
   pillSlot.appendChild(proxyPill(s.proxy_running, s.proxy_active_uri));
@@ -1756,7 +1840,11 @@ function renderProxyTab() {
     ["Working pool", String(s.reachable_candidates || 0)],
   ]);
   $("proxy-manual").textContent = s.proxy_active_uri ? "Active link held by the server (full URI never rendered — use Copy on its row to export)." : "none pinned";
-  $("btn-proxy-unpin").disabled = !s.proxy_active_uri;
+  // Locked while an unpin is in flight (snapshot still shows the old pin
+  // until the server confirms), so rapid clicks cannot stack duplicate
+  // unpin POSTs; a pin in flight keeps it clickable to cancel the pin.
+  $("btn-proxy-unpin").disabled = !s.proxy_active_uri || state.proxyPendingUri === null;
+  updateProxyModeButtons();
 }
 
 function renderShare() {
@@ -2567,29 +2655,19 @@ function wire() {
     void loadSettings();
   });
 
-  $("btn-proxy-mode").addEventListener("click", async (ev) => {
-    const btn = ev.currentTarget;
-    btn.disabled = true;
-    try {
-      const r = await fetchJson("/api/proxy/mode", { method: "POST", body: {} });
-      if (r.status === 404) {
-        toast("Proxy API is not on this server version yet — use the TUI.", "bad");
-        return;
-      }
-      if (r.status >= 200 && r.status < 300) {
-        toast(subMessage(r, "Proxy mode cycled."), "good");
-        window.setTimeout(() => void loadResults(), 1200);
-        return;
-      }
-      toast(subMessage(r, "Proxy switch failed (HTTP " + r.status + ")."), "bad");
-    } finally {
-      btn.disabled = false;
-    }
-  });
+  for (const mode of ["off", "local", "lan"]) {
+    $("proxy-" + mode).addEventListener("click", () => void setProxyMode(mode));
+  }
   $("btn-proxy-unpin").addEventListener("click", () => {
     const s = state.snapshot;
-    if (s && s.proxy_active_uri) {
+    if (s && s.proxy_active_uri && state.proxyPendingUri === undefined) {
+      // Synchronous lock first: the button disables on re-render, so a
+      // second click can never stack another unpin POST behind this one.
+      state.proxyPendingUri = null;
+      renderProxyTab();
       void selectProxy(null);
+    } else if (state.proxyPendingUri !== undefined) {
+      toast("Proxy switch already in flight — try again in a moment.", "bad");
     } else {
       toast("No manual config pinned.", "bad");
     }

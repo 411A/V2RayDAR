@@ -66,11 +66,11 @@
 
     <div class="top-actions">
       <button type="button" class="btn" id="btn-refresh" title="Trigger a manual refresh (same as Ctrl+R in the TUI)">
-        <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 1.5v3h-3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <svg width="15" height="15" viewBox="0 0 492 492" fill="currentColor" aria-hidden="true"><path d="M484.08 296.216c-5.1-5.128-11.848-7.936-19.032-7.936H330.516c-14.828 0-26.86 12.036-26.86 26.868v22.796c0 7.168 2.784 14.064 7.884 19.16 5.092 5.088 11.82 8.052 18.976 8.052H366.1c-31.544 30.752-74.928 50.08-120.388 50.08-71.832 0-136.028-45.596-159.744-113.344-5.392-15.404-19.972-25.784-36.28-25.784-4.316 0-8.592.708-12.7 2.144-9.692 3.396-17.48 10.352-21.932 19.596-4.456 9.248-5.04 19.684-1.648 29.368 34.496 98.54 127.692 164.74 232.144 164.74 64.132 0 123.448-23.948 169.572-67.656v25.22c0 14.836 12.384 27.108 27.224 27.108h22.792c14.84 0 26.86-12.272 26.86-27.108V315.24c0-7.184-2.8-13.936-7.92-19.024z"/><path d="M478.628 164.78C444.132 66.244 350.916.044 246.464.044c-64.136 0-123.464 23.952-169.588 67.66v-25.22C76.876 27.652 64.532 15.372 49.692 15.372H26.896C12.06 15.372 0 27.652 0 42.484V176.76c0 7.18 2.824 13.868 7.944 18.964 5.096 5.128 11.86 7.932 19.044 7.932l-.08.06h134.604c14.84 0 26.832-12.028 26.832-26.86v-22.8c0-14.836-11.992-27.216-26.832-27.216h-35.576c31.544-30.752 74.932-50.076 120.392-50.076 71.832 0 136.024 45.596 159.74 113.348 5.392 15.404 19.968 25.78 36.28 25.78 4.32 0 8.588-.704 12.7-2.144 9.696-3.396 17.48-10.348 21.932-19.596 4.452-9.252 5.04-19.68 1.648-29.372z"/></svg>
         Refresh
       </button>
       <button type="button" class="btn" id="btn-ping" title="Re-ping cached configs (same as Ctrl+P in the TUI)">
-        <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 12.5 8 3.5l6 9" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><circle cx="8" cy="12.5" r="1.3" fill="currentColor"/></svg>
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="m 12 1 c -0.265625 0 -0.519531 0.105469 -0.707031 0.292969 c -0.390625 0.390625 -0.390625 1.023437 0 1.414062 l 1.292969 1.292969 h -7.585938 c -0.550781 0 -1 0.449219 -1 1 s 0.449219 1 1 1 h 7.585938 l -1.292969 1.292969 c -0.390625 0.390625 -0.390625 1.023437 0 1.414062 s 1.023437 0.390625 1.414062 0 l 3 -3 c 0.390625 -0.390625 0.390625 -1.023437 0 -1.414062 l -3 -3 c -0.1875 -0.1875 -0.441406 -0.292969 -0.707031 -0.292969 z m -8 6 c -0.257812 0 -0.511719 0.097656 -0.707031 0.292969 l -3 3 c -0.3906252 0.390625 -0.3906252 1.023437 0 1.414062 l 3 3 c 0.1875 0.1875 0.441406 0.292969 0.707031 0.292969 s 0.519531 -0.105469 0.707031 -0.292969 c 0.390625 -0.390625 0.390625 -1.023437 0 -1.414062 l -1.292969 -1.292969 h 7.585938 c 0.550781 0 1 -0.449219 1 -1 s -0.449219 -1 -1 -1 h -7.585938 l 1.292969 -1.292969 c 0.390625 -0.390625 0.390625 -1.023437 0 -1.414062 c -0.195312 -0.195313 -0.449219 -0.292969 -0.707031 -0.292969 z m 0 0"/></svg>
         Ping
       </button>
       <div class="theme-switch" role="group" aria-label="Color theme">
@@ -113,7 +113,6 @@
                   <th scope="col">#</th>
                   <th scope="col">Name</th>
                   <th scope="col">Latency</th>
-                  <th scope="col"><span class="visually-hidden">Actions</span></th>
                 </tr>
               </thead>
               <tbody id="ov-cfg-body"></tbody>
@@ -325,8 +324,12 @@
     <div class="dlg">
       <h2 id="dlg-detail-title">Config detail</h2>
       <dl class="kv" id="dlg-detail-kv"></dl>
+      <div class="qr-wrap" id="dlg-detail-qr-wrap">
+        <canvas id="dlg-detail-qr" width="220" height="220" role="img" aria-label="QR code for the selected config link"></canvas>
+      </div>
       <div class="dlg-actions">
-        <button type="button" class="btn primary" id="dlg-detail-copy">Copy link</button>
+        <button type="button" class="btn primary" id="dlg-detail-use">Use as proxy</button>
+        <button type="button" class="btn" id="dlg-detail-copy">Copy link</button>
         <button type="button" class="btn" id="dlg-detail-close">Close</button>
       </div>
     </div>

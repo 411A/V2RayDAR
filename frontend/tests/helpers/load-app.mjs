@@ -174,6 +174,8 @@ const EXPORT_HOOK = `;globalThis.__v2 = {
   saveNow, fetchJson, toast, setStatus, setDirty, renderStats, loadResults,
   applyRanked, renderOvConfigs, renderConfigs, pingSub, refreshStatus,
   renderStats, fmtClock, fmtStamp, fmtDuration, fmtAgo,
+  openDetail, wireRowDialog, selectProxy, toggleProxy,
+  proxyRowState, syncProxyPending,
 };`;
 
 /** Evaluate the real frontend/app.js in a stub DOM and return its internals. */

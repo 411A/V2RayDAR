@@ -53,6 +53,7 @@ const state = {
   follow: true,
   wired: false, // wire() runs once; boot() may re-enter via Retry
   cycleInflight: { refresh: false, ping: false }, // POST in flight (buttons locked)
+  proxyPendingUri: undefined, // proxy switch requested but not yet confirmed (undefined = none; null = unpin in flight)
   editingSub: null, // subscription index being edited, null = adding
 };
 
@@ -592,6 +593,7 @@ async function loadResults() {
     return false;
   }
   state.snapshot = r.data;
+  syncProxyPending();
   ingestLogs(r.data);
   renderAll();
   if (state.feed !== "live" && state.feed !== "polling") {
@@ -731,6 +733,7 @@ function applyHello(text) {
   const msg = safeParse(text);
   if (msg && msg.snapshot) {
     state.snapshot = msg.snapshot;
+    syncProxyPending();
     ingestLogs(msg.snapshot);
     renderAll();
   } else {
@@ -779,6 +782,7 @@ function applySummary(sum) {
     state.qrKnown = sum.qr_available;
   }
   storeCapabilities(sum);
+  syncProxyPending();
   renderAll();
 }
 
@@ -1066,22 +1070,40 @@ function renderOvConfigs() {
     const tr = document.createElement("tr");
     if (activeUri && c.uri && c.uri === activeUri) {
       tr.className = "is-proxy";
+    } else if (proxyRowState(c.uri) === "pending") {
+      tr.className = "is-pending";
     }
     tr.appendChild(el("td", c.rank !== undefined ? String(c.rank) : "—"));
     const nameTd = document.createElement("td");
     nameTd.appendChild(el("strong", c.name || "(unnamed)"));
     tr.appendChild(nameTd);
     tr.appendChild(el("td", fmtLatency(c.latency_ms)));
-    const actTd = document.createElement("td");
-    const isActive = !!(c.uri && activeUri && c.uri === activeUri);
-    const useBtn = el("button", isActive ? "Active" : "Use", "btn small");
-    useBtn.type = "button";
-    useBtn.title = isActive ? "This config is the active proxy" : "Pin this config as the proxy (same as Enter in the TUI)";
-    useBtn.addEventListener("click", () => void selectProxy(c.uri));
-    actTd.appendChild(useBtn);
-    tr.appendChild(actTd);
+    wireRowDialog(tr, c);
     body.appendChild(tr);
   }
+}
+
+/// Make a config row open the detail popup on click (or Enter/Space when
+/// focused). Clicks on in-row buttons (Use/Copy/QR) keep their own action
+/// and never open the dialog.
+function wireRowDialog(tr, c) {
+  tr.tabIndex = 0;
+  tr.title = "Show config details, QR code and proxy actions";
+  tr.addEventListener("click", (ev) => {
+    if (ev.target && ev.target.closest && ev.target.closest("button")) {
+      return;
+    }
+    openDetail(c);
+  });
+  tr.addEventListener("keydown", (ev) => {
+    if (ev.target && ev.target !== tr) {
+      return;
+    }
+    if (ev.key === "Enter" || ev.key === " ") {
+      ev.preventDefault();
+      openDetail(c);
+    }
+  });
 }
 
 function ovConfigRow(box, key, value) {
@@ -1339,6 +1361,8 @@ function renderConfigs() {
     const tr = document.createElement("tr");
     if (activeUri && c.uri && c.uri === activeUri) {
       tr.className = "is-proxy";
+    } else if (proxyRowState(c.uri) === "pending") {
+      tr.className = "is-pending";
     }
     tr.appendChild(el("td", c.rank !== undefined ? String(c.rank) : "—"));
 
@@ -1385,14 +1409,16 @@ function renderConfigs() {
 
     const actTd = document.createElement("td");
     const wrap = el("span", null, "row-actions");
-    const isActive = !!(c.uri && activeUri && c.uri === activeUri);
-    const useBtn = el("button", isActive ? "Active" : "Use", "btn small");
+    const rowState = proxyRowState(c.uri);
+    const useBtn = el("button", rowState === "active" ? "Active" : rowState === "pending" ? "Pending…" : "Use", "btn small");
     useBtn.type = "button";
-    useBtn.title = isActive ? "This config is the active proxy" : "Pin this config as the proxy (same as Enter in the TUI)";
-    useBtn.addEventListener("click", () => void selectProxy(c.uri));
-    const detBtn = el("button", "Detail", "btn small");
-    detBtn.type = "button";
-    detBtn.addEventListener("click", () => openDetail(c));
+    useBtn.disabled = rowState === "pending";
+    useBtn.title = rowState === "active"
+      ? "This config is the active proxy — click to unpin (auto-select)"
+      : rowState === "pending"
+        ? "Confirming the proxy switch — the server has not caught up yet"
+        : "Pin this config as the proxy (same as Enter in the TUI)";
+    useBtn.addEventListener("click", () => void toggleProxy(c.uri));
     const copyBtn = el("button", "Copy", "btn small");
     copyBtn.type = "button";
     copyBtn.addEventListener("click", () => void copyText(c.uri || "", "Config link copied."));
@@ -1401,12 +1427,13 @@ function renderConfigs() {
     qrBtn.title = "Show the QR code for this config (scan with a phone)";
     qrBtn.addEventListener("click", () => openQr(c));
     wrap.appendChild(useBtn);
-    wrap.appendChild(detBtn);
     wrap.appendChild(copyBtn);
     wrap.appendChild(qrBtn);
     actTd.appendChild(wrap);
     tr.appendChild(actTd);
 
+    // The row itself opens the detail popup; the Detail button is gone.
+    wireRowDialog(tr, c);
     body.appendChild(tr);
   }
 }
@@ -1443,6 +1470,21 @@ function openDetail(c) {
     }
     kv.appendChild(dd);
   }
+  // QR alongside the facts: same client-side encoder as the per-row QR
+  // button (link stays in JS, painted to canvas, never in the DOM).
+  // Quiet: a missing encoder just hides the QR block instead of toasting
+  // on every dialog open.
+  const qrWrap = $("dlg-detail-qr-wrap");
+  if (c.uri && drawQr(c.uri, "dlg-detail-qr", true)) {
+    qrWrap.hidden = false;
+  } else {
+    qrWrap.hidden = true;
+  }
+  const useBtn = $("dlg-detail-use");
+  const detailState = proxyRowState(c.uri);
+  useBtn.disabled = detailState !== "idle";
+  useBtn.textContent = detailState === "active" ? "Active proxy" : detailState === "pending" ? "Pending…" : "Use as proxy";
+  useBtn.title = detailState === "active" ? "This config is the active proxy — click to unpin (auto-select)" : "";
   const dlg = $("dlg-detail");
   if (typeof dlg.showModal === "function") {
     dlg.showModal();
@@ -1468,17 +1510,21 @@ function openQr(c) {
   }
 }
 
-function drawQr(text) {
-  const canvas = $("qr-canvas");
+function drawQr(text, canvasId, silent) {
+  const canvas = $(canvasId || "qr-canvas");
   if (typeof QREncode === "undefined" || !QREncode) {
-    toast("QR encoder failed to load (qr.js missing).", "bad");
+    if (!silent) {
+      toast("QR encoder failed to load (qr.js missing).", "bad");
+    }
     return false;
   }
   let model = null;
   try {
     model = QREncode.encode(text, QREncode.CorrectLevel.M);
   } catch (err) {
-    toast("Link is too long for a QR code.", "bad");
+    if (!silent) {
+      toast("Link is too long for a QR code.", "bad");
+    }
     return false;
   }
   const n = model.getModuleCount();
@@ -1500,6 +1546,45 @@ function drawQr(text) {
   return true;
 }
 
+/// Per-row proxy state for button labels: `active` (server-confirmed),
+/// `pending` (requested, confirmation in flight), or `idle`. Mirrors the
+/// TUI's `proxy_pending_uri`: a pending row only flips to active once
+/// `proxy_active_uri` catches up in a fresh snapshot.
+function proxyRowState(uri) {
+  const s = state.snapshot;
+  const activeUri = s && s.proxy_active_uri ? s.proxy_active_uri : null;
+  if (state.proxyPendingUri !== undefined && uri === state.proxyPendingUri) {
+    return activeUri === uri ? "active" : "pending";
+  }
+  return activeUri && uri === activeUri ? "active" : "idle";
+}
+
+/// Clear a pending switch once the server confirms it. Called on every path
+/// that installs a fresh snapshot; the list re-renders right after, so the
+/// Pending… button flips to Active without another round trip.
+function syncProxyPending() {
+  if (state.proxyPendingUri !== undefined && state.snapshot &&
+    state.snapshot.proxy_active_uri === state.proxyPendingUri) {
+    state.proxyPendingUri = undefined;
+  }
+}
+
+/// Row/dialog proxy action with TUI `Enter` toggle semantics: clicking the
+/// confirmed-active config (nothing in flight) unpins back to auto-select
+/// instead of re-firing a no-op pin. While a switch is still in flight the
+/// click (re-)pins the row: re-affirming a pending pin, superseding another
+/// row's pin, or cancelling a pending unpin.
+async function toggleProxy(uri) {
+  const s = state.snapshot;
+  const activeUri = s && s.proxy_active_uri;
+  const confirmedActive = !!(uri && activeUri && uri === activeUri);
+  if (confirmedActive && state.proxyPendingUri === undefined) {
+    await selectProxy(null);
+    return;
+  }
+  await selectProxy(uri);
+}
+
 async function selectProxy(uri) {
   // Explicit `null` unpins back to auto-select (same as the TUI toggle-off).
   if (uri === null) {
@@ -1516,14 +1601,26 @@ async function selectProxy(uri) {
   }
   if (r.status === 0) {
     toast("Server unreachable.", "bad");
+    state.proxyPendingUri = undefined;
+    renderConfigs();
+    renderOvConfigs();
     return;
   }
   if (r.status >= 200 && r.status < 300) {
+    // Optimistic pending lock: the button flips to Pending… now so the
+    // very next click (before the 1.5 s resync confirms) re-affirms or
+    // toggles instead of firing a duplicate pin.
+    state.proxyPendingUri = uri;
+    renderConfigs();
+    renderOvConfigs();
     toast(subMessage(r, "Proxy switch requested — confirming…"), "good");
     setStatus(subMessage(r, "Proxy switch requested."));
     window.setTimeout(() => void loadResults(), 1500);
     return;
   }
+  state.proxyPendingUri = undefined;
+  renderConfigs();
+  renderOvConfigs();
   toast(subMessage(r, "Proxy switch failed (HTTP " + r.status + ")."), "bad");
 }
 
@@ -2476,7 +2573,26 @@ function wire() {
   $("btn-qr-generate-ov").addEventListener("click", () => void generateQr());
 
   $("dlg-detail-close").addEventListener("click", () => $("dlg-detail").close());
+  // Light-dismiss: a click/tap outside the dialog box (on the backdrop,
+  // which targets the dialog element itself) closes it, same as Close/Esc.
+  // Inner clicks target children, so form buttons keep working.
+  for (const id of ["dlg-sub", "dlg-detail", "dlg-qr", "dlg-keys"]) {
+    const d = $(id);
+    d.addEventListener("click", (ev) => {
+      if (ev.target === d) {
+        d.close();
+      }
+    });
+  }
   $("dlg-detail-copy").addEventListener("click", () => void copyText(state.detailUri, "Config link copied."));
+  $("dlg-detail-use").addEventListener("click", () => {
+    if (!state.detailUri) {
+      toast("No link to pin for this config.", "bad");
+      return;
+    }
+    $("dlg-detail").close();
+    void toggleProxy(state.detailUri);
+  });
   $("dlg-qr-close").addEventListener("click", () => $("dlg-qr").close());
 
   window.addEventListener("popstate", () => showTab(currentTab()));

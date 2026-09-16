@@ -355,6 +355,129 @@ describe("fmtDuration uses whole units, never fractional minutes", () => {
   });
 });
 
+describe("config detail popup (row click)", () => {
+  const row = {
+    rank: 1,
+    name: "node-x",
+    protocol: "vless",
+    endpoint: { host: "x.example.com", port: 443 },
+    uri: "vless://uuid@x.example.com:443#node-x",
+    reachable: true,
+    validation: "active_http",
+    latency_ms: 11,
+    http_status: 204,
+    source: "e2e",
+    country_code: "DE",
+    error: null,
+    download_mbps: null,
+  };
+
+  it("openDetail fills facts, stores the link, hides QR without encoder", () => {
+    api.state.snapshot = { proxy_active_uri: null };
+    api.openDetail(row);
+    const dlg = sandbox.__elements.get("dlg-detail");
+    assert.equal(dlg.open, true);
+    assert.equal(api.state.detailUri, row.uri);
+    assert.equal(sandbox.__elements.get("dlg-detail-title").textContent, "Config detail — node-x");
+    assert.ok(sandbox.__elements.get("dlg-detail-kv").children.length > 0);
+    // No QREncode in the sandbox: QR block hides instead of erroring.
+    assert.equal(sandbox.__elements.get("dlg-detail-qr-wrap").hidden, true);
+    const useBtn = sandbox.__elements.get("dlg-detail-use");
+    assert.equal(useBtn.disabled, false);
+    assert.equal(useBtn.textContent, "Use as proxy");
+    dlg.close();
+  });
+
+  it("openDetail marks the active proxy row", () => {
+    api.state.snapshot = { proxy_active_uri: row.uri };
+    api.openDetail(row);
+    const useBtn = sandbox.__elements.get("dlg-detail-use");
+    assert.equal(useBtn.disabled, true);
+    assert.equal(useBtn.textContent, "Active proxy");
+    sandbox.__elements.get("dlg-detail").close();
+  });
+
+  it("backdrop clicks light-dismiss, inner clicks do not", () => {
+    api.wire();
+    for (const id of ["dlg-sub", "dlg-detail", "dlg-qr", "dlg-keys"]) {
+      const d = sandbox.__elements.get(id);
+      d.open = true;
+      d.__fire("click", { target: d });
+      assert.equal(d.open, false, id + " closes on backdrop click");
+      d.open = true;
+      d.__fire("click", { target: sandbox.document.createElement("button") });
+      assert.equal(d.open, true, id + " stays open on inner click");
+      d.close();
+    }
+  });
+
+  it("row clicks open the popup, button clicks do not", () => {
+    api.state.snapshot = { proxy_active_uri: null };
+    const tr = sandbox.document.createElement("tr");
+    api.wireRowDialog(tr, row);
+    assert.equal(tr.tabIndex, 0);
+    tr.__fire("click", { target: { closest: () => null } });
+    assert.equal(sandbox.__elements.get("dlg-detail").open, true);
+    sandbox.__elements.get("dlg-detail").close();
+    tr.__fire("click", { target: { closest: (sel) => (sel === "button" ? {} : null) } });
+    assert.equal(sandbox.__elements.get("dlg-detail").open, false);
+  });
+});
+
+describe("proxy row state tracks pending → active (TUI parity)", () => {
+  const URI = "vless://uuid@x.example.com:443#node-x";
+
+  it("idle / active / pending matrix", () => {
+    api.state.snapshot = { proxy_active_uri: null };
+    api.state.proxyPendingUri = undefined;
+    assert.equal(api.proxyRowState(URI), "idle");
+
+    api.state.snapshot = { proxy_active_uri: URI };
+    assert.equal(api.proxyRowState(URI), "active");
+    assert.equal(api.proxyRowState("vless://other"), "idle");
+
+    // Requested but not yet confirmed: pending…
+    api.state.snapshot = { proxy_active_uri: null };
+    api.state.proxyPendingUri = URI;
+    assert.equal(api.proxyRowState(URI), "pending");
+
+    // …and a fresh snapshot confirming it flips back to active.
+    api.state.snapshot = { proxy_active_uri: URI };
+    api.syncProxyPending();
+    assert.equal(api.state.proxyPendingUri, undefined);
+    assert.equal(api.proxyRowState(URI), "active");
+  });
+
+  it("toggleProxy unpins the confirmed-active config, re-affirms while pending", async () => {
+    const posts = [];
+    sandbox.fetch = async (url, init) => {
+      posts.push(JSON.parse(init.body));
+      return { status: 200, async text() { return '{"ok":true,"status":"Proxy switch requested.","dirty":false}'; } };
+    };
+    // Confirmed active, no pending: toggle OFF (TUI Enter behavior).
+    api.state.snapshot = { proxy_active_uri: URI, ranked: [], proxy_running: false };
+    api.state.proxyPendingUri = undefined;
+    await api.toggleProxy(URI);
+    assert.deepEqual(posts[posts.length - 1], { uri: null });
+    assert.equal(api.state.proxyPendingUri, null);
+
+    // Still pending (server has not caught up): re-affirm the pin.
+    await api.toggleProxy(URI);
+    assert.deepEqual(posts[posts.length - 1], { uri: URI });
+  });
+
+  it("selectProxy sets the optimistic pending lock immediately", async () => {
+    sandbox.fetch = async () => (
+      { status: 200, async text() { return '{"ok":true,"status":"Proxy switch requested.","dirty":false}'; } }
+    );
+    api.state.snapshot = { proxy_active_uri: null, ranked: [], proxy_running: false };
+    api.state.proxyPendingUri = undefined;
+    await api.selectProxy(URI);
+    assert.equal(api.state.proxyPendingUri, URI);
+    assert.equal(api.proxyRowState(URI), "pending");
+  });
+});
+
 describe("proxy select: explicit null unpins (live-push only)", () => {
   it("selectProxy(null) POSTs {uri:null}", async () => {
     const bodies = [];

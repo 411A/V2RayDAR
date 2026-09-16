@@ -80,7 +80,11 @@ test("keyboard trigger while busy is refused in-browser with TUI wording", async
 test("keyboard shortcuts r/p trigger exactly once each", async ({ page }) => {
   await page.goto(base + "/overview");
   await page.keyboard.press("r");
-  await page.keyboard.press("p");
   await expect.poll(() => stub.refreshPosts).toBe(1);
+  // The successful refresh optimistically marks the snapshot refreshing
+  // (resynced ~1.2 s later): pressing `p` before that is correctly refused,
+  // so wait for the resync before the ping shortcut.
+  await page.waitForTimeout(1600);
+  await page.keyboard.press("p");
   await expect.poll(() => stub.pingPosts).toBe(1);
 });

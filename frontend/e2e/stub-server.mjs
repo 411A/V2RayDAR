@@ -79,6 +79,7 @@ export function createStub() {
     proxyModePosts: 0,
     sharingPosts: 0,
     proxySelectBodies: [],
+    proxyActiveUri: null,
     subAddBodies: [],
     subPatch: [],
     subToggle: [],
@@ -142,11 +143,11 @@ export function createStub() {
       return;
     }
     if (req.method === "GET" && p === "/results") {
-      json(res, 200, snapshot({ refreshing: stub.busyRefreshing, pinging: stub.busyPinging, fetch_errors: stub.fetchErrors }));
+      json(res, 200, snapshot({ refreshing: stub.busyRefreshing, pinging: stub.busyPinging, fetch_errors: stub.fetchErrors, proxy_active_uri: stub.proxyActiveUri }));
       return;
     }
     if (req.method === "GET" && p === "/api/summary") {
-      const s = snapshot({ refreshing: stub.busyRefreshing, pinging: stub.busyPinging, fetch_errors: stub.fetchErrors });
+      const s = snapshot({ refreshing: stub.busyRefreshing, pinging: stub.busyPinging, fetch_errors: stub.fetchErrors, proxy_active_uri: stub.proxyActiveUri });
       json(res, 200, { ...s, qr_available: false, refresh_seconds: 60, ping_seconds: 300 });
       return;
     }
@@ -156,7 +157,7 @@ export function createStub() {
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
       });
-      const s = snapshot({ refreshing: stub.busyRefreshing, pinging: stub.busyPinging, fetch_errors: stub.fetchErrors });
+      const s = snapshot({ refreshing: stub.busyRefreshing, pinging: stub.busyPinging, fetch_errors: stub.fetchErrors, proxy_active_uri: stub.proxyActiveUri });
       res.write(`event: hello\ndata: ${JSON.stringify({ snapshot: s })}\n\n`);
       if (stub.rankedPush) {
         const rows = stub.rankedPush;
@@ -271,7 +272,11 @@ export function createStub() {
       return;
     }
     if (req.method === "POST" && p === "/api/proxy/select") {
-      stub.proxySelectBodies.push(await readBody(req));
+      const body = await readBody(req);
+      stub.proxySelectBodies.push(body);
+      // Emulate the server applying the switch: the next snapshot carries
+      // it as proxy_active_uri, confirming the client's pending state.
+      stub.proxyActiveUri = body && body.uri !== undefined ? body.uri : stub.proxyActiveUri;
       json(res, 200, { ok: true, status: "Proxy switch requested.", dirty: false });
       return;
     }
@@ -305,4 +310,5 @@ export function createStub() {
 
   return { stub, server };
 }
+
 

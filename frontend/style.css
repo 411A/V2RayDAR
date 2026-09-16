@@ -676,6 +676,10 @@ tbody tr.is-proxy {
   background: var(--good-soft);
 }
 
+tbody tr.is-pending {
+  background: var(--accent-soft);
+}
+
 #cfg-body tr {
   content-visibility: auto;
   contain-intrinsic-size: auto 40px;
@@ -872,10 +876,24 @@ td .lat-bar > span {
   border-radius: 8px;
 }
 
-#qr-canvas {
+#qr-canvas,
+#dlg-detail-qr {
   inline-size: 220px;
   block-size: 220px;
   image-rendering: pixelated;
+}
+
+/* Config rows open the detail popup on click — signal it and keep keyboard
+ * focus visible (rows are tabindex=0, Enter/Space opens too). */
+#ov-cfg-body tr,
+#cfg-body tr {
+  cursor: pointer;
+}
+
+#ov-cfg-body tr:focus-visible,
+#cfg-body tr:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
 }
 
 #qr-img,

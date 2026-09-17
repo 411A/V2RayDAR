@@ -16,6 +16,11 @@ pub const GEOIP_MMDB_FILE_NAME: &str = "GeoLite2-Country.mmdb";
 /// timeout the country stays `None` and the next cycle retries.
 pub const GEOIP_DNS_TIMEOUT: Duration = Duration::from_secs(5);
 pub const CONFIG_FILE_NAME: &str = "configs.yaml";
+/// One-line note replacing a migrated `configs.yaml`: settings and
+/// subscriptions now live in `data.db`, so the file only asks to be deleted.
+/// Startup treats a file containing exactly this line as "already migrated".
+pub const CONFIG_MIGRATION_NOTE: &str =
+    "# V2RayDAR settings and subscriptions now live in data.db — you can safely delete this file.";
 pub const FIREWALL_STATE_FILE_NAME: &str = ".v2raydar-firewall.json";
 pub const LEGACY_APP_MARKER_FILE_NAME: &str = ".v2raydar";
 pub const LEGACY_CACHE_MARKER_FILE_NAME: &str = ".v2raydar-cache";
@@ -117,7 +122,6 @@ pub const MAX_TUI_LOGS: usize = 512;
 pub const DEFAULT_LOG_FILTER_PLAIN: &str = "v2raydar=warn,tower_http=warn";
 pub const DEFAULT_LOG_FILTER_VERBOSE: &str = "v2raydar=info,tower_http=warn";
 pub const DEFAULT_LOG_FILTER_TUI: &str = "v2raydar=off,tower_http=warn";
-pub const CONFIG_WATCH_INTERVAL: Duration = Duration::from_secs(1);
 pub const LOCALHOST_IP: &str = "127.0.0.1";
 pub const ROUTE_PROBE_ADDR: &str = "8.8.8.8:80";
 pub const ROUTE_PROBE_ADDR_FALLBACK: &str = "1.1.1.1:80";
@@ -209,8 +213,7 @@ pub const WINDOWS_CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[cfg(test)]
 pub const TEST_REALITY_PUBLIC_KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
-pub const MAIN_ITEMS: [MainItem; 8] = [
-    MainItem::OpenConfig,
+pub const MAIN_ITEMS: [MainItem; 7] = [
     MainItem::Sharing,
     MainItem::Proxy,
     MainItem::Subscriptions,

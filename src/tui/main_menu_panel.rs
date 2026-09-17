@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Row, Table},
 };
 
-use crate::constants::{CONFIG_FILE_NAME, CONFIG_KEYS, SUBSCRIPTION_ACTIONS, visible_main_items};
+use crate::constants::{CONFIG_KEYS, SUBSCRIPTION_ACTIONS, visible_main_items};
 
 use super::{
     config_editor,
@@ -51,7 +51,6 @@ fn draw_main(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState, focused: b
         .take(visible_rows)
         .map(|(index, item)| {
             let (name, value) = match item {
-                MainItem::OpenConfig => ("Open Configs File", CONFIG_FILE_NAME),
                 MainItem::Sharing => (
                     "Share subscription URL on LAN",
                     if state.editable.sharing.enabled {

@@ -1,0 +1,43 @@
+name: Rust
+
+# Backend gates on every push/PR, independent of which files changed:
+# the frontend workflow only watches a few Rust paths, so a backend-only
+# change (e.g. src/db.rs, src/settings.rs, src/main.rs) would otherwise
+# merge with zero checks.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    name: fmt + strict clippy + tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        shell: bash
+        run: |
+          rustup default stable
+          rustup component add rustfmt clippy
+
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Strict clippy (nursery + pedantic deny)
+        run: cargo clippy --locked --all-targets -- -D warnings -W clippy::nursery -W clippy::pedantic
+
+      - name: Tests
+        run: cargo test --locked

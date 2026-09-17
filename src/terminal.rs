@@ -71,7 +71,10 @@ pub fn print_startup(config: &AppConfig, paths: &AppPaths, verbose: bool) {
         }
     );
     println!("Data folder: {}", display_path(&paths.root_dir));
-    println!("Config: {}", display_path(&paths.config_path));
+    println!(
+        "Database: {}",
+        display_path(&paths.root_dir.join(crate::constants::DB_FILE_NAME))
+    );
     println!("Local subscription: {local_url}");
 
     if config.sharing.enabled {

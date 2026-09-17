@@ -99,11 +99,11 @@ pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar &&
 
 **手动下载** — 从 [Releases](https://github.com/411A/V2RayDAR/releases/latest) 下载对应操作系统的压缩包后直接运行 — 便携目录会被自动检测（`--portable` 可强制启用）。
 
-安装脚本验证 SHA-256 校验和，检测已安装版本并提供更新（保留 `configs.yaml`、`data.db` 和 `v2raydar_data/`），默认无需 sudo。
+安装脚本验证 SHA-256 校验和，检测已安装版本并提供更新（保留 `data.db` 和 `v2raydar_data/`），默认无需 sudo。
 
 ## 🔰 快速开始
 
-使用上述脚本安装后，运行 `v2raydar`（Windows 上为 `v2raydar.exe`）。首次启动会创建包含预选订阅源的 `configs.yaml`。
+使用上述脚本安装后，运行 `v2raydar`（Windows 上为 `v2raydar.exe`）。首次启动会在 `data.db` 中初始化默认设置和预选订阅源。老版本升级时，现有的 `configs.yaml` 会自动迁移进 `data.db`。
 
 1. **等待数据填充。** 应用并行获取订阅源，通过真实网络探测每个配置，并对可用配置进行排名。端点从启动即可用 — 客户端可以立即指向它。
 2. **将客户端指向**订阅 URL：
@@ -128,7 +128,7 @@ pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar &&
 | `q` | 退出 |
 | `:` | 命令模式 — `:q` 退出，`:w` 保存，`:a` 添加，`:d` 删除，`:n` 重命名，`:u` 修改 URL，`:p` 修改优先级，`:r` 刷新，`:ping` 重测 |
 
-4. **更改设置** — 从 TUI 主菜单（Configurations）或直接编辑 `configs.yaml`，更改将在下次刷新时生效。关键设置：`top_n`、`refresh_seconds`、`ping_seconds`、`sharing.enabled`、`probe.mode`。新版本新增的设置项会在启动时以默认值追加到旧配置文件，你已有的值不会被改动。
+4. **更改设置** — 从 TUI 主菜单（Configurations）或仪表盘设置页修改，更改立即生效。关键设置：`top_n`、`refresh_seconds`、`ping_seconds`、`sharing.enabled`、`probe.mode`。新版本新增的设置项会自动使用默认值，你已有的值不会被改动。
 5. **退出** — 按 `q` 或 `:q`。退出后端点停止服务。
 
 ### 运行模式
@@ -146,7 +146,7 @@ Windows 用户将 `v2raydar` 替换为 `v2raydar.exe`。macOS 上首次打开捆
 ## ⚙️ 默认配置一览
 
 <details>
-  <summary>👣 <strong>configs.yaml</strong> — 所有配置键、默认值及用途。详细说明请参阅 <a href="guide.md">开发者指南</a>。</summary>
+  <summary>👣 <strong>设置</strong> — 所有配置键、默认值及用途。详细说明请参阅 <a href="guide.md">开发者指南</a>。</summary>
 
 | 键 | 默认值 | 用途 |
 | --- | --- | --- |
@@ -192,7 +192,7 @@ Windows 用户将 `v2raydar` 替换为 `v2raydar.exe`。macOS 上首次打开捆
 ## 🌐 受限网络注意事项
 
 - 在高度受限的网络中，先前探测过的配置存储在数据库中，可通过 `use_cache_only: true` 使用。
-- 默认情况下，如果某些 HTTP 订阅 URL 无法连接但有可用配置，应用会使用该配置重试失败的 HTTP 订阅。如果没有可用配置但你有一个可用配置，可以将其添加到 `configs.yaml` 的 `emergency_config` 中，让应用使用它重试失败的 HTTP 订阅获取。
+- 默认情况下，如果某些 HTTP 订阅 URL 无法连接但有可用配置，应用会使用该配置重试失败的 HTTP 订阅。如果没有可用配置但你有一个可用配置，可以将其设为 `emergency_config`（在 TUI 配置界面或仪表盘设置页中），让应用使用它重试失败的 HTTP 订阅获取。
 
 ## 📡 将常用客户端指向 V2RayDAR
 
@@ -205,7 +205,7 @@ Windows 用户将 `v2raydar` 替换为 `v2raydar.exe`。macOS 上首次打开捆
 
 V2RayDAR 可以在订阅端点旁边运行一个持久的 SOCKS5/HTTP 代理。系统上的任何应用 — Telegram、浏览器、curl、Python — 都可以通过它路由流量，无需单独的 VPN 客户端。
 
-**在 `configs.yaml` 中启用：**
+**在设置中启用：**
 ```yaml
 proxy:
   enabled: true

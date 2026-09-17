@@ -38,9 +38,9 @@ shasum -a 256 ./v2raydar-macos-universal.app.zip
 
 ## First Run
 
-V2RayDAR is shipped as an icon-bearing executable on Windows, a compatibility-first raw binary on Linux, and one universal icon-bearing `.app` bundle on macOS. It creates `V2RayDAR/v2raydar_data/configs.yaml` under the user's platform app-data folder on first run.
+V2RayDAR is shipped as an icon-bearing executable on Windows, a compatibility-first raw binary on Linux, and one universal icon-bearing `.app` bundle on macOS. It initializes `V2RayDAR/v2raydar_data/data.db` with default settings under the user's platform app-data folder on first run.
 
-Active probing requires `sing-box`, which is downloaded separately. On first run, V2RayDAR asks for the local `sing-box` executable path, verifies it with `sing-box version`, saves it in the generated `configs.yaml`, and then starts scanning.
+Active probing requires `sing-box`, which is downloaded separately. On first run, V2RayDAR asks for the local `sing-box` executable path, verifies it with `sing-box version`, saves it in `data.db`, and then starts scanning.
 
 The `_with_singbox` desktop archives include pinned `sing-box` 1.13.13 beside V2RayDAR, so `probe.sing_box_path` can remain `null`. If you use the non-embedded desktop assets, download the sing-box archive for your OS: `sing-box.exe` from the Windows archive, `sing-box` from the Linux archive, or `sing-box` from the Darwin archive for macOS. Windows users who already have v2rayN can also check the v2rayN installation folder for `sing-box.exe`.
 

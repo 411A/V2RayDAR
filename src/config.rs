@@ -1,6 +1,6 @@
-use std::{fs, net::SocketAddr, path::Path};
+use std::net::SocketAddr;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_yaml::Value;
@@ -189,51 +189,10 @@ impl Default for ProxyConfig {
 }
 
 impl AppConfig {
-    pub fn load(path: &Path) -> Result<Self> {
-        Ok(Self::load_with_generated_token_flag(path)?.0)
-    }
-
-    pub fn load_with_generated_token_flag(path: &Path) -> Result<(Self, bool)> {
-        let content = fs::read_to_string(path)
-            .with_context(|| format!("unable to read {}", path.display()))?;
-        let extension = path
-            .extension()
-            .and_then(|value| value.to_str())
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-
-        let config = match extension.as_str() {
-            "json" => serde_json::from_str(&content).context("invalid JSON config")?,
-            "yaml" | "yml" | "" => serde_yaml::from_str(&content).context("invalid YAML config")?,
-            other => {
-                return Err(anyhow!(
-                    "unsupported config extension '.{other}'; use .yaml, .yml, or .json"
-                ));
-            }
-        };
-
-        let generated_token_requested = sharing_token_requests_generation(&content);
-        Ok((validate(config)?, generated_token_requested))
-    }
-
     pub fn default_for_first_run() -> Self {
         let config = serde_yaml::from_str::<Self>(DEFAULT_CONFIG_TEMPLATE)
             .expect("default config template is valid");
-        validate(config).expect("default config template passes validation")
-    }
-
-    pub fn write_default(path: &Path) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("unable to create {}", parent.display()))?;
-        }
-
-        let config = Self::default_for_first_run();
-        validate(config).context("default config template failed validation")?;
-        fs::write(path, DEFAULT_CONFIG_TEMPLATE)
-            .with_context(|| format!("unable to write default config to {}", path.display()))?;
-        restrict_file_permissions(path);
-        Ok(())
+        validate_config(config).expect("default config template passes validation")
     }
 
     pub fn subscription_url(&self, host: &str, raw: bool) -> String {
@@ -258,7 +217,10 @@ impl AppConfig {
     }
 }
 
-fn validate(mut config: AppConfig) -> Result<AppConfig> {
+/// Shared validation for seeded, migrated, and reloaded configs:
+/// the database holds plain rows, so every load re-checks the same rules
+/// the legacy file loader enforced.
+pub fn validate_config(mut config: AppConfig) -> Result<AppConfig> {
     config.probe.sing_box_path = normalize_string_or_null(&config.probe.sing_box_path);
     config.probe.download_url = normalize_optional_string(config.probe.download_url.as_deref());
     config.emergency_config = normalize_optional_string(config.emergency_config.as_deref());
@@ -440,32 +402,6 @@ pub fn should_include_token_in_url(token: &str) -> bool {
     !token.trim().is_empty()
 }
 
-fn sharing_token_requests_generation(content: &str) -> bool {
-    let Ok(document) = serde_yaml::from_str::<Value>(content) else {
-        return false;
-    };
-    let Some(sharing) = mapping_value(&document, "sharing") else {
-        return false;
-    };
-    let Some(token) = mapping_value(sharing, "token") else {
-        return false;
-    };
-
-    match token {
-        Value::Bool(true) => true,
-        Value::String(value) => value.trim().eq_ignore_ascii_case("true"),
-        _ => false,
-    }
-}
-
-fn mapping_value<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
-    let Value::Mapping(mapping) = value else {
-        return None;
-    };
-
-    mapping.get(Value::String(key.to_string()))
-}
-
 fn normalize_optional_string(value: Option<&str>) -> Option<String> {
     let value = normalize_string_or_null(value.unwrap_or_default());
     match value.to_ascii_lowercase().as_str() {
@@ -575,21 +511,6 @@ fn strip_url_userinfo(scheme: &str, rest: &str, trimmed: &str) -> String {
         );
     }
     trimmed.to_string()
-}
-
-/// Restrict a config file to owner-only (0600 on Unix).
-/// Best-effort, no-op on Windows; single syscall, no refresh delay.
-#[allow(clippy::missing_const_for_fn)]
-fn restrict_file_permissions(path: &Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-    }
 }
 
 fn default_bind() -> SocketAddr {
@@ -734,191 +655,102 @@ const fn default_proxy_health_check_interval() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::PathBuf};
+    use super::{AppConfig, validate_config};
 
-    use super::AppConfig;
-
-    fn write_temp_config(extension: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "v2raydar-config-test-{}.{}",
-            std::process::id(),
-            extension
-        ));
-        fs::write(
-            &path,
-            r"
-subscriptions:
-    - name: local
-      url: data:,vless://uuid@example.com:443%23demo
-",
-        )
-        .expect("temp config can be written");
-        path
+    fn valid_config() -> AppConfig {
+        AppConfig::default_for_first_run()
     }
 
     #[test]
-    fn loads_yml_config() {
-        let path = write_temp_config("yml");
-        let config = AppConfig::load(&path).expect("yml config loads");
-        fs::remove_file(&path).ok();
-
-        assert_eq!(config.subscriptions.len(), 1);
-        assert_eq!(config.subscriptions[0].name, "local");
-    }
-
-    #[test]
-    fn rejects_unknown_config_extension() {
-        let path = write_temp_config("toml");
-        let error = AppConfig::load(&path).expect_err("unsupported extension should fail");
-        fs::remove_file(&path).ok();
-
-        assert!(error.to_string().contains("unsupported config extension"));
-    }
-
-    #[test]
-    fn rejects_zero_probe_timeout() {
-        let path = std::env::temp_dir().join(format!(
-            "v2raydar-config-test-zero-timeout-{}.yaml",
-            std::process::id()
-        ));
-        fs::write(
-            &path,
-            r"
-probe:
-    active_timeout_ms: 0
-subscriptions:
-    - name: local
-      url: data:,vless://uuid@example.com:443%23demo
-",
-        )
-        .expect("temp config can be written");
-        let error = AppConfig::load(&path).expect_err("zero timeout should fail");
-        fs::remove_file(&path).ok();
-
-        assert!(error.to_string().contains("active_timeout_ms"));
-    }
-
-    #[test]
-    fn rejects_zero_probe_batch_size() {
-        let path = std::env::temp_dir().join(format!(
-            "v2raydar-config-test-zero-batch-{}.yaml",
-            std::process::id()
-        ));
-        fs::write(
-            &path,
-            r"
-probe:
-    batch_size: 0
-subscriptions:
-    - name: local
-      url: data:,vless://uuid@example.com:443%23demo
-",
-        )
-        .expect("temp config can be written");
-        let error = AppConfig::load(&path).expect_err("zero batch size should fail");
-        fs::remove_file(&path).ok();
-
-        assert!(error.to_string().contains("batch_size"));
-    }
-
-    #[test]
-    fn rejects_invalid_http_status() {
-        let path = std::env::temp_dir().join(format!(
-            "v2raydar-config-test-status-{}.yaml",
-            std::process::id()
-        ));
-        fs::write(
-            &path,
-            r"
-probe:
-    accepted_statuses: [99]
-subscriptions:
-    - name: local
-      url: data:,vless://uuid@example.com:443%23demo
-",
-        )
-        .expect("temp config can be written");
-        let error = AppConfig::load(&path).expect_err("invalid HTTP status should fail");
-        fs::remove_file(&path).ok();
-
-        assert!(error.to_string().contains("valid HTTP status codes"));
-    }
-
-    #[test]
-    fn accepts_null_probe_and_sharing_strings() {
-        let config = load_inline_config(
-            "null-values",
-            r"
-sharing:
-    token: null
-probe:
-    sing_box_path: null
-    download_url: null
-subscriptions:
-    - name: local
-      url: data:,vless://uuid@example.com:443%23demo
-",
+    fn rejects_invalid_values() {
+        let mut config = valid_config();
+        config.probe.active_timeout_ms = 0;
+        assert!(
+            validate_config(config)
+                .expect_err("zero timeout should fail")
+                .to_string()
+                .contains("active_timeout_ms")
         );
 
-        assert_eq!(config.sharing.token, "");
-        assert_eq!(config.probe.sing_box_path, "");
-        assert_eq!(config.probe.download_url, None);
-    }
-
-    #[test]
-    fn accepts_empty_probe_and_sharing_strings() {
-        let config = load_inline_config(
-            "empty-values",
-            r#"
-sharing:
-    token: ""
-probe:
-    sing_box_path: ""
-    download_url: ""
-subscriptions:
-    - name: local
-      url: data:,vless://uuid@example.com:443%23demo
-"#,
+        let mut config = valid_config();
+        config.probe.batch_size = Some(0);
+        assert!(
+            validate_config(config)
+                .expect_err("zero batch size should fail")
+                .to_string()
+                .contains("batch_size")
         );
 
-        assert_eq!(config.sharing.token, "");
-        assert_eq!(config.probe.sing_box_path, "");
-        assert_eq!(config.probe.download_url, None);
-    }
-
-    #[test]
-    fn normalizes_legacy_literal_null_strings() {
-        let config = load_inline_config(
-            "literal-null-values",
-            r#"
-sharing:
-    token: "null"
-probe:
-    sing_box_path: "null"
-    download_url: "null"
-subscriptions:
-    - name: local
-      url: data:,vless://uuid@example.com:443%23demo
-"#,
+        let mut config = valid_config();
+        config.probe.accepted_statuses = vec![99];
+        assert!(
+            validate_config(config)
+                .expect_err("invalid HTTP status should fail")
+                .to_string()
+                .contains("valid HTTP status codes")
         );
 
-        assert_eq!(config.sharing.token, "");
-        assert_eq!(config.probe.sing_box_path, "");
-        assert_eq!(config.probe.download_url, None);
+        let mut config = valid_config();
+        config.subscriptions[0].name.clear();
+        assert!(
+            validate_config(config)
+                .expect_err("empty name should fail")
+                .to_string()
+                .contains("cannot be empty")
+        );
+
+        let mut config = valid_config();
+        config.subscriptions[0].url = "javascript:alert(1)".to_string();
+        assert!(
+            validate_config(config)
+                .expect_err("unsupported scheme should fail")
+                .to_string()
+                .contains("unsupported url scheme")
+        );
+
+        let mut config = valid_config();
+        config.sharing.require_token = true;
+        config.sharing.token.clear();
+        assert!(
+            validate_config(config)
+                .expect_err("missing required token should fail")
+                .to_string()
+                .contains("sharing.token")
+        );
+
+        let mut config = valid_config();
+        config.proxy.enabled = true;
+        config.proxy.port = 0;
+        assert!(
+            validate_config(config)
+                .expect_err("zero proxy port should fail")
+                .to_string()
+                .contains("proxy.port")
+        );
+    }
+
+    fn parse_inline(content: &str) -> AppConfig {
+        let config: AppConfig = serde_yaml::from_str(content).expect("inline config parses");
+        validate_config(config).expect("inline config validates")
     }
 
     #[test]
-    fn default_config_keeps_token_null() {
-        let path = std::env::temp_dir().join(format!(
-            "v2raydar-config-test-default-token-{}.yaml",
-            std::process::id()
-        ));
-        AppConfig::write_default(&path).expect("default config writes");
-        let saved = fs::read_to_string(&path).expect("default config can be read");
-        let config = AppConfig::load(&path).expect("default config loads");
-        fs::remove_file(&path).ok();
+    fn accepts_null_empty_and_literal_null_strings() {
+        for token in ["null", r#""""#, r#""null""#] {
+            let config = parse_inline(&format!(
+                "sharing:\n    token: {token}\nprobe:\n    sing_box_path: {token}\n    download_url: {token}\n"
+            ));
 
-        assert!(saved.contains("  token: null"));
+            assert_eq!(config.sharing.token, "", "token {token}");
+            assert_eq!(config.probe.sing_box_path, "", "path {token}");
+            assert_eq!(config.probe.download_url, None, "url {token}");
+        }
+    }
+
+    #[test]
+    fn default_template_keeps_token_empty() {
+        let config = valid_config();
+
         assert_eq!(config.sharing.token, "");
         assert_eq!(
             config.subscription_url("127.0.0.1", false),
@@ -927,19 +759,9 @@ subscriptions:
     }
 
     #[test]
-    fn token_true_generates_token_and_requests_persistence() {
-        let (config, generated) = load_inline_config_with_generation_flag(
-            "token-true",
-            r"
-sharing:
-    token: true
-subscriptions:
-    - name: local
-      url: data:,vless://uuid@example.com:443%23demo
-",
-        );
+    fn token_true_generates_token() {
+        let config = parse_inline("sharing:\n    token: true\n");
 
-        assert!(generated);
         assert!(!config.sharing.token.is_empty());
         assert!(
             config
@@ -950,43 +772,13 @@ subscriptions:
 
     #[test]
     fn string_token_is_used_in_subscription_url() {
-        let (config, generated) = load_inline_config_with_generation_flag(
-            "token-string",
-            r"
-sharing:
-    token: user-token
-subscriptions:
-    - name: local
-      url: data:,vless://uuid@example.com:443%23demo
-",
-        );
+        let config = parse_inline("sharing:\n    token: user-token\n");
 
-        assert!(!generated);
         assert_eq!(config.sharing.token, "user-token");
         assert_eq!(
             config.subscription_url("127.0.0.1", false),
             "http://127.0.0.1:27141/subscription?token=user-token"
         );
-    }
-
-    #[test]
-    fn require_token_rejects_null_token() {
-        let path = write_inline_config(
-            "require-token-null",
-            r"
-sharing:
-    require_token: true
-    token: null
-subscriptions:
-    - name: local
-      url: data:,vless://uuid@example.com:443%23demo
-",
-        );
-
-        let error = AppConfig::load(&path).expect_err("missing required token should fail");
-        fs::remove_file(&path).ok();
-
-        assert!(error.to_string().contains("sharing.token"));
     }
 
     #[test]
@@ -998,41 +790,16 @@ subscriptions:
     }
 
     #[test]
-    fn ping_interval_zero_disables_and_parses() {
-        let config = load_inline_config(
-            "ping-zero",
-            r"
-ping_seconds: 0
-subscriptions:
-    - name: local
-      url: data:,vless://uuid@example.com:443%23demo
-",
+    fn ping_interval_zero_disables() {
+        let mut config = valid_config();
+        config.ping_seconds = 0;
+
+        assert_eq!(
+            validate_config(config)
+                .expect("zero ping validates")
+                .ping_seconds,
+            0
         );
-
-        assert_eq!(config.ping_seconds, 0);
-    }
-
-    fn load_inline_config(name: &str, content: &str) -> AppConfig {
-        let path = write_inline_config(name, content);
-        let config = AppConfig::load(&path).expect("config loads");
-        fs::remove_file(&path).ok();
-        config
-    }
-
-    fn load_inline_config_with_generation_flag(name: &str, content: &str) -> (AppConfig, bool) {
-        let path = write_inline_config(name, content);
-        let result = AppConfig::load_with_generated_token_flag(&path).expect("config loads");
-        fs::remove_file(&path).ok();
-        result
-    }
-
-    fn write_inline_config(name: &str, content: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "v2raydar-config-test-{name}-{}.yaml",
-            std::process::id()
-        ));
-        fs::write(&path, content).expect("temp config can be written");
-        path
     }
 
     #[test]
@@ -1066,16 +833,9 @@ subscriptions:
 
     #[test]
     fn rejects_unsupported_subscription_scheme() {
-        let path = write_inline_config(
-            "bad-scheme",
-            r"
-subscriptions:
-    - name: bad
-      url: javascript:alert(1)
-",
-        );
-        let error = AppConfig::load(&path).expect_err("unsupported scheme should fail");
-        fs::remove_file(&path).ok();
+        let mut config = valid_config();
+        config.subscriptions[0].url = "javascript:alert(1)".to_string();
+        let error = validate_config(config).expect_err("unsupported scheme should fail");
         assert!(error.to_string().contains("unsupported url scheme"));
     }
 }

@@ -12,6 +12,7 @@ mod probe;
 mod proxy;
 mod qr;
 mod server;
+mod settings;
 mod sing_box;
 mod subscription;
 mod terminal;
@@ -27,7 +28,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering as AtomicOrdering},
     },
-    time::{Duration, SystemTime},
+    time::Duration,
 };
 
 use anyhow::{Context, Result, anyhow};
@@ -43,8 +44,8 @@ use tracing::{debug, error, info, warn};
 use crate::{
     config::{AppConfig, ProbeMode},
     constants::{
-        APP_DATA_DIR_NAME, APP_NAME, CACHE_DIR_NAME, CONFIG_FILE_NAME, CONFIG_WATCH_INTERVAL,
-        DB_FILE_NAME, DEFAULT_LOG_FILTER_PLAIN, DEFAULT_LOG_FILTER_TUI, DEFAULT_LOG_FILTER_VERBOSE,
+        APP_DATA_DIR_NAME, APP_NAME, CACHE_DIR_NAME, CONFIG_FILE_NAME, DB_FILE_NAME,
+        DEFAULT_LOG_FILTER_PLAIN, DEFAULT_LOG_FILTER_TUI, DEFAULT_LOG_FILTER_VERBOSE,
         FIREWALL_STATE_FILE_NAME, GEOIP_DIR_NAME, GEOIP_MMDB_FILE_NAME,
         LEGACY_APP_MARKER_FILE_NAME, LEGACY_CACHE_MARKER_FILE_NAME, LOCALHOST_IP, MAX_TUI_LOGS,
         sing_box_download_url,
@@ -164,40 +165,36 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    if paths.config_path.exists() {
-        paths.ensure().await?;
-    } else {
-        if !paths.generated_config {
-            return Err(anyhow!(
-                "config file does not exist: {}; create it or omit --config to use {}",
-                paths.config_path.display(),
-                paths.root_dir.join(CONFIG_FILE_NAME).display()
-            ));
+    paths.ensure().await?;
+
+    let db_path = paths.root_dir.join(DB_FILE_NAME);
+    let database = Arc::new(
+        Database::open(&db_path)
+            .with_context(|| format!("failed to open database at {}", db_path.display()))?,
+    );
+
+    // User preferences live in the database now: a legacy configs.yaml is
+    // migrated once (then neutered to a delete-me note), a fresh install
+    // seeds example defaults, otherwise stored rows load as-is.
+    let (mut config, outcome) =
+        crate::settings::load_or_migrate(&paths, &database).with_context(|| {
+            format!(
+                "failed to load settings (legacy {})",
+                paths.config_path.display()
+            )
+        })?;
+    match outcome {
+        crate::settings::StartupOutcome::Migrated { subscriptions } => println!(
+            "Migrated settings and {subscriptions} subscription(s) from {} to {}; the file now only asks to be deleted.",
+            paths.config_path.display(),
+            db_path.display()
+        ),
+        crate::settings::StartupOutcome::SeededDefaults => {
+            println!("Initialized default settings in {}", db_path.display());
         }
-
-        paths.ensure().await?;
-        AppConfig::write_default(&paths.config_path)?;
-        println!("Created default config at {}", paths.config_path.display());
+        crate::settings::StartupOutcome::Loaded => {}
     }
-
-    let mut config = load_config_and_persist_generated_token(&paths.config_path)
-        .with_context(|| format!("failed to load config from {}", paths.config_path.display()))?;
-
-    // Backfill settings added by newer versions into older configs.yaml files.
-    // Add-only and skipped when nothing is missing, so the watcher never loops.
-    match tui::util::backfill_missing_defaults(&paths.config_path) {
-        Ok(0) => {}
-        Ok(added) => info!(
-            added,
-            path = %paths.config_path.display(),
-            "backfilled missing config defaults"
-        ),
-        Err(err) => warn!(
-            error = %err,
-            path = %paths.config_path.display(),
-            "config backfill skipped; in-memory defaults still apply"
-        ),
-    }
+    apply_runtime_sing_box_path(&mut config);
 
     // Initialize GeoIP: MaxMind database first (most accurate), ipdeny
     // country zones as fallback. Both are refreshed by the installer
@@ -237,19 +234,13 @@ async fn main() -> Result<()> {
             return Ok(());
         }
 
-        tui::run_sing_box_setup(&mut config, &paths).await?;
+        tui::run_sing_box_setup(&mut config, &paths, &database).await?;
     }
 
     let state = Arc::new(RwLock::new(RuntimeState::default()));
     let runtime_config = Arc::new(RwLock::new(RuntimeConfig::from(&config)));
     let subscriptions: crate::server::SharedSubscriptions =
         Arc::new(RwLock::new(config.subscriptions.clone()));
-
-    let db_path = paths.root_dir.join(DB_FILE_NAME);
-    let database = Arc::new(
-        Database::open(&db_path)
-            .with_context(|| format!("failed to open database at {}", db_path.display()))?,
-    );
 
     if cli.once {
         print_startup(&config, &paths, cli.verbose);
@@ -294,10 +285,6 @@ async fn main() -> Result<()> {
             "Serving top {} configs at {}",
             config.top_n,
             config.subscription_url(LOCALHOST_IP, true)
-        );
-        println!(
-            "Watching {} for live config changes.",
-            paths.config_path.display()
         );
     }
 
@@ -403,13 +390,6 @@ async fn main() -> Result<()> {
         ping_cancel,
         cli.no_tui && !cli.verbose,
     );
-    spawn_config_watcher(
-        paths.config_path.clone(),
-        config.bind,
-        config_tx.clone(),
-        subscriptions.clone(),
-    );
-
     let result = if cli.no_tui {
         serve(
             config.bind,
@@ -417,7 +397,6 @@ async fn main() -> Result<()> {
             runtime_config,
             subscriptions,
             paths.root_dir.clone(),
-            paths.config_path.clone(),
             Some(config_tx),
             Some(refresh_trigger_tx),
             Some(ping_trigger_tx),
@@ -426,9 +405,8 @@ async fn main() -> Result<()> {
         .await
     } else {
         let data_dir = paths.root_dir.clone();
-        let config_path = paths.config_path.clone();
         tokio::select! {
-            result = serve(config.bind, state.clone(), runtime_config.clone(), subscriptions.clone(), data_dir, config_path, Some(config_tx.clone()), Some(refresh_trigger_tx.clone()), Some(ping_trigger_tx.clone()), Some(database.clone())) => result,
+            result = serve(config.bind, state.clone(), runtime_config.clone(), subscriptions.clone(), data_dir, Some(config_tx.clone()), Some(refresh_trigger_tx.clone()), Some(ping_trigger_tx.clone()), Some(database.clone())) => result,
             result = tui::run(config, paths, state, runtime_config, database.clone(), config_tx, refresh_trigger_tx, ping_trigger_tx) => result,
         }
     };
@@ -689,7 +667,7 @@ fn print_sing_box_setup_required(paths: &AppPaths) {
     let guide = setup_guide();
 
     println!("V2RayDAR active probing requires sing-box before it can refresh.");
-    println!("Config: {}", paths.config_path.display());
+    println!("Database: {}", paths.root_dir.join(DB_FILE_NAME).display());
     println!("Detected OS: {}", guide.platform);
     println!("Recommended sing-box version: v{}", recommended_version());
     println!("Download: {}", sing_box_download_url());
@@ -870,15 +848,6 @@ fn resolve_paths(cli: &Cli) -> Result<AppPaths> {
     }
 
     AppPaths::installed()
-}
-
-fn load_config_and_persist_generated_token(path: &Path) -> Result<AppConfig> {
-    let (mut config, generated_token_requested) = AppConfig::load_with_generated_token_flag(path)?;
-    if generated_token_requested {
-        tui::util::save_config(path, &config)?;
-    }
-    apply_runtime_sing_box_path(&mut config);
-    Ok(config)
 }
 
 /// Persist probed configs and stable top-N keys; optionally clean offline rows.
@@ -2765,75 +2734,6 @@ impl From<&AppConfig> for RefreshFingerprint {
     }
 }
 
-fn spawn_config_watcher(
-    config_path: PathBuf,
-    initial_bind: std::net::SocketAddr,
-    config_tx: watch::Sender<AppConfig>,
-    subscriptions: crate::server::SharedSubscriptions,
-) {
-    tokio::spawn(async move {
-        let mut last_modified = modified_time(&config_path).await.ok();
-
-        loop {
-            time::sleep(CONFIG_WATCH_INTERVAL).await;
-            let modified = match modified_time(&config_path).await {
-                Ok(value) => value,
-                Err(err) => {
-                    warn!(
-                        path = %config_path.display(),
-                        error = %err,
-                        "unable to stat config file"
-                    );
-                    continue;
-                }
-            };
-
-            if last_modified == Some(modified) {
-                continue;
-            }
-
-            last_modified = Some(modified);
-            match load_config_and_persist_generated_token(&config_path) {
-                Ok(config) => {
-                    if config.bind != initial_bind {
-                        warn!(
-                            configured_bind = %config.bind,
-                            active_bind = %initial_bind,
-                            "config bind changed; restart V2RayDAR to apply the HTTP bind address"
-                        );
-                    }
-
-                    // Keep the read-only subscriptions endpoint live: file
-                    // edits and in-app saves both flow through this file, so
-                    // watcher-sync covers every reload path.
-                    *subscriptions.write().await = config.subscriptions.clone();
-                    if config_tx.send(config).is_err() {
-                        return;
-                    }
-
-                    info!(path = %config_path.display(), "config file reloaded");
-                }
-                Err(err) => {
-                    warn!(
-                        path = %config_path.display(),
-                        error = %err,
-                        "config reload failed; keeping previous valid config"
-                    );
-                }
-            }
-        }
-    });
-}
-
-async fn modified_time(path: &Path) -> Result<SystemTime> {
-    let metadata = fs::metadata(path)
-        .await
-        .with_context(|| format!("unable to read metadata for {}", path.display()))?;
-    metadata
-        .modified()
-        .with_context(|| format!("unable to read modification time for {}", path.display()))
-}
-
 async fn record_refresh_error(state: &Arc<RwLock<RuntimeState>>, error: String) {
     let mut state = state.write().await;
     state.last_error = Some(error.clone());
@@ -3106,6 +3006,8 @@ impl From<&AppConfig> for RuntimeConfig {
 
 #[cfg(test)]
 mod tests {
+    use std::time::SystemTime;
+
     use super::*;
     use crate::model::Endpoint;
 

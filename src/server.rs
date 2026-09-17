@@ -39,8 +39,6 @@ pub struct HttpState {
     /// Powers the dashboard "Running For" clock; refresh cycles rebuild
     /// `RuntimeState` wholesale, so per-process truth lives here instead.
     pub started: String,
-    /// Live `configs.yaml` path for dashboard mutations (immediate-save).
-    pub config_path: PathBuf,
     /// Live config broadcast (same channel the TUI pushes through).
     /// `None` in unit tests; mutations then report unavailable.
     pub config_tx: Option<tokio::sync::watch::Sender<crate::config::AppConfig>>,
@@ -60,7 +58,6 @@ pub async fn serve(
     config: SharedConfig,
     subscriptions: SharedSubscriptions,
     data_dir: PathBuf,
-    config_path: PathBuf,
     config_tx: Option<tokio::sync::watch::Sender<crate::config::AppConfig>>,
     refresh_tx: Option<tokio::sync::mpsc::UnboundedSender<()>>,
     ping_tx: Option<tokio::sync::mpsc::UnboundedSender<()>>,
@@ -72,7 +69,6 @@ pub async fn serve(
         subscriptions,
         data_dir,
         started: Utc::now().to_rfc3339(),
-        config_path,
         config_tx,
         refresh_tx,
         ping_tx,
@@ -634,7 +630,6 @@ mod tests {
             subscriptions: Arc::new(RwLock::new(Vec::new())),
             data_dir: PathBuf::from("v2raydar_data"),
             started: "2026-01-01T00:00:00+00:00".to_string(),
-            config_path: PathBuf::from("v2raydar_data/configs.yaml"),
             config_tx: None,
             refresh_tx: None,
             ping_tx: None,
@@ -661,7 +656,6 @@ mod tests {
             subscriptions: Arc::new(RwLock::new(Vec::new())),
             data_dir: PathBuf::from("v2raydar_data"),
             started: "2026-01-01T00:00:00+00:00".to_string(),
-            config_path: PathBuf::from("v2raydar_data/configs.yaml"),
             config_tx: None,
             refresh_tx: None,
             ping_tx: None,

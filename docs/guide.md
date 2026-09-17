@@ -61,7 +61,7 @@ The app is published as-is, without any warranty. You are responsible for the su
 
 At runtime, V2RayDAR:
 
-- loads `configs.yaml` or a custom `.yaml`, `.yml`, or `.json` config file,
+- loads settings and subscriptions from the local SQLite database (`data.db`), migrating a legacy `configs.yaml` once if one is present,
 - creates the app data folder when needed,
 - fetches enabled subscription sources concurrently,
 - stores previously-probed configs in a local SQLite database,
@@ -73,7 +73,7 @@ At runtime, V2RayDAR:
 - ranks reachable configs by priority, latency, speed-test result, protocol, name, and URI,
 - optionally promotes configs that worked across repeated refreshes,
 - **serves working configs as both V2Ray share-links (`/subscription`) and full Mihomo YAML configs (`/mihomo.yaml`)**,
-- watches the config file and refreshes when relevant settings change,
+- applies dashboard and TUI changes immediately (no manual reload),
 - provides a TUI for editing settings, subscriptions, sharing, logs, and database state.
 
 ## Requirements
@@ -130,36 +130,36 @@ Checksums verify integrity. They do not prevent Windows SmartScreen or macOS Gat
 
 ## First Run
 
-On first launch without `--config`, V2RayDAR creates `configs.yaml` with a set of pre-selected subscription sources to get you started. Adding your own sources is recommended for better coverage. In a portable folder, config and database stay beside the executable (auto-detected; `--portable` forces it); user-installed mode uses the platform app-data location.
+On first launch without `--config`, V2RayDAR initializes `data.db` with default settings and a set of pre-selected subscription sources to get you started. Adding your own sources is recommended for better coverage. Upgrading from an older version migrates an existing `configs.yaml` into `data.db` automatically on first launch (the file is left with a delete-me note). In a portable folder, the database stays beside the executable (auto-detected; `--portable` forces it); user-installed mode uses the platform app-data location.
 
 Windows:
 
 ```text
-%LOCALAPPDATA%\V2RayDAR\v2raydar_data\configs.yaml
+%LOCALAPPDATA%\V2RayDAR\v2raydar_data\data.db
 ```
 
 macOS:
 
 ```text
-~/Library/Application Support/V2RayDAR/v2raydar_data/configs.yaml
+~/Library/Application Support/V2RayDAR/v2raydar_data/data.db
 ```
 
 Linux:
 
 ```text
-$XDG_DATA_HOME/V2RayDAR/v2raydar_data/configs.yaml
+$XDG_DATA_HOME/V2RayDAR/v2raydar_data/data.db
 ```
 
 Fallback Linux path:
 
 ```text
-~/.local/share/V2RayDAR/v2raydar_data/configs.yaml
+~/.local/share/V2RayDAR/v2raydar_data/data.db
 ```
 
 Portable mode path:
 
 ```text
-v2raydar_data/configs.yaml
+v2raydar_data/data.db
 ```
 
 If `probe.mode` is `active`, V2RayDAR first looks for a bundled `sing-box` beside the executable, then for `probe.sing_box_path`. If none is valid, the interactive TUI asks for the OS-specific `sing-box` executable path and verifies it with `sing-box version`.
@@ -186,7 +186,7 @@ Run one refresh, print a terminal summary, and exit without starting the endpoin
 v2raydar --once
 ```
 
-Use a custom config file:
+Use a custom data location (a legacy config file there is migrated once):
 
 ```bash
 v2raydar --config path/to/configs.yaml
@@ -351,26 +351,27 @@ If it returns `ok`, use:
 http://192.0.2.23:27141/subscription
 ```
 
-## Config File Formats
+## Legacy Config Migration
 
-V2RayDAR accepts:
+Settings and subscriptions live in `data.db` now. A legacy config file is
+still honored exactly once: on startup V2RayDAR parses it, stores everything
+in the database, and replaces the file with a one-line delete-me note.
+Accepted legacy formats are `.yaml`, `.yml`, `.json`, and extensionless
+files (parsed as YAML); anything else is rejected and the file is left
+untouched. A corrupt legacy file aborts startup with an error so you can fix
+it — nothing is migrated and nothing is deleted until the parse succeeds.
 
-- `.yaml`
-- `.yml`
-- `.json`
-- files without an extension, parsed as YAML
+The seeded defaults are based on [configs.example.yaml](../configs.example.yaml).
 
-Other config extensions are rejected.
-
-The generated default file is based on [configs.example.yaml](../configs.example.yaml).
-
-When you use `--config path/to/configs.yaml`, V2RayDAR uses that file as the config and stores cache/state in a sibling `v2raydar_data` folder. If the custom config already lives inside a `v2raydar_data` folder, that folder is reused for cache/state.
+When you use `--config path/to/configs.yaml`, V2RayDAR derives the data
+folder from that path (a sibling `v2raydar_data` folder, or the enclosing
+one if the file already lives inside it) and migrates the file there.
 
 Example:
 
 ```text
 custom/configs.yaml
-custom/v2raydar_data/cache/
+custom/v2raydar_data/data.db
 ```
 
 ## Config Validation Rules
@@ -605,7 +606,7 @@ V2RayDAR provides full Clash/Mihomo integration on both input and output sides.
 
 ### Input: Parsing Clash/Mihomo Subscription Sources
 
-You can add Clash/Mihomo subscription URLs directly as sources in `configs.yaml`. V2RayDAR automatically detects configs that contain a `proxies:` list with `type`/`server`/`port` entries and extracts proxy entries as share links.
+You can add Clash/Mihomo subscription URLs directly as sources from the TUI Subscriptions screen or the dashboard. V2RayDAR automatically detects configs that contain a `proxies:` list with `type`/`server`/`port` entries and extracts proxy entries as share links.
 
 ```yaml
 subscriptions:
@@ -737,8 +738,8 @@ After that:
 - `Ctrl+R` triggers one manual refresh (re-fetch); refused while a refresh is running.
 - `Ctrl+P` triggers one manual re-ping; refused while any cycle is running.
 - `refresh_seconds: 0` disables timer refreshes.
-- Relevant config-file changes can still trigger refreshes even when `refresh_seconds` is `0`.
-- When a newer version adds settings, the missing keys are appended to your existing `configs.yaml` with defaults on startup; your values, comments, and subscriptions are left untouched.
+- Manual changes from the TUI or dashboard apply immediately even when `refresh_seconds` is `0`.
+- When a newer version adds settings, they default automatically on load; your stored values and subscriptions are left untouched.
 
 Headless mode prints compact progress by default and a detailed trace with `--verbose`.
 
@@ -816,7 +817,7 @@ Boolean prompts accept values such as `yes`, `no`, `true`, `false`, `on`, `off`,
 
 ## Config Editing In The TUI
 
-The `Configurations` panel exposes the same settings as `configs.yaml`, including:
+The `Configurations` panel exposes the same settings as the database, including:
 
 - bind address,
 - top-N count,
@@ -888,7 +889,7 @@ Typical files and folders:
 
 | Artifact | Meaning |
 | --- | --- |
-| `configs.yaml` | Main config file generated on first run. |
+| `data.db` | SQLite database: settings, subscriptions, and probe cache. Seeded on first run. |
 | `data.db` | SQLite database storing previously-probed configs and stable top-N keys. |
 | `.v2raydar-firewall.json` | Records firewall rules created by V2RayDAR. |
 

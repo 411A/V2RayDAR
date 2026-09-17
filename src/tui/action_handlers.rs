@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use anyhow::Result;
 
 use super::{
@@ -7,8 +5,9 @@ use super::{
     state::{Action, InputMode, TuiState},
     util::save_merged,
 };
+use crate::db::Database;
 
-pub fn run_action(state: &mut TuiState, action: Action, config_path: &Path) -> Result<()> {
+pub fn run_action(state: &mut TuiState, action: Action, db: &Database) -> Result<()> {
     match action {
         Action::Add => start_new_subscription(state),
         Action::EditName => {
@@ -25,7 +24,7 @@ pub fn run_action(state: &mut TuiState, action: Action, config_path: &Path) -> R
         }
         Action::Toggle => toggle_subscription(state),
         Action::Delete => delete_subscription(state),
-        Action::Save => save_now(state, config_path)?,
+        Action::Save => save_now(state, db)?,
     }
 
     Ok(())
@@ -76,9 +75,9 @@ fn delete_subscription(state: &mut TuiState) {
     state.status = format!("Deleted {}", removed.name);
 }
 
-fn save_now(state: &mut TuiState, config_path: &Path) -> Result<()> {
-    save_merged(config_path, &state.startup_editable, &state.editable)?;
+fn save_now(state: &mut TuiState, db: &Database) -> Result<()> {
+    save_merged(db, &state.startup_editable, &state.editable)?;
     state.dirty = false;
-    state.status = format!("Saved {}", config_path.display());
+    state.status = "Saved to data.db".to_string();
     Ok(())
 }

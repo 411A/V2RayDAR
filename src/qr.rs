@@ -776,13 +776,13 @@ pub fn save_jpeg(cards: &[QrCard], state_dir: &Path) -> Result<PathBuf> {
 pub fn open_image(path: &Path) -> String {
     #[cfg(target_os = "windows")]
     {
-        if super::tui::open_config::try_spawn(
+        if super::tui::launch::try_spawn(
             "cmd",
             &[
                 "/C".to_string(),
                 "start".to_string(),
                 String::new(),
-                super::tui::open_config::path_arg(path),
+                super::tui::launch::path_arg(path),
             ],
         )
         .is_ok()
@@ -793,20 +793,14 @@ pub fn open_image(path: &Path) -> String {
 
     #[cfg(target_os = "macos")]
     {
-        if super::tui::open_config::try_spawn("open", &[super::tui::open_config::path_arg(path)])
-            .is_ok()
-        {
+        if super::tui::launch::try_spawn("open", &[super::tui::launch::path_arg(path)]).is_ok() {
             return format!("QR image opened: {}", path.display());
         }
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        if super::tui::open_config::try_spawn(
-            "xdg-open",
-            &[super::tui::open_config::path_arg(path)],
-        )
-        .is_ok()
+        if super::tui::launch::try_spawn("xdg-open", &[super::tui::launch::path_arg(path)]).is_ok()
         {
             return format!("QR image opened: {}", path.display());
         }

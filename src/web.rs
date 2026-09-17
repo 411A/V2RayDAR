@@ -373,7 +373,7 @@ struct SubscriptionsResponse {
     dirty: bool,
 }
 
-/// `GET /api/subscriptions` — live list from `configs.yaml` (read-only).
+/// `GET /api/subscriptions` — live list from shared state (read-only).
 pub async fn api_subscriptions(
     State(state): State<HttpState>,
     headers: HeaderMap,
@@ -647,7 +647,7 @@ fn proxy_group(config: &RuntimeConfig) -> ConfigGroup {
     }
 }
 
-/// Derived counts (`configs.yaml` truth, read-only like everything here).
+/// Derived counts (stored-subscription truth, read-only like everything here).
 fn maintenance_group(config: &RuntimeConfig) -> ConfigGroup {
     ConfigGroup {
         title: "Maintenance".to_string(),
@@ -655,7 +655,7 @@ fn maintenance_group(config: &RuntimeConfig) -> ConfigGroup {
             config_row(
                 "subscription_count",
                 config.subscription_count.to_string(),
-                "subscriptions in configs.yaml (read-only)",
+                "subscriptions in the database (read-only)",
             ),
             config_row(
                 "enabled_subscription_count",
@@ -1040,24 +1040,46 @@ fn validate_subscription(url: &str, name: &str) -> Result<(), Response> {
     Ok(())
 }
 
+/// Load the stored config: every mutation starts from the database, never
+/// from a file. Rusqlite takes a mutex, so this runs off the async runtime
+/// like persistence below.
 #[allow(clippy::result_large_err)]
-fn load_disk_config(state: &HttpState) -> Result<crate::config::AppConfig, Response> {
-    crate::config::AppConfig::load(&state.config_path).map_err(|error| {
-        mutation_error(
+async fn load_db_config(state: &HttpState) -> Result<crate::config::AppConfig, Response> {
+    let Some(db) = state.database.clone() else {
+        return Err(mutation_error(
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Unable to read config: {error}"),
-        )
-    })
+            "Settings database unavailable",
+        ));
+    };
+    tokio::task::spawn_blocking(move || crate::settings::load_app_config(&db))
+        .await
+        .map_err(|error| {
+            mutation_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Load task failed: {error}"),
+            )
+        })?
+        .map_err(|error| {
+            mutation_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Unable to read settings: {error}"),
+            )
+        })
 }
 
-/// Persist `cfg` to `configs.yaml` and push it live (watcher broadcast +
-/// shared snapshots) so the dashboard sees the change without waiting for
-/// the 1 s file watcher. Immediate-save: no dirty flag, ever.
+/// Persist `cfg` to the database and push it live (broadcast + shared
+/// snapshots) so the dashboard sees the change immediately.
+/// Immediate-save: no dirty flag, ever.
 #[allow(clippy::result_large_err)]
 async fn persist_config(state: &HttpState, cfg: &crate::config::AppConfig) -> Result<(), Response> {
-    let path = state.config_path.clone();
+    let Some(db) = state.database.clone() else {
+        return Err(mutation_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Settings database unavailable",
+        ));
+    };
     let snapshot = cfg.clone();
-    tokio::task::spawn_blocking(move || crate::tui::util::save_config(&path, &snapshot))
+    tokio::task::spawn_blocking(move || crate::settings::save_app_config(&db, &snapshot))
         .await
         .map_err(|error| {
             mutation_error(
@@ -1068,7 +1090,7 @@ async fn persist_config(state: &HttpState, cfg: &crate::config::AppConfig) -> Re
         .map_err(|error| {
             mutation_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Unable to save config: {error}"),
+                format!("Unable to save settings: {error}"),
             )
         })?;
     *state.subscriptions.write().await = cfg.subscriptions.clone();
@@ -1111,7 +1133,7 @@ pub async fn api_subscriptions_add(
     if let Err(response) = validate_subscription(&url, &name) {
         return response;
     }
-    let mut cfg = match load_disk_config(&state) {
+    let mut cfg = match load_db_config(&state).await {
         Ok(cfg) => cfg,
         Err(response) => return response,
     };
@@ -1146,7 +1168,7 @@ pub async fn api_subscriptions_patch(
             "Subscription API unavailable",
         );
     }
-    let mut cfg = match load_disk_config(&state) {
+    let mut cfg = match load_db_config(&state).await {
         Ok(cfg) => cfg,
         Err(response) => return response,
     };
@@ -1195,7 +1217,7 @@ pub async fn api_subscriptions_toggle(
             "Subscription API unavailable",
         );
     }
-    let mut cfg = match load_disk_config(&state) {
+    let mut cfg = match load_db_config(&state).await {
         Ok(cfg) => cfg,
         Err(response) => return response,
     };
@@ -1232,7 +1254,7 @@ pub async fn api_subscriptions_delete(
             "Subscription API unavailable",
         );
     }
-    let mut cfg = match load_disk_config(&state) {
+    let mut cfg = match load_db_config(&state).await {
         Ok(cfg) => cfg,
         Err(response) => return response,
     };
@@ -1254,9 +1276,9 @@ pub struct SubscriptionsReorder {
 
 /// `POST /api/subscriptions/reorder` — drag-and-drop order from the dashboard.
 /// Validates a full permutation, reorders, renumbers priorities 1..=N in the
-/// new visual order ("lower runs first"), then immediate-saves to
-/// `configs.yaml` + live snapshots (probe-result rows pick the new
-/// priorities up on the next cycle).
+/// new visual order ("lower runs first"), then immediate-saves to the
+/// database + live snapshots (probe-result rows pick the new priorities up
+/// on the next cycle).
 pub async fn api_subscriptions_reorder(
     State(state): State<HttpState>,
     headers: HeaderMap,
@@ -1274,7 +1296,7 @@ pub async fn api_subscriptions_reorder(
             "Subscription API unavailable",
         );
     }
-    let mut cfg = match load_disk_config(&state) {
+    let mut cfg = match load_db_config(&state).await {
         Ok(cfg) => cfg,
         Err(response) => return response,
     };
@@ -1343,8 +1365,8 @@ fn apply_web_setting(
     }
     Err(match key {
         "probe.speedtest_enabled" => {
-            "probe.speedtest_enabled is derived from probe.download_url; edit configs.yaml directly"
-                .to_string()
+        "probe.speedtest_enabled is derived from probe.download_url; set probe.download_url instead"
+            .to_string()
         }
         "subscription_count" | "enabled_subscription_count" => format!("{key} is read-only"),
         _ => format!("unknown key: {key}"),
@@ -1539,7 +1561,7 @@ pub async fn api_config_patch(
     if state.config_tx.is_none() {
         return mutation_error(StatusCode::SERVICE_UNAVAILABLE, "Settings API unavailable");
     }
-    let mut cfg = match load_disk_config(&state) {
+    let mut cfg = match load_db_config(&state).await {
         Ok(cfg) => cfg,
         Err(response) => return response,
     };
@@ -1994,6 +2016,16 @@ mod tests {
         dir
     }
 
+    /// Test-only database seeded with example defaults, mirroring a fresh
+    /// install right after first-run seeding.
+    fn test_db() -> std::sync::Arc<crate::db::Database> {
+        let db =
+            crate::db::Database::open(&temp_data_dir("db").join("data.db")).expect("test db opens");
+        crate::settings::save_app_config(&db, &crate::config::AppConfig::default_for_first_run())
+            .expect("seed saves");
+        std::sync::Arc::new(db)
+    }
+
     fn http_state(runtime: RuntimeState, sharing_enabled: bool) -> HttpState {
         let config = crate::model::RuntimeConfig {
             bind: DEFAULT_BIND.parse().expect("valid bind"),
@@ -2045,11 +2077,10 @@ mod tests {
             ])),
             data_dir: temp_data_dir("state"),
             started: "2026-01-01T00:00:00+00:00".to_string(),
-            config_path: temp_data_dir("cfg").join("configs.yaml"),
             config_tx: None,
             refresh_tx: None,
             ping_tx: None,
-            database: None,
+            database: Some(test_db()),
         }
     }
 
@@ -2664,8 +2695,8 @@ mod tests {
         assert_eq!(body.to_vec(), bytes);
     }
 
-    /// Test-only [`HttpState`] with live trigger channels and a real
-    /// `configs.yaml` on disk, so mutation handlers run end to end.
+    /// Test-only [`HttpState`] with live trigger channels and a real seeded
+    /// database, so mutation handlers run end to end.
     fn mutation_state(
         runtime: RuntimeState,
     ) -> (
@@ -2674,20 +2705,22 @@ mod tests {
         tokio::sync::mpsc::UnboundedReceiver<()>,
         tokio::sync::watch::Receiver<crate::config::AppConfig>,
     ) {
-        let dir = temp_data_dir("mutation");
-        let config_path = dir.join("configs.yaml");
-        crate::config::AppConfig::write_default(&config_path).expect("seed config writes");
-        let (config_tx, config_rx) = tokio::sync::watch::channel(
-            crate::config::AppConfig::load(&config_path).expect("seed loads"),
-        );
+        let mut state = http_state(runtime, false);
+        let seed =
+            crate::settings::load_app_config(state.database.as_ref().expect("test db present"))
+                .expect("seed loads");
+        let (config_tx, config_rx) = tokio::sync::watch::channel(seed);
         let (refresh_tx, refresh_rx) = tokio::sync::mpsc::unbounded_channel();
         let (ping_tx, ping_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut state = http_state(runtime, false);
-        state.config_path = config_path;
         state.config_tx = Some(config_tx);
         state.refresh_tx = Some(refresh_tx);
         state.ping_tx = Some(ping_tx);
         (state, refresh_rx, ping_rx, config_rx)
+    }
+
+    fn stored_config(state: &HttpState) -> crate::config::AppConfig {
+        crate::settings::load_app_config(state.database.as_ref().expect("test db present"))
+            .expect("settings reload")
     }
 
     fn no_auth() -> (
@@ -2802,12 +2835,13 @@ mod tests {
         .await;
 
         assert_eq!(response.status(), StatusCode::OK);
-        let disk = crate::config::AppConfig::load(&state.config_path).expect("config reloads");
+        let stored = stored_config(&state);
         assert!(
-            disk.subscriptions
+            stored
+                .subscriptions
                 .iter()
                 .any(|source| source.name == "new" && source.priority == 5),
-            "new subscription persists to configs.yaml"
+            "new subscription persists to the database"
         );
         assert!(
             state
@@ -2816,7 +2850,7 @@ mod tests {
                 .await
                 .iter()
                 .any(|source| source.name == "new"),
-            "shared snapshot updates without waiting for the watcher"
+            "shared snapshot updates immediately"
         );
         config_rx.changed().await.expect("live broadcast fires");
         assert!(
@@ -2850,16 +2884,28 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
-    fn seed_subscriptions(state: &HttpState, yaml: &str) {
-        std::fs::write(&state.config_path, yaml).expect("seed subscriptions write");
+    fn seed_subscriptions(state: &HttpState) {
+        let sources = ["a", "b", "c"]
+            .into_iter()
+            .map(|name| crate::config::SubscriptionSource {
+                name: name.to_string(),
+                url: format!("https://example.com/{name}.txt"),
+                enabled: name != "c",
+                priority: if name == "c" { 9 } else { 5 },
+            })
+            .collect::<Vec<_>>();
+        state
+            .database
+            .as_ref()
+            .expect("test db present")
+            .save_subscriptions(&sources)
+            .expect("seed subscriptions save");
     }
-
-    const REORDER_SEED: &str = "subscriptions:\n  - {name: a, url: https://example.com/a.txt, enabled: true, priority: 5}\n  - {name: b, url: https://example.com/b.txt, enabled: true, priority: 5}\n  - {name: c, url: https://example.com/c.txt, enabled: false, priority: 9}\n";
 
     #[tokio::test]
     async fn subscriptions_reorder_permutes_renumbers_and_persists() {
         let (state, _refresh_rx, _ping_rx, mut config_rx) = mutation_state(RuntimeState::default());
-        seed_subscriptions(&state, REORDER_SEED);
+        seed_subscriptions(&state);
         let (headers, query, connect) = no_auth();
         let response = super::api_subscriptions_reorder(
             axum::extract::State(state.clone()),
@@ -2873,14 +2919,14 @@ mod tests {
         .await;
 
         assert_eq!(response.status(), StatusCode::OK);
-        let disk = crate::config::AppConfig::load(&state.config_path).expect("config reloads");
-        let names: Vec<&str> = disk
+        let stored = stored_config(&state);
+        let names: Vec<&str> = stored
             .subscriptions
             .iter()
             .map(|source| source.name.as_str())
             .collect();
-        assert_eq!(names, ["c", "a", "b"], "disk order follows the drop");
-        let priorities: Vec<u32> = disk
+        assert_eq!(names, ["c", "a", "b"], "stored order follows the drop");
+        let priorities: Vec<u32> = stored
             .subscriptions
             .iter()
             .map(|source| source.priority)
@@ -2895,7 +2941,7 @@ mod tests {
     #[tokio::test]
     async fn subscriptions_reorder_rejects_non_permutations() {
         let (state, _refresh_rx, _ping_rx, _config_rx) = mutation_state(RuntimeState::default());
-        seed_subscriptions(&state, REORDER_SEED);
+        seed_subscriptions(&state);
         // Duplicate, out-of-range, and wrong-length orders are all 400 and
         // must leave the file untouched.
         for order in [vec![0, 0, 1], vec![0, 1, 5], vec![0, 1], vec![0, 1, 2, 0]] {
@@ -2910,9 +2956,9 @@ mod tests {
             .await;
             assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         }
-        let disk = crate::config::AppConfig::load(&state.config_path).expect("config reloads");
+        let stored = stored_config(&state);
         assert_eq!(
-            disk.subscriptions[0].priority, 5,
+            stored.subscriptions[0].priority, 5,
             "rejected reorder writes nothing"
         );
     }
@@ -2958,8 +3004,8 @@ mod tests {
         .await;
 
         assert_eq!(response.status(), StatusCode::OK);
-        let disk = crate::config::AppConfig::load(&state.config_path).expect("config reloads");
-        assert_eq!(disk.top_n, 25);
+        let stored = stored_config(&state);
+        assert_eq!(stored.top_n, 25);
         assert_eq!(state.config.read().await.top_n, 25);
     }
 
@@ -2983,7 +3029,8 @@ mod tests {
     #[tokio::test]
     async fn proxy_select_pins_live_without_touching_disk() {
         let (state, _refresh_rx, _ping_rx, mut config_rx) = mutation_state(RuntimeState::default());
-        let before = std::fs::read_to_string(&state.config_path).expect("config reads");
+        let db = state.database.as_ref().expect("test db present").clone();
+        let before = db.load_settings().expect("settings read");
         let (headers, query, connect) = no_auth();
         let uri = "vless://uuid@example.com:443?security=tls#Node".to_string();
         let response = super::api_proxy_select(
@@ -3003,8 +3050,8 @@ mod tests {
             config_rx.borrow().proxy.manual_proxy_uri.as_deref(),
             Some(uri.as_str())
         );
-        let after = std::fs::read_to_string(&state.config_path).expect("config reads");
-        assert_eq!(before, after, "proxy select never writes the file");
+        let after = db.load_settings().expect("settings read");
+        assert_eq!(before, after, "proxy select never writes the database");
     }
 
     #[tokio::test]

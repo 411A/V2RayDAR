@@ -99,11 +99,11 @@ pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar &&
 
 **Téléchargement manuel** — téléchargez l'archive pour votre OS depuis [Releases](https://github.com/411A/V2RayDAR/releases/latest) et lancez-la — les dossiers portables sont détectés automatiquement (`--portable` le force).
 
-Le script d'installation vérifie les checksums SHA-256, détecte les installations existantes et propose une mise à jour (en préservant `configs.yaml`, `data.db` et `v2raydar_data/`), et ne nécessite pas sudo par défaut.
+Le script d'installation vérifie les checksums SHA-256, détecte les installations existantes et propose une mise à jour (en préservant `data.db` et `v2raydar_data/`), et ne nécessite pas sudo par défaut.
 
 ## 🔰 Démarrage rapide
 
-Après l'installation avec le script ci-dessus, lancez `v2raydar` (ou `v2raydar.exe` sous Windows). Au premier lancement, un `configs.yaml` est créé avec des sources d'abonnement pré-sélectionnées.
+Après l'installation avec le script ci-dessus, lancez `v2raydar` (ou `v2raydar.exe` sous Windows). Au premier lancement, `data.db` est initialisée avec les réglages par défaut et des sources d'abonnement pré-sélectionnées. Lors d'une mise à jour, un `configs.yaml` existant est automatiquement migré vers `data.db`.
 
 1. **Attendez le remplissage.** L'application récupère vos sources d'abonnement en parallèle, teste chaque config via votre réseau et classe les configs fonctionnelles. L'endpoint est actif dès le début — votre client peut s'y connecter immédiatement.
 2. **Pointez votre client** vers l'URL d'abonnement :
@@ -128,7 +128,7 @@ Après l'installation avec le script ci-dessus, lancez `v2raydar` (ou `v2raydar.
 | `q` | Quitter |
 | `:` | Mode commande — `:q` quitter, `:w` sauvegarder, `:a` ajouter, `:d` supprimer, `:n` renommer, `:u` URL, `:p` priorité, `:r` actualiser, `:ping` re-tester |
 
-4. **Modifier les paramètres** depuis le menu principal TUI (Configurations) ou en éditant directement `configs.yaml` — les changements prennent effet au prochain rafraîchissement. Paramètres clés : `top_n`, `refresh_seconds`, `ping_seconds`, `sharing.enabled`, `probe.mode`. Les nouveaux réglages sont ajoutés avec leurs valeurs par défaut à votre fichier au démarrage ; vos valeurs sont conservées.
+4. **Modifier les paramètres** depuis le menu principal TUI (Configurations) ou l'onglet des paramètres du tableau de bord — les changements s'appliquent immédiatement. Paramètres clés : `top_n`, `refresh_seconds`, `ping_seconds`, `sharing.enabled`, `probe.mode`. Les nouveaux réglages reçoivent leurs valeurs par défaut automatiquement ; vos valeurs sont conservées.
 5. **Quitter** avec `q` ou `:q`. L'endpoint s'arrête à la fermeture.
 
 ### Modes d'exécution
@@ -146,7 +146,7 @@ Les utilisateurs Windows remplacent `v2raydar` par `v2raydar.exe`. Sous macOS, o
 ## ⚙️ Configuration par défaut
 
 <details>
-  <summary>👣 <strong>configs.yaml</strong> — tableau de toutes les clés, valeurs par défaut et leur rôle. Explications complètes dans le <a href="guide.md">guide développeur</a>.</summary>
+  <summary>👣 <strong>Paramètres</strong> — tableau de toutes les clés, valeurs par défaut et leur rôle. Explications complètes dans le <a href="guide.md">guide développeur</a>.</summary>
 
 | Clé | Par défaut | Rôle |
 | --- | --- | --- |
@@ -192,7 +192,7 @@ Les utilisateurs Windows remplacent `v2raydar` par `v2raydar.exe`. Sous macOS, o
 ## 🌐 Notes pour les réseaux restreints
 
 - Sur les réseaux très restreints, les configs précédemment testées sont stockées en base et accessibles via `use_cache_only: true`.
-- Par défaut, si certaines URLs HTTP échouent mais qu'une config fonctionnelle est disponible, l'application l'utilise pour réessayer les abonnements échoués. Si aucune config n'est disponible mais que vous en avez une, ajoutez-la dans `emergency_config` du `configs.yaml`.
+- Par défaut, si certaines URLs HTTP échouent mais qu'une config fonctionnelle est disponible, l'application l'utilise pour réessayer les abonnements échoués. Si aucune config n'est disponible mais que vous en avez une, définissez-la comme `emergency_config` depuis l'écran de configuration du TUI ou l'onglet des paramètres.
 
 ## 📡 Connecter vos clients à V2RayDAR
 
@@ -205,7 +205,7 @@ Le guide complet de configuration des clients, le partage protégé par token et
 
 V2RayDAR peut exécuter un proxy SOCKS5/HTTP persistant à côté de l'endpoint d'abonnement. Toute application sur le système — Telegram, navigateurs, curl, Python — peut y router son trafic sans client VPN séparé.
 
-**Activer dans `configs.yaml` :**
+**Activation dans les paramètres :**
 ```yaml
 proxy:
   enabled: true

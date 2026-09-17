@@ -50,6 +50,28 @@ impl Database {
             CREATE TABLE IF NOT EXISTS stable_top (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 keys_json TEXT NOT NULL
+            );
+
+            -- User preferences migrated from `configs.yaml`: dotted setting
+            -- keys (`bind`, `probe.mode`, `sharing.token`, ...) mapped to
+            -- compact JSON literals (`\"127.0.0.1:27141\"`, `true`, `900`,
+            -- `null`, `[204,200]`), so any leaf round-trips exactly with no
+            -- per-field mapping code. New settings persist automatically.
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+
+            -- Subscription sources: `priority` is both the probe ranking
+            -- weight and the list order (lower runs first, ties keep
+            -- insertion order), in the TUI and on the dashboard alike.
+            -- Drag-and-drop renumbers priorities, so no second column.
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                url TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                priority INTEGER NOT NULL DEFAULT 100
             );",
         )?;
 
@@ -364,9 +386,119 @@ impl Database {
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM configs", [])?;
         tx.execute("DELETE FROM stable_top", [])?;
+        // `settings` and `subscriptions` are user data, not probe cache:
+        // a cache clean must never wipe preferences or sources.
         tx.commit()?;
         drop(conn);
         Ok(())
+    }
+
+    /// True once user preferences live here (seeded or migrated).
+    /// An empty table means first run: seed defaults instead of loading.
+    #[allow(clippy::significant_drop_tightening)]
+    pub fn has_settings(&self) -> Result<bool> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM settings", [], |row| row.get(0))
+            .context("failed to count settings rows")?;
+        Ok(count > 0)
+    }
+
+    /// Replace every setting in one transaction: a killed process can never
+    /// leave a half-written preference set behind.
+    #[allow(clippy::significant_drop_tightening)]
+    pub fn save_settings(&self, entries: &[(String, String)]) -> Result<()> {
+        let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM settings", [])
+            .context("failed to clear settings")?;
+        {
+            let mut stmt = tx
+                .prepare("INSERT INTO settings (key, value) VALUES (?1, ?2)")
+                .context("failed to prepare settings insert")?;
+            for (key, value) in entries {
+                stmt.execute(params![key, value])
+                    .with_context(|| format!("failed to save setting {key}"))?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    #[allow(clippy::significant_drop_tightening)]
+    pub fn load_settings(&self) -> Result<std::collections::HashMap<String, String>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let mut stmt = conn
+            .prepare("SELECT key, value FROM settings")
+            .context("failed to prepare settings query")?;
+        let rows = stmt
+            .query_map([], |row| {
+                let key: String = row.get(0)?;
+                let value: String = row.get(1)?;
+                Ok((key, value))
+            })
+            .context("failed to query settings")?;
+        let mut map = std::collections::HashMap::new();
+        for row in rows {
+            let (key, value) = row.context("failed to read settings row")?;
+            map.insert(key, value);
+        }
+        Ok(map)
+    }
+
+    /// Replace every subscription in one transaction: a killed process can
+    /// never leave a half-written source list behind.
+    #[allow(clippy::significant_drop_tightening)]
+    pub fn save_subscriptions(&self, sources: &[crate::config::SubscriptionSource]) -> Result<()> {
+        let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM subscriptions", [])
+            .context("failed to clear subscriptions")?;
+        {
+            let mut stmt = tx
+                .prepare(
+                    "INSERT INTO subscriptions (name, url, enabled, priority)
+                     VALUES (?1, ?2, ?3, ?4)",
+                )
+                .context("failed to prepare subscriptions insert")?;
+            for source in sources {
+                stmt.execute(params![
+                    source.name,
+                    source.url,
+                    i64::from(source.enabled),
+                    i64::from(source.priority),
+                ])
+                .with_context(|| format!("failed to save subscription {}", source.name))?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    #[allow(clippy::significant_drop_tightening)]
+    pub fn load_subscriptions(&self) -> Result<Vec<crate::config::SubscriptionSource>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT name, url, enabled, priority FROM subscriptions
+                 ORDER BY priority ASC, id ASC",
+            )
+            .context("failed to prepare subscriptions query")?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(crate::config::SubscriptionSource {
+                    name: row.get(0)?,
+                    url: row.get(1)?,
+                    enabled: row.get::<_, i64>(2)? != 0,
+                    priority: row.get::<_, u32>(3)?,
+                })
+            })
+            .context("failed to query subscriptions")?;
+        let mut sources = Vec::new();
+        for row in rows {
+            sources.push(row.context("failed to read subscription row")?);
+        }
+        Ok(sources)
     }
 }
 

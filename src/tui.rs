@@ -7,10 +7,10 @@ pub mod firewall;
 mod footer;
 mod found_panel;
 mod input_handlers;
+pub mod launch;
 mod layout;
 mod logs_panel;
 mod main_menu_panel;
-pub mod open_config;
 mod setup;
 pub mod state;
 mod subscriptions_panel;
@@ -153,8 +153,12 @@ fn drain_events(
     Ok(EventResult::Continue)
 }
 
-pub async fn run_sing_box_setup(config: &mut AppConfig, paths: &AppPaths) -> Result<()> {
-    setup::run(config, paths).await
+pub async fn run_sing_box_setup(
+    config: &mut AppConfig,
+    paths: &AppPaths,
+    db: &crate::db::Database,
+) -> Result<()> {
+    setup::run(config, paths, db).await
 }
 
 pub fn remove_owned_firewall_rules(state_dir: &Path) -> Result<Vec<String>> {

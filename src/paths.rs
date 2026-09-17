@@ -58,7 +58,7 @@ impl AppPaths {
         Ok(())
     }
 
-    fn from_root(root_dir: PathBuf, portable: bool) -> Self {
+    pub(crate) fn from_root(root_dir: PathBuf, portable: bool) -> Self {
         let config_path = root_dir.join(CONFIG_FILE_NAME);
         Self::from_root_with_config(root_dir, config_path, portable, true)
     }

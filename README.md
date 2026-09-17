@@ -58,7 +58,7 @@ After starting the app, open http://127.0.0.1:27141 in your browser for the live
 - Validates each candidate through your current network with `sing-box` (it actually loads a test URL through the proxy).
 - **Dual-format output** — serves working configs as V2Ray share-links (`/subscription`) **and** as full Mihomo YAML configs (`/mihomo.yaml`), so any client can use them.
 - Re-exposes the top working configs at a local URL so any compatible client just sees one always-fresh subscription.
-- **Persistent HTTP/SOCKS5 proxy** — keeps a `sing-box` process running with the best config, exposing a local proxy port any app can use. Enable `proxy.enabled` in `configs.yaml` and point Telegram, browsers, or any app at `127.0.0.1:27910`.
+- **Persistent HTTP/SOCKS5 proxy** — keeps a `sing-box` process running with the best config, exposing a local proxy port any app can use. Flip `proxy.enabled` on from the TUI main menu or the dashboard Proxy tab and point Telegram, browsers, or any app at `127.0.0.1:27910`.
 - **LAN proxy sharing** — set `proxy.discoverable: true` to bind `0.0.0.0` and add firewall rules, so every phone on your Wi-Fi can use the proxy. Telegram one-tap setup: `https://t.me/socks?server=192.0.2.2&port=27910`.
 - **QR code sheet** (desktop) — the main menu's `QR Codes: Generate & View` renders the LAN subscription and Telegram proxy as scannable QR codes (`v2raydar_data/QRCodes.jpg`) and opens the image for your phone.
 - Survives restricted networks via previously-probed configs in the database, an in-network bridge config, or an `emergency_config`.
@@ -105,11 +105,11 @@ irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
 
 **Manual download** — grab the archive for your OS from [Releases](https://github.com/411A/V2RayDAR/releases/latest) and run it — portable folders are detected automatically (`--portable` forces it).
 
-The installer verifies SHA-256 checksums, detects existing installations and offers to update (preserving `configs.yaml`, `data.db`, and `v2raydar_data/`), and never requires sudo by default.
+The installer verifies SHA-256 checksums, detects existing installations and offers to update (preserving `data.db` and `v2raydar_data/`), and never requires sudo by default.
 
 ## 🔰 Quick start
 
-After installing with the script above, run `v2raydar` (or `v2raydar.exe` on Windows). On first launch it creates a `configs.yaml` with a set of pre-selected subscription sources to get you started.
+After installing with the script above, run `v2raydar` (or `v2raydar.exe` on Windows). On first launch it initializes `data.db` with default settings and a set of pre-selected subscription sources to get you started. Upgrading keeps everything: an existing `configs.yaml` is migrated into `data.db` automatically.
 
 1. **Wait for it to populate.** The app fetches your subscription sources in parallel, probes each config through your real network, and ranks the ones that work. The endpoint is live from the start — your client can point to it immediately.
 2. **Point your client** at the subscription URL:
@@ -134,7 +134,7 @@ After installing with the script above, run `v2raydar` (or `v2raydar.exe` on Win
 | `q` | Quit |
 | `:` | Command mode — `:q` quit, `:w` save, `:a` add, `:d` delete, `:n` rename, `:u` URL, `:p` priority, `:r` refresh, `:ping` |
 
-4. **Change settings** from the TUI main menu (Configurations) or edit `configs.yaml` directly — changes take effect on the next refresh. Key settings: `top_n`, `refresh_seconds`, `ping_seconds`, `sharing.enabled`, `probe.mode`. Settings added by newer versions are appended to older files with defaults on startup; your values are never overwritten.
+4. **Change settings** from the TUI main menu (Configurations) or the dashboard Settings tab — changes apply immediately. Key settings: `top_n`, `refresh_seconds`, `ping_seconds`, `sharing.enabled`, `probe.mode`. Settings added by newer versions default automatically; your stored values are never overwritten.
 5. **Exit** with `q` or `:q`. The endpoint stops when the app exits.
 
 ### Run modes
@@ -152,7 +152,7 @@ Windows users replace `v2raydar` with `v2raydar.exe`. On macOS open the bundled 
 ## ⚙️ Default config at a glance
 
 <details>
-  <summary>👣 <strong>configs.yaml</strong> — table of every key, default, and what it does. Full explanations live in the <a href="docs/guide.md">detailed guide</a>.</summary>
+  <summary>👣 <strong>Settings</strong> — table of every key, default, and what it does. Full explanations live in the <a href="docs/guide.md">detailed guide</a>.</summary>
 
 | Key | Default | Purpose |
 | --- | --- | --- |
@@ -198,7 +198,7 @@ Windows users replace `v2raydar` with `v2raydar.exe`. On macOS open the bundled 
 ## 🌐 Notes for restricted networks
 
 - If you are on a very restricted network, previously-probed configs are stored in the database and can be used via `use_cache_only: true`.
-- By default, if some HTTP subscription URLs don't connect on your network but one config is reachable, the app uses that config to retry those failed HTTP subscriptions too. And if there are no working configs on your network but you have one working config yourself, you can bring it into `configs.yaml`'s `emergency_config` so the app uses it to retry failed HTTP subscription fetches.
+- By default, if some HTTP subscription URLs don't connect on your network but one config is reachable, the app uses that config to retry those failed HTTP subscriptions too. And if there are no working configs on your network but you have one working config yourself, you can set it as `emergency_config` from the TUI Configurations screen or the dashboard Settings tab so the app uses it to retry failed HTTP subscription fetches.
 
 ## 📡 Pointing common clients at V2RayDAR
 
@@ -211,13 +211,8 @@ Full client walkthroughs, token-protected sharing, and OS-specific firewall deta
 
 V2RayDAR can run a persistent SOCKS5/HTTP proxy alongside the subscription endpoint. Any app on the system — Telegram, browsers, curl, Python — can route traffic through it without a separate VPN client.
 
-**Enable in `configs.yaml`:**
-```yaml
-proxy:
-  enabled: true
-  port: 27910
-  discoverable: false   # true = LAN access + firewall rule
-```
+**Enable from the TUI Proxy row or the dashboard Proxy tab**
+(`enabled: true`, port `27910`, `discoverable: true` = LAN access + firewall rule).
 
 **Local usage (on the device running V2RayDAR):**
 ```bash

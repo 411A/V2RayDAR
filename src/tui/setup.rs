@@ -11,14 +11,13 @@ use std::path::Path;
 
 use crate::{
     config::AppConfig,
-    constants::{TUI_SETUP_POLL_INTERVAL, sing_box_download_url},
+    constants::{DB_FILE_NAME, TUI_SETUP_POLL_INTERVAL, sing_box_download_url},
+    db::Database,
     paths::AppPaths,
     sing_box,
 };
 
-use super::util::save_config;
-
-pub async fn run(config: &mut AppConfig, paths: &AppPaths) -> Result<()> {
+pub async fn run(config: &mut AppConfig, paths: &AppPaths, db: &Database) -> Result<()> {
     crossterm::terminal::enable_raw_mode()?;
     let mut terminal = ratatui::try_init()?;
     crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
@@ -54,7 +53,7 @@ pub async fn run(config: &mut AppConfig, paths: &AppPaths) -> Result<()> {
                             Ok(()) => {
                                 config.probe.sing_box_path = candidate;
                                 config.probe.sing_box_path_auto = false;
-                                save_config(&paths.config_path, config)?;
+                                crate::settings::save_app_config(db, config)?;
                                 break Ok(());
                             }
                             Err(error) => {
@@ -144,9 +143,9 @@ fn draw(frame: &mut Frame<'_>, state: &SetupState, paths: &AppPaths) {
     );
     lines.extend([
         Line::from(""),
-        Line::from("Config will be saved to:"),
+        Line::from("Settings will be saved to:"),
         Line::from(Span::styled(
-            display_path(&paths.config_path),
+            display_path(&paths.root_dir.join(DB_FILE_NAME)),
             Style::default().fg(Color::DarkGray),
         )),
         Line::from(""),

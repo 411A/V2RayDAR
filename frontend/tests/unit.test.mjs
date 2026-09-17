@@ -560,6 +560,10 @@ describe("config detail popup (row click)", () => {
     assert.ok(kvText.includes("Name|node-x"), "name renders inside the popup: " + kvText);
     assert.ok(kvText.includes("Reachable|yes|Stability|\u2066\u00d73\u2069"),
       "stability follows Reachable like the configs tab: " + kvText);
+    // The popup shows the exact milliseconds even past one second.
+    api.openDetail({ ...row, latency_ms: 2100 });
+    const kvMs = sandbox.__elements.get("dlg-detail-kv").children.map((c) => c.textContent).join("|");
+    assert.ok(kvMs.includes("Latency|\u20662100 ms\u2069"), "popup latency stays in ms: " + kvMs);
     // No QREncode in the sandbox: QR block hides instead of erroring.
     assert.equal(sandbox.__elements.get("dlg-detail-qr-wrap").hidden, true);
     const useBtn = sandbox.__elements.get("dlg-detail-use");

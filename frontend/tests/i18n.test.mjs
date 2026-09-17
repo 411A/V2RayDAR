@@ -169,6 +169,9 @@ describe("frontend i18n: one unified strings file, English default", () => {
     const PDI = "\u2069";
     assert.equal(api.fmtLatency(2100), `${LRI}2.1 s${PDI}`);
     assert.equal(api.fmtLatency(42), `${LRI}42 ms${PDI}`);
+    assert.equal(api.fmtLatencyMs(2100), `${LRI}2100 ms${PDI}`);
+    assert.equal(api.fmtLatencyMs(42), `${LRI}42 ms${PDI}`);
+    assert.equal(api.fmtLatencyMs(null), "—");
     assert.equal(api.fmtBytes(6080000), `${LRI}5.8 MB${PDI}`);
     assert.equal(api.fmtDuration(130000), `${LRI}2m 10s${PDI}`);
     assert.equal(api.fmtLatency(null), "—");

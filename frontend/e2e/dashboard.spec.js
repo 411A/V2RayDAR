@@ -217,3 +217,26 @@ test("legacy #/tab bookmarks replace-redirect with token preserved", async ({ pa
   await expect.poll(() => page.url()).toContain("/configs?token=abc");
   await expect(page.locator("#panel-configs")).toBeVisible();
 });
+
+test("top-bar controls share one height; overview sections share one gap", async ({ page }) => {
+  await page.goto(base + "/overview");
+  // Equal heights, natural widths: icon/segmented controls must not sit
+  // shorter than the text buttons.
+  const heights = await page.evaluate(() =>
+    [...document.querySelectorAll("#btn-refresh, #btn-ping, .theme-switch, #btn-lang, #btn-keys, #btn-power")]
+      .map((el) => el.getBoundingClientRect().height)
+  );
+  expect(heights).toHaveLength(6);
+  expect(Math.max(...heights) - Math.min(...heights)).toBeLessThanOrEqual(1);
+  // One rhythm below the stat cards, between the two-col rows, and above
+  // the fetch-errors card (computed margins match even while hidden).
+  const margins = await page.evaluate(() => {
+    const css = (sel, prop) => getComputedStyle(document.querySelector(sel))[prop];
+    return [
+      css("#stat-cards", "marginBottom"),
+      css("#panel-overview .two-col", "marginTop"),
+      css("#fetch-errors-card", "marginTop"),
+    ];
+  });
+  expect(new Set(margins).size).toBe(1);
+});

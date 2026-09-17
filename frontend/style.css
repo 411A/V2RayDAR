@@ -233,10 +233,19 @@ kbd,
 
 .top-actions {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   gap: 0.5rem;
   margin-inline-start: auto;
   flex-wrap: wrap;
+}
+
+/* One shared control height across the top bar (widths stay natural):
+ * every item stretches to the tallest one, so image/compact controls never
+ * sit shorter than text buttons. Segmented buttons center their label in
+ * the stretched box. */
+.top-actions .theme-switch .seg {
+  display: inline-flex;
+  align-items: center;
 }
 
 /* ---- Buttons ---- */
@@ -531,7 +540,7 @@ main {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 0.5rem;
-  margin-block-end: 1rem;
+  margin-block-end: 0.7rem;
 }
 
 .card {
@@ -588,6 +597,13 @@ main {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 0.7rem;
+  margin-block-start: 0.7rem;
+}
+
+/* Standalone overview card (fetch errors): same rhythm as the rows above —
+ * without this the Configuration/Recent-logs row sits closer to it than to
+ * anything else. */
+#fetch-errors-card {
   margin-block-start: 0.7rem;
 }
 

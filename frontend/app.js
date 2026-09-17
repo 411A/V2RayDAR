@@ -361,6 +361,19 @@ function fmtLatency(ms) {
   return ltr((v / 1000).toFixed(1) + " s");
 }
 
+/// Milliseconds, always (`842 ms`, never `0.8 s`): the config detail popup
+/// shows the exact figure while tables stay compact with [`fmtLatency`].
+function fmtLatencyMs(ms) {
+  if (ms === null || ms === undefined) {
+    return "—";
+  }
+  const v = Number(ms);
+  if (!Number.isFinite(v)) {
+    return "—";
+  }
+  return ltr(Math.round(v) + " ms");
+}
+
 function fmtStamp(iso) {
   if (!iso) {
     return "—";
@@ -1622,7 +1635,7 @@ function openDetail(c) {
     [t("fReachable"), c.reachable ? t("yes") : t("no")],
     [t("fStability"), c.stability_count ? ltr("\u00d7" + c.stability_count) : "—"],
     [t("fValidation"), c.validation || "—"],
-    [t("fLatency"), fmtLatency(c.latency_ms)],
+    [t("fLatency"), fmtLatencyMs(c.latency_ms)],
     [t("fHttp"), c.http_status !== null && c.http_status !== undefined ? String(c.http_status) : "—"],
     [t("fSpeed"), c.download_mbps !== null && c.download_mbps !== undefined ? ltr(Number(c.download_mbps).toFixed(2) + t("speedUnit")) : "—"],
     [t("fCountry"), ccFlag ? ccFlag : "—"],

@@ -291,6 +291,74 @@ describe("power-off stops quietly and stays stopped", () => {
   });
 });
 
+describe("firewall elevation pops the run-as-admin guide", () => {
+  const elevation = (os) => ({
+    status: 200,
+    async text() {
+      return JSON.stringify({
+        ok: true,
+        status: "Sharing on (firewall update failed: boom)",
+        dirty: false,
+        code: "firewall_elevation",
+        os,
+      });
+    },
+  });
+
+  it("firewallElevation reads code+os, ignores plain replies", () => {
+    const { api } = loadApp();
+    assert.equal(
+      api.firewallElevation({ status: 200, data: { ok: true, code: "firewall_elevation", os: "windows" } }),
+      "windows",
+    );
+    assert.equal(
+      api.firewallElevation({ status: 200, data: { ok: true, code: "firewall_elevation" } }),
+      "other",
+    );
+    assert.equal(
+      api.firewallElevation({ status: 200, data: { ok: true, status: "Sharing on" } }),
+      null,
+    );
+    assert.equal(api.firewallElevation({ status: 500, data: null }), null);
+  });
+
+  it("showAdminGuide renders per-OS text in the user's language", () => {
+    const { api, sandbox } = loadApp();
+    api.showAdminGuide("windows");
+    assert.equal(sandbox.__elements.get("dlg-admin").open, true);
+    assert.match(sandbox.__elements.get("dlg-admin-body").textContent, /Run as administrator/);
+    api.showAdminGuide("linux");
+    assert.match(sandbox.__elements.get("dlg-admin-body").textContent, /sudo/);
+    api.showAdminGuide("android");
+    assert.match(sandbox.__elements.get("dlg-admin-body").textContent, /Termux/);
+    api.setLanguage("fa");
+    api.showAdminGuide("windows");
+    // The Windows menu label stays in English: that is what the OS shows.
+    assert.match(sandbox.__elements.get("dlg-admin-body").textContent, /Run as administrator/);
+  });
+
+  it("proxy mode LAN failure opens the guide instead of the success toast", async () => {
+    const { api, sandbox } = loadApp();
+    sandbox.fetch = async () => elevation("windows");
+    await api.setProxyMode("lan");
+    assert.equal(sandbox.__elements.get("dlg-admin").open, true);
+    assert.match(sandbox.__elements.get("dlg-admin-body").textContent, /Run as administrator/);
+    assert.equal(sandbox.__elements.get("toasts").children.length, 0, "no success toast on elevation");
+  });
+
+  it("plain proxy replies keep the toast path", async () => {
+    const { api, sandbox } = loadApp();
+    sandbox.fetch = async () => ({
+      status: 200,
+      async text() { return '{"ok":true,"status":"Proxy LAN (rule ok)","dirty":false}'; },
+    });
+    await api.setProxyMode("lan");
+    assert.equal(sandbox.__elements.get("dlg-admin").open, false);
+    const toasts = sandbox.__elements.get("toasts");
+    assert.match(toasts.children[toasts.children.length - 1].textContent, /Proxy LAN/);
+  });
+});
+
 describe("live ranked events refresh overview top-configs too", () => {
   const row = {
     rank: 1,

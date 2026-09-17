@@ -71,10 +71,11 @@ const FAVICON_SVG: &str = concat!(
 /// Budget from PLAN.md §5: the whole initial payload must fit one loopback
 /// exchange and stay usable on low-end phones. Raised 150 → 175 KiB for the
 /// unified i18n table + HTML bindings, then 175 → 250 KiB for the fa/zh/fr/ru
-/// locale tables and 250 → 260 KiB for subscription drag-and-drop reorder
-/// (user text, not bloat — still one RTT).
+/// locale tables, 250 → 260 KiB for subscription drag-and-drop reorder and
+/// 260 → 266 KiB for the run-as-admin elevation guide (user text, not
+/// bloat — still one RTT).
 #[cfg(test)]
-const DASHBOARD_ASSET_BUDGET_BYTES: usize = 266_240;
+const DASHBOARD_ASSET_BUDGET_BYTES: usize = 272_384;
 /// Feed diff cadence: matches the dashboard's ≤1 Hz ranked refresh.
 const FEED_TICK: Duration = Duration::from_secs(2);
 /// SSE heartbeat so idle connections survive NATs/proxies.
@@ -828,13 +829,44 @@ struct MutationResult {
     ok: bool,
     status: String,
     dirty: bool,
+    /// Machine flag for the dashboard (absent = plain message). Currently
+    /// only `FIREWALL_ELEVATION_CODE`, paired with `os`, so the frontend can
+    /// pop the run-as-admin guide in the user's language.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<&'static str>,
+    /// Server OS (`std::env::consts::OS`) for the admin guide. The browser
+    /// may run on another LAN device, so the client must not guess from UA.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    os: Option<&'static str>,
 }
+
+/// Firewall rule change failed while toggling proxy mode or sharing.
+const FIREWALL_ELEVATION_CODE: &str = "firewall_elevation";
 
 fn mutation_ok(status: impl Into<String>) -> Response {
     Json(MutationResult {
         ok: true,
         status: status.into(),
         dirty: false,
+        code: None,
+        os: None,
+    })
+    .into_response()
+}
+
+/// Setting saved, firewall rule failed: same 200 + `ok` as a plain success
+/// (existing tests and old frontends only look at those), plus the machine
+/// flag new frontends use to pop the run-as-admin guide. The failure is
+/// almost always missing elevation — `netsh`/`ufw`/`firewall-cmd` refuse
+/// without admin/root — so the guide tells the user to stop the server,
+/// restart it elevated, and retry.
+fn mutation_firewall_elevation(firewall_message: String) -> Response {
+    Json(MutationResult {
+        ok: true,
+        status: firewall_message,
+        dirty: false,
+        code: Some(FIREWALL_ELEVATION_CODE),
+        os: Some(std::env::consts::OS),
     })
     .into_response()
 }
@@ -846,6 +878,8 @@ fn mutation_error(status: StatusCode, message: impl Into<String>) -> Response {
             ok: false,
             status: message.into(),
             dirty: false,
+            code: None,
+            os: None,
         }),
     )
         .into_response()
@@ -1637,24 +1671,24 @@ pub async fn api_proxy_mode(
     if let Err(response) = persist_config(&state, &cfg).await {
         return response;
     }
-    let firewall_message = crate::tui::firewall::apply(
+    let mode_label = if !cfg.proxy.enabled {
+        "off"
+    } else if cfg.proxy.discoverable {
+        "LAN"
+    } else {
+        "local"
+    };
+    match crate::tui::firewall::apply(
         &state.data_dir,
         cfg.proxy.discoverable,
         cfg.proxy.port,
         crate::constants::FIREWALL_PROXY_RULE_NAME,
-    )
-    .unwrap_or_else(|error| format!("firewall update failed: {error}"));
-    mutation_ok(format!(
-        "Proxy {} ({})",
-        if !cfg.proxy.enabled {
-            "off"
-        } else if cfg.proxy.discoverable {
-            "LAN"
-        } else {
-            "local"
-        },
-        firewall_message
-    ))
+    ) {
+        Ok(message) => mutation_ok(format!("Proxy {mode_label} ({message})")),
+        Err(error) => mutation_firewall_elevation(format!(
+            "Proxy {mode_label} (firewall update failed: {error})"
+        )),
+    }
 }
 
 /// `POST /api/sharing` — toggle LAN sharing (same save + live-push +
@@ -1679,18 +1713,18 @@ pub async fn api_sharing(
     if let Err(response) = persist_config(&state, &cfg).await {
         return response;
     }
-    let firewall_message = crate::tui::firewall::apply(
+    let sharing_label = if cfg.sharing.enabled { "on" } else { "off" };
+    match crate::tui::firewall::apply(
         &state.data_dir,
         cfg.sharing.enabled,
         cfg.bind.port(),
         crate::constants::FIREWALL_RULE_NAME,
-    )
-    .unwrap_or_else(|error| format!("firewall update failed: {error}"));
-    mutation_ok(format!(
-        "Sharing {} ({})",
-        if cfg.sharing.enabled { "on" } else { "off" },
-        firewall_message
-    ))
+    ) {
+        Ok(message) => mutation_ok(format!("Sharing {sharing_label} ({message})")),
+        Err(error) => mutation_firewall_elevation(format!(
+            "Sharing {sharing_label} (firewall update failed: {error})"
+        )),
+    }
 }
 
 /// `POST /api/cache/clean` — clear the probe database (`{confirm: "DELETE"}`).
@@ -2559,6 +2593,56 @@ mod tests {
                 .is_some_and(|message| !message.is_empty()),
             "a human message rides along: {value}"
         );
+    }
+
+    #[tokio::test]
+    async fn firewall_elevation_flag_rides_along_for_admin_guide() {
+        // The dashboard pops the run-as-admin guide from `code` + `os`; the
+        // setting itself is already saved, so status stays 200 + ok.
+        let response = super::mutation_firewall_elevation(
+            "Sharing on (firewall update failed: boom)".to_string(),
+        );
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body reads");
+        let value: serde_json::Value = serde_json::from_slice(&body).expect("elevation is json");
+        assert_eq!(value["ok"], serde_json::Value::Bool(true));
+        assert_eq!(
+            value["code"],
+            serde_json::Value::String(super::FIREWALL_ELEVATION_CODE.to_string())
+        );
+        assert_eq!(
+            value["os"],
+            serde_json::Value::String(std::env::consts::OS.to_string())
+        );
+        assert!(
+            value["status"]
+                .as_str()
+                .is_some_and(|status| status.contains("firewall update failed")),
+            "the TUI-style reason stays human-readable: {value}"
+        );
+    }
+
+    #[tokio::test]
+    async fn plain_mutations_carry_no_admin_flag() {
+        for response in [
+            super::mutation_ok("done"),
+            super::mutation_error(StatusCode::BAD_REQUEST, "nope"),
+        ] {
+            let body = to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body reads");
+            let value: serde_json::Value = serde_json::from_slice(&body).expect("mutation is json");
+            assert!(
+                value.get("code").is_none(),
+                "plain mutation must not flag: {value}"
+            );
+            assert!(
+                value.get("os").is_none(),
+                "plain mutation must not flag: {value}"
+            );
+        }
     }
 
     #[tokio::test]

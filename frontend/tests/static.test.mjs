@@ -57,13 +57,13 @@ describe("frontend static gates (PLAN §5 + TODO global gates)", () => {
     assert.deepEqual(missing, [], `missing ids: ${missing.join(", ")}`);
   });
 
-  it("payload budget: HTML+CSS+JS+i18n+QR ≤ 266240 bytes (PLAN §5)", () => {
+  it("payload budget: HTML+CSS+JS+i18n+QR ≤ 272384 bytes (PLAN §5)", () => {
     const total =
       fs.statSync(path.join(dir, "index.html")).size +
       fs.statSync(path.join(dir, "style.css")).size +
       fs.statSync(path.join(dir, "app.js")).size +
       fs.statSync(path.join(dir, "i18n.js")).size +
       fs.statSync(path.join(dir, "qr.js")).size;
-    assert.ok(total <= 266_240, `payload ${total} bytes exceeds 266240`);
+    assert.ok(total <= 272_384, `payload ${total} bytes exceeds 272384`);
   });
 });

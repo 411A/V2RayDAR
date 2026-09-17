@@ -113,6 +113,7 @@ export function makeSandbox(overrides = {}) {
     "dlg-sub-priority", "dlg-sub-enabled", "dlg-sub-ok", "dlg-detail",
     "dlg-detail-title", "dlg-detail-kv", "dlg-detail-copy", "dlg-detail-close",
     "dlg-qr", "dlg-qr-title", "qr-canvas", "qr-hint", "dlg-qr-close",
+    "dlg-admin", "dlg-admin-title", "dlg-admin-body", "dlg-admin-ok",
     "dlg-keys", "dlg-keys-title", "dlg-keys-close", "btn-keys", "btn-lang",
     "lang-menu",
     "theme-system", "theme-light", "theme-dark",
@@ -193,6 +194,7 @@ const EXPORT_HOOK = `;globalThis.__v2 = {
   openDetail, wireRowDialog, selectProxy, toggleProxy,
   proxyRowState, syncProxyPending, applyProbeDelta, settleProxyPending,
   setProxyMode, proxyMode, updateProxyModeButtons,
+  firewallElevation, showAdminGuide,
   tickClock, uptimeText,
 };`;
 

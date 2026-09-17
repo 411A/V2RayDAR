@@ -1909,6 +1909,12 @@ async function setProxyMode(mode) {
       return;
     }
     if (r.status >= 200 && r.status < 300) {
+      const elevated = firewallElevation(r);
+      if (elevated) {
+        showAdminGuide(elevated);
+        window.setTimeout(() => void loadResults(), 1200);
+        return;
+      }
       toast(subMessage(r, t("proxyModeSet")), "good");
       window.setTimeout(() => void loadResults(), 1200);
       return;
@@ -2426,6 +2432,31 @@ function subMessage(r, fallback) {
   return (r.data && r.data.status) || fallback;
 }
 
+/// Firewall-elevation flag from proxy/sharing mutations: the setting is
+/// saved but the rule change needs admin/root, so the caller pops the guide
+/// instead of the success toast. Returns the server OS (the browser may sit
+/// on another LAN device, so the client must not guess from its own UA).
+function firewallElevation(r) {
+  if (r.data && r.data.code === "firewall_elevation") {
+    return typeof r.data.os === "string" && r.data.os ? r.data.os : "other";
+  }
+  return null;
+}
+
+function showAdminGuide(os) {
+  const key =
+    os === "windows" ? "adminGuideWindows"
+    : os === "linux" ? "adminGuideLinux"
+    : os === "macos" ? "adminGuideMac"
+    : os === "android" ? "adminGuideAndroid"
+    : "adminGuideOther";
+  $("dlg-admin-body").textContent = t(key) + " " + t("adminGuideRetry");
+  const d = $("dlg-admin");
+  if (typeof d.showModal === "function" && !d.open) {
+    d.showModal();
+  }
+}
+
 async function subToggle(i) {
   const r = await fetchJson("/api/subscriptions/" + i + "/toggle", { method: "POST", body: {} });
   if (r.status === 404) {
@@ -2917,6 +2948,7 @@ function wire() {
     $("dlg-power").close();
     void shutdownServer();
   });
+  $("dlg-admin-ok").addEventListener("click", () => $("dlg-admin").close());
 
   $("cfg-search").addEventListener("input", (ev) => {
     state.search = ev.target.value;
@@ -3019,6 +3051,12 @@ function wire() {
         return;
       }
       if (r.status >= 200 && r.status < 300) {
+        const elevated = firewallElevation(r);
+        if (elevated) {
+          showAdminGuide(elevated);
+          window.setTimeout(() => void loadResults(), 1200);
+          return;
+        }
         toast(subMessage(r, t("sharingToggled")), "good");
         window.setTimeout(() => void loadResults(), 1200);
         return;
@@ -3035,7 +3073,7 @@ function wire() {
   // Light-dismiss: a click/tap outside the dialog box (on the backdrop,
   // which targets the dialog element itself) closes it, same as Close/Esc.
   // Inner clicks target children, so form buttons keep working.
-  for (const id of ["dlg-sub", "dlg-detail", "dlg-qr", "dlg-keys", "dlg-power"]) {
+  for (const id of ["dlg-sub", "dlg-detail", "dlg-qr", "dlg-keys", "dlg-power", "dlg-admin"]) {
     const d = $(id);
     d.addEventListener("click", (ev) => {
       if (ev.target === d) {

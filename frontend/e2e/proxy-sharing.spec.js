@@ -57,6 +57,46 @@ test("sharing button POSTs and locks in-flight", async ({ page }) => {
   expect(stub.sharingPosts).toBeLessThanOrEqual(3);
 });
 
+test("sharing firewall failure pops the run-as-admin guide", async ({ page }) => {
+  await page.route("**/api/sharing", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      ok: true,
+      status: "Sharing on (firewall update failed: boom)",
+      dirty: false,
+      code: "firewall_elevation",
+      os: "windows",
+    }),
+  }));
+  await page.goto(base + "/share");
+  await page.click("#btn-sharing");
+  const dlg = page.locator("#dlg-admin");
+  await expect(dlg).toHaveAttribute("open", "");
+  await expect(dlg.locator("#dlg-admin-title")).toHaveText("Firewall needs elevation");
+  await expect(page.locator("#dlg-admin-body")).toContainText("Run as administrator");
+  await page.click("#dlg-admin-ok");
+  await expect(dlg).not.toHaveAttribute("open", "");
+});
+
+test("proxy LAN firewall failure pops the guide with server-OS text", async ({ page }) => {
+  await page.route("**/api/proxy/mode", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      ok: true,
+      status: "Proxy LAN (firewall update failed: boom)",
+      dirty: false,
+      code: "firewall_elevation",
+      os: "linux",
+    }),
+  }));
+  await page.goto(base + "/proxy");
+  await page.click("#proxy-lan");
+  await expect(page.locator("#dlg-admin")).toHaveAttribute("open", "");
+  await expect(page.locator("#dlg-admin-body")).toContainText("sudo");
+});
+
 test("Use-as-proxy pins a config; proxy tab unpin sends {uri:null}", async ({ page }) => {
   await page.goto(base + "/configs");
   await expect(page.locator("#cfg-body tr")).toHaveCount(2);

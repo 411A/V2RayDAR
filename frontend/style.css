@@ -815,6 +815,13 @@ td .lat-bar > span {
   flex-wrap: nowrap;
 }
 
+/* Mobile-card value wrapper (see `cell()` in app.js): shrinkable on
+ * desktop tables, labeled line on portrait phones. */
+.cell-text {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+
 /* ---- Key/value + settings ---- */
 
 .kv {
@@ -1144,34 +1151,295 @@ kbd {
   text-align: center;
 }
 
-/* ---- Responsive ---- */
+/* ---- Responsive: phones get an app layout, not a shrunk desktop ----
+ * Portrait phones (<=640px): bottom tab bar, icon-only actions, wide tables
+ * collapse into labeled cards (see `cell()` in app.js), stats become a snap
+ * carousel. Landscape phones keep top tabs + real tables (the width fits
+ * them) with condensed chrome. Tablets get roomy single columns, an
+ * auto-fill stat grid, and a sticky name column in wide tables. Touch
+ * pointers everywhere get thumb-size targets and 16px inputs (no iOS
+ * zoom-on-focus). Desktop (>1024px landscape) is untouched. */
 
-@media (max-width: 760px) {
+@media (max-width: 640px) and (orientation: portrait) {
   body {
     font-size: 14px;
   }
 
   main {
-    padding: 0.75rem 0.75rem 1.5rem;
+    /* Clear the fixed bottom tab bar + the safe-area home indicator. */
+    padding: 0.75rem 0.75rem 5.5rem;
   }
 
-  /* One row on phones too: horizontal scroll, never wrap or overflow. */
+  /* Top bar: brand + status on line one, icon actions on line two. */
+  .topbar {
+    gap: 0.6rem;
+  }
+
+  .brand-sub {
+    display: none;
+  }
+
+  /* Refresh/Ping go icon-only (accessible names survive in `title`);
+   * icon buttons match the flag/?/power rhythm instead of dwarfing them. */
+  #btn-refresh span,
+  #btn-ping span {
+    display: none;
+  }
+
+  #btn-refresh,
+  #btn-ping {
+    padding-inline: 0.6rem;
+  }
+
+  #conn-bind {
+    max-inline-size: 24vw;
+  }
+
+  .top-actions {
+    margin-inline-start: 0;
+    inline-size: 100%;
+  }
+
+  .seg {
+    padding-inline: 0.5rem;
+  }
+
+  /* Portrait action cluster: the theme switch is a full-width segmented
+   * control on its own row; the five icon buttons share one stretched row
+   * below it (a lone wrapped button would collapse to its natural height
+   * instead of the shared one). */
+  .top-actions .theme-switch {
+    flex: 1 1 100%;
+  }
+
+  .top-actions .theme-switch .seg {
+    flex: 1 1 0;
+    justify-content: center;
+  }
+
+  /* Bottom tab bar: the phone's primary navigation lives at the thumb. */
+  .tabs {
+    position: fixed;
+    inset-inline: 0;
+    bottom: 0;
+    z-index: 40;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    margin-block-end: 0;
+    border-block-end: 0;
+    border-block-start: 1px solid var(--border);
+    background: var(--bg-raised);
+    background: color-mix(in srgb, var(--bg-raised) 88%, transparent);
+    -webkit-backdrop-filter: blur(14px) saturate(1.3);
+    backdrop-filter: blur(14px) saturate(1.3);
+    padding: 0.35rem 0.5rem calc(0.35rem + env(safe-area-inset-bottom));
+  }
+
+  .tab {
+    flex: 1 0 auto;
+    text-align: center;
+    white-space: nowrap;
+    border-radius: 8px;
+    padding: 0.55rem 0.6rem;
+    font-size: 0.8rem;
+  }
+
+  /* Active marker moves to the top edge (the bar sits at the bottom). */
+  .tab[aria-selected="true"] {
+    box-shadow: inset 0 3px 0 var(--accent);
+    background: var(--accent-soft);
+  }
+
+  /* Swipe cue: overlay scrollbars auto-hide on touch platforms and no CSS
+   * forces a persistent native bar there (measured: zero layout space), so
+   * the always-overflowing rows fade at the trailing edge instead. The
+   * native thin-bar rules below still serve classic scrollbars elsewhere. */
+  .tabs,
+  .cards {
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 26px), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - 26px), transparent);
+  }
+
+  html[dir="rtl"] .tabs,
+  html[dir="rtl"] .cards {
+    -webkit-mask-image: linear-gradient(to left, #000 calc(100% - 26px), transparent);
+    mask-image: linear-gradient(to left, #000 calc(100% - 26px), transparent);
+  }
+
+  /* Toasts dock above the tab bar instead of hiding behind it. */
+  .toasts {
+    inset-block-end: calc(4.5rem + env(safe-area-inset-bottom));
+    inset-inline: 0.75rem;
+    max-inline-size: none;
+  }
+
+  /* Stats: a snap carousel with a peek of the next card. */
   .cards {
     grid-auto-flow: column;
     grid-template-columns: none;
-    grid-auto-columns: minmax(128px, 1fr);
+    grid-auto-columns: minmax(132px, 68vw);
     overflow-x: auto;
     padding-block-end: 0.25rem;
+    scroll-snap-type: x mandatory;
+    scroll-padding-inline: 0.75rem;
   }
 
-  .two-col {
-    grid-template-columns: 1fr;
+  .cards > .card {
+    scroll-snap-align: start;
   }
 
+  .two-col,
   .config-cols {
     grid-template-columns: 1fr;
   }
 
+  /* Wide tables become labeled cards: one bordered card per row, each
+   * value on its own labeled line (`data-th`, see `cell()` in app.js).
+   * The outer box goes chrome-less so cards float directly on the page. */
+  .table-wrap {
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    overflow: visible;
+  }
+
+  #cfg-table,
+  #sub-table,
+  #ov-cfg-table,
+  #cfg-table tbody,
+  #sub-table tbody,
+  #ov-cfg-table tbody,
+  #cfg-table tr,
+  #sub-table tr,
+  #ov-cfg-table tr {
+    display: block;
+  }
+
+  #cfg-table thead,
+  #sub-table thead,
+  #ov-cfg-table thead {
+    display: none;
+  }
+
+  #cfg-table tr,
+  #sub-table tr,
+  #ov-cfg-table tr {
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 0.55rem 0.75rem;
+    margin-block-end: 0.6rem;
+  }
+
+  #cfg-table tr:last-child,
+  #sub-table tr:last-child,
+  #ov-cfg-table tr:last-child {
+    margin-block-end: 0;
+  }
+
+  #cfg-table td,
+  #sub-table td,
+  #ov-cfg-table td {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.6rem;
+    border-block-end: 0;
+    padding: 0.28rem 0;
+  }
+
+  #cfg-table td::before,
+  #sub-table td::before,
+  #ov-cfg-table td::before {
+    content: attr(data-th);
+    flex: none;
+    max-inline-size: 40%;
+    color: var(--muted);
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  /* Label-less cells render no phantom label (and no phantom gap). */
+  #cfg-table td::before:empty,
+  #sub-table td::before:empty,
+  #ov-cfg-table td::before:empty {
+    display: none;
+  }
+
+  /* The card title: full-width name, no label needed. */
+  #cfg-table td.cell-main,
+  #sub-table td.cell-main,
+  #ov-cfg-table td.cell-main {
+    display: block;
+    font-size: 1rem;
+    padding-block: 0.15rem 0.3rem;
+  }
+
+  /* Latency value + bar stack under their label. */
+  #cfg-table td.cell-lat {
+    display: block;
+  }
+
+  #cfg-table td.cell-lat::before {
+    margin-inline-end: 0.5rem;
+  }
+
+  #cfg-table td.cell-lat .lat-bar {
+    margin-block-start: 0.3rem;
+  }
+
+  /* Drag reorder is pointer-only; phones reorder via Edit → priority. */
+  #sub-table td.cell-grip {
+    display: none;
+  }
+
+  /* Row actions: full-width thumb buttons that wrap instead of clipping. */
+  #cfg-table td.cell-actions,
+  #sub-table td.cell-actions {
+    display: block;
+    padding-block-start: 0.45rem;
+  }
+
+  #cfg-table td.cell-actions .row-actions,
+  #sub-table td.cell-actions .row-actions {
+    flex-wrap: wrap;
+  }
+
+  #cfg-table td.cell-actions .btn,
+  #sub-table td.cell-actions .btn {
+    flex: 1 1 0;
+    justify-content: center;
+  }
+
+  /* Long values wrap inside the card instead of forcing a scroll. */
+  #cfg-table td > .proto {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  #sub-table td > code {
+    min-inline-size: 0;
+    overflow-wrap: anywhere;
+  }
+
+  /* Panel tools: title on its own row, search takes the full row below. */
+  .panel-tools {
+    inline-size: 100%;
+  }
+
+  .panel-tools .search {
+    flex: 1 1 100%;
+  }
+
+  .panel-tools .search input {
+    flex: 1 1 auto;
+    min-inline-size: 0;
+  }
+
+  /* Settings: name → control → guide stacks; controls go full-width. */
   .set-row {
     grid-template-columns: 1fr;
   }
@@ -1180,8 +1448,46 @@ kbd {
     grid-column: 1;
   }
 
-  .topbar {
-    gap: 0.6rem;
+  .set-row select,
+  .set-row input {
+    inline-size: 100%;
+  }
+
+  .switch {
+    padding: 0.45rem 1rem;
+    font-size: 0.92rem;
+  }
+
+  .set-secret {
+    inline-size: 100%;
+  }
+
+  /* Dialogs: bottom buttons share the width like a phone action sheet. */
+  .dlg-actions {
+    flex-wrap: wrap;
+  }
+
+  .dlg-actions .btn {
+    flex: 1 1 0;
+    justify-content: center;
+  }
+}
+
+/* Landscape phones: the width fits real tables, so only the chrome
+ * condenses (icon actions, scrollable top tabs, wrapping stat grid). */
+@media (max-width: 920px) and (orientation: landscape) {
+  .brand-sub {
+    display: none;
+  }
+
+  #btn-refresh span,
+  #btn-ping span {
+    display: none;
+  }
+
+  #btn-refresh,
+  #btn-ping {
+    padding-inline: 0.6rem;
   }
 
   .top-actions {
@@ -1190,17 +1496,147 @@ kbd {
   }
 
   .tabs {
-    position: sticky;
-    top: 0;
-    background: var(--bg);
-    z-index: 10;
-    overflow-x: auto;
     flex-wrap: nowrap;
+    overflow-x: auto;
     scrollbar-width: thin;
   }
 
   .tab {
     white-space: nowrap;
+  }
+
+  .cards {
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  }
+
+  .panel-tools .search {
+    flex: 1 1 12rem;
+  }
+
+  .panel-tools .search input {
+    flex: 1 1 auto;
+    min-inline-size: 0;
+  }
+}
+
+/* Tablets and other small screens: roomy single-column composites with an
+ * auto-fill stat grid instead of seven squeezed badges. */
+@media (min-width: 641px) and (max-width: 900px) {
+  .two-col,
+  .config-cols {
+    grid-template-columns: 1fr;
+  }
+
+  .cards {
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  }
+}
+
+/* Tablets: the name column pins while the table scrolls sideways, so rows
+ * stay identifiable. (`content-visibility` breaks sticky descendants, so
+ * long config lists render plainly in this range.) */
+@media (min-width: 641px) and (max-width: 1024px) {
+  #cfg-body tr {
+    content-visibility: visible;
+  }
+
+  #cfg-table thead th:nth-child(2),
+  #cfg-table tbody td:nth-child(2),
+  #sub-table thead th:nth-child(4),
+  #sub-table tbody td:nth-child(4) {
+    position: sticky;
+    inset-inline-start: 0;
+    z-index: 1;
+    border-inline-end: 1px solid var(--border);
+  }
+
+  #cfg-table thead th:nth-child(2),
+  #sub-table thead th:nth-child(4) {
+    background: var(--bg-sunken);
+  }
+
+  #cfg-table tbody td:nth-child(2),
+  #sub-table tbody td:nth-child(4) {
+    background: var(--bg-raised);
+  }
+}
+
+/* Touch pointers (phones, tablets, touch laptops): thumb-size targets and
+ * 16px inputs so iOS never zoom-kicks on focus. Fine-pointer desktops are
+ * untouched (the equal-height e2e pins that chrome). */
+@media (pointer: coarse) {
+  .btn {
+    padding: 0.6rem 0.95rem;
+    /* Content-independent floor: icon-only buttons would otherwise sit at
+     * their small natural height on their own wrapped line. */
+    min-block-size: 2.6rem;
+  }
+
+  .btn.small {
+    padding: 0.42rem 0.72rem;
+    font-size: 0.85rem;
+  }
+
+  .tab {
+    padding-block: 0.7rem;
+  }
+
+  .seg {
+    padding: 0.7rem 0.75rem;
+  }
+
+  .drag-handle {
+    padding: 0.5rem 0.65rem;
+    font-size: 1.15rem;
+  }
+
+  .check input {
+    inline-size: 1.25rem;
+    block-size: 1.25rem;
+  }
+
+  .lang-menu button {
+    padding: 0.55rem 0.6rem;
+  }
+
+  .search input,
+  .limit select,
+  .dlg input,
+  .set-row select,
+  .set-row input {
+    font-size: 16px;
+  }
+}
+
+/* Small screens: every scrollable region keeps a small always-visible bar
+ * (tab bar, stat carousel, wide tables, live logs) so scrollability is
+ * discoverable without swiping first. One query covers portrait phones,
+ * landscape phones, and tablets; desktops keep native scrollbars. */
+@media (max-width: 1024px) {
+  .tabs,
+  .cards,
+  .table-wrap,
+  .log-list {
+    scrollbar-width: thin;
+    scrollbar-color: var(--muted) transparent;
+  }
+
+  .tabs::-webkit-scrollbar,
+  .cards::-webkit-scrollbar,
+  .table-wrap::-webkit-scrollbar {
+    height: 5px;
+  }
+
+  .log-list::-webkit-scrollbar {
+    width: 5px;
+  }
+
+  .tabs::-webkit-scrollbar-thumb,
+  .cards::-webkit-scrollbar-thumb,
+  .table-wrap::-webkit-scrollbar-thumb,
+  .log-list::-webkit-scrollbar-thumb {
+    background: var(--muted);
+    border-radius: 999px;
   }
 }
 

@@ -572,6 +572,16 @@ describe("config detail popup (row click)", () => {
     dlg.close();
   });
 
+  it("cell() labels every value for the portrait-phone card layout", () => {
+    const td = api.cell("vless", "Protocol");
+    assert.equal(td.tagName, "TD");
+    assert.equal(td.dataset.th, "Protocol");
+    assert.equal(td.children.length, 1);
+    assert.equal(td.children[0].tagName, "SPAN");
+    assert.equal(td.children[0].className, "cell-text");
+    assert.equal(td.children[0].textContent, "vless");
+  });
+
   it("openDetail marks the active proxy row", () => {
     api.state.snapshot = { proxy_active_uri: row.uri };
     api.openDetail(row);

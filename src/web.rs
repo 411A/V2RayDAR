@@ -72,11 +72,14 @@ const FAVICON_SVG: &str = concat!(
 /// exchange and stay usable on low-end phones. Raised 150 → 175 KiB for the
 /// unified i18n table + HTML bindings, then 175 → 250 KiB for the fa/zh/fr/ru
 /// locale tables, 250 → 260 KiB for subscription drag-and-drop reorder,
-/// 260 → 266 KiB for the run-as-admin elevation guide, and 266 → 294 KiB for
+/// 260 → 266 KiB for the run-as-admin elevation guide, 266 → 294 KiB for
 /// the translated typed settings editor (28 option names/guides × 5 locales:
-/// user text, not bloat — still one RTT).
+/// user text, not bloat — still one RTT), and 294 → 305 KiB for the
+/// portrait-phone app layout + tablet rules + card-label renderer, and
+/// 305 → 306 KiB for the persistent small-screen scrollbar styling + swipe
+/// cues on the always-overflowing rows.
 #[cfg(test)]
-const DASHBOARD_ASSET_BUDGET_BYTES: usize = 301_056;
+const DASHBOARD_ASSET_BUDGET_BYTES: usize = 313_344;
 /// Feed diff cadence: matches the dashboard's ≤1 Hz ranked refresh.
 const FEED_TICK: Duration = Duration::from_secs(2);
 /// SSE heartbeat so idle connections survive NATs/proxies.

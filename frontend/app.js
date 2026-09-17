@@ -70,6 +70,17 @@ function el(tag, text, className) {
   return node;
 }
 
+/// Table cell with a mobile-card label: on portrait phones the wide tables
+/// collapse into labeled cards, and each value reads its `data-th` (the
+/// already-localized column header) as the card-line label. Desktop and
+/// tablets render plain tables and ignore the attribute entirely.
+function cell(text, label) {
+  const td = document.createElement("td");
+  td.dataset.th = label;
+  td.appendChild(el("span", text, "cell-text"));
+  return td;
+}
+
 function getToken() {
   try {
     const q = new URLSearchParams(window.location.search);
@@ -1247,11 +1258,12 @@ function renderOvConfigs() {
     } else if (proxyRowState(c.uri) === "pending") {
       tr.className = "is-pending";
     }
-    tr.appendChild(el("td", c.rank !== undefined ? String(c.rank) : "—"));
+    tr.appendChild(cell(c.rank !== undefined ? String(c.rank) : "—", t("thRank")));
     const nameTd = document.createElement("td");
+    nameTd.className = "cell-main";
     nameTd.appendChild(el("strong", c.name || t("unnamed")));
     tr.appendChild(nameTd);
-    tr.appendChild(el("td", fmtLatency(c.latency_ms)));
+    tr.appendChild(cell(fmtLatency(c.latency_ms), t("thLatency")));
     wireRowDialog(tr, c);
     body.appendChild(tr);
   }
@@ -1543,9 +1555,10 @@ function renderConfigs() {
     } else if (proxyRowState(c.uri) === "pending") {
       tr.className = "is-pending";
     }
-    tr.appendChild(el("td", c.rank !== undefined ? String(c.rank) : "—"));
+    tr.appendChild(cell(c.rank !== undefined ? String(c.rank) : "—", t("thRank")));
 
     const nameTd = document.createElement("td");
+    nameTd.className = "cell-main";
     nameTd.appendChild(el("strong", c.name || t("unnamed")));
     if (c.source) {
       nameTd.appendChild(el("div", c.source, "muted"));
@@ -1553,12 +1566,15 @@ function renderConfigs() {
     tr.appendChild(nameTd);
 
     const protoTd = document.createElement("td");
+    protoTd.dataset.th = t("thProtocol");
     protoTd.appendChild(el("span", c.protocol || "?", "proto"));
     tr.appendChild(protoTd);
 
-    tr.appendChild(el("td", maskedHost(c.endpoint)));
+    tr.appendChild(cell(maskedHost(c.endpoint), t("thEndpoint")));
 
     const latTd = document.createElement("td");
+    latTd.className = "cell-lat";
+    latTd.dataset.th = t("thLatency");
     latTd.textContent = fmtLatency(c.latency_ms);
     const bar = el("span", null, "lat-bar");
     const fillSpan = document.createElement("span");
@@ -1568,12 +1584,13 @@ function renderConfigs() {
     latTd.appendChild(bar);
     tr.appendChild(latTd);
 
-    tr.appendChild(el("td", c.stability_count ? ltr("\u00d7" + c.stability_count) : "—"));
+    tr.appendChild(cell(c.stability_count ? ltr("\u00d7" + c.stability_count) : "—", t("thStability")));
     // Flag glyph only (+ code in the tooltip): regional indicators render as
     // the two letters on platforms without flag emoji (notably Windows), so
     // showing both would duplicate ("DE DE").
     const ccFlag = flagFor(c.country_code);
     const ccTd = document.createElement("td");
+    ccTd.dataset.th = t("thCountry");
     if (ccFlag) {
       const ccUp = String(c.country_code).toUpperCase();
       const glyph = el("span", ccFlag);
@@ -1587,6 +1604,7 @@ function renderConfigs() {
     tr.appendChild(ccTd);
 
     const actTd = document.createElement("td");
+    actTd.className = "cell-actions";
     const wrap = el("span", null, "row-actions");
     const rowState = proxyRowState(c.uri);
     const useBtn = el("button", rowState === "active" ? t("useActive") : rowState === "pending" ? t("usePending") : t("useIdle"), "btn small");
@@ -2285,7 +2303,7 @@ function renderSubs() {
     tr.addEventListener("drop", (ev) => void subRowDrop(ev, tr, i));
 
     const gripTd = document.createElement("td");
-    gripTd.className = "drag-cell";
+    gripTd.className = "drag-cell cell-grip";
     const grip = document.createElement("button");
     grip.type = "button";
     grip.className = "drag-handle";
@@ -2299,6 +2317,7 @@ function renderSubs() {
     tr.appendChild(gripTd);
 
     const onTd = document.createElement("td");
+    onTd.dataset.th = t("thOn");
     const tgl = document.createElement("button");
     tgl.type = "button";
     tgl.className = "btn small";
@@ -2309,14 +2328,16 @@ function renderSubs() {
     onTd.appendChild(tgl);
     tr.appendChild(onTd);
 
-    tr.appendChild(el("td", sub.priority !== undefined ? String(sub.priority) : "—"));
-    tr.appendChild(el("td", sub.name || t("subFallback", { i: i + 1 })));
+    tr.appendChild(cell(sub.priority !== undefined ? String(sub.priority) : "—", t("thPriority")));
+    tr.appendChild(el("td", sub.name || t("subFallback", { i: i + 1 }), "cell-main"));
 
     const urlTd = document.createElement("td");
+    urlTd.dataset.th = t("thUrl");
     urlTd.appendChild(el("code", redactUrl(sub.url || "")));
     tr.appendChild(urlTd);
 
     const actTd = document.createElement("td");
+    actTd.className = "cell-actions";
     const wrap = el("span", null, "row-actions");
     const editBtn = el("button", t("btnEdit"), "btn small");
     editBtn.type = "button";

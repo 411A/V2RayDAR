@@ -308,10 +308,17 @@ kbd,
 .top-actions {
   position: relative;
 }
+/* Anchor for the button + its dropdown: the menu hangs off this box, so it
+ * stays under the flag in both directions (a bare `right: 0` against the
+ * wide actions row detaches in RTL). */
+.lang-wrap {
+  position: relative;
+  display: inline-flex;
+}
 .lang-menu {
   position: absolute;
   top: calc(100% + 6px);
-  right: 0;
+  inset-inline-end: 0;
   z-index: 60;
   display: flex;
   flex-direction: column;

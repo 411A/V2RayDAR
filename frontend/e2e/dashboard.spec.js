@@ -102,6 +102,14 @@ test("language flag sits left of ? with a real file and a 5-flag menu", async ({
   await flag.click();
   const menu = page.locator("#lang-menu");
   await expect(menu).toBeVisible();
+  // Dropdown hangs off the flag button itself (overlaps it horizontally).
+  const underButton = () =>
+    page.evaluate(() => {
+      const b = document.getElementById("btn-lang").getBoundingClientRect();
+      const m = document.getElementById("lang-menu").getBoundingClientRect();
+      return m.left <= b.right && m.right >= b.left;
+    });
+  expect(await underButton()).toBe(true);
   const codes = await menu.locator("button[data-lang]").evaluateAll((els) =>
     els.map((el) => el.getAttribute("data-lang")),
   );
@@ -153,6 +161,9 @@ test("language flag sits left of ? with a real file and a 5-flag menu", async ({
   await expect(page.locator("#settings-groups .guide").first()).toHaveCSS("direction", "ltr");
   // Back to English for the rest of the suite.
   await flag.click();
+  await expect(menu).toBeVisible();
+  // Still anchored under the button in RTL heartland.
+  expect(await underButton()).toBe(true);
   await menu.locator('button[data-lang="en"]').click();
   await expect(page.locator("html")).toHaveAttribute("lang", "en");
   await expect(page.locator("html")).toHaveAttribute("dir", "ltr");

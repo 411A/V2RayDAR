@@ -1526,7 +1526,7 @@ async fn probe_active_batch(
         |(entry, port)| async move {
             let result = probe_active_target_inner(port, config).await;
             let bytes = result.as_ref().map_or(0, |ok| ok.bytes);
-            (ranked_configs_for_active_result(entry, result), bytes)
+            (ranked_configs_for_active_result(entry, result).await, bytes)
         },
     ))
     .buffer_unordered(http_concurrency);
@@ -1670,12 +1670,12 @@ where
     result
 }
 
-fn ranked_configs_for_active_result(
+async fn ranked_configs_for_active_result(
     entry: PreparedActiveCandidate,
     result: Result<ActiveProbeSuccess>,
 ) -> Vec<RankedConfig> {
     match result {
-        Ok(active) => vec![successful_config(entry.into_candidate(), &active)],
+        Ok(active) => vec![successful_config(entry.into_candidate(), &active).await],
         Err(err) => {
             let error = err.to_string();
             failed_configs(entry, "active_http", &error)
@@ -1683,9 +1683,19 @@ fn ranked_configs_for_active_result(
     }
 }
 
-fn successful_config(candidate: Candidate, active: &ActiveProbeSuccess) -> RankedConfig {
-    // Resolve endpoint host to IP for GeoIP lookup
-    let country_code = resolve_endpoint_country(&candidate.endpoint.host);
+/// Successful-host → country cache: DNS + `GeoIP` per host runs once per
+/// process instead of once per probe cycle. Only successes are cached — a
+/// host that is unresolvable now may resolve later, so failures retry.
+static COUNTRY_CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+
+fn country_cache() -> &'static Mutex<HashMap<String, String>> {
+    COUNTRY_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+async fn successful_config(candidate: Candidate, active: &ActiveProbeSuccess) -> RankedConfig {
+    // Async DNS: this used to block an async worker per success and stall
+    // the whole runtime (including the dashboard HTTP server) mid-refresh.
+    let country_code = resolve_endpoint_country(&candidate.endpoint.host).await;
 
     RankedConfig {
         rank: 0,
@@ -1711,17 +1721,36 @@ fn successful_config(candidate: Candidate, active: &ActiveProbeSuccess) -> Ranke
 
 /// Resolve a hostname to an IP and look up its country code.
 ///
-/// Tries parsing as IP first, then DNS resolution. Returns the
-/// 2-letter ISO country code or `None` if resolution/lookup fails.
-fn resolve_endpoint_country(host: &str) -> Option<String> {
-    use std::net::ToSocketAddrs;
-
-    let ip = host
-        .parse::<std::net::IpAddr>()
+/// Tries parsing as IP first, then async DNS resolution (never blocking a
+/// runtime worker), bounded by [`crate::constants::GEOIP_DNS_TIMEOUT`].
+/// Returns the 2-letter ISO country code or `None` if resolution/lookup
+/// fails. Successful resolutions are cached per host for the process.
+async fn resolve_endpoint_country(host: &str) -> Option<String> {
+    if let Some(hit) = country_cache()
+        .lock()
         .ok()
-        .or_else(|| (host, 0).to_socket_addrs().ok()?.next()?.ip().into())?;
+        .and_then(|cache| cache.get(host).cloned())
+    {
+        return Some(hit);
+    }
+    let ip = match host.parse::<std::net::IpAddr>() {
+        Ok(ip) => ip,
+        Err(_) => tokio::time::timeout(
+            crate::constants::GEOIP_DNS_TIMEOUT,
+            tokio::net::lookup_host((host, 0)),
+        )
+        .await
+        .ok()?
+        .ok()?
+        .next()?
+        .ip(),
+    };
 
-    crate::geoip::lookup_country(ip)
+    let country = crate::geoip::lookup_country(ip)?;
+    if let Ok(mut cache) = country_cache().lock() {
+        cache.insert(host.to_string(), country.clone());
+    }
+    Some(country)
 }
 
 async fn probe_active_target_inner(port: u16, config: &ProbeConfig) -> Result<ActiveProbeSuccess> {
@@ -2750,6 +2779,26 @@ mod tests {
         let mut item = ranked("node", "vless://uuid@example.com:443", false, None);
         item.error = Some(error.to_string());
         item
+    }
+
+    #[tokio::test]
+    async fn country_resolution_rejects_garbage_host() {
+        // Invalid names fail fast in the resolver (no 5 s timeout burn).
+        assert_eq!(resolve_endpoint_country("not a host!!").await, None);
+        assert_eq!(resolve_endpoint_country("").await, None);
+    }
+
+    #[tokio::test]
+    async fn country_cache_serves_without_dns() {
+        // Pre-seed the cache: the lookup below must not touch the network.
+        let key = "v2raydar-test.invalid".to_string();
+        if let Ok(mut cache) = country_cache().lock() {
+            cache.insert(key.clone(), "XX".to_string());
+        }
+        assert_eq!(resolve_endpoint_country(&key).await.as_deref(), Some("XX"));
+        if let Ok(mut cache) = country_cache().lock() {
+            cache.remove(&key);
+        }
     }
 
     #[test]

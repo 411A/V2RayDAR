@@ -709,4 +709,29 @@ describe("pure helpers", () => {
     assert.equal(api.subMessage({ data: { status: "Manual ping started" } }, "fb"), "Manual ping started");
     assert.equal(api.subMessage({ data: null }, "fb"), "fb");
   });
+
+  it("fetchJson aborts a hung server into status 0 (fail fast)", async () => {
+    const sb = makeSandbox();
+    sb.setTimeout = setTimeout;
+    sb.clearTimeout = clearTimeout;
+    sb.AbortController = AbortController;
+    sb.window.setTimeout = setTimeout;
+    sb.window.clearTimeout = clearTimeout;
+    sb.fetch = (url, init) =>
+      new Promise((_, reject) => {
+        const onAbort = () => reject(new Error("aborted"));
+        if (init && init.signal) {
+          if (init.signal.aborted) {
+            onAbort();
+          } else {
+            init.signal.addEventListener("abort", onAbort);
+          }
+        }
+      });
+    const hung = loadApp(sb);
+    hung.api.state.fetchTimeoutMs = 50;
+    const r = await hung.api.fetchJson("/results");
+    assert.equal(r.status, 0);
+    assert.equal(r.data, null);
+  });
 });

@@ -11,6 +11,10 @@ pub const DB_FILE_NAME: &str = "data.db";
 pub const CACHE_DIR_NAME: &str = "cache";
 pub const GEOIP_DIR_NAME: &str = "geoip";
 pub const GEOIP_MMDB_FILE_NAME: &str = "GeoLite2-Country.mmdb";
+/// Upper bound for one `GeoIP` hostname resolution. DNS runs async (never on a
+/// worker), but a hanging resolver must not stall a config's result: on
+/// timeout the country stays `None` and the next cycle retries.
+pub const GEOIP_DNS_TIMEOUT: Duration = Duration::from_secs(5);
 pub const CONFIG_FILE_NAME: &str = "configs.yaml";
 pub const FIREWALL_STATE_FILE_NAME: &str = ".v2raydar-firewall.json";
 pub const LEGACY_APP_MARKER_FILE_NAME: &str = ".v2raydar";

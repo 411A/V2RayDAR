@@ -88,8 +88,20 @@ function apiPath(path) {
   return path + sep + "token=" + encodeURIComponent(token);
 }
 
+/// Fail-fast timeout for API calls: a stalled server must drop into the
+/// offline/retry path, not wedge boot on "Connecting…" forever. Zero
+/// network/resource overhead — purely client-side, the request is aborted.
+/// Override via `state.fetchTimeoutMs` (tests).
+const FETCH_TIMEOUT_MS = 15000;
+
 async function fetchJson(path, options) {
+  const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const ms = state.fetchTimeoutMs || FETCH_TIMEOUT_MS;
+  const timer = ctrl ? window.setTimeout(() => ctrl.abort(), ms) : 0;
   const init = { headers: { Accept: "application/json" } };
+  if (ctrl) {
+    init.signal = ctrl.signal;
+  }
   if (options && options.method) {
     init.method = options.method;
     init.headers["Content-Type"] = "application/json";
@@ -102,6 +114,10 @@ async function fetchJson(path, options) {
     res = await fetch(apiPath(path), init);
   } catch (err) {
     return { status: 0, data: null };
+  } finally {
+    if (timer) {
+      window.clearTimeout(timer);
+    }
   }
   let data = null;
   try {

@@ -64,7 +64,7 @@ const fn bundled_sing_box_file_name() -> &'static str {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn bundled_sing_box_file_name() -> &'static str {
+const fn bundled_sing_box_file_name() -> &'static str {
     "sing-box"
 }
 

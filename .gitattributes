@@ -6,7 +6,16 @@ install.ps1 linguist-generated
 *.yml linguist-generated
 *.xml linguist-generated
 *.json linguist-generated
+*.html linguist-generated
+*.css linguist-generated
+*.svg linguist-generated
+*.png linguist-generated
+*.ico linguist-generated
+*.toml linguist-generated
+*.lock linguist-generated
+.gitignore linguist-generated
 LICENSE linguist-generated
 assets/* linguist-generated
+frontend/assets/* linguist-generated
 docs/* linguist-generated
 .github/* linguist-generated

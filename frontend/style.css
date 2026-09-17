@@ -1150,3 +1150,18 @@ kbd {
     scroll-behavior: auto;
   }
 }
+
+/* ---------- RTL (Persian) ---------- */
+/* Flex/grid/table order follows `direction` automatically (set from <html
+ * dir> by setDocLang); only Latin runs inside RTL text need explicit help:
+ * code/URLs, setting keys, and server log lines stay left-to-right so they
+ * read correctly instead of scattering across the sentence. */
+html[dir="rtl"] code,
+html[dir="rtl"] .set-row .key,
+html[dir="rtl"] .set-row .guide,
+html[dir="rtl"] #log-list,
+html[dir="rtl"] #ov-logs,
+html[dir="rtl"] #fetch-errors {
+  direction: ltr;
+  unicode-bidi: isolate;
+}

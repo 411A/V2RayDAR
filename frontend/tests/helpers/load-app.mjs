@@ -130,6 +130,7 @@ export function makeSandbox(overrides = {}) {
     console,
     URLSearchParams,
     document: {
+      documentElement: { lang: "", dir: "" },
       getElementById: (id) => getOrCreate(id),
       createElement: (tag) => makeElement(tag),
       querySelector: () => makeElement("div"),
@@ -181,13 +182,13 @@ export function makeSandbox(overrides = {}) {
 
 const EXPORT_HOOK = `;globalThis.__v2 = {
   state, t, applyI18nStatic, setLanguage, loadLanguage,
-  toggleLangMenu, selectLang, closeLangMenu,
+  toggleLangMenu, selectLang, closeLangMenu, reapplyFeedStatus, renderSettings,
   refreshBusy, pingBusy, updateCycleButtons, triggerCycle, wire,
   openSubDialog, submitSubDialog, selectProxy, subToggle, subDelete, subEdit,
   flagFor, apiPath, subMessage, maskedHost, currentTab, showTab, goTab,
   saveNow, fetchJson, toast, setStatus, setDirty, renderStats, loadResults,
   applyRanked, renderOvConfigs, renderConfigs, pingSub, refreshStatus,
-  renderStats, fmtClock, fmtStamp, fmtDuration, fmtAgo,
+  renderStats, fmtClock, fmtStamp, fmtDuration, fmtAgo, fmtBytes, fmtLatency, ltr,
   openDetail, wireRowDialog, selectProxy, toggleProxy,
   proxyRowState, syncProxyPending, applyProbeDelta, settleProxyPending,
   setProxyMode, proxyMode, updateProxyModeButtons,

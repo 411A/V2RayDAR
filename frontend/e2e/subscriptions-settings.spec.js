@@ -41,7 +41,8 @@ test("edit dialog PATCHes /:index; toggle flips enabled", async ({ page }) => {
   expect(stub.subPatch[0]).toMatchObject({ index: 0, body: { name: "renamed" } });
   await expect(page.locator("#sub-body")).toContainText("renamed");
 
-  const tgl = page.locator("#sub-body tr").first().getByRole("button", { name: "Toggle renamed" });
+  // Accessible name carries bidi isolates around the sub name (i18n t()).
+  const tgl = page.locator("#sub-body tr").first().getByRole("button", { name: /Toggle.*renamed/ });
   await expect(tgl).toHaveText("✅");
   await tgl.click();
   await expect.poll(() => stub.subToggle.length).toBe(1);

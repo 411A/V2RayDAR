@@ -163,22 +163,36 @@ function hideBanner() {
 
 /* ---------- language menu ---------- */
 
-/// Language codes in menu order (EN, IR, CN, FR, RU); only `en` has strings
-/// so far — the rest toast "coming soon" and keep English.
+/// Language menu codes in menu order (EN, IR, CN, FR, RU) mapped to the
+/// i18n.js locale tables; the choice persists via setLanguage().
 const LANGS = ["en", "ir", "cn", "fr", "ru"];
-
-function langNameKey(code) {
-  return { en: "langEN", ir: "langIR", cn: "langCN", fr: "langFR", ru: "langRU" }[code] || "langEN";
-}
+const LANG_LOCALE = { en: "en", ir: "fa", cn: "zh", fr: "fr", ru: "ru" };
+/// Flag file per menu code (frontend/assets/, same replaceable files as the
+/// menu rows) shown on the language button itself.
+const LANG_FLAG = { en: "GB", ir: "IR", cn: "CN", fr: "FR", ru: "RU" };
 
 function syncLangMenu() {
   const menu = $("lang-menu");
-  if (!menu || !menu.querySelectorAll) {
-    return;
+  if (menu && menu.querySelectorAll) {
+    const items = menu.querySelectorAll('button[data-lang]');
+    for (let i = 0; i < items.length; i += 1) {
+      const locale = LANG_LOCALE[items[i].getAttribute("data-lang")] || "en";
+      items[i].setAttribute("aria-checked", String(locale === i18nLang));
+    }
   }
-  const items = menu.querySelectorAll('button[data-lang]');
-  for (let i = 0; i < items.length; i += 1) {
-    items[i].setAttribute("aria-checked", String(items[i].getAttribute("data-lang") === i18nLang));
+  // The button shows the current language's flag — it must follow the
+  // switch (and the persisted language at boot), not stay stuck on GB.
+  const btn = $("btn-lang");
+  const img = btn && btn.querySelector ? btn.querySelector("img.flag-img") : null;
+  if (img) {
+    let code = "en";
+    for (const c of LANGS) {
+      if (LANG_LOCALE[c] === i18nLang) {
+        code = c;
+        break;
+      }
+    }
+    img.setAttribute("src", "./assets/" + (LANG_FLAG[code] || "GB") + ".svg");
   }
 }
 
@@ -202,15 +216,21 @@ function closeLangMenu() {
 }
 
 function selectLang(code) {
-  if (!LANGS.includes(code)) {
+  const locale = LANG_LOCALE[code];
+  if (!locale || !LANGS.includes(code)) {
     return;
   }
-  if (code !== "en") {
-    toast(t("langSoon", { lang: t(langNameKey(code)) }));
-    closeLangMenu();
-    return;
-  }
-  setLanguage("en");
+  setLanguage(locale);
+  // Static shell re-applies inside setLanguage(); dynamic sections render
+  // only on data arrival, so repaint everything from cached state —
+  // otherwise stale-language rows (share list, tables, pill, banner)
+  // survive the switch.
+  renderAll();
+  renderSubs();
+  renderSettings();
+  setDirty(!!((state.subs && state.subs.dirty) || (state.settings && state.settings.dirty)));
+  updateCycleButtons();
+  reapplyFeedStatus();
   syncLangMenu();
   closeLangMenu();
 }
@@ -282,6 +302,14 @@ function saveRowLimit(limit) {
 
 /* ---------- formatting ---------- */
 
+/// Isolate a Latin technical run (measurements, "x3" counts) as one
+/// left-to-right chunk so RTL layout keeps "2.1 s" instead of flipping it
+/// to "s 2.1". Written as backslash-u escapes on purpose: invisible bidi
+/// control chars must never be pasted literally into source.
+function ltr(s) {
+  return "\u2066" + s + "\u2069";
+}
+
 function fmtBytes(n) {
   if (n === null || n === undefined) {
     return "—";
@@ -291,15 +319,15 @@ function fmtBytes(n) {
     return "—";
   }
   if (v < 1024) {
-    return v + " B";
+    return ltr(v + " B");
   }
   if (v < 1048576) {
-    return (v / 1024).toFixed(1) + " KB";
+    return ltr((v / 1024).toFixed(1) + " KB");
   }
   if (v < 1073741824) {
-    return (v / 1048576).toFixed(1) + " MB";
+    return ltr((v / 1048576).toFixed(1) + " MB");
   }
-  return (v / 1073741824).toFixed(2) + " GB";
+  return ltr((v / 1073741824).toFixed(2) + " GB");
 }
 
 function fmtLatency(ms) {
@@ -311,9 +339,9 @@ function fmtLatency(ms) {
     return "—";
   }
   if (v < 1000) {
-    return Math.round(v) + " ms";
+    return ltr(Math.round(v) + " ms");
   }
-  return (v / 1000).toFixed(1) + " s";
+  return ltr((v / 1000).toFixed(1) + " s");
 }
 
 function fmtStamp(iso) {
@@ -381,18 +409,18 @@ function fmtDuration(ms) {
   }
   const v = Math.max(0, n);
   if (v < 1000) {
-    return Math.round(v) + " ms";
+    return ltr(Math.round(v) + " ms");
   }
   const totalSeconds = Math.round(v / 1000);
   if (totalSeconds < 60) {
-    return (v / 1000).toFixed(1) + " s";
+    return ltr((v / 1000).toFixed(1) + " s");
   }
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   if (minutes < 60) {
-    return minutes + "m " + seconds + "s";
+    return ltr(minutes + "m " + seconds + "s");
   }
-  return Math.floor(minutes / 60) + "h " + (minutes % 60) + "m";
+  return ltr(Math.floor(minutes / 60) + "h " + (minutes % 60) + "m");
 }
 
 function truncate(text, max) {
@@ -571,6 +599,16 @@ function setConn(connState, detail) {
 function setFeedStatus(feed, opts) {
   const o = opts || {};
   state.feed = feed;
+  // Stash the variant selectors (never translated strings) so a language
+  // switch can re-derive this exact state via reapplyFeedStatus().
+  if (feed === "polling") {
+    state.feedPollFast = (o.detail || "") === t("feedPoll2");
+  } else if (feed === "locked") {
+    state.feedLockKind = o.lockKind;
+  } else if (feed === "offline") {
+    state.feedOfflineCustom = o.bannerTitle !== undefined || o.bannerText !== undefined
+      || o.status !== undefined || (!!o.connDetail && o.connDetail !== t("connUnreachable"));
+  }
   if (feed === "live") {
     setConn("online", t("feedLive"));
     hideBanner();
@@ -620,6 +658,21 @@ function setFeedStatus(feed, opts) {
     showBanner(t("bannerUnreachable"), t("bannerUnreachableBody"), true);
   }
   setStatus(o.status || t("statusOffline"));
+}
+
+/// Re-derive pill + banner + status line in the current language (language
+/// switch). Custom offline banners (unexpected HTTP, feed-lost) are left
+/// alone — the retry/reconnect timers refire them with fresh strings.
+function reapplyFeedStatus() {
+  if (state.feed === "live" || state.feed === "boot") {
+    setFeedStatus(state.feed);
+  } else if (state.feed === "polling") {
+    setFeedStatus("polling", { detail: t(state.feedPollFast ? "feedPoll2" : "feedPoll10") });
+  } else if (state.feed === "locked") {
+    setFeedStatus("locked", { lockKind: state.feedLockKind });
+  } else if (state.feed === "offline" && !state.feedOfflineCustom) {
+    setFeedStatus("offline", {});
+  }
 }
 
 async function loadResults() {
@@ -1355,7 +1408,7 @@ function renderFetchErrors() {
   }
   const lines = [];
   for (const [msg, n] of groups) {
-    lines.push(n > 1 ? "×" + n + " " + msg : msg);
+    lines.push(n > 1 ? ltr("\u00d7" + n) + " " + msg : msg);
   }
   const SHOWN = 6;
   for (const line of lines.slice(0, SHOWN)) {
@@ -1466,7 +1519,7 @@ function renderConfigs() {
     latTd.appendChild(bar);
     tr.appendChild(latTd);
 
-    tr.appendChild(el("td", c.stability_count ? "×" + c.stability_count : "—"));
+    tr.appendChild(el("td", c.stability_count ? ltr("\u00d7" + c.stability_count) : "—"));
     // Flag glyph only (+ code in the tooltip): regional indicators render as
     // the two letters on platforms without flag emoji (notably Windows), so
     // showing both would duplicate ("DE DE").
@@ -1531,11 +1584,11 @@ function openDetail(c) {
     [t("fEndpoint"), maskedHost(c.endpoint)],
     [t("fSource"), c.source || "—"],
     [t("fReachable"), c.reachable ? t("yes") : t("no")],
-    [t("fStability"), c.stability_count ? "×" + c.stability_count : "—"],
+    [t("fStability"), c.stability_count ? ltr("\u00d7" + c.stability_count) : "—"],
     [t("fValidation"), c.validation || "—"],
     [t("fLatency"), fmtLatency(c.latency_ms)],
     [t("fHttp"), c.http_status !== null && c.http_status !== undefined ? String(c.http_status) : "—"],
-    [t("fSpeed"), c.download_mbps !== null && c.download_mbps !== undefined ? Number(c.download_mbps).toFixed(2) + t("speedUnit") : "—"],
+    [t("fSpeed"), c.download_mbps !== null && c.download_mbps !== undefined ? ltr(Number(c.download_mbps).toFixed(2) + t("speedUnit")) : "—"],
     [t("fCountry"), ccFlag ? ccFlag : "—"],
     [t("fError"), c.error || "—"],
   ];
@@ -2310,17 +2363,36 @@ async function submitSubDialog() {
 /* ---------- settings tab (progressive) ---------- */
 
 async function loadSettings() {
-  const note = $("settings-note");
   const r = await fetchJson("/api/config");
+  if (r.status === 200 && r.data && Array.isArray(r.data.groups)) {
+    state.settings = r.data;
+    state.settingsStatus = 200;
+  } else {
+    state.settings = null;
+    state.settingsStatus = r.status;
+  }
+  renderSettings();
+}
+
+/// Paint the settings tab from the cached payload (no fetch). Skips entirely
+/// while a value is being edited (blur auto-commits, so destroying the input
+/// could PATCH a half-typed value) and when nothing ever loaded.
+function renderSettings() {
+  if (!state.settings && state.settingsStatus === undefined) {
+    return;
+  }
   const box = $("settings-groups");
+  if (box.querySelector("input")) {
+    return;
+  }
+  const note = $("settings-note");
   while (box.firstChild) {
     box.removeChild(box.firstChild);
   }
-  if (r.status === 200 && r.data && Array.isArray(r.data.groups)) {
-    state.settings = r.data;
-    setDirty(!!r.data.dirty);
+  if (state.settings) {
+    setDirty(!!state.settings.dirty);
     note.textContent = t("setHint");
-    for (const g of r.data.groups) {
+    for (const g of state.settings.groups) {
       const card = el("section", null, "set-group");
       card.appendChild(el("h3", g.title || t("setFallback")));
       for (const k of g.keys || []) {
@@ -2348,10 +2420,9 @@ async function loadSettings() {
     }
     return;
   }
-  state.settings = null;
-  note.textContent = r.status === 404
+  note.textContent = state.settingsStatus === 404
     ? t("setApiOld")
-    : t("setLoadFailed", { status: r.status });
+    : t("setLoadFailed", { status: state.settingsStatus });
 }
 
 function editSetting(key, valNode) {

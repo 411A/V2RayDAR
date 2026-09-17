@@ -16,7 +16,7 @@ describe("frontend performance budgets (PLAN §5)", () => {
       sizes[f] = fs.statSync(path.join(dir, f)).size;
       total += sizes[f];
     }
-    assert.ok(total <= 179_200, `total ${total} > 179200: ${JSON.stringify(sizes)}`);
+    assert.ok(total <= 256_000, `total ${total} > 256000: ${JSON.stringify(sizes)}`);
     assert.ok(sizes["app.js"] <= 120_000, `app.js ${sizes["app.js"]} too large for weak devices`);
   });
 

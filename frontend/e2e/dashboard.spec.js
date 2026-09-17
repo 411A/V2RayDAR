@@ -126,10 +126,38 @@ test("language flag sits left of ? with a real file and a 5-flag menu", async ({
     return m ? Number(m[m.length - 1]) : 0;
   });
   expect(alpha).toBeGreaterThanOrEqual(0.8);
-  // Non-English stays English with a coming-soon toast; menu closes.
+  // Picking a language switches the whole shell for real and persists.
   await menu.locator('button[data-lang="ir"]').click();
-  await expect(page.locator("#toasts .toast").last()).toContainText("فارسی is coming soon");
   await expect(menu).toBeHidden();
+  await expect(page.locator("html")).toHaveAttribute("lang", "fa");
+  await expect(page.locator("html")).toHaveAttribute("dir", "rtl");
+  await expect(img).toHaveAttribute("src", "./assets/IR.svg");
+  await expect(page.locator("#btn-refresh")).toContainText("به‌روزرسانی");
+  await expect(page.locator("#tab-configs")).toContainText("کانفیگ‌ها");
+  await expect(menu.locator('button[data-lang="ir"]')).toHaveAttribute("aria-checked", "true");
+  // Dynamic sections repaint immediately: share rows in Persian, no reload.
+  await page.locator("#tab-share").click();
+  const firstRow = page.locator("#share-list li").first();
+  await expect(firstRow.locator("strong")).toHaveText("اشتراک (خودکار)");
+  await expect(firstRow.locator("button")).toHaveText("کپی");
+  await expect(page.locator("#share-hint")).not.toBeEmpty();
+  // URLs stay left-to-right inside RTL text.
+  await expect(firstRow.locator("code")).toHaveCSS("direction", "ltr");
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("lang", "fa");
+  await expect(img).toHaveAttribute("src", "./assets/IR.svg");
+  await expect(page.locator("#btn-refresh")).toContainText("به‌روزرسانی");
+  await expect(page.locator('#cfg-limit option[value="all"]')).toHaveText("همه");
+  // Setting guides (server English) stay left-to-right.
+  await page.locator("#tab-settings").click();
+  await expect(page.locator("#settings-groups .guide").first()).toHaveCSS("direction", "ltr");
+  // Back to English for the rest of the suite.
+  await flag.click();
+  await menu.locator('button[data-lang="en"]').click();
+  await expect(page.locator("html")).toHaveAttribute("lang", "en");
+  await expect(page.locator("html")).toHaveAttribute("dir", "ltr");
+  await expect(img).toHaveAttribute("src", "./assets/GB.svg");
+  await expect(page.locator("#btn-refresh")).toContainText("Refresh");
   // Unknown asset names 404 (whitelist, no traversal).
   const bad = await page.request.get(`${base}/assets/EVIL.svg`);
   expect(bad.status()).toBe(404);

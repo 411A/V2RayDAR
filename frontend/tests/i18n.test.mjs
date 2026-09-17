@@ -8,26 +8,30 @@ import { FRONTEND_DIR, loadApp } from "./helpers/load-app.mjs";
 
 const read = (f) => fs.readFileSync(path.join(FRONTEND_DIR, f), "utf8");
 
-/** Execute only i18n.js in an empty context and return the `en` table. */
-function enTable() {
+const LOCALES = ["en", "fa", "zh", "fr", "ru"];
+
+/** Execute only i18n.js in an empty context and return all locale tables. */
+function allTables() {
   const box = {};
-  vm.runInNewContext(`${read("i18n.js")};globalThis.__en = I18N_STRINGS.en;`, box, {
+  vm.runInNewContext(`${read("i18n.js")};globalThis.__all = I18N_STRINGS;`, box, {
     filename: "i18n.js",
   });
-  return box.__en;
+  return box.__all;
 }
 
 describe("frontend i18n: one unified strings file, English default", () => {
-  it("every t(\"key\") in app.js exists in the en table", () => {
-    const en = enTable();
+  it("every t(\"key\") in app.js exists in every locale table", () => {
+    const all = allTables();
     const used = new Set([...read("app.js").matchAll(/\bt\(\s*"([^"]+)"\s*[,)]/g)].map((m) => m[1]));
     assert.ok(used.size > 100, `expected 100+ string keys, found ${used.size}`);
-    const missing = [...used].filter((k) => !Object.prototype.hasOwnProperty.call(en, k));
-    assert.deepEqual(missing, [], `t() keys missing from en: ${missing.join(", ")}`);
+    for (const locale of LOCALES) {
+      const missing = [...used].filter((k) => !Object.prototype.hasOwnProperty.call(all[locale], k));
+      assert.deepEqual(missing, [], `t() keys missing from ${locale}: ${missing.join(", ")}`);
+    }
   });
 
-  it("every data-i18n* binding in index.html exists in the en table", () => {
-    const en = enTable();
+  it("every data-i18n* binding in index.html exists in every locale table", () => {
+    const all = allTables();
     const html = read("index.html");
     const bound = new Set();
     for (const attr of ["data-i18n", "data-i18n-ph", "data-i18n-aria", "data-i18n-title", "data-i18n-alt", "data-i18n-content"]) {
@@ -36,8 +40,25 @@ describe("frontend i18n: one unified strings file, English default", () => {
       }
     }
     assert.ok(bound.size > 100, `expected 100+ HTML bindings, found ${bound.size}`);
-    const missing = [...bound].filter((k) => !Object.prototype.hasOwnProperty.call(en, k));
-    assert.deepEqual(missing, [], `HTML bindings missing from en: ${missing.join(", ")}`);
+    for (const locale of LOCALES) {
+      const missing = [...bound].filter((k) => !Object.prototype.hasOwnProperty.call(all[locale], k));
+      assert.deepEqual(missing, [], `HTML bindings missing from ${locale}: ${missing.join(", ")}`);
+    }
+  });
+
+  it("all locales share en's exact key set and placeholder names", () => {
+    const all = allTables();
+    const enKeys = Object.keys(all.en).sort();
+    const ph = (s) => [...s.matchAll(/\{([a-zA-Z]+)\}/g)].map((m) => m[1]).sort().join(",");
+    for (const locale of LOCALES.filter((l) => l !== "en")) {
+      const keys = Object.keys(all[locale]).sort();
+      assert.deepEqual(keys, enKeys, `${locale} key set differs from en`);
+      for (const k of enKeys) {
+        assert.equal(typeof all[locale][k], "string", `${locale}.${k} is not a string`);
+        assert.ok(all[locale][k].length > 0, `${locale}.${k} is empty`);
+        assert.equal(ph(all[locale][k]), ph(all.en[k]), `${locale}.${k} placeholders differ from en`);
+      }
+    }
   });
 
   it("no hardcoded user sentence remains in app.js string literals", () => {
@@ -79,12 +100,28 @@ describe("frontend i18n: one unified strings file, English default", () => {
 
   it("t() substitutes placeholders and falls back to the key", () => {
     const { api } = loadApp();
+    // Substituted values are bidi-isolated (U+2066 LRI … U+2069 PDI) so
+    // Latin numbers/URLs keep their place inside RTL sentences.
+    const LRI = "\u2066";
+    const PDI = "\u2069";
     assert.equal(api.t("btnRefresh"), "Refresh");
-    assert.equal(api.t("cfgCount", { n: 3, total: 9, limit: "" }), "Showing 3 of 9 ranked configs.");
+    assert.equal(
+      api.t("cfgCount", { n: 3, total: 9, limit: "" }),
+      `Showing ${LRI}3${PDI} of ${LRI}9${PDI} ranked configs.`,
+    );
     assert.equal(
       api.t("cfgCount", { n: 3, total: 9, limit: api.t("cfgLimit", { limit: 25 }) }),
-      "Showing 3 of 9 ranked configs (limit 25).",
+      `Showing ${LRI}3${PDI} of ${LRI}9${PDI} ranked configs${LRI} (limit ${LRI}25${PDI})${PDI}.`,
     );
+    assert.equal(api.setLanguage("fa"), true);
+    assert.equal(api.t("btnRefresh"), "به‌روزرسانی");
+    assert.equal(
+      api.t("cfgCount", { n: 3, total: 9, limit: "" }),
+      `نمایش ${LRI}3${PDI} از ${LRI}9${PDI} کانفیگ رتبه‌بندی‌شده.`,
+    );
+    // The reported case: the count stays glued to the sentence start.
+    assert.ok(api.t("fetchErrSubN", { n: 3 }).startsWith(`${LRI}3${PDI} منبع`));
+    assert.equal(api.setLanguage("en"), true);
     assert.equal(api.t("definitely-not-a-key"), "definitely-not-a-key");
   });
 
@@ -94,7 +131,42 @@ describe("frontend i18n: one unified strings file, English default", () => {
     assert.equal(api.setLanguage("xx"), false);
   });
 
-  it("language menu toggles, EN sticks, others toast coming-soon", () => {
+  it("measurements stay LTR-glued for RTL (2.1 s, 5.8 MB, x3)", () => {
+    const { api } = loadApp();
+    const LRI = "\u2066";
+    const PDI = "\u2069";
+    assert.equal(api.fmtLatency(2100), `${LRI}2.1 s${PDI}`);
+    assert.equal(api.fmtLatency(42), `${LRI}42 ms${PDI}`);
+    assert.equal(api.fmtBytes(6080000), `${LRI}5.8 MB${PDI}`);
+    assert.equal(api.fmtDuration(130000), `${LRI}2m 10s${PDI}`);
+    assert.equal(api.fmtLatency(null), "—");
+    assert.equal(api.ltr("×3"), `${LRI}×3${PDI}`);
+  });
+
+  it("navigation-link arrows match reading direction (fa <-, rest ->)", () => {
+    const all = allTables();
+    for (const k of ["ovOpenList", "ovOpenSettings", "ovOpenLogs"]) {
+      assert.ok(all.fa[k].endsWith("←"), `fa.${k}`);
+      for (const locale of ["en", "zh", "fr", "ru"]) {
+        assert.ok(all[locale][k].endsWith("→"), `${locale}.${k}`);
+      }
+    }
+  });
+
+  it("RTL locales mirror <html> lang + dir (fa -> rtl, rest -> ltr)", () => {
+    const { api, sandbox } = loadApp();
+    const el = () => sandbox.document.documentElement;
+    api.selectLang("ir");
+    assert.equal(el().lang, "fa");
+    assert.equal(el().dir, "rtl");
+    for (const code of ["cn", "fr", "ru", "en"]) {
+      api.selectLang(code);
+      assert.equal(el().dir, "ltr", `selectLang(${code})`);
+    }
+    assert.equal(el().lang, "en");
+  });
+
+  it("language menu toggles and every row switches for real", () => {
     const { api, sandbox } = loadApp();
     const menu = sandbox.__elements.get("lang-menu");
     assert.equal(menu.hidden, false); // stub default; wire() owns the real state
@@ -105,14 +177,27 @@ describe("frontend i18n: one unified strings file, English default", () => {
     assert.equal(api.closeLangMenu(), true);
     assert.equal(menu.hidden, true);
     assert.equal(api.closeLangMenu(), false);
-    // Non-English: toast names the language, English stays.
+    // Every menu code switches language, persists it, and closes the menu.
+    const expectLang = { en: "Refresh", ir: "به‌روزرسانی", cn: "刷新", fr: "Actualiser", ru: "Обновить" };
+    for (const [code, label] of Object.entries(expectLang)) {
+      api.toggleLangMenu();
+      api.selectLang(code);
+      assert.equal(api.t("btnRefresh"), label, `selectLang(${code})`);
+      assert.equal(menu.hidden, true);
+    }
+    assert.equal(sandbox.localStorage.getItem("v2raydar-lang"), "ru");
+    // Switching repaints dynamic sections from cache (share rows, status).
     api.selectLang("ir");
-    const toasts = sandbox.__elements.get("toasts");
-    const last = toasts.children[toasts.children.length - 1];
-    assert.match(last.textContent, /is coming soon/);
-    assert.equal(api.t("btnRefresh"), "Refresh");
+    const text = (id) => sandbox.__elements.get(id).textContent;
+    assert.equal(text("share-hint"), api.t("shareHintLocal"));
+    assert.equal(text("status-text"), "در حال اتصال…"); // boot feed re-derived
+    api.selectLang("en");
+    assert.equal(text("share-hint"), api.t("shareHintLocal"));
+    assert.equal(text("status-text"), "Connecting…");
+    api.selectLang("en");
     // Unknown codes are ignored silently.
     api.selectLang("xx");
+    assert.equal(api.t("btnRefresh"), "Refresh");
     // Menu rows cover every LANG in order (EN, IR, CN, FR, RU).
     const html = fs.readFileSync(path.join(FRONTEND_DIR, "index.html"), "utf8");
     const rows = [...html.matchAll(/data-lang="([a-z]+)"/g)].map((m) => m[1]);

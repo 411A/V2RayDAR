@@ -247,7 +247,7 @@ describe("refresh badge second line: ping countdown under fetch", () => {
     // Own cadence + anchor: live `ping in MM:SS` under `fetch in`.
     api.state.pingSeconds = 60;
     api.state.snapshot = { refreshing: false, pinging: false, last_ping_at: new Date(Date.now() - 10_000).toISOString() };
-    assert.match(api.pingSub(), /^ping in \d\d:\d\d$/);
+    assert.match(api.pingSub(), /^ping in .*?\d\d:\d\d.*$/);
 
     // Same cadence (fetch 300s, ping 300s): fetch covers it, line hidden.
     api.state.pingSeconds = 300;
@@ -333,7 +333,7 @@ describe("stat badges stay one-line with full stamps in tooltips", () => {
     assert.equal(cards.length, 7);
     const text = (i) => cards[i].children.map((c) => c.textContent).join("|");
     // Running For: uptime value + short "Started: HH:MM:SS" sub, no date inline.
-    assert.match(text(0), /^Running For\|.*\|Started: \d\d:\d\d:\d\d$/);
+    assert.match(text(0), /^Running For\|.*\|Started: .*?\d\d:\d\d:\d\d.*$/);
     assert.ok(!text(0).includes("/"));
     // Last scan: clock-only value (never wraps mid-stamp), date in the title.
     assert.match(text(2), /^Last scan\|\d\d:\d\d:\d\d\|/);
@@ -368,14 +368,18 @@ describe("stat badges stay one-line with full stamps in tooltips", () => {
 
 describe("fmtDuration uses whole units, never fractional minutes", () => {
   it("renders ms, seconds, minutes+seconds, hours+minutes", () => {
+    // Measurements are bidi-isolated (U+2066 LRI … U+2069 PDI) so RTL
+    // layout keeps "30.6 s" instead of flipping it to "s 30.6".
+    const LRI = "\u2066";
+    const PDI = "\u2069";
     assert.equal(api.fmtDuration(null), "—");
     assert.equal(api.fmtDuration("bogus"), "—");
-    assert.equal(api.fmtDuration(850), "850 ms");
-    assert.equal(api.fmtDuration(30600), "30.6 s");
-    assert.equal(api.fmtDuration(168000), "2m 48s");
-    assert.equal(api.fmtDuration(59999), "1m 0s");
-    assert.equal(api.fmtDuration(60000), "1m 0s");
-    assert.equal(api.fmtDuration(3720000), "1h 2m");
+    assert.equal(api.fmtDuration(850), `${LRI}850 ms${PDI}`);
+    assert.equal(api.fmtDuration(30600), `${LRI}30.6 s${PDI}`);
+    assert.equal(api.fmtDuration(168000), `${LRI}2m 48s${PDI}`);
+    assert.equal(api.fmtDuration(59999), `${LRI}1m 0s${PDI}`);
+    assert.equal(api.fmtDuration(60000), `${LRI}1m 0s${PDI}`);
+    assert.equal(api.fmtDuration(3720000), `${LRI}1h 2m${PDI}`);
   });
 });
 
@@ -406,7 +410,7 @@ describe("config detail popup (row click)", () => {
     assert.equal(sandbox.__elements.get("dlg-detail-title").textContent, "Config detail");
     const kvText = sandbox.__elements.get("dlg-detail-kv").children.map((c) => c.textContent).join("|");
     assert.ok(kvText.includes("Name|node-x"), "name renders inside the popup: " + kvText);
-    assert.ok(kvText.includes("Reachable|yes|Stability|×3"),
+    assert.ok(kvText.includes("Reachable|yes|Stability|\u2066\u00d73\u2069"),
       "stability follows Reachable like the configs tab: " + kvText);
     // No QREncode in the sandbox: QR block hides instead of erroring.
     assert.equal(sandbox.__elements.get("dlg-detail-qr-wrap").hidden, true);

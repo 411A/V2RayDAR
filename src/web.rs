@@ -69,9 +69,10 @@ const FAVICON_SVG: &str = concat!(
 
 /// Budget from PLAN.md §5: the whole initial payload must fit one loopback
 /// exchange and stay usable on low-end phones. Raised 150 → 175 KiB for the
-/// unified i18n table + HTML bindings (user text, not bloat — still one RTT).
+/// unified i18n table + HTML bindings, then 175 → 250 KiB for the fa/zh/fr/ru
+/// locale tables (user text, not bloat — still one RTT).
 #[cfg(test)]
-const DASHBOARD_ASSET_BUDGET_BYTES: usize = 179_200;
+const DASHBOARD_ASSET_BUDGET_BYTES: usize = 256_000;
 /// Feed diff cadence: matches the dashboard's ≤1 Hz ranked refresh.
 const FEED_TICK: Duration = Duration::from_secs(2);
 /// SSE heartbeat so idle connections survive NATs/proxies.

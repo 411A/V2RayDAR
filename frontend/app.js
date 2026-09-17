@@ -1344,9 +1344,13 @@ async function loadOvConfig() {
 
 function endpointItems() {
   const origin = window.location.origin;
+  // /subscription honors the encoded_subscription setting (base64 unless
+  // turned off); /subscription.txt is always plain readable text.
+  const enc = state.ovConfig ? state.ovConfig.get("encoded_subscription") : undefined;
+  const base64 = enc !== "false" && enc !== false;
   const items = [
-    [t("epAuto"), origin + "/subscription"],
-    [t("epPlain"), origin + "/subscription.txt"],
+    [base64 ? t("epBase64") : t("epPlainText"), origin + "/subscription"],
+    [t("epPlainText"), origin + "/subscription.txt"],
     [t("epMihomo"), origin + "/mihomo.yaml"],
   ];
   // Same link the QR sheet encodes (qr.rs `telegram_proxy_url`): shown under

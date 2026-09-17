@@ -146,7 +146,7 @@ test("language flag sits left of ? with a real file and a 5-flag menu", async ({
   // Dynamic sections repaint immediately: share rows in Persian, no reload.
   await page.locator("#tab-share").click();
   const firstRow = page.locator("#share-list li").first();
-  await expect(firstRow.locator("strong")).toHaveText("اشتراک (خودکار)");
+  await expect(firstRow.locator("strong")).toHaveText("اشتراک (بیس64)");
   await expect(firstRow.locator("button")).toHaveText("کپی");
   await expect(page.locator("#share-hint")).not.toBeEmpty();
   // URLs stay left-to-right inside RTL text.

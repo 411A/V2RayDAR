@@ -1158,6 +1158,14 @@ kbd {
   }
 }
 
+/* Power button: square glyph (unlike the wide 3:2 flags). currentColor fill
+ * in the asset file follows the theme automatically. */
+.power-img {
+  width: 17px;
+  height: 17px;
+  display: block;
+}
+
 /* ---------- drag-and-drop reorder ---------- */
 .drag-cell {
   width: 2.2rem;

@@ -262,6 +262,35 @@ describe("subscription drag-and-drop reorder", () => {
   });
 });
 
+describe("power-off stops quietly and stays stopped", () => {
+  it("shutdownServer pins the stopped screen on 200", async () => {
+    const { api, sandbox } = loadApp();
+    sandbox.fetch = async () => ({ status: 200, async text() { return '{"ok":true,"status":"Server stopping"}'; } });
+    await api.shutdownServer();
+    assert.equal(api.state.serverStopped, true);
+    assert.equal(api.state.sse, null);
+    assert.equal(sandbox.__elements.get("banner-title").textContent, "Server stopped");
+    assert.equal(sandbox.__elements.get("status-text").textContent, "Stopped.");
+  });
+
+  it("shutdownServer refuses old servers and keeps running", async () => {
+    const { api, sandbox } = loadApp();
+    sandbox.fetch = async () => ({ status: 404, async text() { return ""; } });
+    await api.shutdownServer();
+    assert.equal(api.state.serverStopped, false);
+    const toasts = sandbox.__elements.get("toasts");
+    assert.match(toasts.children[toasts.children.length - 1].textContent, /Shutdown API/);
+  });
+
+  it("loadResults keeps the stopped screen instead of offline", async () => {
+    const { api, sandbox } = loadApp();
+    sandbox.fetch = async () => ({ status: 0, data: null });
+    api.state.serverStopped = true;
+    assert.equal(await api.loadResults(), false);
+    assert.equal(sandbox.__elements.get("banner-title").textContent, "Server stopped");
+  });
+});
+
 describe("live ranked events refresh overview top-configs too", () => {
   const row = {
     rank: 1,

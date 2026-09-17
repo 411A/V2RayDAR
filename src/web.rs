@@ -53,6 +53,7 @@ const FLAG_IR: &str = include_str!("../frontend/assets/IR.svg");
 const FLAG_CN: &str = include_str!("../frontend/assets/CN.svg");
 const FLAG_FR: &str = include_str!("../frontend/assets/FR.svg");
 const FLAG_RU: &str = include_str!("../frontend/assets/RU.svg");
+const ICON_POWER: &str = include_str!("../frontend/assets/power-off-svgrepo-com.svg");
 /// Embedded QR encoder (single-file MIT library, no network use).
 const DASHBOARD_QR: &str = include_str!("../frontend/qr.js");
 /// Radar-mark favicon (static SVG, zero sensitivity — served ungated like
@@ -178,8 +179,9 @@ pub async fn dashboard_qr(
     .await
 }
 
-/// `GET /assets/{file}` — language flag SVGs. Whitelisted by name (never a
-/// raw path: no traversal, no surprises); same auth as the dashboard shell.
+/// `GET /assets/{file}` — language flag SVGs + the power icon. Whitelisted
+/// by name (never a raw path: no traversal, no surprises); same auth as
+/// the dashboard shell.
 pub async fn dashboard_flag(
     State(state): State<HttpState>,
     headers: HeaderMap,
@@ -193,6 +195,7 @@ pub async fn dashboard_flag(
         "CN.svg" => FLAG_CN,
         "FR.svg" => FLAG_FR,
         "RU.svg" => FLAG_RU,
+        "power-off-svgrepo-com.svg" => ICON_POWER,
         _ => {
             return (
                 StatusCode::NOT_FOUND,
@@ -877,6 +880,29 @@ pub async fn api_refresh(
             mutation_ok("Manual refresh started")
         },
     )
+}
+
+/// `POST /api/shutdown` — stop the whole instance (same as Ctrl+C: proxy,
+/// loops and HTTP all go down; manual start required). Responds 200 first,
+/// then exits after a short grace so the confirmation reaches the browser.
+/// Never exits the test runner (`cfg!(test)` skips the spawn).
+pub async fn api_shutdown(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    ConnectInfo(remote_addr): ConnectInfo<std::net::SocketAddr>,
+) -> Response {
+    let token = query.token.as_deref().or_else(|| bearer_token(&headers));
+    if let Err(response) = authorize(&state, remote_addr, token).await {
+        return response;
+    }
+    if !cfg!(test) {
+        tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            std::process::exit(0);
+        });
+    }
+    mutation_ok("Server stopping")
 }
 
 /// `POST /api/ping` — queue one manual re-ping of the cached configs.
@@ -2156,6 +2182,46 @@ mod tests {
             .await
             .expect("body reads");
         assert!(body.starts_with(b"<svg"), "svg favicon");
+    }
+
+    #[tokio::test]
+    async fn dashboard_flag_serves_power_icon() {
+        use super::dashboard_flag;
+        let state = http_state(RuntimeState::default(), false);
+        let (headers, query, connect) = no_auth();
+        let response = dashboard_flag(
+            axum::extract::State(state),
+            headers,
+            query,
+            connect,
+            axum::extract::Path("power-off-svgrepo-com.svg".to_string()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE),
+            Some(&HeaderValue::from_static("image/svg+xml"))
+        );
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body reads");
+        let text = std::str::from_utf8(&body).expect("body is utf-8");
+        assert!(text.contains("<svg"), "power icon must be an SVG file");
+    }
+
+    #[tokio::test]
+    async fn shutdown_confirms_without_exiting_tests() {
+        // cfg!(test) skips the process::exit spawn: the runner survives.
+        let state = http_state(RuntimeState::default(), false);
+        let (headers, query, connect) = no_auth();
+        let response =
+            super::api_shutdown(axum::extract::State(state), headers, query, connect).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body reads");
+        let text = std::str::from_utf8(&body).expect("body is utf-8");
+        assert!(text.contains("stopping"), "confirmation names the stop");
     }
 
     #[tokio::test]

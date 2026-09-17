@@ -124,6 +124,7 @@ fn router(state: HttpState) -> Router {
         .route("/api/qr.jpg", get(crate::web::api_qr_image))
         .route("/api/refresh", post(crate::web::api_refresh))
         .route("/api/ping", post(crate::web::api_ping))
+        .route("/api/shutdown", post(crate::web::api_shutdown))
         .route(
             "/api/subscriptions/{index}",
             patch(crate::web::api_subscriptions_patch).delete(crate::web::api_subscriptions_delete),

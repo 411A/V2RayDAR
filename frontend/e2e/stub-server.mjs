@@ -104,6 +104,7 @@ export function createStub() {
     configPatch: [],
     savePosts: 0,
     cacheClean: [],
+    shutdownPosts: 0,
     busyRefreshing: false,
     busyPinging: false,
     subs: [
@@ -160,9 +161,9 @@ export function createStub() {
       return;
     }
     if (req.method === "GET" && p.startsWith("/assets/")) {
-      // Mirror the backend whitelist: flag SVGs only, no traversal.
+      // Mirror the backend whitelist: flag SVGs + power icon, no traversal.
       const name = p.slice("/assets/".length);
-      if (/^(GB|IR|CN|FR|RU)\.svg$/.test(name)) {
+      if (/^(GB|IR|CN|FR|RU)\.svg$/.test(name) || name === "power-off-svgrepo-com.svg") {
         res.writeHead(200, { "Content-Type": MIME[".svg"] });
         res.end(fs.readFileSync(path.join(FRONTEND, "assets", name)));
       } else {
@@ -378,6 +379,11 @@ export function createStub() {
     }
     if (req.method === "POST" && p === "/api/qr/generate") {
       json(res, 200, { ok: true, status: "QR generated.", dirty: false });
+      return;
+    }
+    if (req.method === "POST" && p === "/api/shutdown") {
+      stub.shutdownPosts += 1;
+      json(res, 200, { ok: true, status: "Server stopping", dirty: false });
       return;
     }
     if (req.method === "GET" && p === "/api/qr.jpg") {

@@ -174,6 +174,41 @@ test("language flag sits left of ? with a real file and a 5-flag menu", async ({
   expect(bad.status()).toBe(404);
 });
 
+test("power button sits rightmost; confirm stops the server", async ({ page }) => {
+  await page.goto(base + "/overview");
+  const power = page.locator("#btn-power");
+  await expect(power).toBeVisible();
+  // Rightmost in the top bar: at/after the ? button, same row.
+  const order = await page.evaluate(() => {
+    const p = document.getElementById("btn-power").getBoundingClientRect();
+    const k = document.getElementById("btn-keys").getBoundingClientRect();
+    return { powerLeft: p.left, keysRight: k.right, sameRow: Math.abs(p.top - k.top) < 4 };
+  });
+  expect(order.sameRow).toBe(true);
+  expect(order.powerLeft).toBeGreaterThanOrEqual(order.keysRight - 1);
+  // Vendored svgrepo file, served square and theme-aware.
+  expect(await power.locator("img.power-img").getAttribute("src")).toBe("./assets/power-off-svgrepo-com.svg");
+  const r = await page.request.get(`${base}/assets/power-off-svgrepo-com.svg`);
+  expect(r.status()).toBe(200);
+  expect(r.headers()["content-type"]).toContain("image/svg+xml");
+  // Confirm dialog warns with a red stop button; cancel keeps running.
+  await power.click();
+  const dlg = page.locator("#dlg-power");
+  await expect(dlg).toHaveAttribute("open", "");
+  await expect(dlg.locator("#dlg-power-title")).toHaveText("Stop the server?");
+  await expect(dlg.locator("#dlg-power-ok")).toHaveText("Yes, stop");
+  await expect(dlg.locator("#dlg-power-ok")).toHaveClass(/danger/);
+  await dlg.locator("#dlg-power-cancel").click();
+  await expect(dlg).not.toHaveAttribute("open", "");
+  expect(stub.shutdownPosts).toBe(0);
+  // Confirm stops: POST sent, stopped screen pins.
+  await power.click();
+  await dlg.locator("#dlg-power-ok").click();
+  await expect.poll(() => stub.shutdownPosts).toBe(1);
+  await expect(page.locator("#banner")).toBeVisible();
+  await expect(page.locator("#banner-title")).toHaveText("Server stopped");
+});
+
 test("legacy #/tab bookmarks replace-redirect with token preserved", async ({ page }) => {
   await page.goto(base + "/overview?token=abc#/configs");
   // Boot reads the hash and replace-redirects to the clean path (token kept).

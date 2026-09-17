@@ -28,6 +28,7 @@ const TABS = ["overview", "configs", "subscriptions", "settings", "proxy", "logs
 const state = {
   snapshot: null,
   feed: "boot", // boot | live | polling | offline | locked
+  serverStopped: false, // set after a confirmed shutdown; boot clears it
   sse: null,
   pollTimer: 0,
   subs: null, // { list, dirty } when /api/subscriptions exists
@@ -691,9 +692,20 @@ function reapplyFeedStatus() {
   }
 }
 
+/// Sticky "server is off" screen: no retry loop may overwrite it — only a
+/// manual boot (Retry now) clears `serverStopped` and reconnects.
+function showStopped() {
+  showBanner(t("powerStoppedTitle"), t("powerStoppedBody"), false);
+  setStatus(t("statusStopped"));
+}
+
 async function loadResults() {
   const r = await fetchJson("/results");
   if (r.status === 0) {
+    if (state.serverStopped) {
+      showStopped();
+      return false;
+    }
     setFeedStatus("offline", { connDetail: t("connUnreachable") });
     return false;
   }
@@ -702,6 +714,10 @@ async function loadResults() {
     return false;
   }
   if (r.status !== 200 || !r.data) {
+    if (state.serverStopped) {
+      showStopped();
+      return false;
+    }
     setFeedStatus("offline", {
       connDetail: t("httpStatus", { status: r.status }),
       bannerTitle: t("bannerUnexpected"),
@@ -2606,6 +2622,34 @@ function editSetting(key, valNode) {
 
 /* ---------- actions ---------- */
 
+/// Confirmed power-off: ask the server to stop the whole instance, then go
+/// quiet — close the feed, stop polling, and pin the stopped screen. A 404
+/// means an old server without the route; anything else failed still ends
+/// quiet only when the server is actually unreachable (status 0).
+async function shutdownServer() {
+  const r = await fetchJson("/api/shutdown", { method: "POST", body: {} });
+  if (r.status === 404) {
+    toast(t("powerApiOld"), "bad");
+    return;
+  }
+  if (r.status !== 200 && r.status !== 0) {
+    toast(subMessage(r, t("trigFailed", { status: r.status })), "bad");
+    return;
+  }
+  state.serverStopped = true;
+  stopPolling();
+  if (state.sse) {
+    try {
+      state.sse.close();
+    } catch (err) {
+      /* connection already gone */
+    }
+    state.sse = null;
+  }
+  setConn("offline", t("connOffline"));
+  showStopped();
+}
+
 async function triggerCycle(kind) {
   // Frontend guard first: while any relevant cycle runs (system or manual)
   // the request must never leave the browser — same wording as the TUI so
@@ -2862,6 +2906,18 @@ function wire() {
   });
   $("dlg-keys-close").addEventListener("click", () => $("dlg-keys").close());
 
+  $("btn-power").addEventListener("click", () => {
+    const d = $("dlg-power");
+    if (typeof d.showModal === "function") {
+      d.showModal();
+    }
+  });
+  $("dlg-power-cancel").addEventListener("click", () => $("dlg-power").close());
+  $("dlg-power-ok").addEventListener("click", () => {
+    $("dlg-power").close();
+    void shutdownServer();
+  });
+
   $("cfg-search").addEventListener("input", (ev) => {
     state.search = ev.target.value;
     renderConfigs();
@@ -2979,7 +3035,7 @@ function wire() {
   // Light-dismiss: a click/tap outside the dialog box (on the backdrop,
   // which targets the dialog element itself) closes it, same as Close/Esc.
   // Inner clicks target children, so form buttons keep working.
-  for (const id of ["dlg-sub", "dlg-detail", "dlg-qr", "dlg-keys"]) {
+  for (const id of ["dlg-sub", "dlg-detail", "dlg-qr", "dlg-keys", "dlg-power"]) {
     const d = $(id);
     d.addEventListener("click", (ev) => {
       if (ev.target === d) {
@@ -3032,6 +3088,7 @@ async function boot() {
   }
   loadTheme();
   state.rowLimit = loadRowLimit();
+  state.serverStopped = false;
   if (redirectLegacyHash()) {
     return;
   }

@@ -90,6 +90,7 @@
       </div>
       </span>
       <button type="button" class="btn icon-only" id="btn-keys" data-i18n-aria="keysAria" data-i18n-title="keysTitle" aria-label="Show keyboard shortcuts" title="Keyboard shortcuts (?)">?</button>
+      <button type="button" class="btn icon-only" id="btn-power" data-i18n-aria="powerAria" data-i18n-title="dlgPowerTitle" aria-label="Power off" title="Stop the server?"><img class="power-img" src="./assets/power-off-svgrepo-com.svg" alt="" width="17" height="17"></button>
     </div>
   </header>
 
@@ -360,6 +361,17 @@
       <p class="muted" id="qr-hint" data-i18n="dlgQrHint">Scan with your phone camera.</p>
       <div class="dlg-actions">
         <button type="button" class="btn primary" id="dlg-qr-close" data-i18n="btnClose">Close</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="dlg-power" aria-labelledby="dlg-power-title">
+    <div class="dlg">
+      <h2 id="dlg-power-title" data-i18n="dlgPowerTitle">Stop the server?</h2>
+      <p class="muted" data-i18n="dlgPowerBody">Do you really want to turn off the server? Everything will stop until you start it manually again.</p>
+      <div class="dlg-actions">
+        <button type="button" class="btn" id="dlg-power-cancel" data-i18n="btnCancel">Cancel</button>
+        <button type="button" class="btn danger" id="dlg-power-ok" data-i18n="btnStopNow">Yes, stop</button>
       </div>
     </div>
   </dialog>

@@ -68,6 +68,16 @@ function snapshot(extra = {}) {
  * Stub origin server emulating the Rust backend for E2E.
  * Mutable `stub` handle lets specs flip busy flags and inspect POST counters.
  */
+function moveSub(subs, index, rank) {
+  if (index < 0 || index >= subs.length) {
+    return;
+  }
+  const [entry] = subs.splice(index, 1);
+  const slot = Math.min(Math.max(1, rank), subs.length + 1) - 1;
+  subs.splice(slot, 0, entry);
+  subs.forEach((s, k) => { s.priority = k + 1; });
+}
+
 export function createStub() {
   const sseClients = new Set();
   const stub = {
@@ -254,6 +264,8 @@ export function createStub() {
         return;
       }
       stub.subs.push({ url: body.url, name: body.name, priority: body.priority ?? 100, enabled: body.enabled ?? true });
+      // Mirror the server: priority is the list position (insert on rank).
+      moveSub(stub.subs, stub.subs.length - 1, stub.subs[stub.subs.length - 1].priority);
       json(res, 200, { ok: true, status: "Added.", dirty: false });
       return;
     }
@@ -262,6 +274,10 @@ export function createStub() {
       const body = await readBody(req);
       stub.subPatch.push({ index: Number(m[1]), body });
       Object.assign(stub.subs[Number(m[1])], body);
+      // Mirror the server: an edited rank moves the row to that exact slot.
+      if (body.priority !== undefined) {
+        moveSub(stub.subs, Number(m[1]), body.priority);
+      }
       json(res, 200, { ok: true, status: "Saved.", dirty: false });
       return;
     }
@@ -295,10 +311,14 @@ export function createStub() {
         dirty: false,
         groups: [
           {
+            id: "connection",
             title: "Connection",
             keys: [
-              { key: "bind", value: "127.0.0.1:27141", guide: "Local bind address." },
-              { key: "top_n", value: "8", guide: "Configs to publish." },
+              { key: "bind", value: "127.0.0.1:27141", guide: "Local bind address.", kind: "text", options: [] },
+              { key: "top_n", value: "8", guide: "Configs to publish.", kind: "int", options: [] },
+              { key: "encoded_subscription", value: "true", guide: "Base64 or raw list.", kind: "bool", options: [] },
+              { key: "probe.download_url", value: "off", guide: "Speedtest link.", kind: "text", options: [] },
+              { key: "probe.speedtest_enabled", value: "false", guide: "Follows the link.", kind: "readonly", options: [] },
             ],
           },
         ],

@@ -883,3 +883,90 @@ describe("pure helpers", () => {
     assert.equal(r.data, null);
   });
 });
+
+describe("settings tab: typed controls + translated rows", () => {
+  const payload = () => ({
+    dirty: false,
+    groups: [{
+      id: "connection",
+      title: "Connection",
+      keys: [
+        { key: "bind", value: "127.0.0.1:27141", guide: "Local bind.", kind: "text", options: [] },
+        { key: "top_n", value: "8", guide: "Kept.", kind: "int", options: [] },
+        { key: "encoded_subscription", value: "false", guide: "Feed kind.", kind: "bool", options: [] },
+        { key: "probe.mode", value: "active", guide: "Mode.", kind: "choice", options: ["active", "tcp"] },
+        { key: "sharing.token", value: "empty", guide: "Secret.", kind: "secret", options: [] },
+        { key: "probe.speedtest_enabled", value: "false", guide: "Derived.", kind: "readonly", options: [] },
+      ],
+    }],
+  });
+
+  it("settingKind prefers server kind, infers old-server rows", () => {
+    assert.equal(api.settingKind({ kind: "bool" }), "bool");
+    assert.equal(api.settingKind({ key: "x", value: "true" }), "bool");
+    assert.equal(api.settingKind({ key: "sharing.token", value: "set" }), "secret");
+    assert.equal(api.settingKind({ key: "probe.mode", value: "active" }), "choice");
+    assert.equal(api.settingKind({ key: "subscription_count", value: "2" }), "readonly");
+    assert.equal(api.settingKind({ key: "bind", value: "127.0.0.1:27141" }), "text");
+    assert.equal(api.settingKind(null), "text");
+  });
+
+  it("names/guides translate, unknown keys fall back to server strings", () => {
+    assert.equal(api.settingName("bind"), "Bind address");
+    assert.equal(api.settingGuide("bind", "srv"), "host:port the dashboard listens on");
+    assert.equal(api.settingName("future.key"), "future.key");
+    assert.equal(api.settingGuide("future.key", "srv"), "srv");
+    assert.equal(api.settingGroupTitle({ id: "probe", title: "Probe" }), "Probe");
+    assert.equal(api.settingGroupTitle({ title: "Legacy" }), "Legacy");
+    assert.equal(api.setLanguage("fa"), true);
+    assert.equal(api.settingName("bind"), "آدرس گوش دادن");
+    assert.equal(api.setLanguage("en"), true);
+  });
+
+  it("renderSettings builds name/value/description rows with typed controls", () => {
+    api.state.settings = payload();
+    api.state.settingsStatus = 200;
+    api.renderSettings();
+    const box = sandbox.__elements.get("settings-groups");
+    assert.equal(box.children.length, 1);
+    const card = box.children[0];
+    assert.equal(card.children[0].textContent, "Connection");
+    const rows = card.children.slice(1);
+    assert.equal(rows.length, 6);
+    // Name | control | description columns.
+    assert.equal(rows[0].children[0].textContent, "Bind address");
+    assert.equal(rows[0].children[0].className, "set-name");
+    assert.equal(rows[0].children[1].className, "val");
+    assert.equal(rows[0].children[2].textContent, "host:port the dashboard listens on");
+    // Bool row renders an off switch.
+    const sw = rows[2].children[1].children[0];
+    assert.equal(sw.getAttribute("role"), "switch");
+    assert.equal(sw.getAttribute("aria-checked"), "false");
+    assert.equal(sw.textContent, "Off");
+    // Choice row renders a select; secret row a presence + setter; readonly is static.
+    assert.equal(rows[3].children[1].children[0].tagName, "SELECT");
+    assert.equal(rows[4].children[1].children[0].textContent, "empty");
+    assert.equal(rows[5].children[1].children.length, 0);
+  });
+
+  it("switch click PATCHes the flipped value", async () => {
+    const bodies = [];
+    sandbox.fetch = async (url, init) => {
+      const body = init && init.body ? JSON.parse(init.body) : null;
+      bodies.push({ url: String(url), body });
+      if (String(url).includes("/api/config") && init && init.method === "PATCH") {
+        return { status: 200, async text() { return '{"ok":true,"status":"Updated.","dirty":false}'; } };
+      }
+      return { status: 200, async text() { return JSON.stringify(payload()); } };
+    };
+    api.state.settings = payload();
+    api.state.settingsStatus = 200;
+    api.renderSettings();
+    const box = sandbox.__elements.get("settings-groups");
+    const sw = box.children[0].children[3].children[1].children[0];
+    sw.__listeners.get("click")[0]();
+    await new Promise((r) => setTimeout(r, 100));
+    const patch = bodies.find((b) => b.body && b.body.key === "encoded_subscription");
+    assert.deepEqual(patch.body, { key: "encoded_subscription", value: "true" });
+  });
+});

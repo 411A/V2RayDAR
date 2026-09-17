@@ -73,6 +73,31 @@ pub struct SubscriptionSource {
     pub priority: u32,
 }
 
+/// Priority *is* the list position: move `subscriptions[index]` to 1-based
+/// `rank` (clamped into range) and renumber 1..=N, so the row a user touches
+/// lands exactly where the number says on every surface (the dashboard
+/// refetch and the TUI panel both render vec order). No ties can survive:
+/// the number always names the slot.
+pub fn move_subscription_to_rank(
+    subscriptions: &mut Vec<SubscriptionSource>,
+    index: usize,
+    rank: u32,
+) {
+    if index >= subscriptions.len() {
+        return;
+    }
+    let entry = subscriptions.remove(index);
+    let rank = usize::try_from(rank)
+        .unwrap_or(usize::MAX)
+        .clamp(1, subscriptions.len().saturating_add(1));
+    subscriptions.insert(rank - 1, entry);
+    let mut next: u32 = 0;
+    for entry in subscriptions.iter_mut() {
+        next = next.saturating_add(1);
+        entry.priority = next;
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
 pub struct ProbeConfig {
     #[serde(default = "default_probe_mode")]
@@ -655,7 +680,7 @@ const fn default_proxy_health_check_interval() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppConfig, validate_config};
+    use super::{AppConfig, SubscriptionSource, validate_config};
 
     fn valid_config() -> AppConfig {
         AppConfig::default_for_first_run()
@@ -837,5 +862,56 @@ mod tests {
         config.subscriptions[0].url = "javascript:alert(1)".to_string();
         let error = validate_config(config).expect_err("unsupported scheme should fail");
         assert!(error.to_string().contains("unsupported url scheme"));
+    }
+
+    fn subscription(name: &str, priority: u32) -> SubscriptionSource {
+        SubscriptionSource {
+            name: name.to_string(),
+            url: format!("https://example.com/{name}.txt"),
+            enabled: true,
+            priority,
+        }
+    }
+
+    #[test]
+    fn priority_move_lands_on_the_named_slot_and_renumbers() {
+        let mut subscriptions = vec![
+            subscription("a", 1),
+            subscription("b", 2),
+            subscription("c", 3),
+        ];
+        // The user retitles c's rank to the top: it must move, not just
+        // relabel in place, and ranks must stay dense 1..=N.
+        super::move_subscription_to_rank(&mut subscriptions, 2, 1);
+        let names: Vec<&str> = subscriptions
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["c", "a", "b"]);
+        let ranks: Vec<u32> = subscriptions.iter().map(|entry| entry.priority).collect();
+        assert_eq!(ranks, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn priority_move_clamps_out_of_range_ranks() {
+        let mut subscriptions = vec![
+            subscription("a", 1),
+            subscription("b", 2),
+            subscription("c", 3),
+        ];
+        super::move_subscription_to_rank(&mut subscriptions, 0, 99);
+        let names: Vec<&str> = subscriptions
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["b", "c", "a"], "huge rank lands last");
+        super::move_subscription_to_rank(&mut subscriptions, 2, 0);
+        let names: Vec<&str> = subscriptions
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["a", "b", "c"], "zero rank lands first");
+        let ranks: Vec<u32> = subscriptions.iter().map(|entry| entry.priority).collect();
+        assert_eq!(ranks, vec![1, 2, 3]);
     }
 }

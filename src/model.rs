@@ -156,6 +156,8 @@ pub struct RuntimeConfig {
     pub test_url: String,
     pub accepted_statuses: Vec<u16>,
     pub download_bytes_limit: usize,
+    /// Speedtest download link (`None` = speedtest off, shown as `off`).
+    pub download_url: Option<String>,
     pub subscription_count: usize,
     pub enabled_subscription_count: usize,
     pub proxy_enabled: bool,

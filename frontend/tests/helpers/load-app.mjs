@@ -182,8 +182,9 @@ export function makeSandbox(overrides = {}) {
 }
 
 const EXPORT_HOOK = `;globalThis.__v2 = {
-  state, t, applyI18nStatic, setLanguage, loadLanguage,
+  state, t, thas, applyI18nStatic, setLanguage, loadLanguage,
   toggleLangMenu, selectLang, closeLangMenu, reapplyFeedStatus, renderSettings,
+  settingKind, settingName, settingGuide, settingGroupTitle, patchSetting,
   dropIndex, subReorder, shutdownServer, showStopped,
   refreshBusy, pingBusy, updateCycleButtons, triggerCycle, wire,
   openSubDialog, submitSubDialog, selectProxy, subToggle, subDelete, subEdit,

@@ -285,7 +285,9 @@ Local loopback requests are always allowed. LAN requests to `/subscription`, `/s
 
 ### Local web dashboard (beta)
 
-The same bind address also serves a built-in offline dashboard at `/` (`/overview`, `/configs`, …), live over SSE with polling fallback under the same endpoint auth; mutations are still TUI-only.
+The same bind address also serves a built-in offline dashboard at `/` (`/overview`, `/configs`, …), live over SSE with polling fallback under the same endpoint auth. The dashboard edits live: subscriptions (add, edit, on/off, delete, drag-and-drop reorder), the power button, proxy and sharing toggles, and the Settings tab.
+
+The Settings tab lists every tunable option as name | value | description rows, in the dashboard language, with a control that fits the type: on/off switch for booleans, dropdown for choices (probe mode), inline editor for numbers/text/lists, a setter for the LAN token, and plain text for read-only rows. Every change saves to the database and the live runtime immediately.
 
 ## Client Setup
 
@@ -524,7 +526,7 @@ Each subscription item has:
 | `name` | String | Display name and source label in results. |
 | `url` | String | HTTP URL, HTTPS URL, single local file path, `file://` file URL, or `data:` URL. |
 | `enabled` | Boolean | Whether the source is fetched. Defaults to `true` if omitted. |
-| `priority` | Integer | Lower numbers are ranked ahead of higher numbers when other checks are equal. Defaults to `100` if omitted. |
+| `priority` | Integer | The 1-based list slot: editing it moves the row to that slot immediately (same as drag-and-drop in the dashboard). Out-of-range values clamp to the ends. Defaults to `100` (the end) if omitted. |
 
 Example:
 
@@ -799,7 +801,7 @@ Command mode accepts:
 | `:a`, `:add` | Add a subscription. |
 | `:n`, `:name` | Edit selected subscription name. |
 | `:u`, `:url` | Edit selected subscription URL. |
-| `:p`, `:priority` | Edit selected subscription priority. |
+| `:p`, `:priority` | Edit selected subscription priority (the row moves to that slot at once). |
 | `:t`, `:toggle` | Enable or disable selected subscription. |
 | `:d`, `:delete` | Delete selected subscription. |
 | `:w`, `:save` | Save config changes. |
@@ -810,7 +812,7 @@ Adding a subscription is a four-step flow:
 
 1. URL.
 2. Display name.
-3. Priority number.
+3. Priority rank (the 1-based list slot; the row lands there).
 4. Enabled state.
 
 Boolean prompts accept values such as `yes`, `no`, `true`, `false`, `on`, `off`, `1`, and `0`.
@@ -838,7 +840,7 @@ The `Configurations` panel exposes the same settings as the database, including:
 
 The reset action keeps the current subscriptions but restores non-subscription settings to defaults. It asks for a short confirmation code before applying.
 
-TUI saves try to preserve the shape and comments of the existing YAML file where possible.
+TUI saves go straight to the database (and the live runtime) — there is no config file to keep in shape.
 
 ## LAN Sharing And Firewall Handling
 

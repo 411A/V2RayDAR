@@ -117,11 +117,24 @@ fn commit_priority(state: &mut TuiState) {
         return;
     };
 
-    if let Some(source) = state.selected_subscription_mut() {
-        source.priority = value;
-        state.dirty = true;
-        finish_edit(state, "Priority updated");
-    }
+    let Some(index) = state.selected_subscription_index() else {
+        return;
+    };
+    let moved = {
+        let source = &state.editable.subscriptions[index];
+        (source.name.clone(), source.url.clone())
+    };
+    // Priority is the list position (same rule as the dashboard): the edited
+    // row moves to that exact slot and the selection follows it.
+    crate::config::move_subscription_to_rank(&mut state.editable.subscriptions, index, value);
+    state.selected_subscription = state
+        .editable
+        .subscriptions
+        .iter()
+        .position(|source| source.name == moved.0 && source.url == moved.1)
+        .map_or(1, |slot| slot + 1);
+    state.dirty = true;
+    finish_edit(state, "Priority updated");
 }
 
 fn commit_new_subscription_step(state: &mut TuiState, step: NewSubscriptionStep) {
@@ -193,13 +206,24 @@ fn commit_new_enabled(state: &mut TuiState) {
         return;
     };
     draft.enabled = enabled;
+    let added = (draft.name.clone(), draft.url.clone());
+    let rank = draft.priority;
     state.editable.subscriptions.push(SubscriptionSource {
         name: draft.name,
         url: draft.url,
         enabled: draft.enabled,
         priority: draft.priority,
     });
-    state.selected_subscription = state.editable.subscriptions.len();
+    // Priority is the list position: the newcomer lands on its rank at once
+    // and the selection follows it (same rule as the dashboard).
+    let last = state.editable.subscriptions.len().saturating_sub(1);
+    crate::config::move_subscription_to_rank(&mut state.editable.subscriptions, last, rank);
+    state.selected_subscription = state
+        .editable
+        .subscriptions
+        .iter()
+        .position(|source| source.name == added.0 && source.url == added.1)
+        .map_or(state.editable.subscriptions.len(), |slot| slot + 1);
     state.view = MenuView::Subscriptions;
     state.dirty = true;
     finish_edit(state, "Subscription added");
@@ -250,5 +274,77 @@ const fn new_subscription_guide(step: NewSubscriptionStep) -> &'static str {
         NewSubscriptionStep::Name => "Step 2/4: enter a display name",
         NewSubscriptionStep::Priority => "Step 3/4: enter priority as a number",
         NewSubscriptionStep::Enabled => "Step 4/4: enable now? yes/no",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::config::SubscriptionSource;
+
+    use super::{commit_new_enabled, commit_priority, start_new_subscription};
+    use crate::tui::state::TuiState;
+
+    fn subscription(name: &str, priority: u32) -> SubscriptionSource {
+        SubscriptionSource {
+            name: name.to_string(),
+            url: format!("https://example.com/{name}.txt"),
+            enabled: true,
+            priority,
+        }
+    }
+
+    fn state_with(subscriptions: Vec<SubscriptionSource>) -> TuiState {
+        let mut state = TuiState::new(crate::config::AppConfig::default_for_first_run());
+        state.editable.subscriptions = subscriptions;
+        state
+    }
+
+    #[test]
+    fn priority_edit_moves_row_and_selection_follows() {
+        let mut state = state_with(vec![
+            subscription("a", 1),
+            subscription("b", 2),
+            subscription("c", 3),
+        ]);
+        // Select "c" (1-based position 3) and retitle its rank to the top.
+        state.selected_subscription = 3;
+        state.input.push('0');
+        commit_priority(&mut state);
+
+        let names: Vec<&str> = state
+            .editable
+            .subscriptions
+            .iter()
+            .map(|source| source.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["c", "a", "b"]);
+        assert_eq!(
+            state.selected_subscription, 1,
+            "selection follows the moved row"
+        );
+        assert!(state.dirty);
+        assert_eq!(state.status, "Priority updated");
+    }
+
+    #[test]
+    fn new_subscription_lands_at_rank_and_selects_it() {
+        let mut state = state_with(vec![subscription("a", 1), subscription("b", 2)]);
+        start_new_subscription(&mut state);
+        let draft = state.new_subscription.as_mut().expect("draft starts");
+        draft.name = "z".to_string();
+        draft.url = "https://example.com/z.txt".to_string();
+        draft.priority = 0;
+        draft.enabled = true;
+        state.input.push_str("yes");
+        commit_new_enabled(&mut state);
+
+        let names: Vec<&str> = state
+            .editable
+            .subscriptions
+            .iter()
+            .map(|source| source.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["z", "a", "b"]);
+        assert_eq!(state.selected_subscription, 1);
     }
 }

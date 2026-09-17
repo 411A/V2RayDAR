@@ -2238,6 +2238,16 @@ async function loadSubscriptions() {
     setDirty(!!r.data.dirty);
     note.textContent = t("subCount", { n: r.data.list.length });
     renderSubs();
+    // Spotlight a just-added/edited row at its new rank (see submitSubDialog).
+    if (state.flashSub) {
+      const at = r.data.list.findIndex(
+        (s) => s && s.name === state.flashSub.name && s.url === state.flashSub.url
+      );
+      state.flashSub = null;
+      if (at >= 0) {
+        flashSubRow(at);
+      }
+    }
     return;
   }
   state.subs = null;
@@ -2406,7 +2416,29 @@ async function subReorder(from, to) {
   } finally {
     state.subReorderInflight = false;
   }
-  void loadSubscriptions();
+  await loadSubscriptions();
+  flashSubRow(to);
+}
+
+/// Briefly spotlight the row at `index` after an add/edit/reorder lands, so
+/// the eye catches where the entry moved without hunting the table.
+function flashSubRow(index) {
+  const body = $("sub-body");
+  const row = body && body.querySelector
+    ? body.querySelector("tr[data-index=" + index + "]")
+    : null;
+  if (!row || !row.classList) {
+    return;
+  }
+  row.classList.add("flash");
+  if (typeof row.scrollIntoView === "function") {
+    try {
+      row.scrollIntoView({ block: "nearest" });
+    } catch (err) {
+      /* older browsers take no options */
+    }
+  }
+  window.setTimeout(() => row.classList.remove("flash"), 1600);
 }
 
 function redactUrl(url) {
@@ -2537,7 +2569,10 @@ async function submitSubDialog() {
     state.editingSub = null;
     toast(subMessage(r, editing === null ? t("added") : t("saved")), "good");
     setDirty(false);
-    void loadSubscriptions();
+    // The server resorts on priority, so the row may land elsewhere: remember
+    // its new identity and spotlight it after the refetch.
+    state.flashSub = { name: payload.name, url: payload.url };
+    await loadSubscriptions();
     return;
   }
   toast(subMessage(r, editing === null ? t("addFailed", { status: r.status }) : t("saveFailed", { status: r.status })), "bad");
@@ -2557,17 +2592,92 @@ async function loadSettings() {
   renderSettings();
 }
 
-/// Paint the settings tab from the cached payload (no fetch). Skips entirely
-/// while a value is being edited (blur auto-commits, so destroying the input
-/// could PATCH a half-typed value) and when nothing ever loaded.
+/// Settings tab: name | value | description columns with a control that fits
+/// the row — on/off switch for booleans, dropdown for choices, inline editor
+/// for numbers/text/lists, a setter for the secret, plain text for read-only
+/// rows. Names/guides come from the locale tables (`setName_<key>`,
+/// `setGuide_<key>`, `setGroup_<id>`), falling back to the server strings so
+/// older servers stay readable.
+const READONLY_SETTING_KEYS = [
+  "subscription_count",
+  "enabled_subscription_count",
+  "probe.speedtest_enabled",
+];
+
+/// Control kind for one settings row: the server's `kind` wins; older
+/// servers (no kinds) fall back to inference from key/value.
+function settingKind(k) {
+  const known = ["bool", "int", "text", "choice", "list", "secret", "readonly"];
+  if (k && known.includes(k.kind)) {
+    return k.kind;
+  }
+  if (!k) {
+    return "text";
+  }
+  if (k.key === "sharing.token") {
+    return "secret";
+  }
+  if (k.key === "probe.mode") {
+    return "choice";
+  }
+  if (READONLY_SETTING_KEYS.includes(k.key)) {
+    return "readonly";
+  }
+  if (k.value === "true" || k.value === "false") {
+    return "bool";
+  }
+  return "text";
+}
+
+function settingName(key) {
+  const k = "setName_" + String(key).split(".").join("_");
+  return thas(k) ? t(k) : key;
+}
+
+function settingGuide(key, fallback) {
+  const k = "setGuide_" + String(key).split(".").join("_");
+  if (thas(k)) {
+    return t(k);
+  }
+  return fallback || "";
+}
+
+function settingGroupTitle(g) {
+  if (g && g.id && thas("setGroup_" + g.id)) {
+    return t("setGroup_" + g.id);
+  }
+  return (g && g.title) || t("setFallback");
+}
+
+/// PATCH one setting, toast the outcome, and resync the tab + overview.
+async function patchSetting(key, value) {
+  const r = await fetchJson("/api/config", { method: "PATCH", body: { key, value } });
+  if (r.status === 404) {
+    toast(t("setApiOldShort"), "bad");
+    return;
+  }
+  if (r.status >= 200 && r.status < 300) {
+    toast(subMessage(r, t("saved")), "good");
+    setDirty(!!(r.data && r.data.dirty));
+    await loadSettings();
+    void loadOvConfig();
+    return;
+  }
+  const msg = (r.data && (r.data.status || r.data.message)) || t("httpStatus", { status: r.status });
+  toast(t("rejected", { msg }), "bad");
+}
+
+/// Paint the settings tab from the cached payload (no fetch). Skips while an
+/// inline editor is open (blur auto-commits, so rebuilding the DOM could
+/// PATCH a half-typed value) and when nothing ever loaded.
 function renderSettings() {
   if (!state.settings && state.settingsStatus === undefined) {
     return;
   }
-  const box = $("settings-groups");
-  if (box.querySelector("input")) {
+  if (state.settingsEditing) {
     return;
   }
+  const box = $("settings-groups");
   const note = $("settings-note");
   while (box.firstChild) {
     box.removeChild(box.firstChild);
@@ -2577,27 +2687,9 @@ function renderSettings() {
     note.textContent = t("setHint");
     for (const g of state.settings.groups) {
       const card = el("section", null, "set-group");
-      card.appendChild(el("h3", g.title || t("setFallback")));
+      card.appendChild(el("h3", settingGroupTitle(g)));
       for (const k of g.keys || []) {
-        const row = document.createElement("div");
-        row.className = "set-row";
-        row.appendChild(el("span", k.key || "", "key"));
-        const val = el("span", k.value !== undefined ? String(k.value) : "—", "val");
-        val.tabIndex = 0;
-        val.setAttribute("role", "button");
-        val.title = t("tipEditSetting");
-        val.addEventListener("click", () => editSetting(k.key, val));
-        val.addEventListener("keydown", (ev) => {
-          if (ev.key === "Enter" || ev.key === " ") {
-            ev.preventDefault();
-            editSetting(k.key, val);
-          }
-        });
-        row.appendChild(val);
-        if (k.guide) {
-          row.appendChild(el("span", k.guide, "guide"));
-        }
-        card.appendChild(row);
+        card.appendChild(settingRow(k));
       }
       box.appendChild(card);
     }
@@ -2608,36 +2700,162 @@ function renderSettings() {
     : t("setLoadFailed", { status: state.settingsStatus });
 }
 
-function editSetting(key, valNode) {
+function settingRow(k) {
+  const key = k.key || "";
+  const name = settingName(key);
+  const row = document.createElement("div");
+  row.className = "set-row";
+  row.appendChild(el("span", name, "set-name"));
+  row.appendChild(settingControl(k, key, name));
+  const guide = settingGuide(key, k.guide);
+  if (guide) {
+    row.appendChild(el("span", guide, "guide"));
+  }
+  return row;
+}
+
+function settingControl(k, key, name) {
+  const kind = settingKind(k);
+  const value = k.value !== undefined ? String(k.value) : "—";
+  if (kind === "bool") {
+    const on = value === "true";
+    const sw = el("button", on ? t("setOn") : t("setOff"), "switch");
+    sw.type = "button";
+    sw.setAttribute("role", "switch");
+    sw.setAttribute("aria-checked", on ? "true" : "false");
+    sw.setAttribute("aria-label", name);
+    sw.addEventListener("click", () => void patchSetting(key, on ? "false" : "true"));
+    const wrap = el("span", null, "val");
+    wrap.appendChild(sw);
+    return wrap;
+  }
+  if (kind === "choice") {
+    const options = (k.options && k.options.length) ? k.options : ["active", "tcp"];
+    const sel = document.createElement("select");
+    sel.setAttribute("aria-label", name);
+    for (const opt of options) {
+      const o = document.createElement("option");
+      o.value = opt;
+      o.textContent = opt;
+      if (opt === value) {
+        o.selected = true;
+      }
+      sel.appendChild(o);
+    }
+    sel.addEventListener("change", () => void patchSetting(key, sel.value));
+    const wrap = el("span", null, "val");
+    wrap.appendChild(sel);
+    return wrap;
+  }
+  if (kind === "secret") {
+    return settingSecretControl(k, key, name);
+  }
+  if (kind === "readonly") {
+    return el("span", value, "val");
+  }
+  const val = el("span", value, "val");
+  val.tabIndex = 0;
+  val.setAttribute("role", "button");
+  val.title = t("tipEditSetting");
+  val.addEventListener("click", () => editSettingText(key, name, val, kind === "int"));
+  val.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" || ev.key === " ") {
+      ev.preventDefault();
+      editSettingText(key, name, val, kind === "int");
+    }
+  });
+  return val;
+}
+
+function settingSecretControl(k, key, name) {
+  const present = k.value !== "empty" && k.value !== "" && k.value !== "—";
+  const wrap = el("span", null, "val");
+  wrap.classList.add("set-secret");
+  wrap.appendChild(el("span", present ? t("setPresentSet") : t("setPresentEmpty"), "set-presence"));
+  const change = el("button", t("setChange"), "btn small");
+  change.type = "button";
+  change.addEventListener("click", () => editSecret(key, name, wrap));
+  wrap.appendChild(change);
+  if (present) {
+    const clear = el("button", t("setClear"), "btn small");
+    clear.type = "button";
+    clear.addEventListener("click", () => void patchSetting(key, ""));
+    wrap.appendChild(clear);
+  }
+  return wrap;
+}
+
+function editSecret(key, name, wrap) {
+  state.settingsEditing = true;
+  while (wrap.firstChild) {
+    wrap.removeChild(wrap.firstChild);
+  }
+  const input = document.createElement("input");
+  input.type = "password";
+  input.placeholder = t("setSecretPh");
+  input.setAttribute("aria-label", name);
+  input.autocomplete = "off";
+  wrap.appendChild(input);
+  const save = el("button", t("btnSave"), "btn small");
+  save.type = "button";
+  save.classList.add("primary");
+  const cancel = el("button", t("btnCancel"), "btn small");
+  cancel.type = "button";
+  wrap.appendChild(save);
+  wrap.appendChild(cancel);
+  input.focus();
+  let done = false;
+  const close = async (store) => {
+    if (done) {
+      return;
+    }
+    done = true;
+    state.settingsEditing = false;
+    if (!store) {
+      renderSettings();
+      return;
+    }
+    await patchSetting(key, input.value);
+  };
+  save.addEventListener("click", () => void close(true));
+  cancel.addEventListener("click", () => void close(false));
+  input.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      void close(true);
+    } else if (ev.key === "Escape") {
+      ev.preventDefault();
+      void close(false);
+    }
+  });
+}
+
+function editSettingText(key, name, valNode, numeric) {
+  state.settingsEditing = true;
   const current = valNode.textContent;
   const input = document.createElement("input");
   input.type = "text";
+  if (numeric) {
+    input.inputMode = "numeric";
+  }
   input.value = current === "—" ? "" : current;
-  input.setAttribute("aria-label", t("ariaNewValue", { key }));
+  input.setAttribute("aria-label", t("ariaNewValue", { key: name }));
   valNode.textContent = "";
   valNode.appendChild(input);
   input.focus();
   input.select();
+  let done = false;
   const commit = async (save) => {
-    const v = input.value;
-    valNode.removeChild(input);
-    valNode.textContent = v === "" ? "—" : v;
+    if (done) {
+      return;
+    }
+    done = true;
+    state.settingsEditing = false;
     if (!save) {
+      renderSettings();
       return;
     }
-    const r = await fetchJson("/api/config", { method: "PATCH", body: { key, value: v } });
-    if (r.status === 404) {
-      toast(t("setApiOldShort"), "bad");
-      return;
-    }
-    if (r.status >= 200 && r.status < 300) {
-      toast(subMessage(r, t("saved")), "good");
-      setDirty(!!(r.data && r.data.dirty));
-      void loadOvConfig();
-      return;
-    }
-    const msg = (r.data && (r.data.status || r.data.message)) || t("httpStatus", { status: r.status });
-    toast(t("rejected", { msg }), "bad");
+    await patchSetting(key, input.value);
   };
   input.addEventListener("keydown", (ev) => {
     if (ev.key === "Enter") {

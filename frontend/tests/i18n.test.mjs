@@ -125,6 +125,38 @@ describe("frontend i18n: one unified strings file, English default", () => {
     assert.equal(api.t("definitely-not-a-key"), "definitely-not-a-key");
   });
 
+  it("every settings key has a translated name/guide in every locale", () => {
+    // Contract with the server's /api/config groups (see web.rs
+    // connection/fetch/probe/sharing/proxy/maintenance groups): adding a key
+    // there must add setName_<key> + setGuide_<key> here, or the Settings tab
+    // falls back to raw English.
+    const all = allTables();
+    const keys = [
+      "bind", "top_n", "refresh_seconds", "ping_seconds",
+      "encoded_subscription", "prioritize_stability", "return_configs_asap",
+      "scan_all_configs", "fetch_timeout_ms", "fetch_concurrency",
+      "max_subscription_bytes", "probe.mode", "probe.concurrency",
+      "probe.batch_size", "probe.active_timeout_ms",
+      "probe.startup_timeout_ms", "probe.test_url",
+      "probe.accepted_statuses", "probe.download_bytes_limit",
+      "probe.download_url", "probe.speedtest_enabled", "sharing.enabled",
+      "sharing.require_token", "sharing.token", "proxy.enabled",
+      "proxy.port", "proxy.discoverable",
+    ];
+    const groups = ["connection", "fetch", "probe", "sharing", "proxy"];
+    for (const locale of LOCALES) {
+      for (const key of keys) {
+        // Dotted API keys (probe.mode) map to underscores in i18n keys.
+        const flat = key.replace(".", "_");
+        assert.ok(all[locale]["setName_" + flat], `${locale}.setName_${flat} missing`);
+        assert.ok(all[locale]["setGuide_" + flat], `${locale}.setGuide_${flat} missing`);
+      }
+      for (const id of groups) {
+        assert.ok(all[locale]["setGroup_" + id], `${locale}.setGroup_${id} missing`);
+      }
+    }
+  });
+
   it("default language is English; unknown languages are refused", () => {
     const { api } = loadApp();
     assert.equal(api.t("langAria"), "Language: English");

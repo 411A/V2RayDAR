@@ -156,9 +156,11 @@ test("language flag sits left of ? with a real file and a 5-flag menu", async ({
   await expect(img).toHaveAttribute("src", "./assets/IR.svg");
   await expect(page.locator("#btn-refresh")).toContainText("به‌روزرسانی");
   await expect(page.locator('#cfg-limit option[value="all"]')).toHaveText("همه");
-  // Setting guides (server English) stay left-to-right.
+  // Setting guides are translated: Persian rows read right-to-left now
+  // (the server English fallback stays left-to-right).
   await page.locator("#tab-settings").click();
-  await expect(page.locator("#settings-groups .guide").first()).toHaveCSS("direction", "ltr");
+  await expect(page.locator("#settings-groups .guide").first()).toHaveCSS("direction", "rtl");
+  await expect(page.locator("#settings-groups .set-name").first()).toHaveText("آدرس گوش دادن");
   // Back to English for the rest of the suite.
   await flag.click();
   await expect(menu).toBeVisible();

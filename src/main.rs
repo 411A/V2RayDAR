@@ -2990,6 +2990,7 @@ impl From<&AppConfig> for RuntimeConfig {
             test_url: config.probe.test_url.clone(),
             accepted_statuses: config.probe.accepted_statuses.clone(),
             download_bytes_limit: config.probe.download_bytes_limit,
+            download_url: config.probe.download_url.clone(),
             subscription_count: config.subscriptions.len(),
             enabled_subscription_count: config
                 .subscriptions

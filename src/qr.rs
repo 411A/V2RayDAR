@@ -841,6 +841,7 @@ mod tests {
             test_url: "https://www.gstatic.com/generate_204".to_string(),
             accepted_statuses: vec![200, 204],
             download_bytes_limit: 1_000_000,
+            download_url: None,
             subscription_count: 1,
             enabled_subscription_count: 1,
             proxy_enabled: true,

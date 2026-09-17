@@ -835,14 +835,14 @@ td .lat-bar > span {
 
 .set-row {
   display: grid;
-  grid-template-columns: minmax(150px, 220px) 1fr;
+  grid-template-columns: minmax(120px, 180px) minmax(140px, 1fr) minmax(150px, 1.1fr);
   gap: 0.25rem 0.9rem;
   padding-block: 0.45rem;
   border-block-start: 1px solid var(--border);
   align-items: baseline;
 }
 
-.set-row .key {
+.set-row .set-name {
   font-weight: 600;
   overflow-wrap: anywhere;
 }
@@ -850,12 +850,53 @@ td .lat-bar > span {
 .set-row .guide {
   color: var(--muted);
   font-size: 0.82rem;
+  overflow-wrap: anywhere;
 }
 
 .set-row .val {
   grid-column: 2;
   color: var(--text);
   overflow-wrap: anywhere;
+}
+
+/* Typed settings controls: the value column holds one control per row. */
+.set-row select,
+.set-row input {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.3rem 0.5rem;
+  max-inline-size: 100%;
+}
+
+.switch {
+  font: inherit;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.15rem 0.8rem;
+  background: var(--bg-sunken);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.switch[aria-checked="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.set-secret {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.set-presence {
+  color: var(--muted);
+  font-size: 0.82rem;
 }
 
 /* ---- Logs ---- */
@@ -1196,6 +1237,19 @@ kbd {
 #sub-body tr.drop-after {
   box-shadow: inset 0 -2px 0 var(--accent);
 }
+/* The row an add/edit/reorder just moved: one soft pulse so the eye lands
+ * on its new rank without hunting the table. */
+#sub-body tr.flash {
+  animation: sub-flash 1.6s ease-out;
+}
+@keyframes sub-flash {
+  0% {
+    background: var(--accent-soft);
+  }
+  100% {
+    background: transparent;
+  }
+}
 
 /* ---------- RTL (Persian) ---------- */
 /* Flex/grid/table order follows `direction` automatically (set from <html
@@ -1203,8 +1257,6 @@ kbd {
  * code/URLs, setting keys, and server log lines stay left-to-right so they
  * read correctly instead of scattering across the sentence. */
 html[dir="rtl"] code,
-html[dir="rtl"] .set-row .key,
-html[dir="rtl"] .set-row .guide,
 html[dir="rtl"] #log-list,
 html[dir="rtl"] #ov-logs,
 html[dir="rtl"] #fetch-errors {

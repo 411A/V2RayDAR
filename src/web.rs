@@ -71,11 +71,12 @@ const FAVICON_SVG: &str = concat!(
 /// Budget from PLAN.md §5: the whole initial payload must fit one loopback
 /// exchange and stay usable on low-end phones. Raised 150 → 175 KiB for the
 /// unified i18n table + HTML bindings, then 175 → 250 KiB for the fa/zh/fr/ru
-/// locale tables, 250 → 260 KiB for subscription drag-and-drop reorder and
-/// 260 → 266 KiB for the run-as-admin elevation guide (user text, not
-/// bloat — still one RTT).
+/// locale tables, 250 → 260 KiB for subscription drag-and-drop reorder,
+/// 260 → 266 KiB for the run-as-admin elevation guide, and 266 → 294 KiB for
+/// the translated typed settings editor (28 option names/guides × 5 locales:
+/// user text, not bloat — still one RTT).
 #[cfg(test)]
-const DASHBOARD_ASSET_BUDGET_BYTES: usize = 272_384;
+const DASHBOARD_ASSET_BUDGET_BYTES: usize = 301_056;
 /// Feed diff cadence: matches the dashboard's ≤1 Hz ranked refresh.
 const FEED_TICK: Duration = Duration::from_secs(2);
 /// SSE heartbeat so idle connections survive NATs/proxies.
@@ -397,10 +398,12 @@ async fn subscriptions_response(
 }
 
 /// Read-only settings table served from the live [`RuntimeConfig`].
-/// Response shape is exactly `{groups: [{title, keys: [{key, value,
-/// guide}]}], dirty: false}`; the bundled Settings tab already renders this
-/// shape and degrades its click-to-edit PATCH to a guidance toast until the
-/// mutation API lands. Same [`crate::server::authorize`] as every route.
+/// Response shape is exactly `{groups: [{id, title, keys: [{key, value,
+/// guide, kind, options}]}], dirty: false}`; the bundled Settings tab
+/// renders typed controls from `kind` (`bool` switch, `int`/`text`/`list`
+/// editor, `choice` select over `options`, `secret` setter, `readonly`
+/// static) and degrades unknown kinds to the text editor. Same
+/// [`crate::server::authorize`] as every route.
 ///
 /// Guides live here rather than reusing the TUI's `config_editor::guide`:
 /// that module is private to `tui`, its `value()` reads `AppConfig` (not the
@@ -412,11 +415,19 @@ struct ConfigKeyRow {
     key: String,
     value: String,
     guide: String,
+    /// Control hint: `bool`, `int`, `text`, `choice`, `list`, `secret`,
+    /// or `readonly`. The dashboard translates names/guides client-side and
+    /// falls back to the text editor when `kind` is absent (old servers).
+    kind: &'static str,
+    /// Allowed values for `choice` (empty otherwise).
+    options: Vec<&'static str>,
 }
 
-/// One Settings card (`Connection`, `Fetch`, …).
+/// One Settings card (`Connection`, `Fetch`, …); `id` is the stable
+/// client key for the translated group title.
 #[derive(Debug, Clone, Serialize)]
 struct ConfigGroup {
+    id: &'static str,
     title: String,
     keys: Vec<ConfigKeyRow>,
 }
@@ -437,7 +448,6 @@ impl ConfigResponse {
                 probe_group(config),
                 sharing_group(config),
                 proxy_group(config),
-                maintenance_group(config),
             ],
             dirty: false,
         }
@@ -445,10 +455,22 @@ impl ConfigResponse {
 }
 
 fn config_row(key: &'static str, value: String, guide: &'static str) -> ConfigKeyRow {
+    config_row_kind(key, value, guide, "text", &[])
+}
+
+fn config_row_kind(
+    key: &'static str,
+    value: String,
+    guide: &'static str,
+    kind: &'static str,
+    options: &[&'static str],
+) -> ConfigKeyRow {
     ConfigKeyRow {
         key: key.to_string(),
         value,
         guide: guide.to_string(),
+        kind,
+        options: options.to_vec(),
     }
 }
 
@@ -479,6 +501,7 @@ fn token_presence(token: &str) -> &'static str {
 
 fn connection_group(config: &RuntimeConfig) -> ConfigGroup {
     ConfigGroup {
+        id: "connection",
         title: "Connection".to_string(),
         keys: vec![
             config_row(
@@ -486,40 +509,54 @@ fn connection_group(config: &RuntimeConfig) -> ConfigGroup {
                 config.bind.to_string(),
                 "host:port the HTTP endpoint listens on",
             ),
-            config_row(
+            config_row_kind(
                 "top_n",
                 config.top_n.to_string(),
                 "configs kept in the ranked list",
+                "int",
+                &[],
             ),
-            config_row(
+            config_row_kind(
                 "refresh_seconds",
                 config.refresh_seconds.to_string(),
                 "seconds between refreshes",
+                "int",
+                &[],
             ),
-            config_row(
+            config_row_kind(
                 "ping_seconds",
                 config.ping_seconds.to_string(),
                 "seconds between re-pings; 0 disables",
+                "int",
+                &[],
             ),
-            config_row(
+            config_row_kind(
                 "encoded_subscription",
                 config.encoded_subscription.to_string(),
                 "true serves a base64 feed; false serves a raw list",
+                "bool",
+                &[],
             ),
-            config_row(
+            config_row_kind(
                 "prioritize_stability",
                 config.prioritize_stability.to_string(),
                 "true favors repeat working configs over new wins",
+                "bool",
+                &[],
             ),
-            config_row(
+            config_row_kind(
                 "return_configs_asap",
                 config.return_configs_asap.to_string(),
                 "true publishes working configs immediately",
+                "bool",
+                &[],
             ),
-            config_row(
+            config_row_kind(
                 "scan_all_configs",
                 config.scan_all_configs.to_string(),
                 "true scans every config; false stops when enough work",
+                "bool",
+                &[],
             ),
         ],
     }
@@ -527,22 +564,29 @@ fn connection_group(config: &RuntimeConfig) -> ConfigGroup {
 
 fn fetch_group(config: &RuntimeConfig) -> ConfigGroup {
     ConfigGroup {
+        id: "fetch",
         title: "Fetch".to_string(),
         keys: vec![
-            config_row(
+            config_row_kind(
                 "fetch_timeout_ms",
                 config.fetch_timeout_ms.to_string(),
                 "fetch timeout in ms",
+                "int",
+                &[],
             ),
-            config_row(
+            config_row_kind(
                 "fetch_concurrency",
                 config.fetch_concurrency.to_string(),
                 "parallel fetch count",
+                "int",
+                &[],
             ),
-            config_row(
+            config_row_kind(
                 "max_subscription_bytes",
                 config.max_subscription_bytes.to_string(),
                 "max bytes accepted per subscription",
+                "int",
+                &[],
             ),
         ],
     }
@@ -550,52 +594,75 @@ fn fetch_group(config: &RuntimeConfig) -> ConfigGroup {
 
 fn probe_group(config: &RuntimeConfig) -> ConfigGroup {
     ConfigGroup {
+        id: "probe",
         title: "Probe".to_string(),
         keys: vec![
-            config_row(
+            config_row_kind(
                 "probe.mode",
                 config.probe_mode.clone(),
                 "active uses sing-box; tcp is diagnostic only",
+                "choice",
+                &["active", "tcp"],
             ),
-            config_row(
+            config_row_kind(
                 "probe.concurrency",
                 config.probe_concurrency.to_string(),
                 "parallel probe count",
+                "int",
+                &[],
             ),
             config_row(
                 "probe.batch_size",
                 optional_number(config.probe_batch_size),
                 "configs per probe batch; null selects automatically",
             ),
-            config_row(
+            config_row_kind(
                 "probe.active_timeout_ms",
                 config.active_timeout_ms.to_string(),
                 "active probe timeout in ms",
+                "int",
+                &[],
             ),
-            config_row(
+            config_row_kind(
                 "probe.startup_timeout_ms",
                 config.startup_timeout_ms.to_string(),
                 "probe startup timeout in ms",
+                "int",
+                &[],
             ),
             config_row(
                 "probe.test_url",
                 config.test_url.clone(),
                 "URL used for the active probe",
             ),
-            config_row(
+            config_row_kind(
                 "probe.accepted_statuses",
                 status_list(&config.accepted_statuses),
                 "HTTP codes that count as working",
+                "list",
+                &[],
             ),
-            config_row(
+            config_row_kind(
                 "probe.download_bytes_limit",
                 config.download_bytes_limit.to_string(),
                 "speedtest byte limit",
+                "int",
+                &[],
             ),
             config_row(
+                "probe.download_url",
+                config
+                    .download_url
+                    .clone()
+                    .unwrap_or_else(|| "off".to_string()),
+                "speedtest download link; off disables it",
+            ),
+            config_row_kind(
                 "probe.speedtest_enabled",
                 config.speedtest_enabled.to_string(),
-                "true runs a download speedtest",
+                "on when probe.download_url is set",
+                "readonly",
+                &[],
             ),
         ],
     }
@@ -603,22 +670,29 @@ fn probe_group(config: &RuntimeConfig) -> ConfigGroup {
 
 fn sharing_group(config: &RuntimeConfig) -> ConfigGroup {
     ConfigGroup {
+        id: "sharing",
         title: "Sharing".to_string(),
         keys: vec![
-            config_row(
+            config_row_kind(
                 "sharing.enabled",
                 config.sharing_enabled.to_string(),
                 "true exposes the subscription on the LAN",
+                "bool",
+                &[],
             ),
-            config_row(
+            config_row_kind(
                 "sharing.require_token",
                 config.require_token.to_string(),
                 "true requires ?token= on LAN requests",
+                "bool",
+                &[],
             ),
-            config_row(
+            config_row_kind(
                 "sharing.token",
                 token_presence(&config.token).to_string(),
                 "presence only; the secret never leaves the server",
+                "secret",
+                &[],
             ),
         ],
     }
@@ -626,41 +700,29 @@ fn sharing_group(config: &RuntimeConfig) -> ConfigGroup {
 
 fn proxy_group(config: &RuntimeConfig) -> ConfigGroup {
     ConfigGroup {
+        id: "proxy",
         title: "Proxy".to_string(),
         keys: vec![
-            config_row(
+            config_row_kind(
                 "proxy.enabled",
                 config.proxy_enabled.to_string(),
                 "true runs the persistent local proxy",
+                "bool",
+                &[],
             ),
-            config_row(
+            config_row_kind(
                 "proxy.port",
                 config.proxy_port.to_string(),
                 "local proxy port",
+                "int",
+                &[],
             ),
-            config_row(
+            config_row_kind(
                 "proxy.discoverable",
                 config.proxy_discoverable.to_string(),
                 "true binds LAN and opens the firewall",
-            ),
-        ],
-    }
-}
-
-/// Derived counts (stored-subscription truth, read-only like everything here).
-fn maintenance_group(config: &RuntimeConfig) -> ConfigGroup {
-    ConfigGroup {
-        title: "Maintenance".to_string(),
-        keys: vec![
-            config_row(
-                "subscription_count",
-                config.subscription_count.to_string(),
-                "subscriptions in the database (read-only)",
-            ),
-            config_row(
-                "enabled_subscription_count",
-                config.enabled_subscription_count.to_string(),
-                "enabled subscriptions (read-only)",
+                "bool",
+                &[],
             ),
         ],
     }
@@ -1143,6 +1205,9 @@ pub async fn api_subscriptions_add(
         enabled: body.enabled,
         priority: body.priority,
     });
+    // Priority is the list position: the newcomer lands on its rank at once.
+    let last = cfg.subscriptions.len().saturating_sub(1);
+    crate::config::move_subscription_to_rank(&mut cfg.subscriptions, last, body.priority);
     if let Err(response) = persist_config(&state, &cfg).await {
         return response;
     }
@@ -1192,7 +1257,15 @@ pub async fn api_subscriptions_patch(
         return response;
     }
     let name = next.name.clone();
+    let rank = body.priority;
     *entry = next;
+    // Priority is the list position: an edited rank moves the row to that
+    // exact slot and renumbers 1..=N, so the dashboard refetch shows the
+    // replacement in real time instead of a stale in-place number. Edits
+    // without a rank keep their slot.
+    if let Some(rank) = rank {
+        crate::config::move_subscription_to_rank(&mut cfg.subscriptions, index, rank);
+    }
     if let Err(response) = persist_config(&state, &cfg).await {
         return response;
     }
@@ -1368,7 +1441,6 @@ fn apply_web_setting(
         "probe.speedtest_enabled is derived from probe.download_url; set probe.download_url instead"
             .to_string()
         }
-        "subscription_count" | "enabled_subscription_count" => format!("{key} is read-only"),
         _ => format!("unknown key: {key}"),
     })
 }
@@ -1491,6 +1563,14 @@ fn apply_probe_setting(
         "probe.download_bytes_limit" => {
             cfg.probe.download_bytes_limit = parse_positive(value)
                 .ok_or_else(|| "probe.download_bytes_limit must be greater than 0".to_string())?;
+        }
+        // Mirrors the TUI `optional()`: empty/off/none/null disables the
+        // speedtest, anything else is the download link.
+        "probe.download_url" => {
+            cfg.probe.download_url = match value.to_ascii_lowercase().as_str() {
+                "" | "off" | "none" | "null" => None,
+                _ => Some(value.to_string()),
+            };
         }
         _ => return Ok(false),
     }
@@ -2051,6 +2131,7 @@ mod tests {
             test_url: "https://www.gstatic.com/generate_204".to_string(),
             accepted_statuses: vec![204, 200],
             download_bytes_limit: 1_048_576,
+            download_url: None,
             subscription_count: 0,
             enabled_subscription_count: 0,
             proxy_enabled: false,
@@ -2509,14 +2590,28 @@ mod tests {
         let mut rows = 0;
         let mut seen_token = false;
         let mut seen_statuses = false;
+        let mut seen_download_url = false;
         for group in groups {
             assert!(group["title"].is_string(), "every group has a string title");
+            assert!(
+                group["id"].is_string(),
+                "every group has a stable client id"
+            );
             let keys = group["keys"].as_array().expect("keys is an array");
             for row in keys {
                 assert!(row["key"].is_string(), "every row has a string key");
                 assert!(row["value"].is_string(), "every row has a string value");
                 assert!(row["guide"].is_string(), "every row has a string guide");
+                assert!(row["kind"].is_string(), "every row has a control kind");
+                assert!(row["options"].is_array(), "every row has an options array");
                 rows += 1;
+                if row["key"] == "probe.mode" {
+                    assert_eq!(
+                        row["options"],
+                        serde_json::json!(["active", "tcp"]),
+                        "probe.mode offers its two choices"
+                    );
+                }
                 if row["key"] == "sharing.token" {
                     seen_token = true;
                     assert_eq!(row["value"], serde_json::Value::from("set"));
@@ -2525,11 +2620,17 @@ mod tests {
                     seen_statuses = true;
                     assert_eq!(row["value"], serde_json::Value::from("[204, 200]"));
                 }
+                if row["key"] == "probe.download_url" {
+                    seen_download_url = true;
+                    assert_eq!(row["value"], serde_json::Value::from("off"));
+                    assert_eq!(row["kind"], serde_json::Value::from("text"));
+                }
             }
         }
         assert!(rows > 0, "groups must carry key rows");
         assert!(seen_token, "sharing.token presence marker is served");
         assert!(seen_statuses, "probe.accepted_statuses list is served");
+        assert!(seen_download_url, "probe.download_url switch is served");
     }
 
     #[tokio::test]
@@ -2939,6 +3040,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn subscriptions_patch_moves_row_to_edited_rank() {
+        let (state, _refresh_rx, _ping_rx, mut config_rx) = mutation_state(RuntimeState::default());
+        seed_subscriptions(&state);
+        // "c" sits last; retitling its rank to the top must move the row,
+        // not just relabel the number in place.
+        let (headers, query, connect) = no_auth();
+        let response = super::api_subscriptions_patch(
+            axum::extract::State(state.clone()),
+            headers,
+            query,
+            connect,
+            axum::extract::Path(2_usize),
+            axum::Json(super::SubscriptionPatch {
+                priority: Some(0),
+                ..Default::default()
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let stored = stored_config(&state);
+        let names: Vec<&str> = stored
+            .subscriptions
+            .iter()
+            .map(|source| source.name.as_str())
+            .collect();
+        assert_eq!(names, ["c", "a", "b"], "edited rank moves the row");
+        let priorities: Vec<u32> = stored
+            .subscriptions
+            .iter()
+            .map(|source| source.priority)
+            .collect();
+        assert_eq!(priorities, [1, 2, 3], "ranks stay dense after the move");
+        let live = state.subscriptions.read().await;
+        assert_eq!(live[0].name, "c", "shared snapshot updates immediately");
+        config_rx.changed().await.expect("live broadcast fires");
+    }
+
+    #[tokio::test]
     async fn subscriptions_reorder_rejects_non_permutations() {
         let (state, _refresh_rx, _ping_rx, _config_rx) = mutation_state(RuntimeState::default());
         seed_subscriptions(&state);
@@ -3023,6 +3163,16 @@ mod tests {
         assert_eq!(cfg.probe.accepted_statuses, vec![204, 200]);
         assert!(super::apply_web_setting(&mut cfg, "probe.accepted_statuses", "204,200").is_ok());
         assert!(super::apply_web_setting(&mut cfg, "probe.accepted_statuses", "999").is_err());
+        assert!(super::apply_web_setting(&mut cfg, "probe.download_url", "off").is_ok());
+        assert_eq!(cfg.probe.download_url, None);
+        assert!(
+            super::apply_web_setting(&mut cfg, "probe.download_url", "https://example.com/1gb")
+                .is_ok()
+        );
+        assert_eq!(
+            cfg.probe.download_url.as_deref(),
+            Some("https://example.com/1gb")
+        );
         assert!(super::apply_web_setting(&mut cfg, "unknown.key", "1").is_err());
     }
 

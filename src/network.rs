@@ -622,6 +622,7 @@ mod tests {
             test_url: DEFAULT_TEST_URL.to_string(),
             accepted_statuses: DEFAULT_ACCEPTED_STATUSES.to_vec(),
             download_bytes_limit: DEFAULT_DOWNLOAD_BYTES_LIMIT,
+            download_url: None,
             subscription_count: 0,
             enabled_subscription_count: 0,
             proxy_enabled: false,

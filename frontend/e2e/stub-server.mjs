@@ -100,6 +100,7 @@ export function createStub() {
     subPatch: [],
     subToggle: [],
     subDelete: [],
+    subReorder: [],
     configPatch: [],
     savePosts: 0,
     cacheClean: [],
@@ -276,6 +277,16 @@ export function createStub() {
       const s = stub.subs[Number(m[1])];
       s.enabled = !s.enabled;
       json(res, 200, { ok: true, status: "Toggled.", dirty: false });
+      return;
+    }
+    if (req.method === "POST" && p === "/api/subscriptions/reorder") {
+      const body = await readBody(req);
+      stub.subReorder.push(body.order);
+      const next = body.order.map((i) => stub.subs[i]);
+      next.forEach((s, k) => { s.priority = k + 1; });
+      stub.subs.length = 0;
+      stub.subs.push(...next);
+      json(res, 200, { ok: true, status: "Reordered.", dirty: false });
       return;
     }
     if (req.method === "GET" && p === "/api/config") {

@@ -211,6 +211,57 @@ describe("subscription dialog distinguishes add vs PATCH", () => {
   });
 });
 
+describe("subscription drag-and-drop reorder", () => {
+  it("dropIndex lands after/before in post-removal coordinates", () => {
+    const { api } = loadApp();
+    assert.equal(api.dropIndex(0, 2, true), 2); // drag row 0 below row 2
+    assert.equal(api.dropIndex(0, 2, false), 1); // drag row 0 above row 2
+    assert.equal(api.dropIndex(2, 0, false), 0); // drag row 2 above row 0
+    assert.equal(api.dropIndex(1, 1, false), 1); // no-op
+    assert.equal(api.dropIndex(1, 2, true), 2); // drag row 1 below row 2
+    assert.equal(api.dropIndex(2, 2, true), 2); // below itself = same spot
+  });
+
+  it("subReorder POSTs the permutation and resyncs", async () => {
+    const { api, sandbox } = loadApp();
+    const posts = [];
+    sandbox.fetch = async (url, init) => {
+      posts.push({ url: String(url), body: init && init.body ? JSON.parse(init.body) : null });
+      if (String(url).includes("/reorder")) {
+        return { status: 200, async text() { return '{"ok":true,"status":"Reordered.","dirty":false}'; } };
+      }
+      return { status: 200, async text() { return '{"list":[],"dirty":false}'; } };
+    };
+    api.state.subs = {
+      list: [
+        { name: "a", url: "https://example.com/a.txt", priority: 1, enabled: true },
+        { name: "b", url: "https://example.com/b.txt", priority: 2, enabled: true },
+        { name: "c", url: "https://example.com/c.txt", priority: 3, enabled: true },
+      ],
+      dirty: false,
+    };
+    await api.subReorder(0, 2);
+    const reorder = posts.find((p) => p.url.includes("/reorder"));
+    assert.deepEqual(reorder.body, { order: [1, 2, 0] });
+    const toasts = sandbox.__elements.get("toasts");
+    assert.match(toasts.children[toasts.children.length - 1].textContent, /Reordered/);
+  });
+
+  it("subReorder ignores no-ops and reports old servers", async () => {
+    const { api, sandbox } = loadApp();
+    let calls = 0;
+    sandbox.fetch = async () => {
+      calls += 1;
+      return { status: 404, async text() { return ""; } };
+    };
+    api.state.subs = { list: [{ name: "a", priority: 1, enabled: true }], dirty: false };
+    await api.subReorder(0, 0);
+    assert.equal(calls, 0, "same-spot drop sends nothing");
+    await api.subReorder(0, 5);
+    assert.equal(calls, 0, "out-of-range sends nothing");
+  });
+});
+
 describe("live ranked events refresh overview top-configs too", () => {
   const row = {
     rank: 1,

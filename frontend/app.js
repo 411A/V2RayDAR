@@ -2235,6 +2235,23 @@ function renderSubs() {
   $("sub-empty").hidden = list.length !== 0;
   list.forEach((sub, i) => {
     const tr = document.createElement("tr");
+    tr.dataset.index = String(i);
+    tr.addEventListener("dragover", (ev) => subRowDragOver(ev, tr, i));
+    tr.addEventListener("drop", (ev) => void subRowDrop(ev, tr, i));
+
+    const gripTd = document.createElement("td");
+    gripTd.className = "drag-cell";
+    const grip = document.createElement("button");
+    grip.type = "button";
+    grip.className = "drag-handle";
+    grip.draggable = true;
+    grip.setAttribute("aria-label", t("subDragHandle"));
+    grip.title = t("subDragHandle");
+    grip.textContent = "⋮⋮";
+    grip.addEventListener("dragstart", (ev) => subDragStart(ev, tr, i));
+    grip.addEventListener("dragend", subDragCleanup);
+    gripTd.appendChild(grip);
+    tr.appendChild(gripTd);
 
     const onTd = document.createElement("td");
     const tgl = document.createElement("button");
@@ -2269,6 +2286,105 @@ function renderSubs() {
 
     body.appendChild(tr);
   });
+}
+
+/// Drag-and-drop reorder state: source row while a drag is in flight.
+let subDragFrom = null;
+
+/// Drop target in post-removal coordinates: dropping after row `i` lands at
+/// `i + 1`, then removing `from` shifts everything at/after it down by one.
+function dropIndex(from, i, after) {
+  let to = after ? i + 1 : i;
+  if (from < to) {
+    to -= 1;
+  }
+  return to;
+}
+
+function subDragStart(ev, tr, i) {
+  if (state.subReorderInflight) {
+    ev.preventDefault();
+    return;
+  }
+  subDragFrom = i;
+  if (ev.dataTransfer) {
+    ev.dataTransfer.effectAllowed = "move";
+    try {
+      // Firefox requires payload or dragstart is cancelled.
+      ev.dataTransfer.setData("text/plain", String(i));
+    } catch (err) {
+      /* dataTransfer without setData still drags elsewhere */
+    }
+  }
+  tr.classList.add("dragging");
+}
+
+function subRowDragOver(ev, tr, i) {
+  if (subDragFrom === null || subDragFrom === undefined) {
+    return;
+  }
+  // Allow the drop + show before/after insertion line from the pointer.
+  ev.preventDefault();
+  if (ev.dataTransfer) {
+    ev.dataTransfer.dropEffect = "move";
+  }
+  const rect = tr.getBoundingClientRect ? tr.getBoundingClientRect() : null;
+  const after = rect ? ev.clientY - rect.top > rect.height / 2 : false;
+  tr.dataset.dropAfter = after ? "1" : "";
+  const rows = $("sub-body").querySelectorAll("tr");
+  for (const r of rows) {
+    r.classList.remove("drop-before", "drop-after");
+  }
+  tr.classList.add(after ? "drop-after" : "drop-before");
+}
+
+function subDragCleanup() {
+  subDragFrom = null;
+  const body = $("sub-body");
+  const rows = body && body.querySelectorAll ? body.querySelectorAll("tr") : [];
+  for (const r of rows) {
+    r.classList.remove("dragging", "drop-before", "drop-after");
+    delete r.dataset.dropAfter;
+  }
+}
+
+async function subRowDrop(ev, tr, i) {
+  ev.preventDefault();
+  const from = subDragFrom;
+  const after = tr.dataset.dropAfter === "1";
+  subDragCleanup();
+  if (from === null || from === undefined) {
+    return;
+  }
+  await subReorder(from, dropIndex(from, i, after));
+}
+
+async function subReorder(from, to) {
+  const list = state.subs ? state.subs.list : [];
+  if (from === to || from < 0 || to < 0 || from >= list.length || to >= list.length) {
+    return;
+  }
+  if (state.subReorderInflight) {
+    return;
+  }
+  // Permutation of current indices; the server reorders + renumbers 1..N.
+  const order = list.map((_, k) => k);
+  const moved = order.splice(from, 1)[0];
+  order.splice(to, 0, moved);
+  state.subReorderInflight = true;
+  try {
+    const r = await fetchJson("/api/subscriptions/reorder", { method: "POST", body: { order } });
+    if (r.status === 404) {
+      toast(t("subApiOldShort"), "bad");
+    } else if (r.status >= 200 && r.status < 300) {
+      toast(subMessage(r, t("subReordered")), "good");
+    } else {
+      toast(subMessage(r, t("subReorderFailed", { status: r.status })), "bad");
+    }
+  } finally {
+    state.subReorderInflight = false;
+  }
+  void loadSubscriptions();
 }
 
 function redactUrl(url) {

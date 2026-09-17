@@ -70,9 +70,10 @@ const FAVICON_SVG: &str = concat!(
 /// Budget from PLAN.md §5: the whole initial payload must fit one loopback
 /// exchange and stay usable on low-end phones. Raised 150 → 175 KiB for the
 /// unified i18n table + HTML bindings, then 175 → 250 KiB for the fa/zh/fr/ru
-/// locale tables (user text, not bloat — still one RTT).
+/// locale tables and 250 → 260 KiB for subscription drag-and-drop reorder
+/// (user text, not bloat — still one RTT).
 #[cfg(test)]
-const DASHBOARD_ASSET_BUDGET_BYTES: usize = 256_000;
+const DASHBOARD_ASSET_BUDGET_BYTES: usize = 266_240;
 /// Feed diff cadence: matches the dashboard's ≤1 Hz ranked refresh.
 const FEED_TICK: Duration = Duration::from_secs(2);
 /// SSE heartbeat so idle connections survive NATs/proxies.
@@ -1183,6 +1184,60 @@ pub async fn api_subscriptions_delete(
         return response;
     }
     mutation_ok(format!("Deleted {}", removed.name))
+}
+
+/// Reorder body: `order[i]` is the old index of the entry taking new slot `i`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SubscriptionsReorder {
+    pub order: Vec<usize>,
+}
+
+/// `POST /api/subscriptions/reorder` — drag-and-drop order from the dashboard.
+/// Validates a full permutation, reorders, renumbers priorities 1..=N in the
+/// new visual order ("lower runs first"), then immediate-saves to
+/// `configs.yaml` + live snapshots (probe-result rows pick the new
+/// priorities up on the next cycle).
+pub async fn api_subscriptions_reorder(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    ConnectInfo(remote_addr): ConnectInfo<std::net::SocketAddr>,
+    Json(body): Json<SubscriptionsReorder>,
+) -> Response {
+    let token = query.token.as_deref().or_else(|| bearer_token(&headers));
+    if let Err(response) = authorize(&state, remote_addr, token).await {
+        return response;
+    }
+    if state.config_tx.is_none() {
+        return mutation_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Subscription API unavailable",
+        );
+    }
+    let mut cfg = match load_disk_config(&state) {
+        Ok(cfg) => cfg,
+        Err(response) => return response,
+    };
+    let len = cfg.subscriptions.len();
+    let mut sorted = body.order.clone();
+    sorted.sort_unstable();
+    if sorted.len() != len || sorted.iter().enumerate().any(|(slot, got)| *got != slot) {
+        return mutation_error(StatusCode::BAD_REQUEST, "Order must list every index once");
+    }
+    cfg.subscriptions = body
+        .order
+        .iter()
+        .map(|&old| cfg.subscriptions[old].clone())
+        .collect();
+    let mut priority: u32 = 0;
+    for entry in &mut cfg.subscriptions {
+        priority = priority.saturating_add(1);
+        entry.priority = priority;
+    }
+    if let Err(response) = persist_config(&state, &cfg).await {
+        return response;
+    }
+    mutation_ok(format!("Reordered {len} subscription(s)"))
 }
 
 fn parse_bool(raw: &str) -> Option<bool> {
@@ -2643,6 +2698,73 @@ mod tests {
         .await;
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    fn seed_subscriptions(state: &HttpState, yaml: &str) {
+        std::fs::write(&state.config_path, yaml).expect("seed subscriptions write");
+    }
+
+    const REORDER_SEED: &str = "subscriptions:\n  - {name: a, url: https://example.com/a.txt, enabled: true, priority: 5}\n  - {name: b, url: https://example.com/b.txt, enabled: true, priority: 5}\n  - {name: c, url: https://example.com/c.txt, enabled: false, priority: 9}\n";
+
+    #[tokio::test]
+    async fn subscriptions_reorder_permutes_renumbers_and_persists() {
+        let (state, _refresh_rx, _ping_rx, mut config_rx) = mutation_state(RuntimeState::default());
+        seed_subscriptions(&state, REORDER_SEED);
+        let (headers, query, connect) = no_auth();
+        let response = super::api_subscriptions_reorder(
+            axum::extract::State(state.clone()),
+            headers,
+            query,
+            connect,
+            axum::Json(super::SubscriptionsReorder {
+                order: vec![2, 0, 1],
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let disk = crate::config::AppConfig::load(&state.config_path).expect("config reloads");
+        let names: Vec<&str> = disk
+            .subscriptions
+            .iter()
+            .map(|source| source.name.as_str())
+            .collect();
+        assert_eq!(names, ["c", "a", "b"], "disk order follows the drop");
+        let priorities: Vec<u32> = disk
+            .subscriptions
+            .iter()
+            .map(|source| source.priority)
+            .collect();
+        assert_eq!(priorities, [1, 2, 3], "priorities renumber in visual order");
+        let live = state.subscriptions.read().await;
+        assert_eq!(live[0].name, "c", "shared snapshot updates immediately");
+        assert_eq!(live[0].priority, 1);
+        config_rx.changed().await.expect("live broadcast fires");
+    }
+
+    #[tokio::test]
+    async fn subscriptions_reorder_rejects_non_permutations() {
+        let (state, _refresh_rx, _ping_rx, _config_rx) = mutation_state(RuntimeState::default());
+        seed_subscriptions(&state, REORDER_SEED);
+        // Duplicate, out-of-range, and wrong-length orders are all 400 and
+        // must leave the file untouched.
+        for order in [vec![0, 0, 1], vec![0, 1, 5], vec![0, 1], vec![0, 1, 2, 0]] {
+            let (headers, query, connect) = no_auth();
+            let response = super::api_subscriptions_reorder(
+                axum::extract::State(state.clone()),
+                headers,
+                query,
+                connect,
+                axum::Json(super::SubscriptionsReorder { order }),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
+        let disk = crate::config::AppConfig::load(&state.config_path).expect("config reloads");
+        assert_eq!(
+            disk.subscriptions[0].priority, 5,
+            "rejected reorder writes nothing"
+        );
     }
 
     #[tokio::test]

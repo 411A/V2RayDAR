@@ -1158,6 +1158,37 @@ kbd {
   }
 }
 
+/* ---------- drag-and-drop reorder ---------- */
+.drag-cell {
+  width: 2.2rem;
+}
+.drag-handle {
+  cursor: grab;
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0.25rem 0.4rem;
+}
+.drag-handle:hover {
+  color: inherit;
+  background: var(--accent-soft);
+}
+.drag-handle:active {
+  cursor: grabbing;
+}
+#sub-body tr.dragging {
+  opacity: 0.5;
+}
+#sub-body tr.drop-before {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+#sub-body tr.drop-after {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
 /* ---------- RTL (Persian) ---------- */
 /* Flex/grid/table order follows `direction` automatically (set from <html
  * dir> by setDocLang); only Latin runs inside RTL text need explicit help:

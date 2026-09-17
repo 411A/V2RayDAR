@@ -183,6 +183,7 @@ export function makeSandbox(overrides = {}) {
 const EXPORT_HOOK = `;globalThis.__v2 = {
   state, t, applyI18nStatic, setLanguage, loadLanguage,
   toggleLangMenu, selectLang, closeLangMenu, reapplyFeedStatus, renderSettings,
+  dropIndex, subReorder,
   refreshBusy, pingBusy, updateCycleButtons, triggerCycle, wire,
   openSubDialog, submitSubDialog, selectProxy, subToggle, subDelete, subEdit,
   flagFor, apiPath, subMessage, maskedHost, currentTab, showTab, goTab,

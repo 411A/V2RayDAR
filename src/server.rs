@@ -129,6 +129,10 @@ fn router(state: HttpState) -> Router {
             patch(crate::web::api_subscriptions_patch).delete(crate::web::api_subscriptions_delete),
         )
         .route(
+            "/api/subscriptions/reorder",
+            post(crate::web::api_subscriptions_reorder),
+        )
+        .route(
             "/api/subscriptions/{index}/toggle",
             post(crate::web::api_subscriptions_toggle),
         )

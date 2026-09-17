@@ -49,6 +49,35 @@ test("edit dialog PATCHes /:index; toggle flips enabled", async ({ page }) => {
   await expect(tgl).toHaveText("❌");
 });
 
+test("drag-and-drop reorders rows and renumbers priorities 1..N", async ({ page }) => {
+  await page.goto(base + "/subscriptions");
+  const rows = page.locator("#sub-body tr");
+  const before = await rows.count();
+  // Ensure a second row so there is something to reorder.
+  await page.click("#btn-sub-add");
+  await page.fill("#dlg-sub-url", "https://example.com/dnd.txt");
+  await page.fill("#dlg-sub-name", "dnd-second");
+  await page.click("#dlg-sub-ok");
+  await expect(rows).toHaveCount(before + 1);
+  const n = before + 1;
+  const movedName = await rows.first().locator("td").nth(3).textContent();
+
+  // Drag the first grip below the last row (real mouse HTML5 DnD).
+  const lastBox = await rows.nth(n - 1).boundingBox();
+  await rows.first().locator(".drag-handle").hover();
+  await page.mouse.down();
+  await page.mouse.move(lastBox.x + lastBox.width / 2, lastBox.y + lastBox.height - 4, { steps: 8 });
+  await page.mouse.up();
+
+  // One reorder POST with [1..n-1, 0]; UI resyncs renamed order + 1..N.
+  await expect.poll(() => stub.subReorder.length).toBe(1);
+  expect(stub.subReorder[0]).toEqual([...Array(n).keys()].map((k) => (k + 1) % n));
+  await expect(page.locator("#toasts .toast").last()).toContainText("Reordered.");
+  await expect(rows.nth(n - 1)).toContainText(movedName.trim());
+  const pris = await page.locator("#sub-body tr td:nth-child(3)").allTextContents();
+  expect(pris).toEqual([...Array(n).keys()].map((k) => String(k + 1)));
+});
+
 test("delete asks for confirm; cancel sends nothing", async ({ page }) => {
   await page.goto(base + "/subscriptions");
   page.once("dialog", (d) => void d.dismiss());

@@ -411,6 +411,7 @@ async fn main() -> Result<()> {
         ping_cancel,
         cli.no_tui && !cli.verbose,
     );
+    let mut stopped_by_user = false;
     let result = if use_tui {
         let data_dir = paths.root_dir.clone();
         tokio::select! {
@@ -418,21 +419,36 @@ async fn main() -> Result<()> {
             result = tui::run(config, paths, state, runtime_config, database.clone(), config_tx, refresh_trigger_tx, ping_trigger_tx) => result,
         }
     } else {
-        serve(
-            config.bind,
-            state,
-            runtime_config,
-            subscriptions,
-            paths.root_dir.clone(),
-            Some(config_tx),
-            Some(refresh_trigger_tx),
-            Some(ping_trigger_tx),
-            Some(database.clone()),
-        )
-        .await
+        // Non-TUI modes stay up until the web panel stop button (POST
+        // /api/shutdown) or Ctrl+C. Ctrl+C is caught explicitly so the user
+        // gets a farewell line and the proxy shuts down instead of the
+        // process dying mid-write with no word.
+        tokio::select! {
+            result = serve(
+                config.bind,
+                state,
+                runtime_config,
+                subscriptions,
+                paths.root_dir.clone(),
+                Some(config_tx),
+                Some(refresh_trigger_tx),
+                Some(ping_trigger_tx),
+                Some(database.clone()),
+            ) => result,
+            signal = tokio::signal::ctrl_c() => {
+                signal.with_context(|| "failed to listen for Ctrl+C")?;
+                stopped_by_user = true;
+                println!("  🛑  Stopping…");
+                Ok(())
+            }
+        }
     };
 
     proxy.lock().await.shutdown().await;
+
+    if stopped_by_user {
+        println!("  🛑  Server stopped. Goodbye!");
+    }
 
     result
 }

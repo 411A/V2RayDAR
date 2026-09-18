@@ -246,3 +246,75 @@ test("top-bar controls share one height; overview sections share one gap", async
   });
   expect(new Set(margins).size).toBe(1);
 });
+
+test("keys dialog ends with the GitHub support line (localized, RTL-safe)", async ({ page }) => {
+  await page.goto(base + "/overview");
+  await page.locator("#btn-keys").click();
+  const dlg = page.locator("#dlg-keys");
+  await expect(dlg).toBeVisible();
+  const support = dlg.locator(".keys-support");
+  await expect(support).toContainText("More help on");
+  await expect(support).toContainText("⭐️");
+  const link = support.locator("a[data-i18n-href]");
+  await expect(link).toHaveAttribute("href", "https://github.com/411A/V2RayDAR");
+  await expect(link).toHaveAttribute("target", "_blank");
+  await expect(link.locator("strong")).toHaveText("GitHub");
+  // The star links the repo root in every language (starring happens there).
+  const star = support.locator("a.keys-star");
+  await expect(star).toHaveAttribute("href", "https://github.com/411A/V2RayDAR");
+  await expect(star).toHaveAttribute("target", "_blank");
+  await expect(star).toHaveText("⭐️");
+  await expect(star).toHaveAttribute("aria-label", "Star V2RayDAR on GitHub");
+  await expect(support).toHaveCSS("direction", "ltr");
+  // Full sentence on one line: no lone star stranded below.
+  const singleLine = (el) => {
+    const cs = getComputedStyle(el);
+    return el.getBoundingClientRect().height <= parseFloat(cs.lineHeight) + 1;
+  };
+  expect(await support.evaluate(singleLine)).toBe(true);
+  // French (the reported wrap): same line, own help page.
+  await page.keyboard.press("Escape");
+  await page.locator("#btn-lang").click();
+  await page.locator('#lang-menu button[data-lang="fr"]').click();
+  await expect(page.locator("html")).toHaveAttribute("lang", "fr");
+  await page.locator("#btn-keys").click();
+  await expect(support).toContainText("Offrez-lui");
+  await expect(link).toHaveAttribute("href", "https://github.com/411A/V2RayDAR/blob/main/docs/README.fr.md");
+  expect(await support.evaluate(singleLine)).toBe(true);
+  // Persian: translated sentence, right-to-left, link intact.
+  await page.keyboard.press("Escape");
+  await page.locator("#btn-lang").click();
+  await page.locator('#lang-menu button[data-lang="ir"]').click();
+  await expect(page.locator("html")).toHaveAttribute("dir", "rtl");
+  await page.locator("#btn-keys").click();
+  await expect(support).toContainText("حمایت");
+  await expect(support).toContainText("حمایتش کنید");
+  await expect(star).toHaveText("ستاره ⭐️");
+  await expect(support).toHaveCSS("direction", "rtl");
+  await expect(link).toHaveAttribute("href", "https://github.com/411A/V2RayDAR/blob/main/docs/README.fa.md");
+  await expect(star).toHaveAttribute("href", "https://github.com/411A/V2RayDAR");
+  await expect(star).toHaveAttribute("aria-label", "به V2RayDAR در گیت‌هاب ستاره بدهید");
+  expect(await support.evaluate(singleLine)).toBe(true);
+  // Chinese points at its own help page too.
+  await page.keyboard.press("Escape");
+  await page.locator("#btn-lang").click();
+  await page.locator('#lang-menu button[data-lang="cn"]').click();
+  await expect(page.locator("html")).toHaveAttribute("lang", "zh");
+  await page.locator("#btn-keys").click();
+  await expect(link).toHaveAttribute("href", "https://github.com/411A/V2RayDAR/blob/main/docs/README.zh-CN.md");
+  expect(await support.evaluate(singleLine)).toBe(true);
+  // Russian: same line, own help page.
+  await page.keyboard.press("Escape");
+  await page.locator("#btn-lang").click();
+  await page.locator('#lang-menu button[data-lang="ru"]').click();
+  await expect(page.locator("html")).toHaveAttribute("lang", "ru");
+  await page.locator("#btn-keys").click();
+  await expect(support).toContainText("Поставьте");
+  await expect(link).toHaveAttribute("href", "https://github.com/411A/V2RayDAR/blob/main/docs/README.ru.md");
+  expect(await support.evaluate(singleLine)).toBe(true);
+  // Back to English for the rest of the suite.
+  await page.keyboard.press("Escape");
+  await page.locator("#btn-lang").click();
+  await page.locator('#lang-menu button[data-lang="en"]').click();
+  await expect(page.locator("html")).toHaveAttribute("lang", "en");
+});

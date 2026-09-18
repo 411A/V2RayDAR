@@ -34,7 +34,7 @@ describe("frontend i18n: one unified strings file, English default", () => {
     const all = allTables();
     const html = read("index.html");
     const bound = new Set();
-    for (const attr of ["data-i18n", "data-i18n-ph", "data-i18n-aria", "data-i18n-title", "data-i18n-alt", "data-i18n-content"]) {
+    for (const attr of ["data-i18n", "data-i18n-ph", "data-i18n-aria", "data-i18n-title", "data-i18n-alt", "data-i18n-content", "data-i18n-href"]) {
       for (const m of html.matchAll(new RegExp(`${attr}="([^"]+)"`, "g"))) {
         bound.add(m[1]);
       }
@@ -80,6 +80,8 @@ describe("frontend i18n: one unified strings file, English default", () => {
       "(prefers-color-scheme: dark)",
       "stat card",
       "btn small",
+      "val editable",
+      "drag-cell cell-grip",
       " ",
       " · ",
       " http://",
@@ -134,16 +136,21 @@ describe("frontend i18n: one unified strings file, English default", () => {
     const keys = [
       "bind", "top_n", "refresh_seconds", "ping_seconds",
       "encoded_subscription", "prioritize_stability", "return_configs_asap",
-      "scan_all_configs", "fetch_timeout_ms", "fetch_concurrency",
-      "max_subscription_bytes", "probe.mode", "probe.concurrency",
-      "probe.batch_size", "probe.active_timeout_ms",
+      "scan_all_configs", "use_cache_only", "emergency_config",
+      "fetch_timeout_ms", "fetch_concurrency",
+      "max_subscription_bytes", "probe.mode", "probe.sing_box_path",
+      "probe.connect_timeout_ms", "probe.concurrency",
+      "probe.batch_size", "probe.process_concurrency",
+      "probe.active_timeout_ms",
       "probe.startup_timeout_ms", "probe.test_url",
       "probe.accepted_statuses", "probe.download_bytes_limit",
       "probe.download_url", "probe.speedtest_enabled", "sharing.enabled",
       "sharing.require_token", "sharing.token", "proxy.enabled",
-      "proxy.port", "proxy.discoverable",
+      "proxy.port", "proxy.discoverable", "proxy.rotating_proxy",
+      "proxy.health_check_url", "proxy.health_check_interval_seconds",
+      "clean_offlines_after_days", "geoip_db_path",
     ];
-    const groups = ["connection", "fetch", "probe", "sharing", "proxy"];
+    const groups = ["connection", "fetch", "probe", "sharing", "proxy", "advanced"];
     for (const locale of LOCALES) {
       for (const key of keys) {
         // Dotted API keys (probe.mode) map to underscores in i18n keys.

@@ -64,9 +64,9 @@ pub fn dashboard_url(config: &AppConfig) -> String {
 
 pub fn print_dashboard_hint(config: &AppConfig) {
     let url = dashboard_url(config);
-    println!("Wait ~20 seconds & open following URL in the web browser (Ctrl + Click on the URL):");
+    println!("Wait ~20 seconds, then open the following URL in your web browser (Ctrl + Click):");
     println!("  🌐  {url}");
-    println!("  🛑  Stop: Use web panel stop button or Ctrl + C");
+    println!("  🛑  Stop: Click Stop ⏻️ in the web panel or press Ctrl + C");
 }
 
 pub fn print_startup(config: &AppConfig, paths: &AppPaths, verbose: bool) {

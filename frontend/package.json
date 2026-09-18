@@ -5,7 +5,7 @@
   "description": "Unit, performance and Playwright E2E tests for the V2RayDAR local dashboard (frontend/).",
   "type": "module",
   "scripts": {
-    "test:unit": "node --test tests/unit.test.mjs tests/static.test.mjs tests/perf.test.mjs",
+    "test:unit": "node --test tests/unit.test.mjs tests/static.test.mjs tests/perf.test.mjs tests/i18n.test.mjs",
     "test:e2e": "playwright test",
     "test": "npm run test:unit && npm run test:e2e"
   },

@@ -2849,7 +2849,9 @@ function settingControl(k, key, name) {
   if (kind === "readonly") {
     return el("span", value, "val");
   }
-  const val = el("span", value, "val");
+  // Click-to-edit values wear the editable field look (same box as the
+  // input they turn into) so the tab reads as a form, not a report.
+  const val = el("span", value, "val editable");
   val.tabIndex = 0;
   val.setAttribute("role", "button");
   val.title = t("tipEditSetting");

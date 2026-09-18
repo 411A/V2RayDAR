@@ -1106,7 +1106,7 @@ describe("settings tab: typed controls + translated rows", () => {
     // Name | control | description columns.
     assert.equal(rows[0].children[0].textContent, "Bind address");
     assert.equal(rows[0].children[0].className, "set-name");
-    assert.equal(rows[0].children[1].className, "val");
+    assert.equal(rows[0].children[1].className, "val editable");
     assert.equal(rows[0].children[2].textContent, "host:port the dashboard listens on");
     // Bool row renders an off switch.
     const sw = rows[2].children[1].children[0];

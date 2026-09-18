@@ -468,6 +468,7 @@ impl ConfigResponse {
                 probe_group(config),
                 sharing_group(config),
                 proxy_group(config),
+                advanced_group(config),
             ],
             dirty: false,
         }
@@ -578,6 +579,18 @@ fn connection_group(config: &RuntimeConfig) -> ConfigGroup {
                 "bool",
                 &[],
             ),
+            config_row_kind(
+                "use_cache_only",
+                config.use_cache_only.to_string(),
+                "true skips downloads and reuses cached subscriptions",
+                "bool",
+                &[],
+            ),
+            config_row(
+                "emergency_config",
+                config.emergency_config.clone().unwrap_or_default(),
+                "single proxy config URI used to retry failed subscription fetches; empty clears it",
+            ),
         ],
     }
 }
@@ -624,6 +637,18 @@ fn probe_group(config: &RuntimeConfig) -> ConfigGroup {
                 "choice",
                 &["active", "tcp"],
             ),
+            config_row(
+                "probe.sing_box_path",
+                config.sing_box_path.clone(),
+                "full path to the sing-box executable; empty auto-detects",
+            ),
+            config_row_kind(
+                "probe.connect_timeout_ms",
+                config.connect_timeout_ms.to_string(),
+                "connect timeout in ms",
+                "int",
+                &[],
+            ),
             config_row_kind(
                 "probe.concurrency",
                 config.probe_concurrency.to_string(),
@@ -635,6 +660,11 @@ fn probe_group(config: &RuntimeConfig) -> ConfigGroup {
                 "probe.batch_size",
                 optional_number(config.probe_batch_size),
                 "configs per probe batch; null selects automatically",
+            ),
+            config_row(
+                "probe.process_concurrency",
+                optional_number(config.probe_process_concurrency),
+                "parallel sing-box processes; null selects automatically",
             ),
             config_row_kind(
                 "probe.active_timeout_ms",
@@ -743,6 +773,46 @@ fn proxy_group(config: &RuntimeConfig) -> ConfigGroup {
                 "true binds LAN and opens the firewall",
                 "bool",
                 &[],
+            ),
+            config_row_kind(
+                "proxy.rotating_proxy",
+                config.rotating_proxy.to_string(),
+                "true switches to the lowest ping; false keeps the current config",
+                "bool",
+                &[],
+            ),
+            config_row(
+                "proxy.health_check_url",
+                config.health_check_url.clone(),
+                "URL fetched through the running proxy to verify real traffic (not the probe's test URL)",
+            ),
+            config_row_kind(
+                "proxy.health_check_interval_seconds",
+                config.health_check_interval_seconds.to_string(),
+                "seconds between checks of the running proxy for failover (not the ranked-list re-ping)",
+                "int",
+                &[],
+            ),
+        ],
+    }
+}
+
+fn advanced_group(config: &RuntimeConfig) -> ConfigGroup {
+    ConfigGroup {
+        id: "advanced",
+        title: "Advanced".to_string(),
+        keys: vec![
+            config_row_kind(
+                "clean_offlines_after_days",
+                config.clean_offlines_after_days.to_string(),
+                "days before offline configs are removed from the database",
+                "int",
+                &[],
+            ),
+            config_row(
+                "geoip_db_path",
+                config.geoip_db_path.clone().unwrap_or_default(),
+                "custom GeoIP database file or directory; empty uses the built-in one (takes effect after restart)",
             ),
         ],
     }
@@ -1435,6 +1505,21 @@ where
     }
 }
 
+/// Mirrors the TUI `optional()` for single-string settings: empty/off/none/
+/// null clears, anything else is kept (quote-stripped like every TUI edit).
+fn optional_string_setting(value: &str) -> Option<String> {
+    let normalized = crate::sing_box::normalize_path(value);
+    let normalized = if normalized.eq_ignore_ascii_case("null") {
+        String::new()
+    } else {
+        normalized
+    };
+    match normalized.to_ascii_lowercase().as_str() {
+        "" | "off" | "none" => None,
+        _ => Some(normalized),
+    }
+}
+
 /// Apply one web settings key to `cfg`. Mirrors the TUI
 /// `config_editor::apply` validators for the keys the dashboard serves;
 /// derived/read-only rows are refused with a human reason.
@@ -1454,6 +1539,9 @@ fn apply_web_setting(
         return Ok(());
     }
     if apply_sharing_proxy_setting(cfg, key, value)? {
+        return Ok(());
+    }
+    if apply_advanced_setting(cfg, key, value)? {
         return Ok(());
     }
     Err(match key {
@@ -1507,6 +1595,15 @@ fn apply_connection_setting(
             cfg.scan_all_configs =
                 parse_bool(value).ok_or_else(|| "expected true/false".to_string())?;
         }
+        "use_cache_only" => {
+            cfg.use_cache_only =
+                parse_bool(value).ok_or_else(|| "expected true/false".to_string())?;
+        }
+        // Mirrors the TUI `optional()`: empty/off/none/null clears the
+        // emergency proxy; anything else is the single config URI.
+        "emergency_config" => {
+            cfg.emergency_config = optional_string_setting(value);
+        }
         _ => return Ok(false),
     }
     Ok(true)
@@ -1550,6 +1647,21 @@ fn apply_probe_setting(
                 _ => return Err("probe.mode must be active or tcp".to_string()),
             };
         }
+        // Mirrors the TUI edit: any manual path turns auto-detect off (an
+        // empty value re-arms it on the next start).
+        "probe.sing_box_path" => {
+            let normalized = crate::sing_box::normalize_path(value);
+            cfg.probe.sing_box_path = if normalized.eq_ignore_ascii_case("null") {
+                String::new()
+            } else {
+                normalized
+            };
+            cfg.probe.sing_box_path_auto = false;
+        }
+        "probe.connect_timeout_ms" => {
+            cfg.probe.connect_timeout_ms = parse_positive(value)
+                .ok_or_else(|| "probe.connect_timeout_ms must be greater than 0".to_string())?;
+        }
         "probe.concurrency" => {
             cfg.probe.concurrency = parse_positive(value)
                 .ok_or_else(|| "probe.concurrency must be greater than 0".to_string())?;
@@ -1561,6 +1673,14 @@ fn apply_probe_setting(
                     parse_positive(value)
                         .ok_or_else(|| "probe.batch_size must be a number or auto".to_string())?,
                 ),
+            };
+        }
+        "probe.process_concurrency" => {
+            cfg.probe.process_concurrency = match value.to_ascii_lowercase().as_str() {
+                "" | "auto" | "off" | "none" | "null" => None,
+                _ => Some(parse_positive(value).ok_or_else(|| {
+                    "probe.process_concurrency must be a number or auto".to_string()
+                })?),
             };
         }
         "probe.active_timeout_ms" => {
@@ -1640,6 +1760,45 @@ fn apply_sharing_proxy_setting(
         "proxy.discoverable" => {
             cfg.proxy.discoverable =
                 parse_bool(value).ok_or_else(|| "expected true/false".to_string())?;
+        }
+        "proxy.rotating_proxy" => {
+            cfg.proxy.rotating_proxy =
+                parse_bool(value).ok_or_else(|| "expected true/false".to_string())?;
+        }
+        "proxy.health_check_url" => {
+            if value.is_empty() {
+                return Err("proxy.health_check_url cannot be empty".to_string());
+            }
+            cfg.proxy.health_check_url = value.to_string();
+        }
+        "proxy.health_check_interval_seconds" => {
+            cfg.proxy.health_check_interval_seconds = parse_positive(value).ok_or_else(|| {
+                "proxy.health_check_interval_seconds must be greater than 0".to_string()
+            })?;
+        }
+        _ => return Ok(false),
+    }
+    Ok(true)
+}
+
+/// Advanced-group keys; returns `Ok(false)` when `key` belongs elsewhere.
+fn apply_advanced_setting(
+    cfg: &mut crate::config::AppConfig,
+    key: &str,
+    value: &str,
+) -> Result<bool, String> {
+    match key {
+        "clean_offlines_after_days" => {
+            cfg.clean_offlines_after_days = parse_positive(value)
+                .ok_or_else(|| "clean_offlines_after_days must be greater than 0".to_string())?;
+        }
+        // No path normalization here (unlike sing-box): any non-empty value
+        // is a custom database path; empty/off/none/null restores built-in.
+        "geoip_db_path" => {
+            cfg.geoip_db_path = match value.to_ascii_lowercase().as_str() {
+                "" | "off" | "none" | "null" => None,
+                _ => Some(value.to_string()),
+            };
         }
         _ => return Ok(false),
     }
@@ -2145,13 +2304,20 @@ mod tests {
             fetch_timeout_ms: 30_000,
             fetch_concurrency: 8,
             max_subscription_bytes: 33_554_432,
+            use_cache_only: false,
+            emergency_config: None,
+            clean_offlines_after_days: 7,
+            geoip_db_path: None,
             sharing_enabled,
             require_token: false,
             token: String::new(),
             probe_mode: "active".to_string(),
+            sing_box_path: String::new(),
+            connect_timeout_ms: 5_000,
             speedtest_enabled: false,
             probe_concurrency: 16,
             probe_batch_size: None,
+            probe_process_concurrency: None,
             active_timeout_ms: 30_000,
             startup_timeout_ms: 5_000,
             test_url: "https://www.gstatic.com/generate_204".to_string(),
@@ -2163,6 +2329,9 @@ mod tests {
             proxy_enabled: false,
             proxy_port: 27910,
             proxy_discoverable: false,
+            rotating_proxy: true,
+            health_check_url: "https://cp.cloudflare.com".to_string(),
+            health_check_interval_seconds: 60,
             proxy_manual_uri: None,
         };
         HttpState {
@@ -2650,6 +2819,11 @@ mod tests {
         let mut seen_token = false;
         let mut seen_statuses = false;
         let mut seen_download_url = false;
+        let mut seen_sing_box_path = false;
+        let mut seen_process_concurrency = false;
+        let mut seen_rotating_proxy = false;
+        let mut seen_emergency = false;
+        let mut seen_advanced = false;
         for group in groups {
             assert!(group["title"].is_string(), "every group has a string title");
             assert!(
@@ -2684,12 +2858,39 @@ mod tests {
                     assert_eq!(row["value"], serde_json::Value::from("off"));
                     assert_eq!(row["kind"], serde_json::Value::from("text"));
                 }
+                if row["key"] == "probe.sing_box_path" {
+                    seen_sing_box_path = true;
+                    assert_eq!(row["kind"], serde_json::Value::from("text"));
+                }
+                if row["key"] == "probe.process_concurrency" {
+                    seen_process_concurrency = true;
+                    assert_eq!(row["value"], serde_json::Value::from("null"));
+                }
+                if row["key"] == "proxy.rotating_proxy" {
+                    seen_rotating_proxy = true;
+                    assert_eq!(row["kind"], serde_json::Value::from("bool"));
+                }
+                if row["key"] == "emergency_config" {
+                    seen_emergency = true;
+                    assert_eq!(row["value"], serde_json::Value::from(""));
+                }
+                if group["id"] == "advanced" {
+                    seen_advanced = true;
+                }
             }
         }
         assert!(rows > 0, "groups must carry key rows");
         assert!(seen_token, "sharing.token presence marker is served");
         assert!(seen_statuses, "probe.accepted_statuses list is served");
         assert!(seen_download_url, "probe.download_url switch is served");
+        assert!(seen_sing_box_path, "probe.sing_box_path is served");
+        assert!(
+            seen_process_concurrency,
+            "probe.process_concurrency is served"
+        );
+        assert!(seen_rotating_proxy, "proxy.rotating_proxy is served");
+        assert!(seen_emergency, "emergency_config is served");
+        assert!(seen_advanced, "advanced group is served");
     }
 
     #[tokio::test]
@@ -3232,6 +3433,50 @@ mod tests {
             cfg.probe.download_url.as_deref(),
             Some("https://example.com/1gb")
         );
+        // New keys mirror the TUI validators exactly.
+        assert!(super::apply_web_setting(&mut cfg, "use_cache_only", "yes").is_ok());
+        assert!(cfg.use_cache_only);
+        assert!(super::apply_web_setting(&mut cfg, "use_cache_only", "maybe").is_err());
+        assert!(super::apply_web_setting(&mut cfg, "emergency_config", "").is_ok());
+        assert_eq!(cfg.emergency_config, None);
+        assert!(
+            super::apply_web_setting(&mut cfg, "emergency_config", "vless://u@h:443#e").is_ok()
+        );
+        assert_eq!(cfg.emergency_config.as_deref(), Some("vless://u@h:443#e"));
+        assert!(
+            super::apply_web_setting(&mut cfg, "probe.sing_box_path", "/usr/bin/sing-box").is_ok()
+        );
+        assert_eq!(cfg.probe.sing_box_path, "/usr/bin/sing-box");
+        assert!(!cfg.probe.sing_box_path_auto);
+        assert!(super::apply_web_setting(&mut cfg, "probe.connect_timeout_ms", "3000").is_ok());
+        assert_eq!(cfg.probe.connect_timeout_ms, 3000);
+        assert!(super::apply_web_setting(&mut cfg, "probe.connect_timeout_ms", "0").is_err());
+        assert!(super::apply_web_setting(&mut cfg, "probe.process_concurrency", "auto").is_ok());
+        assert_eq!(cfg.probe.process_concurrency, None);
+        assert!(super::apply_web_setting(&mut cfg, "probe.process_concurrency", "3").is_ok());
+        assert_eq!(cfg.probe.process_concurrency, Some(3));
+        assert!(super::apply_web_setting(&mut cfg, "probe.process_concurrency", "0").is_err());
+        assert!(super::apply_web_setting(&mut cfg, "proxy.rotating_proxy", "0").is_ok());
+        assert!(!cfg.proxy.rotating_proxy);
+        assert!(super::apply_web_setting(&mut cfg, "proxy.health_check_url", "").is_err());
+        assert!(
+            super::apply_web_setting(&mut cfg, "proxy.health_check_url", "https://1.1.1.1").is_ok()
+        );
+        assert_eq!(cfg.proxy.health_check_url, "https://1.1.1.1");
+        assert!(
+            super::apply_web_setting(&mut cfg, "proxy.health_check_interval_seconds", "30").is_ok()
+        );
+        assert_eq!(cfg.proxy.health_check_interval_seconds, 30);
+        assert!(
+            super::apply_web_setting(&mut cfg, "proxy.health_check_interval_seconds", "0").is_err()
+        );
+        assert!(super::apply_web_setting(&mut cfg, "clean_offlines_after_days", "14").is_ok());
+        assert_eq!(cfg.clean_offlines_after_days, 14);
+        assert!(super::apply_web_setting(&mut cfg, "clean_offlines_after_days", "0").is_err());
+        assert!(super::apply_web_setting(&mut cfg, "geoip_db_path", "").is_ok());
+        assert_eq!(cfg.geoip_db_path, None);
+        assert!(super::apply_web_setting(&mut cfg, "geoip_db_path", "/data/geo.mmdb").is_ok());
+        assert_eq!(cfg.geoip_db_path.as_deref(), Some("/data/geo.mmdb"));
         assert!(super::apply_web_setting(&mut cfg, "unknown.key", "1").is_err());
     }
 

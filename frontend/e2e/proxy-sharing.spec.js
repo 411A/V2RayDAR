@@ -38,10 +38,20 @@ test("proxy mode segments set directly, collapse in flight, reflect state", asyn
   await expect(page.locator("#proxy-off")).toHaveAttribute("aria-pressed", "false");
 
   // Rapid re-clicks while in flight collapse to the first POST.
+  // NOTE: page.click() is the wrong tool here — it auto-waits on the
+  // disabled lock and re-fires after unlock, manufacturing a duplicate
+  // the app never sees from real users (human clicks on a disabled
+  // button fire nothing). dispatchEvent lands all three clicks inside
+  // the flight window, which is what "rapid" means.
   stub.proxyModePosts = 0;
   stub.proxyModeBodies = [];
   stub.proxyModeDelayMs = 400;
-  await Promise.all(Array.from({ length: 3 }, () => page.click("#proxy-off")));
+  await page.locator("#proxy-off").evaluate((b) => {
+    for (let i = 0; i < 3; i += 1) {
+      b.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    }
+  });
+  await expect.poll(() => stub.proxyModePosts).toBe(1);
   await page.waitForTimeout(600);
   expect(stub.proxyModePosts).toBe(1);
   expect(stub.proxyModeBodies[0]).toEqual({ mode: "off" });

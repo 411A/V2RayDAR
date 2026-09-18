@@ -438,7 +438,7 @@ async fn main() -> Result<()> {
             signal = tokio::signal::ctrl_c() => {
                 signal.with_context(|| "failed to listen for Ctrl+C")?;
                 stopped_by_user = true;
-                println!("  🛑  Stopping…");
+                println!("  🚨  Stopping…");
                 Ok(())
             }
         }
@@ -447,7 +447,7 @@ async fn main() -> Result<()> {
     proxy.lock().await.shutdown().await;
 
     if stopped_by_user {
-        println!("  🛑  Server stopped. Goodbye!");
+        println!("  💤  Server stopped.");
     }
 
     result
@@ -3011,10 +3011,16 @@ impl From<&AppConfig> for RuntimeConfig {
             fetch_timeout_ms: config.fetch_timeout_ms,
             fetch_concurrency: config.fetch_concurrency,
             max_subscription_bytes: config.max_subscription_bytes,
+            use_cache_only: config.use_cache_only,
+            emergency_config: config.emergency_config.clone(),
+            clean_offlines_after_days: config.clean_offlines_after_days,
+            geoip_db_path: config.geoip_db_path.clone(),
             sharing_enabled: config.sharing.enabled,
             require_token: config.sharing.require_token,
             token: config.sharing.token.clone(),
             probe_mode: format!("{:?}", config.probe.mode).to_ascii_lowercase(),
+            sing_box_path: config.probe.sing_box_path.clone(),
+            connect_timeout_ms: config.probe.connect_timeout_ms,
             speedtest_enabled: config
                 .probe
                 .download_url
@@ -3022,6 +3028,7 @@ impl From<&AppConfig> for RuntimeConfig {
                 .is_some_and(|url| !url.trim().is_empty()),
             probe_concurrency: config.probe.concurrency,
             probe_batch_size: config.probe.batch_size,
+            probe_process_concurrency: config.probe.process_concurrency,
             active_timeout_ms: config.probe.active_timeout_ms,
             startup_timeout_ms: config.probe.startup_timeout_ms,
             test_url: config.probe.test_url.clone(),
@@ -3037,6 +3044,9 @@ impl From<&AppConfig> for RuntimeConfig {
             proxy_enabled: config.proxy.enabled,
             proxy_port: config.proxy.port,
             proxy_discoverable: config.proxy.discoverable,
+            rotating_proxy: config.proxy.rotating_proxy,
+            health_check_url: config.proxy.health_check_url.clone(),
+            health_check_interval_seconds: config.proxy.health_check_interval_seconds,
             proxy_manual_uri: config.proxy.manual_proxy_uri.clone(),
         }
     }

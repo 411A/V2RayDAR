@@ -144,13 +144,22 @@ pub struct RuntimeConfig {
     pub fetch_timeout_ms: u64,
     pub fetch_concurrency: usize,
     pub max_subscription_bytes: usize,
+    pub use_cache_only: bool,
+    /// Fallback share link when every subscription fails (`None` = unset).
+    pub emergency_config: Option<String>,
+    pub clean_offlines_after_days: u32,
+    /// Custom `GeoIP` database path (`None` = built-in; restart to apply).
+    pub geoip_db_path: Option<String>,
     pub sharing_enabled: bool,
     pub require_token: bool,
     pub token: String,
     pub probe_mode: String,
+    pub sing_box_path: String,
+    pub connect_timeout_ms: u64,
     pub speedtest_enabled: bool,
     pub probe_concurrency: usize,
     pub probe_batch_size: Option<usize>,
+    pub probe_process_concurrency: Option<usize>,
     pub active_timeout_ms: u64,
     pub startup_timeout_ms: u64,
     pub test_url: String,
@@ -163,6 +172,9 @@ pub struct RuntimeConfig {
     pub proxy_enabled: bool,
     pub proxy_port: u16,
     pub proxy_discoverable: bool,
+    pub rotating_proxy: bool,
+    pub health_check_url: String,
+    pub health_check_interval_seconds: u64,
     /// Pinned config URI (`None` = auto-select). Carried so the TUI can
     /// adopt pins made from the dashboard (which live-pushes without
     /// touching the file the TUI edits from).

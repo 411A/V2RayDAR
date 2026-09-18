@@ -1029,6 +1029,27 @@ td .lat-bar > span {
   overflow-wrap: anywhere;
 }
 
+/* Click-to-edit values look like the text field they turn into (same box
+ * as `.set-row input`); empty ones still show a field with a dash. */
+.set-row .val.editable {
+  display: block;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.3rem 0.5rem;
+  cursor: text;
+  min-block-size: 1.4em;
+}
+
+.set-row .val.editable:hover {
+  border-color: var(--accent);
+}
+
+.set-row .val.editable:empty::before {
+  content: "—";
+  color: var(--muted);
+}
+
 /* Typed settings controls: the value column holds one control per row. */
 .set-row select,
 .set-row input {
@@ -1301,6 +1322,29 @@ kbd {
   border-block-end-width: 2px;
   border-radius: 6px;
   padding: 0.05rem 0.4rem;
+}
+
+/* Keys-dialog support line: small muted footer above the actions; follows
+ * document direction (RTL locales read it right-to-left with the Latin
+ * repo link flowing inline). */
+.keys-support {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin-block: 0.7rem 0.3rem;
+  overflow-wrap: anywhere;
+}
+
+.keys-support a {
+  color: var(--accent);
+}
+
+/* The star is an icon-link, not running text: no underline, and its words
+ * never split (fa's "ستاره ⭐️" must not strand the emoji alone). The
+ * non-breaking space before it keeps it glued to the previous word, so the
+ * pair wraps together instead of leaving a lone star on its own line. */
+.keys-support .keys-star {
+  text-decoration: none;
+  white-space: nowrap;
 }
 
 .noscript {

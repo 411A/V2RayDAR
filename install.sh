@@ -613,7 +613,7 @@ do_portable_install() {
     echo ""
     info "installed to: $_target/$APP_NAME"
     if [ "$IS_TERMUX" = "1" ]; then
-        info "run:  cd $_target && ./$APP_NAME --no-tui"
+        info "run:  cd $_target && ./$APP_NAME"
     else
         info "run:  cd $_target && ./$APP_NAME --portable"
     fi
@@ -671,7 +671,7 @@ do_user_install() {
     echo ""
     info "installed to: $_bin_dir/$APP_NAME"
     if [ "$IS_TERMUX" = "1" ]; then
-        info "run:  $APP_NAME --no-tui"
+        info "run:  $APP_NAME"
     else
         info "run:  $APP_NAME"
     fi

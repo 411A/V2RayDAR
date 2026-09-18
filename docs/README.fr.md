@@ -92,10 +92,10 @@ irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
 #### <img src="https://cdn.svglogos.dev/logos/android-icon.svg" alt="Android" width="20" height="20" align="texttop"> Android / Termux
 
 ```bash
-pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar && curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | bash && cd ~/V2RayDAR && ./v2raydar --no-tui
+pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar && curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | bash && cd ~/V2RayDAR && ./v2raydar
 ```
 * **Arrêt :** `Ctrl + C`
-* **Démarrage :** `cd ~/V2RayDAR && ./v2raydar --no-tui`
+* **Démarrage :** `cd ~/V2RayDAR && ./v2raydar`
 
 **Téléchargement manuel** — téléchargez l'archive pour votre OS depuis [Releases](https://github.com/411A/V2RayDAR/releases/latest) et lancez-la — les dossiers portables sont détectés automatiquement (`--portable` le force).
 
@@ -134,8 +134,9 @@ Après l'installation avec le script ci-dessus, lancez `v2raydar` (ou `v2raydar.
 ### Modes d'exécution
 
 ```bash
-v2raydar                # TUI + endpoint d'abonnement local
-v2raydar --no-tui       # sans interface — endpoint et logs uniquement
+v2raydar                # silencieux — indication navigateur uniquement, sans logs
+v2raydar --no-tui       # sans TUI — détails et logs
+v2raydar --tui          # TUI + endpoint d'abonnement local
 v2raydar --once         # un rafraîchissement, afficher les résultats, quitter
 v2raydar --portable     # données à côté de l'exécutable (détecté automatiquement dans les dossiers portables)
 v2raydar --uninstall    # supprimer les données et règles de pare-feu

@@ -47,7 +47,7 @@ The `_with_singbox` desktop archives include pinned `sing-box` 1.13.13 beside V2
 For Android / Termux:
 
 ```bash
-pkg update -y && pkg install -y curl tar && curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | bash && cd V2RayDAR && ./v2raydar --no-tui
+pkg update -y && pkg install -y curl tar && curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | bash && cd V2RayDAR && ./v2raydar
 ```
 
 ## Trust Warnings

@@ -58,6 +58,21 @@ pub fn print_summary(state: &RuntimeState, top_n: usize) {
     }
 }
 
+pub fn dashboard_url(config: &AppConfig) -> String {
+    format!("http://{}:{}", LOCALHOST_IP, config.bind.port())
+}
+
+pub fn print_dashboard_hint(config: &AppConfig) {
+    let url = dashboard_url(config);
+    if cfg!(target_os = "windows") {
+        println!(
+            "Wait ~20 seconds & open {url} in web browser (Ctrl + Click on the URL). Stop: Ctrl + C"
+        );
+    } else {
+        println!("Wait ~20 seconds & open {url} in web browser. Stop: Ctrl + C");
+    }
+}
+
 pub fn print_startup(config: &AppConfig, paths: &AppPaths, verbose: bool) {
     let local_url = config.subscription_url(LOCALHOST_IP, true);
 

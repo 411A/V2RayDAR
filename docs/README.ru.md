@@ -92,10 +92,10 @@ irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
 #### <img src="https://cdn.svglogos.dev/logos/android-icon.svg" alt="Android" width="20" height="20" align="texttop"> Android / Termux
 
 ```bash
-pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar && curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | bash && cd ~/V2RayDAR && ./v2raydar --no-tui
+pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar && curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | bash && cd ~/V2RayDAR && ./v2raydar
 ```
 * **Остановить:** `Ctrl + C`
-* **Запустить:** `cd ~/V2RayDAR && ./v2raydar --no-tui`
+* **Запустить:** `cd ~/V2RayDAR && ./v2raydar`
 
 **Ручная загрузка** — скачайте архив для вашей ОС из [Releases](https://github.com/411A/V2RayDAR/releases/latest) и запустите его — портативные папки определяются автоматически (`--portable` задаёт режим явно).
 
@@ -134,8 +134,9 @@ pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar &&
 ### Режимы запуска
 
 ```bash
-v2raydar                # TUI + локальный эндпоинт подписки
-v2raydar --no-tui       # без интерфейса — только эндпоинт и логи
+v2raydar                # тихий режим — только подсказка браузера, без логов
+v2raydar --no-tui       # без TUI — детали и логи
+v2raydar --tui          # TUI + локальный эндпоинт подписки
 v2raydar --once         # одно обновление, вывод результатов, выход
 v2raydar --portable     # данные рядом с исполняемым файлом (в портативных папках определяется автоматически)
 v2raydar --uninstall    # удаление данных приложения и правил файрвола

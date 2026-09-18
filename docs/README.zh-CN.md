@@ -92,10 +92,10 @@ irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
 #### <img src="https://cdn.svglogos.dev/logos/android-icon.svg" alt="Android" width="20" height="20" align="texttop"> Android / Termux
 
 ```bash
-pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar && curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | bash && cd ~/V2RayDAR && ./v2raydar --no-tui
+pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar && curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | bash && cd ~/V2RayDAR && ./v2raydar
 ```
 * **停止：** `Ctrl + C`
-* **启动：** `cd ~/V2RayDAR && ./v2raydar --no-tui`
+* **启动：** `cd ~/V2RayDAR && ./v2raydar`
 
 **手动下载** — 从 [Releases](https://github.com/411A/V2RayDAR/releases/latest) 下载对应操作系统的压缩包后直接运行 — 便携目录会被自动检测（`--portable` 可强制启用）。
 
@@ -134,8 +134,9 @@ pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar &&
 ### 运行模式
 
 ```bash
-v2raydar                # TUI + 本地订阅端点
-v2raydar --no-tui       # 无头模式 — 仅端点和日志
+v2raydar                # 静默模式 — 仅浏览器提示，无日志
+v2raydar --no-tui       # 无头模式 — 详细信息和日志
+v2raydar --tui          # TUI + 本地订阅端点
 v2raydar --once         # 刷新一次，打印结果后退出
 v2raydar --portable     # 数据保存在可执行文件旁边（便携目录自动检测）
 v2raydar --uninstall    # 删除应用数据和防火墙规则

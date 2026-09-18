@@ -557,7 +557,7 @@ jobs:
 
           cat <<'MSG'
           Installed V2RayDAR to $PREFIX/bin/v2raydar.
-          Run with: v2raydar --no-tui
+          Run with: v2raydar
           MSG
           INSTALLEOF
           chmod +x "$package/install-termux.sh"
@@ -575,7 +575,7 @@ jobs:
               tar -xzf ${asset}
               cd ${{ matrix.package_dir }}
               ./install-termux.sh
-              v2raydar --no-tui
+              v2raydar
           EOF
 
           tar -C dist -czf "dist/$asset" "${{ matrix.package_dir }}"

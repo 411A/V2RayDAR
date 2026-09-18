@@ -113,13 +113,13 @@ irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
 <div dir="ltr" align="left">
 
 ```bash
-pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar && curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | bash && cd ~/V2RayDAR && ./v2raydar --no-tui
+pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar && curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | bash && cd ~/V2RayDAR && ./v2raydar
 ```
 
 </div>
 
 * **پایان اتصال:** `Ctrl + C`
-* **شروع:** `cd ~/V2RayDAR && ./v2raydar --no-tui`
+* **شروع:** `cd ~/V2RayDAR && ./v2raydar`
 
 &#x200F;<strong>دانلود دستی</strong> — آرشیو مخصوص سیستم‌عامل خود را از <a href="https://github.com/411A/V2RayDAR/releases/latest">Releases</a> دانلود کرده و اجرا کنید — پوشه‌های پرتابل به‌طور خودکار تشخیص داده می‌شوند (<code>--portable</code> آن را اجباری می‌کند).
 
@@ -170,8 +170,9 @@ pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar &&
 <div dir="ltr" align="left">
 
 ```bash
-v2raydar                # TUI + اندپوینت اشتراک محلی
-v2raydar --no-tui       # بدون رابط گرافیکی — فقط اندپوینت و لاگ‌ها
+v2raydar                # حالت ساکت — فقط راهنمای مرورگر، بدون لاگ
+v2raydar --no-tui       # بدون TUI — جزئیات و لاگ‌ها
+v2raydar --tui          # TUI + اندپوینت اشتراک محلی
 v2raydar --once         # یک بار بروزرسانی، چاپ نتایج، خروج
 v2raydar --portable     # نگهداری داده‌ها در کنار فایل اجرایی (تشخیص خودکار در پوشه پرتابل)
 v2raydar --uninstall    # حذف داده‌های برنامه و قوانین فایروال

@@ -58,12 +58,11 @@ describe("frontend static gates (PLAN §5 + TODO global gates)", () => {
   });
 
   it("payload budget: HTML+CSS+JS+i18n+QR ≤ 313344 bytes (PLAN §5)", () => {
+    // LF-canonical bytes so the gate is identical on every checkout:
+    // a CRLF working tree (Windows core.autocrlf) must not trip it.
+    const size = (f) => Buffer.byteLength(read(f).replace(/\r\n/g, "\n"));
     const total =
-      fs.statSync(path.join(dir, "index.html")).size +
-      fs.statSync(path.join(dir, "style.css")).size +
-      fs.statSync(path.join(dir, "app.js")).size +
-      fs.statSync(path.join(dir, "i18n.js")).size +
-      fs.statSync(path.join(dir, "qr.js")).size;
+      size("index.html") + size("style.css") + size("app.js") + size("i18n.js") + size("qr.js");
     assert.ok(total <= 313_344, `payload ${total} bytes exceeds 313344`);
   });
 });

@@ -42,7 +42,7 @@ irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
 
 **Android / Termux:**
 ```bash
-pkg update -y && pkg install -y curl tar && curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | bash && cd V2RayDAR && ./v2raydar --no-tui
+pkg update -y && pkg install -y curl tar && curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | bash && cd V2RayDAR && ./v2raydar
 ```
 
 **Manual download** — grab the archive for your OS from [Releases](https://github.com/411A/V2RayDAR/releases/latest) and run it — portable folders are detected automatically (`--portable` forces it).
@@ -164,20 +164,26 @@ v2raydar_data/data.db
 
 If `probe.mode` is `active`, V2RayDAR first looks for a bundled `sing-box` beside the executable, then for `probe.sing_box_path`. If none is valid, the interactive TUI asks for the OS-specific `sing-box` executable path and verifies it with `sing-box version`.
 
-In `--no-tui` or `--once` mode, V2RayDAR cannot run the interactive setup prompt. It prints OS-specific setup instructions and exits until a bundled or configured `sing-box` executable is available.
+In quiet (default), `--no-tui`, or `--once` mode, V2RayDAR cannot run the interactive setup prompt. It prints OS-specific setup instructions and exits until a bundled or configured `sing-box` executable is available.
 
 ## Run Modes
 
-Run the interactive TUI and local HTTP endpoint:
+Run quiet with only a browser hint and no logs (default):
 
 ```bash
 v2raydar
 ```
 
-Run headless with plain terminal progress and the local HTTP endpoint:
+Run headless with plain terminal progress, details, and the local HTTP endpoint:
 
 ```bash
 v2raydar --no-tui
+```
+
+Run the interactive TUI alongside the local HTTP endpoint:
+
+```bash
+v2raydar --tui
 ```
 
 Run one refresh, print a terminal summary, and exit without starting the endpoint:
@@ -236,10 +242,22 @@ Development run with a local config:
 cargo run -- --config configs.example.yaml
 ```
 
-Headless development run:
+Headless development run (default):
+
+```bash
+cargo run
+```
+
+Detailed headless development run:
 
 ```bash
 cargo run -- --no-tui
+```
+
+TUI development run:
+
+```bash
+cargo run -- --tui
 ```
 
 One-shot development run:
@@ -1175,7 +1193,7 @@ Useful manual checks:
 
 ```bash
 cargo run -- --once --config configs.example.yaml
-cargo run -- --no-tui --config configs.example.yaml
+cargo run -- --config configs.example.yaml
 cargo run -- --portable --once
 ```
 

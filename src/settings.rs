@@ -43,7 +43,7 @@ pub enum StartupOutcome {
 ///
 /// 1. Legacy file with real content → parse (yaml or json), store in the
 ///    database, then replace the file with [`CONFIG_MIGRATION_NOTE`].
-///    Runs in every mode (TUI, `--no-tui`, `--once`): one code path.
+///    Runs in every mode (TUI, `--no-tui`, `--once`, quiet default): one code path.
 /// 2. Migration-note file → already migrated; load stored rows. If the
 ///    database was deleted since, re-seed defaults instead of failing.
 /// 3. No file → load stored rows, or seed defaults on first run. A custom

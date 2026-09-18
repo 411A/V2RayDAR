@@ -78,6 +78,8 @@ const FAVICON_SVG: &str = concat!(
 /// portrait-phone app layout + tablet rules + card-label renderer, and
 /// 305 → 306 KiB for the persistent small-screen scrollbar styling + swipe
 /// cues on the always-overflowing rows.
+/// Measured in LF-canonical bytes (CRLF working trees normalize before
+/// measuring) so the gate is checkout-independent on every OS.
 #[cfg(test)]
 const DASHBOARD_ASSET_BUDGET_BYTES: usize = 313_344;
 /// Feed diff cadence: matches the dashboard's ≤1 Hz ranked refresh.
@@ -2194,11 +2196,17 @@ mod tests {
 
     #[test]
     fn dashboard_assets_fit_payload_budget_and_stay_self_contained() {
-        let total = DASHBOARD_HTML.len()
-            + DASHBOARD_CSS.len()
-            + DASHBOARD_JS.len()
-            + DASHBOARD_I18N.len()
-            + DASHBOARD_QR.len();
+        // Budget counts LF-canonical bytes so the gate is identical on
+        // every checkout: a CRLF working tree (Windows `core.autocrlf`)
+        // must not trip the tripwire — releases build on LF and serve LF.
+        fn canonical_len(asset: &str) -> usize {
+            asset.len() - asset.matches("\r\n").count()
+        }
+        let total = canonical_len(DASHBOARD_HTML)
+            + canonical_len(DASHBOARD_CSS)
+            + canonical_len(DASHBOARD_JS)
+            + canonical_len(DASHBOARD_I18N)
+            + canonical_len(DASHBOARD_QR);
         assert!(
             total <= DASHBOARD_ASSET_BUDGET_BYTES,
             "dashboard payload {total} exceeds {DASHBOARD_ASSET_BUDGET_BYTES}"

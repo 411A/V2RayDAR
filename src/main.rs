@@ -61,7 +61,9 @@ use crate::{
     subscription::{
         FetchFailure, FetchOutcome, load_candidates_with_cache, retry_failed_sources_with_proxy,
     },
-    terminal::{PlainProgressReporter, print_log, print_startup, print_summary},
+    terminal::{
+        PlainProgressReporter, print_dashboard_hint, print_log, print_startup, print_summary,
+    },
 };
 
 /// Preconfigured TLS for Android where rustls-platform-verifier can't initialize.
@@ -96,11 +98,15 @@ struct Cli {
 
     #[arg(
         long,
+        conflicts_with = "tui",
         help = "Use plain terminal output instead of the interactive TUI"
     )]
     no_tui: bool,
 
-    #[arg(long, help = "Show detailed fetch/probe logs in plain terminal output")]
+    #[arg(long, help = "Run the interactive TUI alongside the web dashboard")]
+    tui: bool,
+
+    #[arg(long, help = "Show detailed fetch/probe logs with --no-tui / --once")]
     verbose: bool,
 
     #[arg(
@@ -144,7 +150,25 @@ async fn main() -> Result<()> {
     }
 
     let cli = Cli::parse();
-    if cli.no_tui || cli.once {
+    // Three terminal modes: `--tui` runs the interactive UI; `--no-tui`
+    // keeps the detailed headless output (startup details + logs, no TUI);
+    // the default is quiet (only the browser hint, no logs or live
+    // updates). `--once` / `--ping` are one-shot modes that never start
+    // the TUI even if `--tui` is passed.
+    let use_tui = cli.tui && !cli.once && cli.ping.is_empty() && cli.ping_file.is_none();
+    let quiet_default =
+        !use_tui && !cli.no_tui && !cli.once && cli.ping.is_empty() && cli.ping_file.is_none();
+    if use_tui {
+        tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::new(DEFAULT_LOG_FILTER_TUI))
+            .with_writer(io::sink)
+            .init();
+    } else if quiet_default {
+        tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::new("off"))
+            .with_writer(io::sink)
+            .init();
+    } else {
         let filter = if cli.verbose {
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| DEFAULT_LOG_FILTER_VERBOSE.into())
@@ -152,11 +176,6 @@ async fn main() -> Result<()> {
             tracing_subscriber::EnvFilter::new(DEFAULT_LOG_FILTER_PLAIN)
         };
         tracing_subscriber::fmt().with_env_filter(filter).init();
-    } else {
-        tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::new(DEFAULT_LOG_FILTER_TUI))
-            .with_writer(io::sink)
-            .init();
     }
     let paths = resolve_paths(&cli)?;
 
@@ -229,7 +248,7 @@ async fn main() -> Result<()> {
     crate::geoip::init(mmdb_path.as_deref(), zone_dir.as_deref());
 
     if active_probe_needs_setup(&config, &paths).await {
-        if cli.no_tui || cli.once {
+        if !use_tui {
             print_sing_box_setup_required(&paths);
             return Ok(());
         }
@@ -279,7 +298,9 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    if cli.no_tui {
+    if quiet_default {
+        print_dashboard_hint(&config);
+    } else if cli.no_tui {
         print_startup(&config, &paths, cli.verbose);
         println!(
             "Serving top {} configs at {}",
@@ -390,7 +411,13 @@ async fn main() -> Result<()> {
         ping_cancel,
         cli.no_tui && !cli.verbose,
     );
-    let result = if cli.no_tui {
+    let result = if use_tui {
+        let data_dir = paths.root_dir.clone();
+        tokio::select! {
+            result = serve(config.bind, state.clone(), runtime_config.clone(), subscriptions.clone(), data_dir, Some(config_tx.clone()), Some(refresh_trigger_tx.clone()), Some(ping_trigger_tx.clone()), Some(database.clone())) => result,
+            result = tui::run(config, paths, state, runtime_config, database.clone(), config_tx, refresh_trigger_tx, ping_trigger_tx) => result,
+        }
+    } else {
         serve(
             config.bind,
             state,
@@ -403,12 +430,6 @@ async fn main() -> Result<()> {
             Some(database.clone()),
         )
         .await
-    } else {
-        let data_dir = paths.root_dir.clone();
-        tokio::select! {
-            result = serve(config.bind, state.clone(), runtime_config.clone(), subscriptions.clone(), data_dir, Some(config_tx.clone()), Some(refresh_trigger_tx.clone()), Some(ping_trigger_tx.clone()), Some(database.clone())) => result,
-            result = tui::run(config, paths, state, runtime_config, database.clone(), config_tx, refresh_trigger_tx, ping_trigger_tx) => result,
-        }
     };
 
     proxy.lock().await.shutdown().await;

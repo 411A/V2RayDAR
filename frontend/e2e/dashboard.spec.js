@@ -91,7 +91,7 @@ test("language flag sits left of ? with a real file and a 5-flag menu", async ({
   const keys = page.locator("#btn-keys");
   await expect(flag).toBeVisible();
   // Real file (replaceable in frontend/assets/), rendered wide, labelled.
-  const img = flag.locator("img.flag-img");
+  const img = flag.locator("img.flag-img:not([hidden])");
   expect(await img.getAttribute("src")).toBe("./assets/GB.svg");
   const box = await img.boundingBox();
   expect(box.width).toBeGreaterThan(box.height);

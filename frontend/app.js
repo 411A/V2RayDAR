@@ -195,32 +195,38 @@ function hideBanner() {
 /// i18n.js locale tables; the choice persists via setLanguage().
 const LANGS = ["en", "ir", "cn", "fr", "ru"];
 const LANG_LOCALE = { en: "en", ir: "fa", cn: "zh", fr: "fr", ru: "ru" };
-/// Flag file per menu code (frontend/assets/, same replaceable files as the
-/// menu rows) shown on the language button itself.
-const LANG_FLAG = { en: "GB", ir: "IR", cn: "CN", fr: "FR", ru: "RU" };
 
 function syncLangMenu() {
+  let code = "en";
+  for (const c of LANGS) {
+    if (LANG_LOCALE[c] === i18nLang) {
+      code = c;
+      break;
+    }
+  }
   const menu = $("lang-menu");
   if (menu && menu.querySelectorAll) {
-    const items = menu.querySelectorAll('button[data-lang]');
+    const items = menu.querySelectorAll("button[data-lang]");
     for (let i = 0; i < items.length; i += 1) {
-      const locale = LANG_LOCALE[items[i].getAttribute("data-lang")] || "en";
+      const itemCode = items[i].getAttribute("data-lang");
+      const locale = LANG_LOCALE[itemCode] || "en";
       items[i].setAttribute("aria-checked", String(locale === i18nLang));
     }
   }
   // The button shows the current language's flag — it must follow the
   // switch (and the persisted language at boot), not stay stuck on GB.
+  // One <img> per language lives in the button and only the current one
+  // is shown: flag assets are served `no-store`, so retargeting `src`
+  // refetches over the network and breaks while offline (and moving nodes
+  // scrambles the menu rows), while toggling preloaded nodes needs zero
+  // network and leaves every menu row untouched.
   const btn = $("btn-lang");
-  const img = btn && btn.querySelector ? btn.querySelector("img.flag-img") : null;
-  if (img) {
-    let code = "en";
-    for (const c of LANGS) {
-      if (LANG_LOCALE[c] === i18nLang) {
-        code = c;
-        break;
-      }
+  const kids = btn && btn.children ? btn.children : [];
+  for (let i = 0; i < kids.length; i += 1) {
+    const el = kids[i];
+    if (el && el.tagName === "IMG") {
+      el.hidden = (el.getAttribute("data-lang") || "en") !== code;
     }
-    img.setAttribute("src", "./assets/" + (LANG_FLAG[code] || "GB") + ".svg");
   }
 }
 

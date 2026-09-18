@@ -242,8 +242,11 @@ describe("frontend i18n: one unified strings file, English default", () => {
     assert.equal(api.t("btnRefresh"), "Refresh");
     // Menu rows cover every LANG in order (EN, IR, CN, FR, RU).
     const html = fs.readFileSync(path.join(FRONTEND_DIR, "index.html"), "utf8");
-    const rows = [...html.matchAll(/data-lang="([a-z]+)"/g)].map((m) => m[1]);
+    const rows = [...html.matchAll(/<button[^>]*data-lang="([a-z]+)"/g)].map((m) => m[1]);
     assert.deepEqual(rows, ["en", "ir", "cn", "fr", "ru"]);
+    // The badge pre-loads one flag per LANG (offline-proof switch).
+    const badge = [...html.matchAll(/<img[^>]*data-lang="([a-z]+)"/g)].map((m) => m[1]);
+    assert.deepEqual(badge, ["en", "ir", "cn", "fr", "ru"]);
   });
 
   it("every ./assets/*.svg referenced in index.html exists on disk", () => {

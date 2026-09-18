@@ -176,10 +176,12 @@ export function createStub() {
       // Vazirmatn, no traversal.
       const name = p.slice("/assets/".length);
       if (/^(GB|IR|CN|FR|RU)\.svg$/.test(name) || name === "power-off-svgrepo-com.svg") {
-        res.writeHead(200, { "Content-Type": MIME[".svg"] });
+        // Mirror the real backend: asset bytes ride with the binary, so
+        // fixed filenames are served `no-store` (see web.rs).
+        res.writeHead(200, { "Content-Type": MIME[".svg"], "Cache-Control": "no-store" });
         res.end(fs.readFileSync(path.join(FRONTEND, "assets", name)));
       } else if (/^vazirmatn-(arabic|latin)\.woff2$/.test(name)) {
-        res.writeHead(200, { "Content-Type": MIME[".woff2"] });
+        res.writeHead(200, { "Content-Type": MIME[".woff2"], "Cache-Control": "no-store" });
         res.end(fs.readFileSync(path.join(FRONTEND, "assets", name)));
       } else {
         res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });

@@ -3375,10 +3375,18 @@ mod tests {
             assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         }
         let stored = stored_config(&state);
-        assert_eq!(
-            stored.subscriptions[0].priority, 5,
-            "rejected reorder writes nothing"
-        );
+        let names: Vec<&str> = stored
+            .subscriptions
+            .iter()
+            .map(|source| source.name.as_str())
+            .collect();
+        assert_eq!(names, ["a", "b", "c"], "rejected reorder writes nothing");
+        let priorities: Vec<u32> = stored
+            .subscriptions
+            .iter()
+            .map(|source| source.priority)
+            .collect();
+        assert_eq!(priorities, [1, 2, 3], "loads converge to dense order");
     }
 
     #[tokio::test]
@@ -3529,6 +3537,90 @@ mod tests {
         // Genuine garbage still refuses.
         assert!(super::apply_web_setting(&mut cfg, "refresh_seconds", "abc").is_err());
         assert!(super::apply_web_setting(&mut cfg, "top_n", "0").is_err());
+    }
+
+    fn test_sub(name: &str, url: &str, priority: u32) -> crate::config::SubscriptionSource {
+        crate::config::SubscriptionSource {
+            name: name.to_string(),
+            url: url.to_string(),
+            enabled: true,
+            priority,
+        }
+    }
+
+    fn stored_names(state: &HttpState) -> Vec<String> {
+        let cfg = stored_config(state);
+        cfg.subscriptions.iter().map(|s| s.name.clone()).collect()
+    }
+
+    #[tokio::test]
+    async fn patch_echo_never_moves_a_row() {
+        // Regression: on a legacy-order database the dashboard showed vec
+        // order while PATCH indexed database order, so saving row N edited a
+        // stranger (and duplicated names). Loads converge now, so an echo of
+        // the prefilled values is a no-op move on every surface.
+        let (state, _refresh_rx, _ping_rx, _config_rx) = mutation_state(RuntimeState::default());
+        {
+            let db = state.database.as_ref().expect("test db present");
+            let mut cfg = crate::settings::load_app_config(db).expect("seed loads");
+            cfg.subscriptions = vec![
+                test_sub("src-1", "https://x.com/1.txt", 30),
+                test_sub("src-2", "https://x.com/2.txt", 10),
+                test_sub("src-3", "https://x.com/3.txt", 20),
+            ];
+            // Bypass validation to store the legacy shape verbatim.
+            crate::settings::save_app_config(db, &cfg).expect("legacy seeds");
+        }
+        // The mutation load converges to priority order, dense: this is the
+        // order the dashboard shows, so position 0 addresses src-2.
+        let loaded =
+            crate::settings::load_app_config(state.database.as_ref().expect("test db present"))
+                .expect("loads converge");
+        let names: Vec<&str> = loaded
+            .subscriptions
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["src-2", "src-3", "src-1"]);
+        // Echo-save row 0 (only the URL changes, priority echoed back):
+        // order and names preserved, nothing teleports, nothing duplicates.
+        let (headers, query, connect) = no_auth();
+        let response = super::api_subscriptions_patch(
+            axum::extract::State(state.clone()),
+            headers,
+            query,
+            connect,
+            axum::extract::Path(0_usize),
+            axum::Json(super::SubscriptionPatch {
+                url: Some("https://x.com/2b.txt".to_string()),
+                name: Some("src-2".to_string()),
+                priority: Some(1),
+                enabled: Some(true),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(stored_names(&state), vec!["src-2", "src-3", "src-1"]);
+        let stored = stored_config(&state);
+        assert_eq!(stored.subscriptions[0].url, "https://x.com/2b.txt");
+        // An explicit rank change still moves the row to its slot.
+        let (headers, query, connect) = no_auth();
+        let response = super::api_subscriptions_patch(
+            axum::extract::State(state.clone()),
+            headers,
+            query,
+            connect,
+            axum::extract::Path(2_usize),
+            axum::Json(super::SubscriptionPatch {
+                url: None,
+                name: None,
+                priority: Some(1),
+                enabled: None,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(stored_names(&state), vec!["src-1", "src-2", "src-3"]);
     }
 
     #[tokio::test]

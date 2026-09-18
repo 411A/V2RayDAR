@@ -322,10 +322,19 @@ mod tests {
         assert_eq!(config.bind.port(), 28080);
         assert_eq!(config.top_n, 7);
         assert!(!config.sharing.token.is_empty(), "token:true generates");
-        // The first return mirrors the file order; the database serves
-        // priority order from the second start on.
-        assert_eq!(names(&config), ["b", "a", "c"]);
-        assert!(!config.subscriptions[0].enabled);
+        // Migration converges to the single order invariant at once: the
+        // first return already serves priority order densely renumbered, so
+        // dashboard positions and database rows agree from the first boot.
+        assert_eq!(names(&config), ["a", "c", "b"]);
+        assert_eq!(
+            config
+                .subscriptions
+                .iter()
+                .map(|s| s.priority)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        assert!(!config.subscriptions[2].enabled);
 
         let note = std::fs::read_to_string(&paths.config_path).expect("note reads");
         assert_eq!(note.trim(), CONFIG_MIGRATION_NOTE);
@@ -486,6 +495,30 @@ mod tests {
                 .collect::<Vec<_>>(),
             names,
             "ties keep insertion order"
+        );
+    }
+
+    #[test]
+    fn legacy_gaps_converge_to_dense_priority_order() {
+        let (db, _db_guard) = open_temp_db("gaps");
+        let mut config = AppConfig::default_for_first_run();
+        config.subscriptions.truncate(3);
+        config.subscriptions[0].priority = 30;
+        config.subscriptions[1].priority = 10;
+        config.subscriptions[2].priority = 20;
+        save_app_config(&db, &config).expect("saves");
+
+        // The database serves priority order while the saver kept vec order:
+        // loads converge so dashboard positions and mutation indices agree.
+        let loaded = load_app_config(&db).expect("loads");
+        let priorities: Vec<u32> = loaded.subscriptions.iter().map(|s| s.priority).collect();
+        assert_eq!(priorities, vec![1, 2, 3]);
+        assert!(
+            loaded
+                .subscriptions
+                .windows(2)
+                .all(|w| w[0].priority < w[1].priority),
+            "vec order is priority order"
         );
     }
 }

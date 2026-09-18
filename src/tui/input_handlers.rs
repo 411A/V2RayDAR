@@ -112,7 +112,7 @@ fn commit_url(state: &mut TuiState) {
 }
 
 fn commit_priority(state: &mut TuiState) {
-    let Ok(value) = state.input.trim().parse::<u32>() else {
+    let Some(value) = crate::config::parse_setting_number::<u32>(&state.input) else {
         state.status = "Priority must be a number".to_string();
         return;
     };
@@ -180,7 +180,7 @@ fn commit_new_name(state: &mut TuiState) {
 }
 
 fn commit_new_priority(state: &mut TuiState) {
-    let Ok(value) = state.input.trim().parse::<u32>() else {
+    let Some(value) = crate::config::parse_setting_number::<u32>(&state.input) else {
         state.status = "Priority must be a number".to_string();
         return;
     };

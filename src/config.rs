@@ -98,6 +98,23 @@ pub fn move_subscription_to_rank(
     }
 }
 
+/// Single order invariant for subscription rows: the vec order IS priority
+/// order, always, everywhere. The database serves `ORDER BY priority, id`,
+/// every mutation renumbers, and the dashboard addresses rows by position —
+/// so any divergence misdirects edits onto the wrong subscription (a row
+/// saved with its prefilled-but-stale priority teleports, and the next edit
+/// lands on a stranger). Stable-sort by priority (ties keep their relative
+/// order) and renumber densely on every validation, so loads, migrations,
+/// and mutations all converge to one order.
+pub fn canonicalize_subscriptions(subscriptions: &mut [SubscriptionSource]) {
+    subscriptions.sort_by_key(|source| source.priority);
+    let mut rank: u32 = 0;
+    for source in subscriptions.iter_mut() {
+        rank = rank.saturating_add(1);
+        source.priority = rank;
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
 pub struct ProbeConfig {
     #[serde(default = "default_probe_mode")]
@@ -339,6 +356,7 @@ pub fn validate_config(mut config: AppConfig) -> Result<AppConfig> {
             ));
         }
     }
+    canonicalize_subscriptions(&mut config.subscriptions);
 
     if config.sharing.require_token && config.sharing.token.is_empty() {
         return Err(anyhow!(
@@ -998,11 +1016,53 @@ mod tests {
     #[test]
     fn setting_number_parses_human_input() {
         assert_eq!(
-            super::parse_setting_number::<u64>("\u{2066}۹۰۰\u{2069}"),
+            super::parse_setting_number::<u64>("\u{2066}900\u{2069}"),
             Some(900)
         );
         assert_eq!(super::parse_setting_number::<u64>(" 300 "), Some(300));
         assert_eq!(super::parse_setting_number::<u64>("abc"), None);
         assert_eq!(super::parse_setting_number::<u16>("[204"), None);
+    }
+
+    #[test]
+    fn canonicalize_sorts_by_priority_and_renumbers_dense() {
+        // Legacy gap order: the dashboard shows vec order while the database
+        // serves priority order, so an untouched echo-save used to teleport
+        // the row and the next edit landed on a stranger.
+        let mut subscriptions = vec![
+            subscription("s1", 30),
+            subscription("s2", 10),
+            subscription("s3", 20),
+        ];
+        super::canonicalize_subscriptions(&mut subscriptions);
+        let names: Vec<&str> = subscriptions
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["s2", "s3", "s1"]);
+        let ranks: Vec<u32> = subscriptions.iter().map(|entry| entry.priority).collect();
+        assert_eq!(ranks, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn canonicalize_keeps_tie_order_and_dense_lists_untouched() {
+        let mut subscriptions = vec![
+            subscription("a", 5),
+            subscription("b", 5),
+            subscription("c", 5),
+        ];
+        super::canonicalize_subscriptions(&mut subscriptions);
+        let names: Vec<&str> = subscriptions
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["a", "b", "c"], "ties keep their relative order");
+        let ranks: Vec<u32> = subscriptions.iter().map(|entry| entry.priority).collect();
+        assert_eq!(ranks, vec![1, 2, 3]);
+
+        let mut dense = vec![subscription("a", 1), subscription("b", 2)];
+        super::canonicalize_subscriptions(&mut dense);
+        let names: Vec<&str> = dense.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(names, vec!["a", "b"]);
     }
 }

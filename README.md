@@ -20,7 +20,8 @@
 <h1 align="center">V2RayDAR</h1>
 
 <p align="center">
-  <em>V2Ray Detection And Reconnaissance — pronounced like <code>v2ray</code> + <code>radar</code>.</em>
+  <em>V2Ray Detection And Reconnaissance — pronounced like <code>v2ray</code> + <code>radar</code>.</em><br>
+  <img src="https://img.shields.io/badge/engineered_%26_coded_with-human_%2B_multiple_AIs-blueviolet" alt="Engineered and coded with help from multiple AIs">
 </p>
 
 <p align="center">
@@ -28,25 +29,27 @@
 </p>
 
 <p align="center">
-  A fast Rust CLI/TUI that fetches V2Ray / Clash / Mihomo subscription sources, validates them through your real network with <code>sing-box</code>, ranks the configs that actually work, and re-publishes the best ones at a local subscription URL your v2rayN / v2rayNG / sing-box / Clash Verge / Mihomo client can point to.
+  A fast Rust service with a built-in web dashboard that fetches V2Ray / Clash / Mihomo subscription sources, validates them through your real network with <code>sing-box</code>, ranks the configs that actually work, and re-publishes the best ones at a local subscription URL your v2rayN / v2rayNG / sing-box / Clash Verge / Mihomo client can point to. An optional terminal UI (<code>--tui</code>) covers a few extra maintenance actions.
 </p>
 
 <p align="center">
   📘 <a href="docs/guide.md">Read the detailed developer guide</a>
 </p>
 
-## 🖥️ Windows TUI Preview
+## 🌐 Web Dashboard (default)
 
-<p align="center">
-  <img src="assets/Windows_TUI_v0.6.0.png" alt="Windows TUI" width="100%">
-</p>
-
-## 🌐 Web Preview (Beta)
-
-After starting the app, open http://127.0.0.1:27141 in your browser for the live dashboard (beta; some actions are still TUI-only).
+After starting the app, open http://127.0.0.1:27141 in your browser. The dashboard covers daily use end to end: live Overview stats, ranked Configs with per-row QR codes, Subscriptions management (add, edit, on/off, delete, drag-and-drop reorder), every setting on the Settings tab, the Proxy tab, LAN sharing, live Logs, and a QR sheet for onboarding phones.
 
 <p align="center">
   <img src="assets/Frontend_v0.6.1.png" alt="Web Interface" width="100%">
+</p>
+
+## 🖥️ Optional TUI (`--tui`)
+
+Run with `v2raydar --tui` for the classic terminal UI alongside the dashboard and the endpoint. It additionally offers cache cleanup, reset-to-defaults, and opening the legacy config file — everything else lives in the dashboard too.
+
+<p align="center">
+  <img src="assets/Windows_TUI_v0.6.0.png" alt="Windows TUI" width="100%">
 </p>
 
 ## 🤔 Why V2RayDAR
@@ -58,9 +61,9 @@ After starting the app, open http://127.0.0.1:27141 in your browser for the live
 - Validates each candidate through your current network with `sing-box` (it actually loads a test URL through the proxy).
 - **Dual-format output** — serves working configs as V2Ray share-links (`/subscription`) **and** as full Mihomo YAML configs (`/mihomo.yaml`), so any client can use them.
 - Re-exposes the top working configs at a local URL so any compatible client just sees one always-fresh subscription.
-- **Persistent HTTP/SOCKS5 proxy** — keeps a `sing-box` process running with the best config, exposing a local proxy port any app can use. Flip `proxy.enabled` on from the TUI main menu or the dashboard Proxy tab and point Telegram, browsers, or any app at `127.0.0.1:27910`.
+- **Persistent HTTP/SOCKS5 proxy** — keeps a `sing-box` process running with the best config, exposing a local proxy port any app can use. Flip `proxy.enabled` on from the dashboard Proxy tab (or the TUI main menu) and point Telegram, browsers, or any app at `127.0.0.1:27910`.
 - **LAN proxy sharing** — set `proxy.discoverable: true` to bind `0.0.0.0` and add firewall rules, so every phone on your Wi-Fi can use the proxy. Telegram one-tap setup: `https://t.me/socks?server=192.0.2.2&port=27910`.
-- **QR code sheet** (desktop) — the main menu's `QR Codes: Generate & View` renders the LAN subscription and Telegram proxy as scannable QR codes (`v2raydar_data/QRCodes.jpg`) and opens the image for your phone.
+- **QR code sheet** — generate scannable QR codes for the LAN subscription and the Telegram proxy: from the dashboard Share tab, per-config QR buttons in the Configs tab, or the TUI main menu's `QR Codes: Generate & View` (desktop, saved to `v2raydar_data/QRCodes.jpg`). One scan and a phone joins.
 - Survives restricted networks via previously-probed configs in the database, an in-network bridge config, or an `emergency_config`.
 - Optional LAN sharing with optional token protection, so the phone in your pocket can use the same feed.
 
@@ -120,7 +123,12 @@ After installing with the script above, run `v2raydar` (or `v2raydar.exe` on Win
 | sing-box | `http://127.0.0.1:27141/subscription.txt` (plain) |
 | Clash Verge / Mihomo | `http://127.0.0.1:27141/mihomo.yaml` |
 
-3. **TUI controls:**
+3. **Use the dashboard** at `http://127.0.0.1:27141` — Overview, Configs, Subscriptions, Settings, Proxy, Logs, and Share tabs. Everything saves instantly to the database and the live runtime.
+
+4. **Change settings** from the dashboard Settings tab (or the TUI Configurations screen with `--tui`) — changes apply immediately. Key settings: `top_n`, `refresh_seconds`, `ping_seconds`, `sharing.enabled`, `probe.mode`. Settings added by newer versions default automatically; your stored values are never overwritten.
+5. **Exit** with `Ctrl + C`. The endpoint stops when the app exits.
+
+### Optional TUI controls (`v2raydar --tui`)
 
 | Key | Action |
 | --- | --- |
@@ -133,9 +141,6 @@ After installing with the script above, run `v2raydar` (or `v2raydar.exe` on Win
 | `Ctrl+P` | Manual re-ping of cached configs, unless any cycle is running |
 | `q` | Quit |
 | `:` | Command mode — `:q` quit, `:w` save, `:a` add, `:d` delete, `:n` rename, `:u` URL, `:p` priority, `:r` refresh, `:ping` |
-
-4. **Change settings** from the TUI main menu (Configurations) or the dashboard Settings tab — changes apply immediately. Key settings: `top_n`, `refresh_seconds`, `ping_seconds`, `sharing.enabled`, `probe.mode`. Settings added by newer versions default automatically; your stored values are never overwritten.
-5. **Exit** with `q` or `:q`. The endpoint stops when the app exits.
 
 ### Run modes
 
@@ -199,7 +204,7 @@ Windows users replace `v2raydar` with `v2raydar.exe`. On macOS open the bundled 
 ## 🌐 Notes for restricted networks
 
 - If you are on a very restricted network, previously-probed configs are stored in the database and can be used via `use_cache_only: true`.
-- By default, if some HTTP subscription URLs don't connect on your network but one config is reachable, the app uses that config to retry those failed HTTP subscriptions too. And if there are no working configs on your network but you have one working config yourself, you can set it as `emergency_config` from the TUI Configurations screen or the dashboard Settings tab so the app uses it to retry failed HTTP subscription fetches.
+- By default, if some HTTP subscription URLs don't connect on your network but one config is reachable, the app uses that config to retry those failed HTTP subscriptions too. And if there are no working configs on your network but you have one working config yourself, you can set it as `emergency_config` from the dashboard Settings tab or the TUI Configurations screen so the app uses it to retry failed HTTP subscription fetches.
 
 ## 📡 Pointing common clients at V2RayDAR
 
@@ -212,7 +217,7 @@ Full client walkthroughs, token-protected sharing, and OS-specific firewall deta
 
 V2RayDAR can run a persistent SOCKS5/HTTP proxy alongside the subscription endpoint. Any app on the system — Telegram, browsers, curl, Python — can route traffic through it without a separate VPN client.
 
-**Enable from the TUI Proxy row or the dashboard Proxy tab**
+**Enable from the dashboard Proxy tab or the TUI Proxy row**
 (`enabled: true`, port `27910`, `discoverable: true` = LAN access + firewall rule).
 
 **Local usage (on the device running V2RayDAR):**
@@ -226,7 +231,7 @@ curl --proxy http://127.0.0.1:27910 https://api.ipify.org
 
 **LAN usage (phone on same Wi-Fi):**
 1. Set `proxy.discoverable: true` — V2RayDAR adds a firewall rule and binds to `0.0.0.0`.
-2. Find your PC's LAN IP in the TUI's **Current Configuration** panel under **Network** (or run `ipconfig` / `ip addr`). For example `192.0.2.2`.
+2. Find your PC's LAN IP in the dashboard Overview tab under **Network** (or the TUI's **Current Configuration** panel, or run `ipconfig` / `ip addr`). For example `192.0.2.2`.
 3. **Telegram:** replace `YOUR_LAN_IP` with your actual LAN IP and open this URL on your phone:
 
    ```
@@ -240,7 +245,7 @@ curl --proxy http://127.0.0.1:27910 https://api.ipify.org
 
    Or manually: Telegram → Settings → Data and Storage → Proxy Settings → Add Proxy:
    - Type: **SOCKS5** or **HTTP**
-   - Host: `YOUR_LAN_IP` (the IP shown in V2RayDAR's TUI panel)
+    - Host: `YOUR_LAN_IP` (the IP shown in the dashboard or the TUI panel)
    - Port: `27910`
 
 4. **System-wide on Android:** Settings → WiFi → long-press your network → Modify → Advanced → Proxy → Manual → Server: `YOUR_LAN_IP`, Port: `27910`.
@@ -251,11 +256,7 @@ The proxy auto-failovers to the next best config when the current one fails, and
 
 Contributions are welcome! Feel free to open an Issue for bugs, feature requests, questions, or suggestions, or submit a Pull Request. Any feedback is greatly appreciated.
 
-## 🗺 Roadmap
-
-- [ ] Add a cross-platform GUI app beside the TUI using Tauri.
-- [ ] Extract V2Ray configs from the body of any website — preferably from non-JS-heavy sites, with FireCrawl or Obscura as a fallback for the JS-heavy ones.
-- [ ] Private endpoints with password requirements and authentication: when a subscription endpoint is private and password-protected, users can get their private endpoint that fetches the configs through a national reachable endpoint that has internet access.
+🤖 V2RayDAR is engineered and coded by its human maintainer with help from multiple AI assistants — human-reviewed contributions, whether from people or their AI helpers, are equally welcome.
 
 ## 👨‍💻 Warranty and responsibility
 

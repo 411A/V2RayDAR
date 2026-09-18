@@ -10,7 +10,7 @@
 
 # V2RayDAR Detailed Guide
 
-V2RayDAR is a Rust CLI/TUI application that fetches V2Ray / Clash / Mihomo subscription sources, extracts supported share links, checks which configs work on your current network, ranks the working results, and publishes the best ones through a local subscription endpoint — both as V2Ray share-links and as full Mihomo YAML configs.
+V2RayDAR is a Rust service with a built-in web dashboard that fetches V2Ray / Clash / Mihomo subscription sources, extracts supported share links, checks which configs work on your current network, ranks the working results, and publishes the best ones through a local subscription endpoint — both as V2Ray share-links and as full Mihomo YAML configs. An optional terminal UI (`--tui`) covers a few extra maintenance actions.
 
 The name means **V2Ray Detection And Reconnaissance** and is pronounced like `v2ray` + `radar`.
 
@@ -74,7 +74,8 @@ At runtime, V2RayDAR:
 - optionally promotes configs that worked across repeated refreshes,
 - **serves working configs as both V2Ray share-links (`/subscription`) and full Mihomo YAML configs (`/mihomo.yaml`)**,
 - applies dashboard and TUI changes immediately (no manual reload),
-- provides a TUI for editing settings, subscriptions, sharing, logs, and database state.
+- serves a built-in web dashboard for editing settings, subscriptions, sharing, proxy, logs, and QR codes,
+- offers an optional TUI (`--tui`) with the same editing plus cache cleanup, reset-to-defaults, and database inspection.
 
 ## Requirements
 
@@ -301,9 +302,9 @@ With the default bind address, V2RayDAR serves these URLs:
 
 Local loopback requests are always allowed. LAN requests to `/subscription`, `/subscription.txt`, `/mihomo.yaml`, and `/results` are blocked unless `sharing.enabled` is true; `/health` is only a reachability check.
 
-### Local web dashboard (beta)
+### Local web dashboard
 
-The same bind address also serves a built-in offline dashboard at `/` (`/overview`, `/configs`, …), live over SSE with polling fallback under the same endpoint auth. The dashboard edits live: subscriptions (add, edit, on/off, delete, drag-and-drop reorder), the power button, proxy and sharing toggles, and the Settings tab.
+The same bind address serves a built-in offline dashboard at `/` (`/overview`, `/configs`, `/subscriptions`, `/settings`, `/proxy`, `/logs`, `/share`), live over SSE with polling fallback under the same endpoint auth. The dashboard edits live: subscriptions (add, edit, on/off, delete, drag-and-drop reorder), the power button, proxy and sharing toggles, per-config QR codes, the QR sheet, and the Settings tab.
 
 The Settings tab lists every tunable option as name | value | description rows, in the dashboard language, with a control that fits the type: on/off switch for booleans, dropdown for choices (probe mode), inline editor for numbers/text/lists, a setter for the LAN token, and plain text for read-only rows. Every change saves to the database and the live runtime immediately.
 
@@ -765,7 +766,7 @@ Headless mode prints compact progress by default and a detailed trace with `--ve
 
 ## TUI Overview
 
-The default mode starts a terminal UI with:
+The optional TUI (`v2raydar --tui`) runs alongside the dashboard and the endpoint. It starts a terminal UI with:
 
 - a top status area,
 - local and LAN subscription URL information,
@@ -1440,7 +1441,7 @@ use_cache_only: true
 
 ## Contributing
 
-PRs are welcome.
+PRs are welcome — V2RayDAR itself is engineered and coded by its human maintainer with help from multiple AI assistants, and human-reviewed contributions of any origin are equally welcome.
 
 Good pull requests should include:
 
@@ -1450,12 +1451,6 @@ Good pull requests should include:
 - README updates when user-facing behavior changes.
 
 Avoid adding unrelated refactors to feature or bug-fix PRs.
-
-## Roadmap
-
-- Add a cross-platform GUI app beside the TUI using Tauri.
-- Extract V2Ray configs from the body of any website, preferably not JavaScript-heavy websites. JavaScript-heavy extraction can be handled through Obscura later.
-- Add private endpoints with password requirements and authentication for private subscription endpoints, so users can fetch their private endpoints through a nationally reachable endpoint that has internet access.
 
 ## References
 

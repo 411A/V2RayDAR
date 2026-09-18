@@ -20,7 +20,8 @@
 <h1 align="center">V2RayDAR</h1>
 
 <p align="center">
-  <em>Détection et Reconnaissance V2Ray — se prononce comme <code>v2ray</code> + <code>radar</code>.</em>
+  <em>Détection et Reconnaissance V2Ray — se prononce comme <code>v2ray</code> + <code>radar</code>.</em><br>
+  <img src="https://img.shields.io/badge/engineered_%26_coded_with-human_%2B_multiple_AIs-blueviolet" alt="Conçu et codé avec l'aide de plusieurs IA">
 </p>
 
 <p align="center">
@@ -28,36 +29,41 @@
 </p>
 
 <p align="center">
-  Un outil CLI/TUI rapide en Rust qui récupère les sources d'abonnement V2Ray / Clash / Mihomo, les valide via votre réseau réel avec <code>sing-box</code>, classe les configurations fonctionnelles et les republie sur une URL d'abonnement locale pour vos clients v2rayN / v2rayNG / sing-box / Clash Verge / Mihomo.
+  Un service rapide en Rust avec tableau de bord web intégré qui récupère les sources d'abonnement V2Ray / Clash / Mihomo, les valide via votre réseau réel avec <code>sing-box</code>, classe les configurations qui fonctionnent vraiment et les republie sur une URL d'abonnement locale pour vos clients v2rayN / v2rayNG / sing-box / Clash Verge / Mihomo. Une interface terminal optionnelle (<code>--tui</code>) couvre quelques actions de maintenance supplémentaires.
 </p>
 
 <p align="center">
   📘 <a href="guide.md">Lire le guide développeur détaillé</a>
 </p>
 
-## 🖥️ Aperçu TUI Windows
+## 🌐 Tableau de bord web (par défaut)
 
-<p align="center">
-  <img src="../assets/Windows_TUI_v0.6.0.png" alt="Windows TUI" width="100%">
-</p>
-
-## 🌐 Aperçu Web (Bêta)
-
-Après avoir démarré l'application, ouvrez http://127.0.0.1:27141 dans votre navigateur pour le tableau de bord en direct (bêta ; certaines actions restent réservées au TUI).
+Après avoir démarré l'application, ouvrez http://127.0.0.1:27141 dans votre navigateur. Le tableau de bord couvre l'usage quotidien de bout en bout : statistiques en direct dans Overview, configs classées dans Configs avec QR codes par ligne, gestion des abonnements dans Subscriptions (ajout, modification, activation/désactivation, suppression, réorganisation par glisser-déposer), tous les réglages dans l'onglet Settings, l'onglet Proxy, le partage LAN, les logs en direct et une feuille de QR codes pour connecter les téléphones.
 
 <p align="center">
   <img src="../assets/Frontend_v0.6.1.png" alt="Web Interface" width="100%">
 </p>
 
+## 🖥️ TUI optionnel (`--tui`)
+
+Lancez avec `v2raydar --tui` pour l'interface terminal classique, en plus du tableau de bord et de l'endpoint. Il offre en plus le nettoyage du cache, la réinitialisation aux valeurs par défaut et l'ouverture du fichier de config historique — tout le reste est aussi dans le tableau de bord.
+
+<p align="center">
+  <img src="../assets/Windows_TUI_v0.6.0.png" alt="Windows TUI" width="100%">
+</p>
+
 ## 🤔 Pourquoi V2RayDAR
 
-- Récupère les abonnements en parallèle depuis un nombre illimité de sources.
+- Récupère les abonnements en parallèle depuis autant de sources que vous voulez.
 - Prend en charge les formats brut, base64, JSON et YAML — ainsi que les liens de partage `vmess`, `vless`, `trojan`, `ss`, `ssr`, `hysteria2`, `hy2`, `tuic`.
 - **Parse les configs Clash/Mihomo YAML** — ajoutez une URL d'abonnement Mihomo et V2RayDAR extrait automatiquement toutes les entrées proxy.
 - **Conversion bidirectionnelle** — convertit entre les liens de partage V2Ray et les entrées proxy Clash/Mihomo YAML.
 - Valide chaque candidat via votre réseau réel avec `sing-box` (charge réellement une URL de test à travers le proxy).
 - **Sortie double format** — sert les configs fonctionnelles en tant que liens de partage V2Ray (`/subscription`) **et** configs Mihomo YAML complètes (`/mihomo.yaml`).
-- Republie les meilleures configs fonctionnelles sur une URL locale pour tout client compatible.
+- Republie les meilleures configs fonctionnelles sur une URL locale pour que tout client compatible voie un seul abonnement toujours à jour.
+- **Proxy HTTP/SOCKS5 persistant** — garde un processus `sing-box` actif avec la meilleure config et expose un port proxy local utilisable par toute application. Activez `proxy.enabled` depuis l'onglet Proxy du tableau de bord (ou le menu principal du TUI) et pointez Telegram, vos navigateurs ou toute application vers `127.0.0.1:27910`.
+- **Partage du proxy en LAN** — réglez `proxy.discoverable: true` pour écouter sur `0.0.0.0` et ajouter les règles de pare-feu, afin que chaque téléphone de votre Wi-Fi utilise le proxy. Configuration Telegram en un toucher : `https://t.me/socks?server=192.0.2.2&port=27910`.
+- **Feuille de QR codes** — générez des QR codes scannables pour l'abonnement LAN et le proxy Telegram : depuis l'onglet Share du tableau de bord, les boutons QR par config dans l'onglet Configs, ou le menu principal du TUI `QR Codes: Generate & View` (bureau, enregistré dans `v2raydar_data/QRCodes.jpg`). Un scan suffit pour connecter un téléphone.
 - Survit aux réseaux restreints via les configs précédemment testées en base de données, un config passerelle réseau ou `emergency_config`.
 - Partage LAN optionnel avec protection par token, pour utiliser le même abonnement depuis votre téléphone.
 
@@ -65,7 +71,7 @@ Après avoir démarré l'application, ouvrez http://127.0.0.1:27141 dans votre n
 
 Collez la ligne de votre OS dans un terminal et appuyez sur Entrée — puis encore Entrée (réponse par défaut Oui) et l'installateur termine automatiquement avec les réglages par défaut (mise à jour sur place si déjà installé). Répondez Non pour les invites étape par étape. Le script d'installation détecte votre plateforme, télécharge la dernière version avec `sing-box` et configure tout. Le mode portable s'installe dans `Desktop/V2RayDAR` (si le dossier Bureau existe), sinon dans `~/V2RayDAR`. Le mode utilisateur installe le binaire dans `~/.local/bin`.
 
-**Mode portable** (recommandé) — tout dans un dossier : copiez-collez et appuyez sur Entrée jusqu'à la fin de l'installation ! Un dossier autonome (`sing-box` fourni ou `v2raydar_data/` existant à côté de l'exécutable) est détecté automatiquement ; `--portable` le force.
+**Portable** (recommandé) — tout dans un dossier : copiez-collez et appuyez sur Entrée jusqu'à la fin de l'installation ! Un dossier autonome (`sing-box` fourni ou `v2raydar_data/` existant à côté de l'exécutable) est détecté automatiquement, donc un double-clic fonctionne directement — `--portable` le force partout.
 
 #### <img src="https://cdn.svglogos.dev/logos/linux-tux.svg" alt="Linux" width="20" height="20" align="texttop"> Linux / macOS
 
@@ -79,7 +85,15 @@ curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh
 irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
 ```
 
-**Installation utilisateur** — binaire dans `~/.local/bin`, données dans le répertoire home :
+#### <img src="https://cdn.svglogos.dev/logos/android-icon.svg" alt="Android" width="20" height="20" align="texttop"> Android / Termux
+
+```bash
+pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar && curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | bash && cd ~/V2RayDAR && ./v2raydar
+```
+
+#### Installation utilisateur
+
+Binaire dans `~/.local/bin`, données dans le répertoire home :
 ```bash
 # Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh -s -- --user
@@ -89,11 +103,6 @@ irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
 # Puis choisissez l'option 2 quand demandé
 ```
 
-#### <img src="https://cdn.svglogos.dev/logos/android-icon.svg" alt="Android" width="20" height="20" align="texttop"> Android / Termux
-
-```bash
-pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar && curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | bash && cd ~/V2RayDAR && ./v2raydar
-```
 * **Arrêt :** `Ctrl + C`
 * **Démarrage :** `cd ~/V2RayDAR && ./v2raydar`
 
@@ -114,7 +123,12 @@ Après l'installation avec le script ci-dessus, lancez `v2raydar` (ou `v2raydar.
 | sing-box | `http://127.0.0.1:27141/subscription.txt` (brut) |
 | Clash Verge / Mihomo | `http://127.0.0.1:27141/mihomo.yaml` |
 
-3. **Contrôles TUI :**
+3. **Utilisez le tableau de bord** sur `http://127.0.0.1:27141` — onglets Overview, Configs, Subscriptions, Settings, Proxy, Logs et Share. Tout est enregistré instantanément dans la base et appliqué au runtime.
+
+4. **Modifiez les paramètres** depuis l'onglet Settings du tableau de bord (ou l'écran Configurations du TUI avec `--tui`) — les changements s'appliquent immédiatement. Paramètres clés : `top_n`, `refresh_seconds`, `ping_seconds`, `sharing.enabled`, `probe.mode`. Les nouveaux réglages reçoivent leurs valeurs par défaut automatiquement ; vos valeurs sont conservées.
+5. **Quittez** avec `Ctrl + C`. L'endpoint s'arrête à la fermeture.
+
+### Contrôles TUI optionnels (`v2raydar --tui`)
 
 | Touche | Action |
 | --- | --- |
@@ -128,23 +142,20 @@ Après l'installation avec le script ci-dessus, lancez `v2raydar` (ou `v2raydar.
 | `q` | Quitter |
 | `:` | Mode commande — `:q` quitter, `:w` sauvegarder, `:a` ajouter, `:d` supprimer, `:n` renommer, `:u` URL, `:p` priorité, `:r` actualiser, `:ping` re-tester |
 
-4. **Modifier les paramètres** depuis le menu principal TUI (Configurations) ou l'onglet des paramètres du tableau de bord — les changements s'appliquent immédiatement. Paramètres clés : `top_n`, `refresh_seconds`, `ping_seconds`, `sharing.enabled`, `probe.mode`. Les nouveaux réglages reçoivent leurs valeurs par défaut automatiquement ; vos valeurs sont conservées.
-5. **Quitter** avec `q` ou `:q`. L'endpoint s'arrête à la fermeture.
-
 ### Modes d'exécution
 
 ```bash
 v2raydar                # silencieux — indication navigateur uniquement, sans logs
-v2raydar --no-tui       # sans TUI — détails et logs
+v2raydar --no-tui       # sans interface, avec détails et logs, pas de TUI
 v2raydar --tui          # TUI + endpoint d'abonnement local
 v2raydar --once         # un rafraîchissement, afficher les résultats, quitter
 v2raydar --portable     # données à côté de l'exécutable (détecté automatiquement dans les dossiers portables)
-v2raydar --uninstall    # supprimer les données et règles de pare-feu
+v2raydar --uninstall    # supprimer les données et les règles de pare-feu gérées
 ```
 
 Les utilisateurs Windows remplacent `v2raydar` par `v2raydar.exe`. Sous macOS, ouvrez le `.app` une fois et Gatekeeper s'en souviendra.
 
-## ⚙️ Configuration par défaut
+## ⚙️ Configuration par défaut en un coup d'œil
 
 <details>
   <summary>👣 <strong>Paramètres</strong> — tableau de toutes les clés, valeurs par défaut et leur rôle. Explications complètes dans le <a href="guide.md">guide développeur</a>.</summary>
@@ -154,7 +165,7 @@ Les utilisateurs Windows remplacent `v2raydar` par `v2raydar.exe`. Sous macOS, o
 | `bind` | `127.0.0.1:27141` | Adresse HTTP locale pour `/subscription`, `/subscription.txt`, `/results` et `/health`. |
 | `top_n` | `10` | Nombre de configs fonctionnelles publiées aux clients. |
 | `refresh_seconds` | `900` | Intervalle de rafraîchissement automatique (secondes) ; `0` désactive le timer. |
-| `ping_seconds` | `300` | Intervalle de re-test des configs en cache sans re-téléchargement (secondes) ; `0` désactive. Quand le cache vérifie moins de `top_n`, le ping teste aussi les configs déjà vues en base pour compléter. |
+| `ping_seconds` | `300` | Intervalle de re-test des configs en cache sans re-téléchargement (secondes) ; `0` désactive. Quand le cache vérifie moins de `top_n`, le ping sonde aussi les configs déjà vues en base pour compléter. Les deux comptent dans Sub Usage. |
 | `encoded_subscription` | `true` | `/subscription` renvoie du base64 (compatible v2rayN / v2rayNG). |
 | `prioritize_stability` | `true` | Re-vérifie le Top-N sauvegardé de la session précédente et les garde en tête, même si de nouvelles configs avec latence plus basse apparaissent. Avec `false`, préfère toute config fonctionnelle à faible latence. |
 | `return_configs_asap` | `false` | Avec `true`, publie les configs fonctionnelles dès leur découverte (max `top_n`) ; les premières configs peuvent ne pas avoir la meilleure latence ou stabilité. |
@@ -193,7 +204,7 @@ Les utilisateurs Windows remplacent `v2raydar` par `v2raydar.exe`. Sous macOS, o
 ## 🌐 Notes pour les réseaux restreints
 
 - Sur les réseaux très restreints, les configs précédemment testées sont stockées en base et accessibles via `use_cache_only: true`.
-- Par défaut, si certaines URLs HTTP échouent mais qu'une config fonctionnelle est disponible, l'application l'utilise pour réessayer les abonnements échoués. Si aucune config n'est disponible mais que vous en avez une, définissez-la comme `emergency_config` depuis l'écran de configuration du TUI ou l'onglet des paramètres.
+- Par défaut, si certaines URLs HTTP échouent mais qu'une config fonctionnelle est disponible, l'application l'utilise pour réessayer les abonnements échoués. Si aucune config n'est disponible mais que vous en avez une, définissez-la comme `emergency_config` depuis l'onglet Settings du tableau de bord ou l'écran Configurations du TUI pour que l'application l'utilise lors des récupérations HTTP échouées.
 
 ## 📡 Connecter vos clients à V2RayDAR
 
@@ -206,22 +217,21 @@ Le guide complet de configuration des clients, le partage protégé par token et
 
 V2RayDAR peut exécuter un proxy SOCKS5/HTTP persistant à côté de l'endpoint d'abonnement. Toute application sur le système — Telegram, navigateurs, curl, Python — peut y router son trafic sans client VPN séparé.
 
-**Activation dans les paramètres :**
-```yaml
-proxy:
-  enabled: true
-  port: 27910
-  discoverable: false   # true = accès LAN + règle de pare-feu
-```
+**Activation depuis l'onglet Proxy du tableau de bord ou la ligne Proxy du TUI**
+(`enabled: true`, port `27910`, `discoverable: true` = accès LAN + règle de pare-feu).
 
 **Usage local (sur l'appareil exécutant V2RayDAR) :**
 ```bash
+# SOCKS5
 curl --socks5 127.0.0.1:27910 https://api.ipify.org
+
+# HTTP
+curl --proxy http://127.0.0.1:27910 https://api.ipify.org
 ```
 
 **Usage LAN (téléphone sur le même Wi-Fi) :**
 1. Réglez `proxy.discoverable: true` — V2RayDAR ajoutera une règle de pare-feu et écoutera sur `0.0.0.0`.
-2. Trouvez l'IP LAN de l'appareil exécutant V2RayDAR dans le panneau TUI sous **Network** (ou exécutez `ipconfig` / `ip addr`). Par exemple `192.0.2.2`.
+2. Trouvez l'IP LAN de votre PC dans l'onglet Overview du tableau de bord sous **Network** (ou le panneau **Current Configuration** du TUI, ou exécutez `ipconfig` / `ip addr`). Par exemple `192.0.2.2`.
 3. **Telegram :** remplacez `YOUR_LAN_IP` par votre vraie IP LAN et ouvrez cette URL sur le téléphone :
 
    ```
@@ -235,26 +245,24 @@ curl --socks5 127.0.0.1:27910 https://api.ipify.org
 
    Ou manuellement : Telegram → Paramètres → Données et stockage → Paramètres du proxy → Ajouter un proxy :
    - Type : **SOCKS5** ou **HTTP**
-   - Host : `YOUR_LAN_IP` (l'IP affichée dans le panneau TUI de V2RayDAR)
+   - Host : `YOUR_LAN_IP` (l'IP affichée dans le tableau de bord ou le panneau du TUI)
    - Port : `27910`
 
 4. **Globalement sur Android :** Paramètres → WiFi → appui long sur le réseau → Modifier → Avancé → Proxy → Manuel → Serveur : `YOUR_LAN_IP`, Port : `27910`.
+
+Le proxy bascule automatiquement sur la config suivante en cas d'échec, et adopte une meilleure config à chaque cycle de rafraîchissement.
 
 ## 🤝 Contribuer
 
 Les contributions sont les bienvenues ! N'hésitez pas à ouvrir un Issue pour les bugs, demandes de fonctionnalités, questions ou suggestions, ou à soumettre un Pull Request.
 
-## 🗺 Feuille de route
+🤖 V2RayDAR est conçu et codé par son mainteneur humain avec l'aide de plusieurs assistants IA — les contributions relues par des humains, qu'elles viennent de personnes ou de leurs assistants IA, sont également les bienvenues.
 
-- [ ] Ajouter une application GUI multiplateforme à côté du TUI avec Tauri.
-- [ ] Extraire les configs V2Ray du corps de n'importe quel site web — de préférence les sites peu chargés en JS, avec FireCrawl ou Obscura en alternative pour les sites JS-intensifs.
-- [ ] Endpoints privés avec mot de passe et authentification : quand un endpoint d'abonnement est privé et protégé par mot de passe, les utilisateurs peuvent obtenir leur endpoint privé via un endpoint national accessible.
-
-## 👨‍💻 Avertissement
+## 👨‍💻 Garantie et responsabilité
 
 L'application est fournie « en l'état », sans aucune garantie.
 
-Le développeur ne crée ni ne distribue de configs compatibles V2Ray, et n'est pas responsable des abonnements V2Ray que l'utilisateur scanne et utilise.
+Le développeur ne crée ni ne distribue lui-même de configs compatibles V2Ray, et n'est pas responsable des abonnements V2Ray que l'utilisateur scanne et auxquels il se connecte. Le propriétaire du serveur V2Ray auquel vous vous connectez peut intercepter votre trafic et lire vos données non chiffrées.
 
 ## ☕️ Contact et dons
 

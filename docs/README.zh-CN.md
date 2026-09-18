@@ -20,7 +20,8 @@
 <h1 align="center">V2RayDAR</h1>
 
 <p align="center">
-  <em>V2Ray 检测与侦察 — 发音类似 <code>v2ray</code> + <code>radar</code>。</em>
+  <em>V2Ray 检测与侦察 — 发音类似 <code>v2ray</code> + <code>radar</code>。</em><br>
+  ![在多个人工智能协助下设计与开发](https://img.shields.io/badge/engineered_%26_coded_with-human_%2B_multiple_AIs-blueviolet)
 </p>
 
 <p align="center">
@@ -28,25 +29,27 @@
 </p>
 
 <p align="center">
-  一款快速的 Rust CLI/TUI 工具，用于获取 V2Ray / Clash / Mihomo 订阅源，通过 <code>sing-box</code> 在真实网络中验证配置，对可用配置进行排名，并在本地订阅 URL 上重新发布最佳配置，供 v2rayN / v2rayNG / sing-box / Clash Verge / Mihomo 客户端使用。
+  一款快速的 Rust 服务，内置 Web 仪表盘：获取 V2Ray / Clash / Mihomo 订阅源，通过 <code>sing-box</code> 在真实网络中验证配置，对可用配置进行排名，并在本地订阅 URL 上重新发布最佳配置，供 v2rayN / v2rayNG / sing-box / Clash Verge / Mihomo 客户端使用。可选的终端界面（<code>--tui</code>）仅提供少量额外的维护操作。
 </p>
 
 <p align="center">
   📘 <a href="guide.md">阅读详细开发者指南</a>
 </p>
 
-## 🖥️ Windows TUI 预览
+## 🌐 Web 仪表盘（默认）
 
-<p align="center">
-  <img src="../assets/Windows_TUI_v0.6.0.png" alt="Windows TUI" width="100%">
-</p>
-
-## 🌐 Web 预览（测试版）
-
-启动应用后，在浏览器中打开 http://127.0.0.1:27141 进入实时仪表盘（测试版，部分操作仍需使用 TUI）。
+启动应用后，在浏览器中打开 http://127.0.0.1:27141。仪表盘覆盖日常使用的完整流程：实时 Overview 统计、带逐行二维码的排名 Configs、Subscriptions 管理（添加、编辑、启用/禁用、删除、拖拽排序）、Settings 标签页中的全部设置、Proxy 标签页、局域网共享、实时 Logs，以及方便手机接入的二维码页面。
 
 <p align="center">
   <img src="../assets/Frontend_v0.6.1.png" alt="Web Interface" width="100%">
+</p>
+
+## 🖥️ 可选 TUI（`--tui`）
+
+使用 `v2raydar --tui` 可在仪表盘和端点之外同时启动经典终端界面。它额外提供缓存清理、恢复默认设置、打开旧版配置文件等操作——其余功能仪表盘中同样具备。
+
+<p align="center">
+  <img src="../assets/Windows_TUI_v0.6.0.png" alt="Windows TUI" width="100%">
 </p>
 
 ## 🤔 为什么选择 V2RayDAR
@@ -58,6 +61,9 @@
 - 通过 `sing-box` 在当前网络中验证每个候选配置（实际加载测试 URL 通过代理）。
 - **双格式输出** — 以 V2Ray 分享链接（`/subscription`）**和**完整 Mihomo YAML 配置（`/mihomo.yaml`）提供可用配置，兼容任何客户端。
 - 在本地 URL 重新发布最佳可用配置，兼容客户端只需指向一个始终最新的订阅源。
+- **持久化 HTTP/SOCKS5 代理** — 保持 `sing-box` 进程持续运行，使用最佳配置对外提供本地代理端口，任何应用均可使用。在仪表盘 Proxy 标签页（或 TUI 主菜单）中开启 `proxy.enabled`，将 Telegram、浏览器或任何应用指向 `127.0.0.1:27910`。
+- **局域网代理共享** — 将 `proxy.discoverable` 设为 `true` 即可绑定 `0.0.0.0` 并添加防火墙规则，同一 Wi-Fi 下的每台手机都能使用该代理。Telegram 一键配置：`https://t.me/socks?server=192.0.2.2&port=27910`。
+- **二维码表单** — 为局域网订阅和 Telegram 代理生成可扫描的二维码：仪表盘 Share 标签页、Configs 标签页中每行的二维码按钮，或 TUI 主菜单的 `QR Codes: Generate & View`（桌面端，保存至 `v2raydar_data/QRCodes.jpg`）。手机扫码即加入。
 - 通过数据库中先前探测过的配置、网络内桥接配置或 `emergency_config` 在受限网络中存活。
 - 可选的局域网共享及令牌保护，方便手机使用同一订阅源。
 
@@ -65,7 +71,7 @@
 
 将对应系统的命令粘贴到终端并回车——再按一次回车（默认“是”），安装程序即按默认设置自动完成（已安装则就地更新）；回答“否”则进入逐步提示。安装脚本自动检测平台，下载最新版本并附带 `sing-box`，完成全部配置。便携模式安装到 `Desktop/V2RayDAR`（若存在桌面目录），否则安装到 `~/V2RayDAR`。用户模式将二进制文件安装到 `~/.local/bin`。
 
-**便携模式**（推荐）— 所有文件在同一目录：只需复制粘贴并按回车，直到安装完成！自包含目录（可执行文件旁附带的 `sing-box` 或已有的 `v2raydar_data/`）会被自动检测；`--portable` 可强制启用。
+**便携模式**（推荐）— 所有文件都在同一目录：只需复制粘贴并一路回车，直到安装完成！自包含目录（可执行文件旁附带的 `sing-box` 或已有的 `v2raydar_data/`）会被自动检测，双击即可运行——任何位置都可用 `--portable` 强制启用。
 
 #### <img src="https://cdn.svglogos.dev/logos/linux-tux.svg" alt="Linux" width="20" height="20" align="texttop"> Linux / macOS
 
@@ -79,7 +85,15 @@ curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh
 irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
 ```
 
-**用户安装** — 二进制文件到 `~/.local/bin`，数据在主目录：
+#### <img src="https://cdn.svglogos.dev/logos/android-icon.svg" alt="Android" width="20" height="20" align="texttop"> Android / Termux
+
+```bash
+pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar && curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | bash && cd ~/V2RayDAR && ./v2raydar
+```
+
+#### 用户安装
+
+二进制文件到 `~/.local/bin`，数据在主目录：
 ```bash
 # Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | sh -s -- --user
@@ -89,11 +103,6 @@ irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
 # 然后在提示时选择选项 2
 ```
 
-#### <img src="https://cdn.svglogos.dev/logos/android-icon.svg" alt="Android" width="20" height="20" align="texttop"> Android / Termux
-
-```bash
-pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar && curl -fsSL https://raw.githubusercontent.com/411A/V2RayDAR/main/install.sh | bash && cd ~/V2RayDAR && ./v2raydar
-```
 * **停止：** `Ctrl + C`
 * **启动：** `cd ~/V2RayDAR && ./v2raydar`
 
@@ -114,7 +123,12 @@ pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar &&
 | sing-box | `http://127.0.0.1:27141/subscription.txt`（纯文本） |
 | Clash Verge / Mihomo | `http://127.0.0.1:27141/mihomo.yaml` |
 
-3. **TUI 控制键：**
+3. **使用仪表盘** `http://127.0.0.1:27141` — Overview、Configs、Subscriptions、Settings、Proxy、Logs 和 Share 共 7 个标签页。所有修改即时保存到数据库并实时生效。
+
+4. **更改设置** — 在仪表盘 Settings 标签页（或带 `--tui` 的 TUI Configurations 界面）中修改，立即生效。关键设置：`top_n`、`refresh_seconds`、`ping_seconds`、`sharing.enabled`、`probe.mode`。新版本新增的设置项会自动使用默认值，你已有的值不会被改动。
+5. **退出** — 按 `Ctrl + C`。退出后端点停止服务。
+
+### 可选 TUI 快捷键（`v2raydar --tui`）
 
 | 按键 | 操作 |
 | --- | --- |
@@ -128,18 +142,15 @@ pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar &&
 | `q` | 退出 |
 | `:` | 命令模式 — `:q` 退出，`:w` 保存，`:a` 添加，`:d` 删除，`:n` 重命名，`:u` 修改 URL，`:p` 修改优先级，`:r` 刷新，`:ping` 重测 |
 
-4. **更改设置** — 从 TUI 主菜单（Configurations）或仪表盘设置页修改，更改立即生效。关键设置：`top_n`、`refresh_seconds`、`ping_seconds`、`sharing.enabled`、`probe.mode`。新版本新增的设置项会自动使用默认值，你已有的值不会被改动。
-5. **退出** — 按 `q` 或 `:q`。退出后端点停止服务。
-
 ### 运行模式
 
 ```bash
 v2raydar                # 静默模式 — 仅浏览器提示，无日志
-v2raydar --no-tui       # 无头模式 — 详细信息和日志
+v2raydar --no-tui       # 无头模式 — 详细信息和日志，无 TUI
 v2raydar --tui          # TUI + 本地订阅端点
 v2raydar --once         # 刷新一次，打印结果后退出
-v2raydar --portable     # 数据保存在可执行文件旁边（便携目录自动检测）
-v2raydar --uninstall    # 删除应用数据和防火墙规则
+v2raydar --portable     # 所有数据保存在可执行文件旁边（便携目录自动检测）
+v2raydar --uninstall    # 删除应用数据和已创建的防火墙规则
 ```
 
 Windows 用户将 `v2raydar` 替换为 `v2raydar.exe`。macOS 上首次打开捆绑的 `.app` 后，Gatekeeper 会记住它。
@@ -154,7 +165,7 @@ Windows 用户将 `v2raydar` 替换为 `v2raydar.exe`。macOS 上首次打开捆
 | `bind` | `127.0.0.1:27141` | 本地 HTTP 绑定地址，用于 `/subscription`、`/subscription.txt`、`/results` 和 `/health`。 |
 | `top_n` | `10` | 发布给客户端的可用配置数量。 |
 | `refresh_seconds` | `900` | 自动刷新间隔（秒）；`0` 禁用定时刷新。 |
-| `ping_seconds` | `300` | 已缓存配置的重测间隔（秒），不重新获取订阅；`0` 禁用。当缓存验证通过的数量少于 `top_n` 时，ping 还会检测数据库中此前见过的配置以补足。 |
+| `ping_seconds` | `300` | 已缓存配置的重测间隔（秒），不重新获取订阅；`0` 禁用。当缓存验证通过的数量少于 `top_n` 时，ping 还会检测数据库中此前见过的配置以补足。两者均计入 Sub Usage。 |
 | `encoded_subscription` | `true` | `/subscription` 返回 base64 编码（兼容 v2rayN / v2rayNG）。 |
 | `prioritize_stability` | `true` | 优先重新探测上一轮保存的 Top-N，即使新发现的配置延迟更低也保持其靠前。设为 `false` 则优先选择低延迟的可用配置。 |
 | `return_configs_asap` | `false` | 设为 `true` 时，找到可用配置后立即发布到端点，最多 `top_n` 个；早期配置可能不是延迟最低或最稳定的。 |
@@ -168,9 +179,9 @@ Windows 用户将 `v2raydar` 替换为 `v2raydar.exe`。macOS 上首次打开捆
 | `sharing.enabled` | `false` | 允许局域网客户端访问端点。 |
 | `sharing.require_token` | `false` | 局域网请求需要 `?token=...`。 |
 | `sharing.token` | `null` | 留空则禁用，设为 `true` 自动生成，或提供字符串。 |
-| `proxy.enabled` | `false` | 启动持久的 SOCKS5/HTTP 代理进程。 |
+| `proxy.enabled` | `false` | 启动持久的 `sing-box` 进程，对外提供混合 SOCKS5/HTTP 代理。 |
 | `proxy.port` | `27910` | 混合 SOCKS5/HTTP 代理端口。 |
-| `proxy.discoverable` | `false` | 绑定到 0.0.0.0 并添加防火墙规则以允许局域网访问。 |
+| `proxy.discoverable` | `false` | 绑定到 `0.0.0.0` 并添加防火墙规则以允许局域网访问。 |
 | `proxy.health_check_url` | `https://www.gstatic.com/generate_204` | 通过代理测试的健康检查 URL。 |
 | `proxy.health_check_interval_seconds` | `60` | 代理健康检查间隔（秒）。故障时自动切换。 |
 | `probe.mode` | `active` | `active` 使用 `sing-box`；`tcp` 仅用于诊断。 |
@@ -193,7 +204,7 @@ Windows 用户将 `v2raydar` 替换为 `v2raydar.exe`。macOS 上首次打开捆
 ## 🌐 受限网络注意事项
 
 - 在高度受限的网络中，先前探测过的配置存储在数据库中，可通过 `use_cache_only: true` 使用。
-- 默认情况下，如果某些 HTTP 订阅 URL 无法连接但有可用配置，应用会使用该配置重试失败的 HTTP 订阅。如果没有可用配置但你有一个可用配置，可以将其设为 `emergency_config`（在 TUI 配置界面或仪表盘设置页中），让应用使用它重试失败的 HTTP 订阅获取。
+- 默认情况下，如果某些 HTTP 订阅 URL 无法连接但有可用配置，应用会使用该配置重试失败的 HTTP 订阅。如果没有可用配置但你有一个可用配置，可以将其设为 `emergency_config`（在仪表盘设置页或 TUI 配置界面中），让应用使用它重试失败的 HTTP 订阅获取。
 
 ## 📡 将常用客户端指向 V2RayDAR
 
@@ -206,22 +217,21 @@ Windows 用户将 `v2raydar` 替换为 `v2raydar.exe`。macOS 上首次打开捆
 
 V2RayDAR 可以在订阅端点旁边运行一个持久的 SOCKS5/HTTP 代理。系统上的任何应用 — Telegram、浏览器、curl、Python — 都可以通过它路由流量，无需单独的 VPN 客户端。
 
-**在设置中启用：**
-```yaml
-proxy:
-  enabled: true
-  port: 27910
-  discoverable: false   # true = 局域网访问 + 防火墙规则
-```
+**在仪表盘 Proxy 标签页或 TUI Proxy 行中启用**
+（`enabled: true`，端口 `27910`，`discoverable: true` = 局域网访问 + 防火墙规则）。
 
 **本地使用（在运行 V2RayDAR 的设备上）：**
 ```bash
+# SOCKS5
 curl --socks5 127.0.0.1:27910 https://api.ipify.org
+
+# HTTP
+curl --proxy http://127.0.0.1:27910 https://api.ipify.org
 ```
 
 **局域网使用（同一 Wi-Fi 的手机）：**
 1. 设置 `proxy.discoverable: true` — V2RayDAR 会添加防火墙规则并绑定到 `0.0.0.0`。
-2. 在 TUI 的 **Current Configuration** 面板 **Network** 部分找到电脑的局域网 IP（或运行 `ipconfig` / `ip addr`）。例如 `192.0.2.2`。
+2. 在仪表盘 Overview 标签页 **Network** 下找到电脑的局域网 IP（或 TUI 的 **Current Configuration** 面板，或运行 `ipconfig` / `ip addr`）。例如 `192.0.2.2`。
 3. **Telegram：** 将 `YOUR_LAN_IP` 替换为你的实际局域网 IP，在手机上打开此 URL：
 
    ```
@@ -235,24 +245,22 @@ curl --socks5 127.0.0.1:27910 https://api.ipify.org
 
    或手动：Telegram → 设置 → 数据和存储 → 代理设置 → 添加代理：
    - 类型：**SOCKS5** 或 **HTTP**
-   - 主机：`YOUR_LAN_IP`（V2RayDAR TUI 面板中显示的 IP）
+   - 主机：`YOUR_LAN_IP`（仪表盘或 TUI 面板中显示的 IP）
    - 端口：`27910`
 
 4. **Android 全局代理：** 设置 → WiFi → 长按网络 → 修改 → 高级 → 代理 → 手动 → 服务器：`YOUR_LAN_IP`，端口：`27910`。
+
+代理在当前配置失效时自动切换到下一个最佳配置，并在每个刷新周期切换到更优配置。
 
 ## 🤝 贡献
 
 欢迎贡献！可以提交 Issue 报告错误、提出功能请求、问题或建议，也可以提交 Pull Request。任何反馈都非常感谢。
 
-## 🗺 路线图
+🤖 V2RayDAR 由人类维护者在多个人工智能助手的协助下设计与开发——无论贡献来自人类还是其 AI 助手，只要经过人工审核，都同样欢迎。
 
-- [ ] 使用 Tauri 在 TUI 之外添加跨平台 GUI 应用。
-- [ ] 从任何网站正文中提取 V2Ray 配置 — 优先从非 JS 密集型网站提取，JS 密集型网站使用 FireCrawl 或 Obscura 作为备选方案。
-- [ ] 带密码要求和身份验证的私有端点：当订阅端点是私有的且受密码保护时，用户可以通过国家级可达端点获取配置。
+## 👨‍💻 质保与责任
 
-## 👨‍💻 免责声明
-
-本应用按"现状"发布，不提供任何保证。
+本应用按“现状”发布，不提供任何保证。
 
 开发者本身不会创建或分发 V2Ray 兼容配置，也不对用户扫描和连接的 V2Ray 订阅负责。你连接的 V2Ray 服务器所有者可能能够截获你的流量并读取未加密数据。
 

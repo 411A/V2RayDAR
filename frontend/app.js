@@ -1124,6 +1124,7 @@ function renderStats() {
   const s = state.snapshot;
   if (!s) {
     box.appendChild(statCard("Status", t("statusNoData")));
+    renderUpdated();
     updateCycleButtons();
     return;
   }
@@ -1151,7 +1152,43 @@ function renderStats() {
   box.appendChild(statCard(t("cardFailed"), String(failed), t("failedOfTested", { tested })));
   box.appendChild(statCard(t("cardWorking"), String(s.reachable_candidates || 0)));
   box.appendChild(statCard(t("cardSubUsage"), fmtBytes(s.fetch_bytes)));
+  renderUpdated();
   updateCycleButtons();
+}
+
+/// Overview "updated" pill: hidden with no data yet, green dot only while
+/// a refresh runs (the stamp underneath is stale then, like the Last scan
+/// card which reads "—" mid-cycle), dot + age once a cycle finished.
+/// The age phrase from `fmtAgo` is already a complete localized string, so
+/// it is concatenated — never nested inside another `t()` substitution,
+/// whose LTR isolate would scramble RTL word order.
+function renderUpdated() {
+  const s = state.snapshot;
+  const stamp = s && !s.refreshing ? latestCycleStamp(s) : null;
+  const wrap = $("ov-updated-wrap");
+  if (wrap) {
+    wrap.hidden = !s || (!s.refreshing && !stamp);
+  }
+  setText($("ov-updated"), stamp ? t("ovUpdated") + " " + fmtAgo(stamp) : "");
+}
+
+/// Newest completed cycle stamp (refresh or ping): a finished ping
+/// revalidates what the dashboard shows, so the pill resets on either
+/// cadence instead of going stale between refreshes.
+function latestCycleStamp(s) {
+  let best = null;
+  let bestMs = NaN;
+  for (const iso of [s.last_refresh, s.last_ping_at]) {
+    if (!iso) {
+      continue;
+    }
+    const ms = Date.parse(iso);
+    if (!Number.isNaN(ms) && (best === null || ms > bestMs)) {
+      best = iso;
+      bestMs = ms;
+    }
+  }
+  return best;
 }
 
 /// Wall-clock-aligned live ticker: uptime + countdowns only. A plain
@@ -1170,6 +1207,7 @@ function tickClock() {
     const rs = refreshStatus();
     setText($("stat-refresh-val"), rs.val);
     setText($("stat-refresh-sub"), rs.sub);
+    renderUpdated();
   }
   scheduleClock();
 }

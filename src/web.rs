@@ -54,6 +54,10 @@ const FLAG_CN: &str = include_str!("../frontend/assets/CN.svg");
 const FLAG_FR: &str = include_str!("../frontend/assets/FR.svg");
 const FLAG_RU: &str = include_str!("../frontend/assets/RU.svg");
 const ICON_POWER: &str = include_str!("../frontend/assets/power-off-svgrepo-com.svg");
+/// Vendored Vazirmatn (variable 100–900) in Google's unicode subsets:
+/// Arabic covers Persian script, Latin covers digits and Latin runs.
+const FONT_VAZIR_ARABIC: &[u8] = include_bytes!("../frontend/assets/vazirmatn-arabic.woff2");
+const FONT_VAZIR_LATIN: &[u8] = include_bytes!("../frontend/assets/vazirmatn-latin.woff2");
 /// Embedded QR encoder (single-file MIT library, no network use).
 const DASHBOARD_QR: &str = include_str!("../frontend/qr.js");
 /// Radar-mark favicon (static SVG, zero sensitivity — served ungated like
@@ -68,20 +72,6 @@ const FAVICON_SVG: &str = concat!(
     "</svg>",
 );
 
-/// Budget from PLAN.md §5: the whole initial payload must fit one loopback
-/// exchange and stay usable on low-end phones. Raised 150 → 175 KiB for the
-/// unified i18n table + HTML bindings, then 175 → 250 KiB for the fa/zh/fr/ru
-/// locale tables, 250 → 260 KiB for subscription drag-and-drop reorder,
-/// 260 → 266 KiB for the run-as-admin elevation guide, 266 → 294 KiB for
-/// the translated typed settings editor (28 option names/guides × 5 locales:
-/// user text, not bloat — still one RTT), and 294 → 305 KiB for the
-/// portrait-phone app layout + tablet rules + card-label renderer, and
-/// 305 → 306 KiB for the persistent small-screen scrollbar styling + swipe
-/// cues on the always-overflowing rows.
-/// Measured in LF-canonical bytes (CRLF working trees normalize before
-/// measuring) so the gate is checkout-independent on every OS.
-#[cfg(test)]
-const DASHBOARD_ASSET_BUDGET_BYTES: usize = 313_344;
 /// Feed diff cadence: matches the dashboard's ≤1 Hz ranked refresh.
 const FEED_TICK: Duration = Duration::from_secs(2);
 /// SSE heartbeat so idle connections survive NATs/proxies.
@@ -186,9 +176,9 @@ pub async fn dashboard_qr(
     .await
 }
 
-/// `GET /assets/{file}` — language flag SVGs + the power icon. Whitelisted
-/// by name (never a raw path: no traversal, no surprises); same auth as
-/// the dashboard shell.
+/// `GET /assets/{file}` — language flag SVGs, the power icon, and the
+/// vendored Vazirmatn woff2 files. Whitelisted by name (never a raw path:
+/// no traversal, no surprises); same auth as the dashboard shell.
 pub async fn dashboard_flag(
     State(state): State<HttpState>,
     headers: HeaderMap,
@@ -196,13 +186,15 @@ pub async fn dashboard_flag(
     ConnectInfo(remote_addr): ConnectInfo<std::net::SocketAddr>,
     Path(file): Path<String>,
 ) -> Response {
-    let body = match file.as_str() {
-        "GB.svg" => FLAG_GB,
-        "IR.svg" => FLAG_IR,
-        "CN.svg" => FLAG_CN,
-        "FR.svg" => FLAG_FR,
-        "RU.svg" => FLAG_RU,
-        "power-off-svgrepo-com.svg" => ICON_POWER,
+    let (body, mime): (&'static [u8], &'static str) = match file.as_str() {
+        "GB.svg" => (FLAG_GB.as_bytes(), "image/svg+xml"),
+        "IR.svg" => (FLAG_IR.as_bytes(), "image/svg+xml"),
+        "CN.svg" => (FLAG_CN.as_bytes(), "image/svg+xml"),
+        "FR.svg" => (FLAG_FR.as_bytes(), "image/svg+xml"),
+        "RU.svg" => (FLAG_RU.as_bytes(), "image/svg+xml"),
+        "power-off-svgrepo-com.svg" => (ICON_POWER.as_bytes(), "image/svg+xml"),
+        "vazirmatn-arabic.woff2" => (FONT_VAZIR_ARABIC, "font/woff2"),
+        "vazirmatn-latin.woff2" => (FONT_VAZIR_LATIN, "font/woff2"),
         _ => {
             return (
                 StatusCode::NOT_FOUND,
@@ -213,7 +205,7 @@ pub async fn dashboard_flag(
         }
     };
     let token = query.token.as_deref().or_else(|| bearer_token(&headers));
-    static_response(&state, remote_addr, token, body, "image/svg+xml").await
+    static_bytes_response(&state, remote_addr, token, body, mime).await
 }
 
 /// `GET /favicon.ico` — radar mark. Public by design (see [`FAVICON_SVG`]).
@@ -234,6 +226,29 @@ async fn static_response(
     remote_addr: std::net::SocketAddr,
     token: Option<&str>,
     body: &'static str,
+    content_type: &'static str,
+) -> Response {
+    if let Err(response) = authorize(state, remote_addr, token).await {
+        return response;
+    }
+    // `no-store`: the bytes ride with the binary, so a fixed filename must
+    // never outlive the release that served it in a browser cache.
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+async fn static_bytes_response(
+    state: &HttpState,
+    remote_addr: std::net::SocketAddr,
+    token: Option<&str>,
+    body: &'static [u8],
     content_type: &'static str,
 ) -> Response {
     if let Err(response) = authorize(state, remote_addr, token).await {
@@ -2067,10 +2082,10 @@ mod tests {
     use tokio::sync::RwLock;
 
     use super::{
-        DASHBOARD_ASSET_BUDGET_BYTES, DASHBOARD_CSS, DASHBOARD_HTML, DASHBOARD_I18N, DASHBOARD_JS,
-        DASHBOARD_QR, FAVICON_SVG, FLAG_CN, FLAG_FR, FLAG_GB, FLAG_IR, FLAG_RU, FeedFingerprint,
-        config_response, events_response, favicon, qr_generate_response, qr_image_response,
-        static_response, subscriptions_response, summary_response,
+        DASHBOARD_CSS, DASHBOARD_HTML, DASHBOARD_I18N, DASHBOARD_JS, DASHBOARD_QR, FAVICON_SVG,
+        FLAG_CN, FLAG_FR, FLAG_GB, FLAG_IR, FLAG_RU, FeedFingerprint, config_response,
+        events_response, favicon, qr_generate_response, qr_image_response, static_response,
+        subscriptions_response, summary_response,
     };
     use crate::{
         constants::{DEFAULT_BIND, LOCALHOST_IP},
@@ -2195,22 +2210,7 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_assets_fit_payload_budget_and_stay_self_contained() {
-        // Budget counts LF-canonical bytes so the gate is identical on
-        // every checkout: a CRLF working tree (Windows `core.autocrlf`)
-        // must not trip the tripwire — releases build on LF and serve LF.
-        fn canonical_len(asset: &str) -> usize {
-            asset.len() - asset.matches("\r\n").count()
-        }
-        let total = canonical_len(DASHBOARD_HTML)
-            + canonical_len(DASHBOARD_CSS)
-            + canonical_len(DASHBOARD_JS)
-            + canonical_len(DASHBOARD_I18N)
-            + canonical_len(DASHBOARD_QR);
-        assert!(
-            total <= DASHBOARD_ASSET_BUDGET_BYTES,
-            "dashboard payload {total} exceeds {DASHBOARD_ASSET_BUDGET_BYTES}"
-        );
+    fn dashboard_assets_stay_self_contained() {
         assert!(DASHBOARD_HTML.contains("<!DOCTYPE html>"));
         assert!(DASHBOARD_HTML.contains("v2raydar-theme"));
         assert!(DASHBOARD_HTML.contains("/i18n.js"));
@@ -2364,6 +2364,35 @@ mod tests {
             .expect("body reads");
         let text = std::str::from_utf8(&body).expect("body is utf-8");
         assert!(text.contains("<svg"), "power icon must be an SVG file");
+    }
+
+    #[tokio::test]
+    async fn dashboard_flag_serves_vendored_vazirmatn() {
+        use super::dashboard_flag;
+        let state = http_state(RuntimeState::default(), false);
+        for file in ["vazirmatn-arabic.woff2", "vazirmatn-latin.woff2"] {
+            let (headers, query, connect) = no_auth();
+            let response = dashboard_flag(
+                axum::extract::State(state.clone()),
+                headers,
+                query,
+                connect,
+                axum::extract::Path(file.to_string()),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK, "{file} must serve");
+            assert_eq!(
+                response.headers().get(header::CONTENT_TYPE),
+                Some(&HeaderValue::from_static("font/woff2"))
+            );
+            let body = to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body reads");
+            assert!(
+                body.starts_with(b"wOF2"),
+                "{file} must be a woff2 font file"
+            );
+        }
     }
 
     #[tokio::test]

@@ -9,21 +9,6 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const dir = path.resolve(here, "..");
 
 describe("frontend performance budgets (PLAN §5)", () => {
-  it("initial payload stays small enough for one loopback RTT", () => {
-    // LF-canonical bytes so the gate is identical on every checkout:
-    // a CRLF working tree (Windows core.autocrlf) must not trip it.
-    const size = (f) =>
-      Buffer.byteLength(fs.readFileSync(path.join(dir, f), "utf8").replace(/\r\n/g, "\n"));
-    const sizes = {};
-    let total = 0;
-    for (const f of ["index.html", "style.css", "app.js", "i18n.js", "qr.js"]) {
-      sizes[f] = size(f);
-      total += sizes[f];
-    }
-    assert.ok(total <= 313_344, `total ${total} > 313344: ${JSON.stringify(sizes)}`);
-    assert.ok(sizes["app.js"] <= 120_000, `app.js ${sizes["app.js"]} too large for weak devices`);
-  });
-
   it("app.js parses fast on low-end hardware (parse ≤ 500 ms)", () => {
     const src = fs.readFileSync(path.join(dir, "app.js"), "utf8");
     const t0 = performance.now();

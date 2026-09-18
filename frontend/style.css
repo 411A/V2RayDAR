@@ -7,73 +7,73 @@
 
 :root {
   color-scheme: light;
-  --bg: #f4f6f9;
+  --bg: #edf1f5;
   --bg-raised: #ffffff;
-  --bg-sunken: #eceff3;
-  --border: #d9dee6;
-  --text: #17202b;
-  --muted: #5b6675;
-  --accent: #1f6feb;
+  --bg-sunken: #e4e9ef;
+  --border: #d5dce4;
+  --text: #15202a;
+  --muted: #5c6874;
+  --accent: #0e7490;
   --accent-ink: #ffffff;
-  --accent-soft: rgba(31, 111, 235, 0.12);
+  --accent-soft: rgba(14, 116, 144, 0.12);
   --good: #1a7f37;
   --good-soft: rgba(26, 127, 55, 0.12);
   --warn: #9a6700;
   --warn-soft: rgba(154, 103, 0, 0.14);
   --bad: #cf222e;
   --bad-soft: rgba(207, 34, 46, 0.1);
-  --code-bg: #eceff3;
-  --shadow: 0 1px 2px rgba(23, 32, 43, 0.08);
-  --radius: 10px;
-  --focus: #1f6feb;
+  --code-bg: #e4e9ef;
+  --shadow: 0 1px 2px rgba(16, 32, 44, 0.06), 0 4px 14px rgba(16, 32, 44, 0.06);
+  --radius: 14px;
+  --focus: #0e7490;
   --bar-track: #dde3ea;
 }
 
 html[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #0d1117;
-  --bg-raised: #161b22;
-  --bg-sunken: #010409;
-  --border: #30363d;
-  --text: #e6edf3;
-  --muted: #8b949e;
-  --accent: #4493f8;
-  --accent-ink: #0d1117;
-  --accent-soft: rgba(68, 147, 248, 0.16);
+  --bg: #0b0f14;
+  --bg-raised: #131a22;
+  --bg-sunken: #070b10;
+  --border: #2b3542;
+  --text: #e8eef4;
+  --muted: #93a0ad;
+  --accent: #2dd4bf;
+  --accent-ink: #062e29;
+  --accent-soft: rgba(45, 212, 191, 0.16);
   --good: #3fb950;
   --good-soft: rgba(63, 185, 80, 0.15);
   --warn: #d29922;
   --warn-soft: rgba(210, 153, 34, 0.16);
   --bad: #f85149;
   --bad-soft: rgba(248, 81, 73, 0.14);
-  --code-bg: #0d1117;
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
-  --focus: #79b8ff;
-  --bar-track: #21262d;
+  --code-bg: #0b0f14;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 6px 18px rgba(0, 0, 0, 0.35);
+  --focus: #5eead4;
+  --bar-track: #1f2933;
 }
 
 @media (prefers-color-scheme: dark) {
   html[data-theme="system"] {
     color-scheme: dark;
-    --bg: #0d1117;
-    --bg-raised: #161b22;
-    --bg-sunken: #010409;
-    --border: #30363d;
-    --text: #e6edf3;
-    --muted: #8b949e;
-    --accent: #4493f8;
-    --accent-ink: #0d1117;
-    --accent-soft: rgba(68, 147, 248, 0.16);
+    --bg: #0b0f14;
+    --bg-raised: #131a22;
+    --bg-sunken: #070b10;
+    --border: #2b3542;
+    --text: #e8eef4;
+    --muted: #93a0ad;
+    --accent: #2dd4bf;
+    --accent-ink: #062e29;
+    --accent-soft: rgba(45, 212, 191, 0.16);
     --good: #3fb950;
     --good-soft: rgba(63, 185, 80, 0.15);
     --warn: #d29922;
     --warn-soft: rgba(210, 153, 34, 0.16);
     --bad: #f85149;
     --bad-soft: rgba(248, 81, 73, 0.14);
-    --code-bg: #0d1117;
-    --shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
-    --focus: #79b8ff;
-    --bar-track: #21262d;
+    --code-bg: #0b0f14;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 6px 18px rgba(0, 0, 0, 0.35);
+    --focus: #5eead4;
+    --bar-track: #1f2933;
   }
 }
 
@@ -142,6 +142,32 @@ kbd,
    without this, elements like the notice banner render visibly empty. */
 [hidden] {
   display: none !important;
+}
+
+/* Vendored Vazirmatn (variable 100-900, same-origin assets only) for
+ * Persian: Arabic subset covers Persian script, Latin covers digits and
+ * Latin runs. Other locales keep the system stack untouched. */
+@font-face {
+  font-family: "Vazirmatn";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("./assets/vazirmatn-arabic.woff2") format("woff2");
+  unicode-range: U+0600-06FF, U+0750-077F, U+0870-088E, U+0890-0891, U+0897-08E1, U+08E3-08FF, U+200C-200E, U+2010-2011, U+204F, U+2E41, U+FB50-FDFF, U+FE70-FE74, U+FE76-FEFC, U+102E0-102FB, U+10E60-10E7E, U+10EC2-10EC4, U+10EFC-10EFF, U+1EE00-1EE03, U+1EE05-1EE1F, U+1EE21-1EE22, U+1EE24, U+1EE27, U+1EE29-1EE32, U+1EE34-1EE37, U+1EE39, U+1EE3B, U+1EE42, U+1EE47, U+1EE49, U+1EE4B, U+1EE4D-1EE4F, U+1EE51-1EE52, U+1EE54, U+1EE57, U+1EE59, U+1EE5B, U+1EE5D, U+1EE5F, U+1EE61-1EE62, U+1EE64, U+1EE67-1EE6A, U+1EE6C-1EE72, U+1EE74-1EE77, U+1EE79-1EE7C, U+1EE7E, U+1EE80-1EE89, U+1EE8B-1EE9B, U+1EEA1-1EEA3, U+1EEA5-1EEA9, U+1EEAB-1EEBB, U+1EEF0-1EEF1;
+}
+
+@font-face {
+  font-family: "Vazirmatn";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("./assets/vazirmatn-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+html[lang="fa"] body {
+  font-family: "Vazirmatn", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
 }
 
 /* ---- Top bar ---- */
@@ -255,7 +281,7 @@ kbd,
   border: 1px solid var(--border);
   background: var(--bg-raised);
   color: var(--text);
-  border-radius: 8px;
+  border-radius: 10px;
   padding: 0.42rem 0.8rem;
   font: inherit;
   font-size: 0.88rem;
@@ -265,10 +291,15 @@ kbd,
   gap: 0.4rem;
   box-shadow: var(--shadow);
   touch-action: manipulation;
+  transition: border-color 0.15s ease, transform 0.05s ease;
 }
 
 .btn:hover {
   border-color: var(--accent);
+}
+
+.btn:active {
+  transform: translateY(1px);
 }
 
 .btn:disabled {
@@ -377,7 +408,7 @@ kbd,
 .seg-switch {
   display: inline-flex;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 10px;
   overflow: hidden;
 }
 
@@ -407,6 +438,12 @@ kbd,
   font-weight: 600;
 }
 
+/* Theme switch is icon-only (monitor/sun/moon); the text labels stay in
+ * the DOM for i18n, while the localized `title` names the buttons. */
+.theme-switch .seg span {
+  display: none;
+}
+
 /* ---- Banner / notices ---- */
 
 .banner {
@@ -423,7 +460,7 @@ kbd,
 /* ---- Tabs + panels ---- */
 
 main {
-  max-inline-size: 1180px;
+  max-inline-size: 1600px;
   margin-inline: auto;
   padding: 1rem 1rem 1.5rem;
 }
@@ -444,6 +481,23 @@ main {
   font-weight: 600;
   font-size: 0.92rem;
   touch-action: manipulation;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+/* Tab glyphs inherit button sizing/paint from one rule so the seven
+ * inline SVGs stay attribute-light. */
+.tab svg,
+.seg svg {
+  width: 17px;
+  height: 17px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .tab:hover {
@@ -454,6 +508,49 @@ main {
 .tab[aria-selected="true"] {
   color: var(--accent);
   box-shadow: inset 0 -3px 0 var(--accent);
+}
+
+/* Wide landscape: the tab strip becomes a sticky icon rail beside the
+ * content (same anchors — layout only, no extra markup). */
+@media (min-width: 1025px) and (orientation: landscape) {
+  main {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    column-gap: 0.75rem;
+    align-items: start;
+    padding-inline-start: 0;
+  }
+
+  .tabs {
+    grid-column: 1;
+    grid-row: 1 / -1;
+    flex-direction: column;
+    gap: 0.2rem;
+    margin: 0;
+    border: 0;
+    padding: 0;
+    position: sticky;
+    top: 4.5rem;
+  }
+
+  .tab {
+    flex-direction: column;
+    gap: 0.2rem;
+    font-size: 0.72rem;
+    padding: 0.45rem 0.35rem;
+    border-radius: 10px;
+    text-align: center;
+  }
+
+  .tab[aria-selected="true"] {
+    box-shadow: none;
+    background: var(--accent-soft);
+  }
+
+  .panel {
+    grid-column: 2;
+    min-inline-size: 0;
+  }
 }
 
 .panel {
@@ -533,6 +630,49 @@ main {
 
 /* ---- Cards / stats ---- */
 
+/* Overview page head: section eyebrow + title with a live "updated" pill
+ * at the trailing edge (hidden until the first snapshot arrives). */
+.page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-block-end: 0.7rem;
+}
+
+.eyebrow {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.page-title {
+  margin: 0;
+  font-size: 1.65rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  line-height: 1.15;
+}
+
+.page-updated {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.page-updated .dot {
+  background: var(--good);
+  animation: pulse-dot 2.4s ease-in-out infinite;
+}
+
 /* Seven tight badges share exactly one row. Each card is min-zero with
  * wrapping values, so nothing ever sticks out of a border at any width;
  * narrow viewports scroll the row horizontally instead of wrapping it. */
@@ -574,8 +714,9 @@ main {
 
 .stat .stat-value {
   display: block;
-  font-size: clamp(1rem, 0.9rem + 0.6vw, 1.3rem);
-  font-weight: 700;
+  font-size: clamp(1.05rem, 0.95rem + 0.7vw, 1.45rem);
+  font-weight: 800;
+  letter-spacing: -0.01em;
   line-height: 1.2;
   overflow-wrap: anywhere;
   font-variant-numeric: tabular-nums;
@@ -665,8 +806,13 @@ main {
   gap: 0.5rem;
   background: var(--bg-sunken);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0.35rem 0.55rem;
+  border-radius: 10px;
+  padding: 0.45rem 0.6rem;
+  transition: border-color 0.15s ease;
+}
+
+.endpoint-list li:hover {
+  border-color: var(--accent);
 }
 
 .endpoint-list li strong {
@@ -957,8 +1103,9 @@ td .lat-bar > span {
   list-style: none;
   margin: 0 0 0.5rem;
   padding: 0.55rem 0.65rem;
-  background: var(--bg-sunken);
-  border: 1px solid var(--border);
+  background: #0d1117;
+  color: #d7e3ee;
+  border: 1px solid #30363d;
   border-radius: 8px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas,
     "Liberation Mono", monospace;
@@ -999,6 +1146,14 @@ td .lat-bar > span {
   margin: 0 0 0.4rem;
   font-size: 0.9rem;
   color: var(--accent);
+}
+
+/* Overview latencies read as accent-colored figures, like the TUI. */
+#ov-cfg-body td:last-child {
+  color: var(--accent);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .table-wrap.slim table {
@@ -1076,7 +1231,7 @@ td .lat-bar > span {
   color: var(--text);
   border: 1px solid var(--border);
   border-inline-start: 4px solid var(--accent);
-  border-radius: 8px;
+  border-radius: 12px;
   box-shadow: var(--shadow);
   padding: 0.55rem 0.8rem;
   font-size: 0.88rem;
@@ -1094,12 +1249,13 @@ td .lat-bar > span {
 
 dialog {
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 14px;
   background: var(--bg-raised);
   color: var(--text);
   padding: 0;
   max-inline-size: min(94vw, 480px);
   inline-size: 100%;
+  box-shadow: 0 18px 50px rgb(0 0 0 / 0.35);
 }
 
 dialog::backdrop {
@@ -1152,13 +1308,14 @@ kbd {
 }
 
 /* ---- Responsive: phones get an app layout, not a shrunk desktop ----
- * Portrait phones (<=640px): bottom tab bar, icon-only actions, wide tables
- * collapse into labeled cards (see `cell()` in app.js), stats become a snap
- * carousel. Landscape phones keep top tabs + real tables (the width fits
- * them) with condensed chrome. Tablets get roomy single columns, an
- * auto-fill stat grid, and a sticky name column in wide tables. Touch
- * pointers everywhere get thumb-size targets and 16px inputs (no iOS
- * zoom-on-focus). Desktop (>1024px landscape) is untouched. */
+ * Portrait phones (<=640px): bottom tab bar, theme + icon actions on one
+ * row with named Refresh/Ping below, wide tables collapse into labeled
+ * cards (see `cell()` in app.js), stats become a snap carousel. Landscape
+ * phones keep top tabs + real tables (the width fits them) with condensed
+ * chrome. Tablets get roomy single columns, an auto-fill stat grid, and a
+ * sticky name column in wide tables. Touch pointers everywhere get
+ * thumb-size targets and 16px inputs (no iOS zoom-on-focus). Desktop
+ * (>1024px landscape) uses the icon rail. */
 
 @media (max-width: 640px) and (orientation: portrait) {
   body {
@@ -1170,7 +1327,7 @@ kbd {
     padding: 0.75rem 0.75rem 5.5rem;
   }
 
-  /* Top bar: brand + status on line one, icon actions on line two. */
+  /* Top bar: brand + status on line one, controls below. */
   .topbar {
     gap: 0.6rem;
   }
@@ -1179,20 +1336,19 @@ kbd {
     display: none;
   }
 
-  /* Refresh/Ping go icon-only (accessible names survive in `title`);
-   * icon buttons match the flag/?/power rhythm instead of dwarfing them. */
-  #btn-refresh span,
-  #btn-ping span {
-    display: none;
-  }
-
-  #btn-refresh,
-  #btn-ping {
-    padding-inline: 0.6rem;
-  }
-
   #conn-bind {
     max-inline-size: 24vw;
+  }
+
+  /* Control rows: theme + icon buttons share row one (theme is first in
+   * flow order, so RTL puts it top-right); named Refresh/Ping share row
+   * two. Theme segments go icon-only here, labels survive for AT/i18n. */
+  #btn-refresh,
+  #btn-ping {
+    order: 5;
+    flex: 1 1 40%;
+    justify-content: center;
+    padding-inline: 0.6rem;
   }
 
   .top-actions {
@@ -1204,17 +1360,21 @@ kbd {
     padding-inline: 0.5rem;
   }
 
-  /* Portrait action cluster: the theme switch is a full-width segmented
-   * control on its own row; the five icon buttons share one stretched row
-   * below it (a lone wrapped button would collapse to its natural height
-   * instead of the shared one). */
+  /* Portrait action cluster: theme + the three icon buttons share row
+   * one (theme is first in flow order, so RTL puts it top-right); named
+   * Refresh/Ping share row two. Segments go icon-only; a lone wrapped
+   * button would collapse to its natural height instead of the shared
+   * one, so every cluster item stretches. */
   .top-actions .theme-switch {
-    flex: 1 1 100%;
+    flex: 1 1 auto;
+    order: -1;
+    min-inline-size: 0;
   }
 
   .top-actions .theme-switch .seg {
     flex: 1 1 0;
     justify-content: center;
+    min-inline-size: 0;
   }
 
   /* Bottom tab bar: the phone's primary navigation lives at the thumb. */
@@ -1237,6 +1397,8 @@ kbd {
 
   .tab {
     flex: 1 0 auto;
+    flex-direction: column;
+    gap: 0.25rem;
     text-align: center;
     white-space: nowrap;
     border-radius: 8px;
@@ -1651,12 +1813,23 @@ kbd {
   }
 }
 
-/* Power button: square glyph (unlike the wide 3:2 flags). currentColor fill
- * in the asset file follows the theme automatically. */
+/* Power button: square glyph (unlike the wide 3:2 flags). The asset file
+ * uses `currentColor`, but that cannot cross the `<img>` boundary — the
+ * glyph always renders black — so dark themes invert it to white. */
 .power-img {
   width: 17px;
   height: 17px;
   display: block;
+}
+
+html[data-theme="dark"] .power-img {
+  filter: invert(1);
+}
+
+@media (prefers-color-scheme: dark) {
+  html[data-theme="system"] .power-img {
+    filter: invert(1);
+  }
 }
 
 /* ---------- drag-and-drop reorder ---------- */

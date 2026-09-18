@@ -12,6 +12,7 @@ const MIME = {
   ".css": "text/css; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".svg": "image/svg+xml",
+  ".woff2": "font/woff2",
 };
 
 function ranked(i) {
@@ -171,10 +172,14 @@ export function createStub() {
       return;
     }
     if (req.method === "GET" && p.startsWith("/assets/")) {
-      // Mirror the backend whitelist: flag SVGs + power icon, no traversal.
+      // Mirror the backend whitelist: flag SVGs + power icon + vendored
+      // Vazirmatn, no traversal.
       const name = p.slice("/assets/".length);
       if (/^(GB|IR|CN|FR|RU)\.svg$/.test(name) || name === "power-off-svgrepo-com.svg") {
         res.writeHead(200, { "Content-Type": MIME[".svg"] });
+        res.end(fs.readFileSync(path.join(FRONTEND, "assets", name)));
+      } else if (/^vazirmatn-(arabic|latin)\.woff2$/.test(name)) {
+        res.writeHead(200, { "Content-Type": MIME[".woff2"] });
         res.end(fs.readFileSync(path.join(FRONTEND, "assets", name)));
       } else {
         res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });

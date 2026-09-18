@@ -85,6 +85,8 @@ const I18N_STRINGS = {
     tabShare: "Share",
 
     // Overview
+    ovEyebrow: "Network operations",
+    ovUpdated: "Updated",
     ovTop: "Top configs",
     thRank: "#",
     thName: "Name",
@@ -526,6 +528,8 @@ const I18N_STRINGS = {
     tabShare: "اشتراک‌گذاری",
 
     // Overview
+    ovEyebrow: "عملیات شبکه",
+    ovUpdated: "به‌روز شد",
     ovTop: "کانفیگ‌های برتر",
     thRank: "رتبه",
     thName: "نام",
@@ -963,6 +967,8 @@ const I18N_STRINGS = {
     tabShare: "分享",
 
     // Overview
+    ovEyebrow: "网络运维",
+    ovUpdated: "更新于",
     ovTop: "优选配置",
     thRank: "排名",
     thName: "名称",
@@ -1400,6 +1406,8 @@ const I18N_STRINGS = {
     tabShare: "Partage",
 
     // Overview
+    ovEyebrow: "Opérations réseau",
+    ovUpdated: "Mis à jour",
     ovTop: "Meilleures configurations",
     thRank: "#",
     thName: "Nom",
@@ -1837,6 +1845,8 @@ const I18N_STRINGS = {
     tabShare: "Поделиться",
 
     // Overview
+    ovEyebrow: "Сетевые операции",
+    ovUpdated: "Обновлено",
     ovTop: "Лучшие конфиги",
     thRank: "№",
     thName: "Название",

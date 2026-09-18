@@ -825,6 +825,43 @@ describe("running-for clock pauses while offline", () => {
   });
 });
 
+describe("overview updated pill tracks refresh and ping completions", () => {
+  const wrap = () => sandbox.document.getElementById("ov-updated-wrap");
+  const text = () => sandbox.document.getElementById("ov-updated").textContent;
+  it("resets on ping, hides text mid-refresh, hides with no data", () => {
+    const hourAgo = new Date(Date.now() - 3600_000).toISOString();
+    const justNow = new Date().toISOString();
+    // Refresh-only age.
+    api.state.snapshot = { refreshing: false, last_refresh: hourAgo, last_ping_at: null };
+    api.renderUpdated();
+    assert.equal(wrap().hidden, false);
+    assert.match(text(), /1.+h ago/);
+    // Fresh ping wins over an older refresh.
+    api.state.snapshot = { refreshing: false, last_refresh: hourAgo, last_ping_at: justNow };
+    api.renderUpdated();
+    assert.equal(wrap().hidden, false);
+    assert.match(text(), /just now/);
+    // Newer refresh wins over an older ping.
+    api.state.snapshot = { refreshing: false, last_refresh: justNow, last_ping_at: hourAgo };
+    api.renderUpdated();
+    assert.match(text(), /just now/);
+    // Unparseable stamps behave like no data.
+    api.state.snapshot = { refreshing: false, last_refresh: "not-a-date", last_ping_at: null };
+    api.renderUpdated();
+    assert.equal(wrap().hidden, true);
+    assert.equal(text(), "");
+    // Mid-refresh: dot only, no stale stamp.
+    api.state.snapshot = { refreshing: true, last_refresh: hourAgo, last_ping_at: justNow };
+    api.renderUpdated();
+    assert.equal(wrap().hidden, false);
+    assert.equal(text(), "");
+    // No data yet: fully hidden.
+    api.state.snapshot = null;
+    api.renderUpdated();
+    assert.equal(wrap().hidden, true);
+  });
+});
+
 describe("proxy select: explicit null unpins (live-push only)", () => {
   it("selectProxy(null) POSTs {uri:null}", async () => {
     const bodies = [];

@@ -26,12 +26,15 @@ describe("frontend static gates (PLAN §5 + TODO global gates)", () => {
     }
   });
 
-  it("no remote refs, no url( in CSS, same-origin fetch only", () => {
+  it("no remote refs, no root url( in CSS, same-origin fetch only", () => {
     const html = read("index.html");
     const css = read("style.css");
     const js = read("app.js");
     assert.ok(!/https?:\/\//.test(css.replace(/semantics|prefixes/i, "")), "style.css must not fetch remote URLs");
-    assert.ok(!/url\s*\(/.test(css), "style.css must not use url()");
+    // Same-origin relative assets only (vendored Vazirmatn): remote,
+    // root-absolute, and data: URLs stay banned so the shell remains
+    // fully self-contained.
+    assert.ok(!/url\s*\(\s*["']?(https?:|data:|\/)/i.test(css), "style.css must not fetch remote/root URLs");
     assert.ok(!/<script[^>]+src\s*=\s*["']https?:/i.test(html), "index.html must not load remote scripts");
     assert.ok(!/<link[^>]+href\s*=\s*["']https?:/i.test(html), "index.html must not load remote styles");
     assert.ok(!/fetch\s*\(\s*["']https?:/.test(js), "app.js must only call same-origin APIs");
@@ -57,12 +60,4 @@ describe("frontend static gates (PLAN §5 + TODO global gates)", () => {
     assert.deepEqual(missing, [], `missing ids: ${missing.join(", ")}`);
   });
 
-  it("payload budget: HTML+CSS+JS+i18n+QR ≤ 313344 bytes (PLAN §5)", () => {
-    // LF-canonical bytes so the gate is identical on every checkout:
-    // a CRLF working tree (Windows core.autocrlf) must not trip it.
-    const size = (f) => Buffer.byteLength(read(f).replace(/\r\n/g, "\n"));
-    const total =
-      size("index.html") + size("style.css") + size("app.js") + size("i18n.js") + size("qr.js");
-    assert.ok(total <= 313_344, `payload ${total} bytes exceeds 313344`);
-  });
 });

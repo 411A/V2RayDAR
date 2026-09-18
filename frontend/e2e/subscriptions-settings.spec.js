@@ -123,6 +123,27 @@ test("settings editor PATCHes a key; unknown key shows rejection toast", async (
   await input.press("Enter");
   await expect.poll(() => stub.configPatch.length).toBe(1);
   expect(stub.configPatch[0]).toMatchObject({ key: "bind" });
+  // Let the first round-trip fully settle: the toast fires before the
+  // resync rebuilds the rows, and an editor opened too early would be
+  // destroyed (or worse, shadow the next one).
+  await expect(page.locator("#toasts")).toContainText("Saved.");
+  await expect(page.locator(".set-row input")).toHaveCount(0);
+  // Numeric fields normalize keyboard digits: Persian digits arrive as ASCII
+  // so the server never rejects what the user typed.
+  await page.locator(".set-row .val").nth(1).click();
+  const num = page.locator(".set-row input").first();
+  await num.fill("۸");
+  await num.press("Enter");
+  await expect.poll(() => stub.configPatch.length).toBe(2);
+  expect(stub.configPatch[1]).toMatchObject({ key: "top_n", value: "8" });
+  // One Enter sends exactly one PATCH: the keystroke must not bubble into a
+  // second (empty) editor that would commit "" on the next blur. Clicking a
+  // neutral row name blurs anything left open; the count must not move.
+  await expect(page.locator(".set-row input")).toHaveCount(0);
+  await page.locator(".set-row .set-name").nth(1).click();
+  // Absence check: a phantom empty commit would land within a round-trip.
+  await page.waitForTimeout(500);
+  expect(stub.configPatch.length).toBe(2);
 });
 
 test("bool switch PATCHes the flipped value; readonly rows stay static", async ({ page }) => {

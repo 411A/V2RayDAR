@@ -1497,7 +1497,7 @@ fn parse_positive<T>(raw: &str) -> Option<T>
 where
     T: std::str::FromStr + PartialOrd + From<u8>,
 {
-    let parsed = raw.trim().parse::<T>().ok()?;
+    let parsed = crate::config::parse_setting_number::<T>(raw)?;
     if parsed > T::from(0) {
         Some(parsed)
     } else {
@@ -1528,7 +1528,11 @@ fn apply_web_setting(
     key: &str,
     raw: &str,
 ) -> Result<(), String> {
-    let value = raw.trim();
+    // Sanitize once for every key: invisible directional controls and
+    // surrounding whitespace never reach the validators or the database.
+    // Digit folding stays inside the numeric parsers so text keeps its chars.
+    let sanitized = crate::config::sanitize_setting_text(raw);
+    let value = sanitized.as_str();
     if apply_connection_setting(cfg, key, value)? {
         return Ok(());
     }
@@ -1570,14 +1574,12 @@ fn apply_connection_setting(
                 parse_positive(value).ok_or_else(|| "top_n must be greater than 0".to_string())?;
         }
         "refresh_seconds" => {
-            cfg.refresh_seconds = value
-                .parse::<u64>()
-                .map_err(|_| "refresh_seconds must be a number".to_string())?;
+            cfg.refresh_seconds = crate::config::parse_setting_number(value)
+                .ok_or_else(|| "refresh_seconds must be a number".to_string())?;
         }
         "ping_seconds" => {
-            cfg.ping_seconds = value
-                .parse::<u64>()
-                .map_err(|_| "ping_seconds must be a number".to_string())?;
+            cfg.ping_seconds = crate::config::parse_setting_number(value)
+                .ok_or_else(|| "ping_seconds must be a number".to_string())?;
         }
         "encoded_subscription" => {
             cfg.encoded_subscription =
@@ -1722,9 +1724,9 @@ fn parse_status_list(value: &str) -> Result<Vec<u16>, String> {
     let inner = inner.strip_suffix(']').unwrap_or(inner);
     let parsed = inner
         .split(',')
-        .map(|part| part.trim().parse::<u16>())
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| "accepted_statuses must be HTTP codes 100..599".to_string())?;
+        .map(crate::config::parse_setting_number::<u16>)
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| "accepted_statuses must be HTTP codes 100..599".to_string())?;
     if parsed.is_empty() || !parsed.iter().all(|status| (100..=599).contains(status)) {
         return Err("accepted_statuses must be HTTP codes 100..599".to_string());
     }
@@ -3494,6 +3496,39 @@ mod tests {
         assert!(super::apply_web_setting(&mut cfg, "geoip_db_path", "/data/geo.mmdb").is_ok());
         assert_eq!(cfg.geoip_db_path.as_deref(), Some("/data/geo.mmdb"));
         assert!(super::apply_web_setting(&mut cfg, "unknown.key", "1").is_err());
+    }
+
+    #[test]
+    fn web_setting_accepts_human_input_from_any_keyboard() {
+        // Regression: Persian-digit input rejected with
+        // "refresh_seconds must be a number" on every OS.
+        let mut cfg = crate::config::AppConfig::default_for_first_run();
+        assert!(super::apply_web_setting(&mut cfg, "refresh_seconds", "۹۰۰").is_ok());
+        assert_eq!(cfg.refresh_seconds, 900);
+        assert!(super::apply_web_setting(&mut cfg, "ping_seconds", "٣٠٠").is_ok());
+        assert_eq!(cfg.ping_seconds, 300);
+        assert!(super::apply_web_setting(&mut cfg, "top_n", "１０").is_ok());
+        assert_eq!(cfg.top_n, 10);
+        // BIDI isolates hitchhiking from RTL paste or isolated rendering.
+        assert!(super::apply_web_setting(&mut cfg, "refresh_seconds", " 900 ").is_ok());
+        assert_eq!(cfg.refresh_seconds, 900);
+        assert!(
+            super::apply_web_setting(&mut cfg, "refresh_seconds", "\u{2066}900\u{2069}").is_ok()
+        );
+        assert_eq!(cfg.refresh_seconds, 900);
+        assert!(
+            super::apply_web_setting(&mut cfg, "probe.accepted_statuses", "[۲۰۴, ۲۰۰]").is_ok()
+        );
+        assert_eq!(cfg.probe.accepted_statuses, vec![204, 200]);
+        assert_eq!(cfg.probe.accepted_statuses, vec![204, 200]);
+        // Text keeps its characters: isolates stripped, content untouched.
+        assert!(
+            super::apply_web_setting(&mut cfg, "emergency_config", "vless://u@h:443#e").is_ok()
+        );
+        assert_eq!(cfg.emergency_config.as_deref(), Some("vless://u@h:443#e"));
+        // Genuine garbage still refuses.
+        assert!(super::apply_web_setting(&mut cfg, "refresh_seconds", "abc").is_err());
+        assert!(super::apply_web_setting(&mut cfg, "top_n", "0").is_err());
     }
 
     #[tokio::test]

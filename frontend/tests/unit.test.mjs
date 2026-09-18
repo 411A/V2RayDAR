@@ -1139,4 +1139,18 @@ describe("settings tab: typed controls + translated rows", () => {
     const patch = bodies.find((b) => b.body && b.body.key === "encoded_subscription");
     assert.deepEqual(patch.body, { key: "encoded_subscription", value: "true" });
   });
+
+  it("normalizeSettingInput folds keyboard digits and drops bidi controls", () => {
+    // Persian, Arabic-Indic, and fullwidth digits from real keyboards.
+    assert.equal(api.normalizeSettingInput("۹۰۰", true), "900");
+    assert.equal(api.normalizeSettingInput("٣٠٠", true), "300");
+    assert.equal(api.normalizeSettingInput("９００", true), "900");
+    // BIDI isolates hitchhiking from RTL paste.
+    assert.equal(api.normalizeSettingInput(" 900 ", true), "900");
+    // Text fields keep their characters (no digit folding).
+    assert.equal(api.normalizeSettingInput("vless://u@h:443#e", false), "vless://u@h:443#e");
+    assert.equal(api.normalizeSettingInput("۱۲۳", false), "۱۲۳");
+    // Genuine garbage passes through for the server to refuse.
+    assert.equal(api.normalizeSettingInput("abc", true), "abc");
+  });
 });

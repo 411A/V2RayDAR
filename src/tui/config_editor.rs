@@ -152,12 +152,21 @@ pub fn value(config: &crate::config::AppConfig, key: ConfigKey) -> String {
 }
 
 pub fn apply(config: &mut crate::config::AppConfig, key: ConfigKey, raw: &str) -> Result<()> {
-    let value = raw.trim();
+    // Same human-input cleanup as the dashboard path: invisible directional
+    // controls and surrounding whitespace never reach the validators.
+    let sanitized = crate::config::sanitize_setting_text(raw);
+    let value = sanitized.as_str();
     match key {
         ConfigKey::Bind => config.bind = value.parse::<SocketAddr>()?,
         ConfigKey::TopN => config.top_n = positive(value, "top_n")?,
-        ConfigKey::RefreshSeconds => config.refresh_seconds = value.parse()?,
-        ConfigKey::PingSeconds => config.ping_seconds = value.parse()?,
+        ConfigKey::RefreshSeconds => {
+            config.refresh_seconds = crate::config::parse_setting_number(value)
+                .ok_or_else(|| anyhow!("refresh_seconds must be a number"))?;
+        }
+        ConfigKey::PingSeconds => {
+            config.ping_seconds = crate::config::parse_setting_number(value)
+                .ok_or_else(|| anyhow!("ping_seconds must be a number"))?;
+        }
         ConfigKey::EncodedSubscription => config.encoded_subscription = bool_value(value)?,
         ConfigKey::PrioritizeStability => config.prioritize_stability = bool_value(value)?,
         ConfigKey::ReturnConfigsAsap => config.return_configs_asap = bool_value(value)?,
@@ -222,9 +231,8 @@ fn positive<T>(value: &str, label: &str) -> Result<T>
 where
     T: std::str::FromStr + PartialOrd + From<u8>,
 {
-    let parsed = value
-        .parse::<T>()
-        .map_err(|_| anyhow!("{label} must be a number"))?;
+    let parsed = crate::config::parse_setting_number::<T>(value)
+        .ok_or_else(|| anyhow!("{label} must be a number"))?;
     if parsed > T::from(0) {
         Ok(parsed)
     } else {
@@ -255,8 +263,9 @@ fn required(value: &str, label: &str) -> Result<String> {
 fn statuses(value: &str) -> Result<Vec<u16>> {
     let parsed = value
         .split(',')
-        .map(|part| part.trim().parse::<u16>())
-        .collect::<Result<Vec<_>, _>>()?;
+        .map(crate::config::parse_setting_number::<u16>)
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| anyhow!("accepted_statuses must be HTTP codes 100..599"))?;
     if parsed.iter().all(|status| (100..=599).contains(status)) {
         Ok(parsed)
     } else {

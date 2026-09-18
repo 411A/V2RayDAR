@@ -185,6 +185,7 @@ const EXPORT_HOOK = `;globalThis.__v2 = {
   state, t, thas, applyI18nStatic, setLanguage, loadLanguage,
   toggleLangMenu, selectLang, closeLangMenu, reapplyFeedStatus, renderSettings,
   settingKind, settingName, settingGuide, settingGroupTitle, patchSetting,
+  normalizeSettingInput,
   el, cell,
   dropIndex, subReorder, shutdownServer, showStopped,
   refreshBusy, pingBusy, updateCycleButtons, triggerCycle, wire,

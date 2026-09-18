@@ -2751,6 +2751,25 @@ function settingGroupTitle(g) {
   return (g && g.title) || t("setFallback");
 }
 
+/// Normalize a typed setting before PATCH: trim, drop invisible bidi
+/// controls, and (for numeric fields) fold non-ASCII digits to ASCII.
+/// Keyboards and IMEs on every OS can emit Persian/Arabic/fullwidth digits
+/// that no server parse accepts — normalize here so the field never rejects
+/// what the user typed, with the server sanitizer as the backstop for pastes
+/// and other clients. Written as backslash-u escapes on purpose: invisible
+/// bidi control chars must never be pasted literally into source.
+function normalizeSettingInput(raw, numeric) {
+  let s = String(raw === undefined || raw === null ? "" : raw).trim();
+  s = s.replace(/[\u2066-\u2069\u200E\u200F\u202A-\u202E\u061C\uFEFF]/g, "");
+  if (numeric) {
+    s = s
+      .replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 0x06f0))
+      .replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+      .replace(/[\uFF10-\uFF19]/g, (d) => String(d.charCodeAt(0) - 0xff10));
+  }
+  return s;
+}
+
 /// PATCH one setting, toast the outcome, and resync the tab + overview.
 async function patchSetting(key, value) {
   const r = await fetchJson("/api/config", { method: "PATCH", body: { key, value } });
@@ -2863,6 +2882,11 @@ function settingControl(k, key, name) {
   val.title = t("tipEditSetting");
   val.addEventListener("click", () => editSettingText(key, name, val, kind === "int"));
   val.addEventListener("keydown", (ev) => {
+    // Keystrokes from the inline editor bubble up here: ignore them, or
+    // Enter/Space would open a second (empty) editor on top of the commit.
+    if (ev.target !== val) {
+      return;
+    }
     if (ev.key === "Enter" || ev.key === " ") {
       ev.preventDefault();
       editSettingText(key, name, val, kind === "int");
@@ -2959,19 +2983,23 @@ function editSettingText(key, name, valNode, numeric) {
       renderSettings();
       return;
     }
-    await patchSetting(key, input.value);
+    await patchSetting(key, normalizeSettingInput(input.value, numeric));
   };
   input.addEventListener("keydown", (ev) => {
     if (ev.key === "Enter") {
       ev.preventDefault();
+      ev.stopPropagation();
       void commit(true);
     } else if (ev.key === "Escape") {
       ev.preventDefault();
+      ev.stopPropagation();
       void commit(false);
     }
   });
   input.addEventListener("blur", () => void commit(true));
 }
+
+/* ---------- actions ---------- */
 
 /* ---------- actions ---------- */
 

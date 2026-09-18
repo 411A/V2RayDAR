@@ -423,6 +423,60 @@ pub fn normalize_sharing_token(value: &str) -> String {
     }
 }
 
+/// Directional-formatting controls that hitchhike on user input (pasted from
+/// RTL text, echoed back from BIDI-isolated rendering): never real content,
+/// so settings entry drops them on every OS instead of rejecting the value.
+const fn is_bidi_control(c: char) -> bool {
+    matches!(
+        c,
+        '\u{2066}' | '\u{2067}' | '\u{2068}' | '\u{2069}' // isolates
+        | '\u{200E}' | '\u{200F}' // marks
+        | '\u{202A}' | '\u{202B}' | '\u{202C}' | '\u{202D}' | '\u{202E}' // embeddings/overrides
+        | '\u{061C}' // arabic letter mark
+        | '\u{FEFF}' // zero-width no-break space / BOM
+    )
+}
+
+/// Human input cleanup shared by the dashboard, the TUI, and the API: drops
+/// invisible directional controls and trims surrounding whitespace. Digit
+/// folding is deliberately NOT done here — only numeric parsers fold, so
+/// URIs, names, and secrets keep their exact characters.
+pub fn sanitize_setting_text(raw: &str) -> String {
+    raw.chars()
+        .filter(|c| !is_bidi_control(*c))
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+/// Fold non-ASCII decimal digits to ASCII: Persian ۰-۹ (U+06F0-U+06F9),
+/// Arabic-Indic ٠-٩ (U+0660-U+0669), fullwidth ０-９ (U+FF10-U+FF19).
+/// Keyboards and IMEs on every OS emit these, while `str::parse` only reads
+/// ASCII — without folding, a typed `۹۰۰` rejects with "must be a number".
+pub fn fold_setting_digits(raw: &str) -> String {
+    raw.chars()
+        .map(|c| match c {
+            '\u{0660}'..='\u{0669}' => {
+                (u8::try_from(c as u32 - 0x0660).unwrap_or(0) + b'0') as char
+            }
+            '\u{06F0}'..='\u{06F9}' => {
+                (u8::try_from(c as u32 - 0x06F0).unwrap_or(0) + b'0') as char
+            }
+            '\u{FF10}'..='\u{FF19}' => {
+                (u8::try_from(c as u32 - 0xFF10).unwrap_or(0) + b'0') as char
+            }
+            _ => c,
+        })
+        .collect()
+}
+
+/// Parse an integer setting from human input: sanitize, fold digits, parse.
+pub fn parse_setting_number<T: std::str::FromStr>(raw: &str) -> Option<T> {
+    fold_setting_digits(&sanitize_setting_text(raw))
+        .parse::<T>()
+        .ok()
+}
+
 pub fn should_include_token_in_url(token: &str) -> bool {
     !token.trim().is_empty()
 }
@@ -913,5 +967,42 @@ mod tests {
         assert_eq!(names, vec!["a", "b", "c"], "zero rank lands first");
         let ranks: Vec<u32> = subscriptions.iter().map(|entry| entry.priority).collect();
         assert_eq!(ranks, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn setting_text_sanitize_drops_bidi_controls_and_trims() {
+        // Isolates hitchhiking from BIDI-isolated rendering or RTL paste.
+        assert_eq!(super::sanitize_setting_text("\u{2066}900\u{2069}"), "900");
+        assert_eq!(super::sanitize_setting_text("  900  "), "900");
+        assert_eq!(
+            super::sanitize_setting_text("\u{200F}active\u{200E}"),
+            "active"
+        );
+        // Real content survives: ZWNJ joins Persian letters, it is not dirt.
+        assert_eq!(
+            super::sanitize_setting_text("می\u{200C}شود"),
+            "می\u{200C}شود"
+        );
+    }
+
+    #[test]
+    fn setting_digits_fold_all_keyboard_digit_blocks() {
+        assert_eq!(super::fold_setting_digits("۹۰۰"), "900"); // Persian
+        assert_eq!(super::fold_setting_digits("٩٠٠"), "900"); // Arabic-Indic
+        assert_eq!(super::fold_setting_digits("９００"), "900"); // fullwidth
+        assert_eq!(super::fold_setting_digits("900"), "900");
+        // Non-digits pass through for the validators to judge.
+        assert_eq!(super::fold_setting_digits("9a0"), "9a0");
+    }
+
+    #[test]
+    fn setting_number_parses_human_input() {
+        assert_eq!(
+            super::parse_setting_number::<u64>("\u{2066}۹۰۰\u{2069}"),
+            Some(900)
+        );
+        assert_eq!(super::parse_setting_number::<u64>(" 300 "), Some(300));
+        assert_eq!(super::parse_setting_number::<u64>("abc"), None);
+        assert_eq!(super::parse_setting_number::<u16>("[204"), None);
     }
 }

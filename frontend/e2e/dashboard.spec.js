@@ -266,11 +266,15 @@ test("keys dialog ends with the GitHub support line (localized, RTL-safe)", asyn
   await expect(star).toHaveText("⭐️");
   await expect(star).toHaveAttribute("aria-label", "Star V2RayDAR on GitHub");
   await expect(support).toHaveCSS("direction", "ltr");
-  // Full sentence on one line: no lone star stranded below.
+  // Webfonts swap in async (font-display: swap): measure only after they
+  // arrive, or CI measures the OS fallback (DejaVu on Ubuntu vs Segoe on
+  // Windows) and identical sentences disagree by platform.
+  const readyFonts = () => page.evaluate(() => document.fonts.ready);
   const singleLine = (el) => {
     const cs = getComputedStyle(el);
     return el.getBoundingClientRect().height <= parseFloat(cs.lineHeight) + 1;
   };
+  await readyFonts();
   expect(await support.evaluate(singleLine)).toBe(true);
   // French (the reported wrap): same line, own help page.
   await page.keyboard.press("Escape");
@@ -280,6 +284,7 @@ test("keys dialog ends with the GitHub support line (localized, RTL-safe)", asyn
   await page.locator("#btn-keys").click();
   await expect(support).toContainText("Offrez-lui");
   await expect(link).toHaveAttribute("href", "https://github.com/411A/V2RayDAR/blob/main/docs/README.fr.md");
+  await readyFonts();
   expect(await support.evaluate(singleLine)).toBe(true);
   // Persian: translated sentence, right-to-left, link intact.
   await page.keyboard.press("Escape");
@@ -294,6 +299,10 @@ test("keys dialog ends with the GitHub support line (localized, RTL-safe)", asyn
   await expect(link).toHaveAttribute("href", "https://github.com/411A/V2RayDAR/blob/main/docs/README.fa.md");
   await expect(star).toHaveAttribute("href", "https://github.com/411A/V2RayDAR");
   await expect(star).toHaveAttribute("aria-label", "به V2RayDAR در گیت‌هاب ستاره بدهید");
+  await readyFonts();
+  // The Persian sentence must render in Vazirmatn, not the OS fallback.
+  const vazir = await page.evaluate(() => document.fonts.check('12px "Vazirmatn"', "حمایتش کنید"));
+  expect(vazir).toBe(true);
   expect(await support.evaluate(singleLine)).toBe(true);
   // Chinese points at its own help page too.
   await page.keyboard.press("Escape");
@@ -302,6 +311,7 @@ test("keys dialog ends with the GitHub support line (localized, RTL-safe)", asyn
   await expect(page.locator("html")).toHaveAttribute("lang", "zh");
   await page.locator("#btn-keys").click();
   await expect(link).toHaveAttribute("href", "https://github.com/411A/V2RayDAR/blob/main/docs/README.zh-CN.md");
+  await readyFonts();
   expect(await support.evaluate(singleLine)).toBe(true);
   // Russian: same line, own help page.
   await page.keyboard.press("Escape");
@@ -311,6 +321,7 @@ test("keys dialog ends with the GitHub support line (localized, RTL-safe)", asyn
   await page.locator("#btn-keys").click();
   await expect(support).toContainText("Поставьте");
   await expect(link).toHaveAttribute("href", "https://github.com/411A/V2RayDAR/blob/main/docs/README.ru.md");
+  await readyFonts();
   expect(await support.evaluate(singleLine)).toBe(true);
   // Back to English for the rest of the suite.
   await page.keyboard.press("Escape");

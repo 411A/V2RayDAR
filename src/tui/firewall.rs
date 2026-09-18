@@ -403,7 +403,13 @@ mod tests {
         .expect("state writes");
 
         assert!(allows_port(&dir, 1));
+        // Unrecorded ports follow the platform contract: closed on
+        // Windows/Linux, open-by-design on macOS (no manageable backend
+        // there — see `allows_port`). Either way no backend is touched.
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
         assert!(!allows_port(&dir, 2));
+        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+        assert!(allows_port(&dir, 2));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

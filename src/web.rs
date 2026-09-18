@@ -2427,7 +2427,6 @@ mod tests {
             assert!(!asset.contains("innerHTML"), "DOM injection sink");
             for snippet in [
                 "src=\"http",
-                "href=\"http",
                 "fetch(\"http",
                 "EventSource(\"http",
                 "url(http",
@@ -2437,6 +2436,23 @@ mod tests {
                 assert!(!asset.contains(snippet), "remote reference: {snippet}");
             }
         }
+        // The deliberate exception: support/star anchors in the keys dialog
+        // navigate on user click — they fetch nothing by themselves, so the
+        // shell stays self-contained. Anything else remote fails closed.
+        let mut search = DASHBOARD_HTML;
+        let mut anchors = 0;
+        while let Some(pos) = search.find("href=\"http") {
+            let tag_start = search[..pos].rfind('<').expect("href lives in a tag");
+            let tag = &search[tag_start..pos];
+            assert!(
+                tag.starts_with("<a ")
+                    && search[pos..].starts_with("href=\"https://github.com/411A/V2RayDAR"),
+                "remote reference must be a repository navigation anchor, got: {tag}"
+            );
+            anchors += 1;
+            search = &search[pos + 1..];
+        }
+        assert_eq!(anchors, 2, "exactly the support + star anchors link out");
         // qr.js keeps its upstream MIT header (with a homepage URL in a
         // comment), so it is checked for fetch-capable sinks instead.
         assert!(!DASHBOARD_QR.contains("innerHTML"), "DOM injection sink");

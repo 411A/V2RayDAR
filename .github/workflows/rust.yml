@@ -20,7 +20,13 @@ concurrency:
 jobs:
   gates:
     name: fmt + strict clippy + tests
-    runs-on: ubuntu-latest
+    # Mirror the release targets (Windows, Ubuntu, macOS): platform-only
+    # faults must fail here, not after release.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4

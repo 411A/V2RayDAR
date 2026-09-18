@@ -82,9 +82,9 @@ jobs:
         working-directory: frontend
         run: npx playwright install chromium --with-deps
 
-      - name: E2E (dashboard, cycles, subs/settings, proxy/sharing)
+      - name: E2E (full chromium suite, stub origin server)
         working-directory: frontend
-        run: npx playwright test --project=chromium e2e/dashboard.spec.js e2e/cycles.spec.js e2e/subscriptions-settings.spec.js e2e/proxy-sharing.spec.js
+        run: npx playwright test --project=chromium
 
       - name: Upload trace on failure
         if: failure()

@@ -675,7 +675,8 @@ main {
 
 /* Seven tight badges share exactly one row. Each card is min-zero with
  * wrapping values, so nothing ever sticks out of a border at any width;
- * narrow viewports scroll the row horizontally instead of wrapping it. */
+ * narrow landscape viewports scroll the row horizontally instead of
+ * wrapping it (portrait phones use a 3x2 grid without Fetched, see below). */
 .cards {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
@@ -1414,16 +1415,14 @@ kbd {
 
   /* Swipe cue: overlay scrollbars auto-hide on touch platforms and no CSS
    * forces a persistent native bar there (measured: zero layout space), so
-   * the always-overflowing rows fade at the trailing edge instead. The
+   * the always-overflowing tab bar fades at the trailing edge instead. The
    * native thin-bar rules below still serve classic scrollbars elsewhere. */
-  .tabs,
-  .cards {
+  .tabs {
     -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 26px), transparent);
     mask-image: linear-gradient(to right, #000 calc(100% - 26px), transparent);
   }
 
-  html[dir="rtl"] .tabs,
-  html[dir="rtl"] .cards {
+  html[dir="rtl"] .tabs {
     -webkit-mask-image: linear-gradient(to left, #000 calc(100% - 26px), transparent);
     mask-image: linear-gradient(to left, #000 calc(100% - 26px), transparent);
   }
@@ -1435,15 +1434,19 @@ kbd {
     max-inline-size: none;
   }
 
-  /* Stats: a snap carousel with a peek of the next card. */
+  /* Stats: six badges (Fetched hides on phones) in a fixed 3x2 grid —
+   * everything visible, no horizontal scroll, no snap carousel. */
   .cards {
-    grid-auto-flow: column;
-    grid-template-columns: none;
-    grid-auto-columns: minmax(132px, 68vw);
-    overflow-x: auto;
-    padding-block-end: 0.25rem;
-    scroll-snap-type: x mandatory;
-    scroll-padding-inline: 0.75rem;
+    grid-auto-flow: row;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-auto-columns: auto;
+    overflow-x: visible;
+    padding-block-end: 0;
+    scroll-snap-type: none;
+  }
+
+  #stat-fetched {
+    display: none;
   }
 
   .cards > .card {
@@ -1453,6 +1456,11 @@ kbd {
   .two-col,
   .config-cols {
     grid-template-columns: 1fr;
+  }
+
+  /* On phones the first overview row stacks: Endpoints above Top configs. */
+  #ov-endpoints-card {
+    order: -1;
   }
 
   /* Wide tables become labeled cards: one bordered card per row, each

@@ -489,6 +489,31 @@ describe("stat badges stay one-line with full stamps in tooltips", () => {
     assert.match(valueNode.title, /^2026\/09\/16 \d\d:\d\d:\d\d$/);
   });
 
+  it("Fetched badge carries the phone-hide id (CSS drops it on portrait phones)", () => {
+    api.state.hasSummaryApi = true;
+    api.state.refreshSeconds = 300;
+    api.state.pingSeconds = 0;
+    api.state.startedAt = "2026-09-16T13:03:47+00:00";
+    api.state.snapshot = {
+      refreshing: false,
+      pinging: false,
+      total_candidates: 9482,
+      tested_candidates: 550,
+      reachable_candidates: 41,
+      fetch_bytes: 6081740,
+      last_refresh: "2026-09-16T13:03:40+00:00",
+      refresh_duration_ms: 33400,
+      ranked: [],
+      fetch_errors: [],
+      proxy_running: false,
+    };
+    api.renderStats();
+    const cards = sandbox.__elements.get("stat-cards").children;
+    assert.equal(cards.length, 7);
+    assert.equal(cards[3].id, "stat-fetched");
+    assert.match(cards[3].children[0].textContent, /Fetched/);
+  });
+
   it("Last scan reads — while a refresh runs (TUI parity)", () => {
     api.state.hasSummaryApi = true;
     api.state.refreshSeconds = 300;

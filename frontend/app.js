@@ -1144,11 +1144,15 @@ function renderStats() {
   const scanHint = scanRunning ? "" : fmtStamp(s.last_refresh);
   // TUI top-strip parity: Running For / Refresh / Last Scan / Fetched /
   // Failed / Working / Sub Usage. Seven tight badges share one row (narrow
-  // viewports scroll horizontally instead of wrapping or overflowing).
+  // landscape viewports scroll horizontally instead of wrapping or
+  // overflowing); portrait phones hide Fetched (`#stat-fetched`) and show
+  // the remaining six in a fixed 3x2 grid — see style.css.
   box.appendChild(statCard(t("cardRunningFor"), uptimeText(), state.startedAt ? t("startedAt", { time: fmtClock(state.startedAt) }) : "", null, "stat-running", null, state.startedAt ? t("startedAt", { time: fmtStamp(state.startedAt) }) : ""));
   box.appendChild(statCard(t("cardRefresh"), rs.val, rs.sub, null, "stat-refresh-val", "stat-refresh-sub"));
   box.appendChild(statCard(t("cardLastScan"), scanVal, scanSub, null, null, null, scanHint));
-  box.appendChild(statCard(t("cardFetched"), String(s.total_candidates || 0)));
+  const fetched = statCard(t("cardFetched"), String(s.total_candidates || 0));
+  fetched.id = "stat-fetched";
+  box.appendChild(fetched);
   box.appendChild(statCard(t("cardFailed"), String(failed), t("failedOfTested", { tested })));
   box.appendChild(statCard(t("cardWorking"), String(s.reachable_candidates || 0)));
   box.appendChild(statCard(t("cardSubUsage"), fmtBytes(s.fetch_bytes)));

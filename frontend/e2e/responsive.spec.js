@@ -73,7 +73,7 @@ async function gotoRoute(page, route, errors) {
 }
 
 /// No page-level horizontal scrolling: wide content must live inside its own
-/// scroll container (table-wrap, tab bar, stat carousel), never the page.
+/// scroll container (table-wrap, tab bar), never the page.
 async function expectNoPageOverflow(page) {
   const r = await page.evaluate(() => ({
     doc: document.documentElement.scrollWidth,
@@ -103,8 +103,7 @@ async function expectTopActionsInside(page) {
 }
 
 /// Small screens: every scrollable region shows its bar (never an
-/// invisible swipe-only area) — tab bar, stat carousel, wide tables,
-// live logs.
+/// invisible swipe-only area) — tab bar, wide tables, live logs.
 async function expectVisibleScrollbars(page, route) {
   const tabs = await page.$eval(".tabs", (el) => [
     getComputedStyle(el).scrollbarWidth,
@@ -142,12 +141,11 @@ function sweep(suiteName, use, mode) {
           await expectVisibleScrollbars(page, route);
         }
         if (mode === "phone-portrait") {
-          // The always-overflowing rows fade at the trailing edge (the
-          // at-rest cue overlay scrollbars cannot give).
-          for (const sel of [".tabs", "#stat-cards"]) {
-            const mask = await page.$eval(sel, (el) => getComputedStyle(el).maskImage);
-            expect(mask, sel + " swipe cue").toContain("linear-gradient");
-          }
+          // The always-overflowing tab bar fades at the trailing edge (the
+          // at-rest cue overlay scrollbars cannot give); the stat badges
+          // are a fixed grid now, so only the tabs keep the swipe cue.
+          const mask = await page.$eval(".tabs", (el) => getComputedStyle(el).maskImage);
+          expect(mask, ".tabs swipe cue").toContain("linear-gradient");
         }
         const tabsPos = await page.evaluate(
           () => getComputedStyle(document.querySelector(".tabs")).position,
@@ -174,8 +172,21 @@ function sweep(suiteName, use, mode) {
             expect(unlabeled).toBe(0);
           }
           if (route.name === "overview") {
+            // Six badges (Fetched hides on phones) in a fixed 3x2 grid —
+            // nothing scrolls horizontally.
+            const fetchedDisplay = await page.$eval("#stat-fetched", (el) => getComputedStyle(el).display);
+            expect(fetchedDisplay, "Fetched badge hidden on phones").toBe("none");
             const scrollable = await page.$eval("#stat-cards", (el) => el.scrollWidth > el.clientWidth + 1);
-            expect(scrollable, "stat carousel scrolls").toBe(true);
+            expect(scrollable, "stat grid does not scroll").toBe(false);
+            const cols = await page.$eval("#stat-cards", (el) => getComputedStyle(el).gridTemplateColumns.split(" ").length);
+            expect(cols, "stat grid columns").toBe(3);
+            // The stacked row shows Endpoints above Top configs.
+            const stacked = await page.evaluate(() => {
+              const ep = document.getElementById("ov-endpoints-card").getBoundingClientRect();
+              const cfg = document.getElementById("ov-cfg-table").closest(".card").getBoundingClientRect();
+              return ep.bottom <= cfg.top;
+            });
+            expect(stacked, "Endpoints above Top configs on phones").toBe(true);
           }
         } else {
           // Top tabs + real tables everywhere else.

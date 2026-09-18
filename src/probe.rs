@@ -3520,8 +3520,12 @@ mod tests {
     /// End-to-end early stop against a live fake sing-box: four concurrent
     /// batches race, and the run must land on the target instead of each
     /// batch probing toward `top_n` on its own (or dropping results).
-    /// The bound is deliberately loose against CI timing variance; exactness
-    /// is pinned by the deterministic `shared_stop_*` unit tests below.
+    /// Structural bound, not a timing one: the first wave already holds
+    /// `process_concurrency(4) x batch(20) = 80` configs in flight before
+    /// any probe completes, and on a fast machine all 80 can land before
+    /// the stop broadcast is observed. What this pins is that no SECOND
+    /// wave is queued (which would head toward all 200); exactness is
+    /// pinned by the deterministic `shared_stop_*` unit tests below.
     #[tokio::test]
     async fn active_probe_stops_near_top_n_under_full_concurrency() {
         let _e2e_guard = stub_e2e_lock().lock().await;
@@ -3544,7 +3548,7 @@ mod tests {
             working_count(&ranked)
         );
         assert!(
-            ranked.len() <= 40,
+            ranked.len() <= 80,
             "tested {} configs for top_n=20",
             ranked.len()
         );
@@ -3572,11 +3576,14 @@ mod tests {
             "must find top_n working, got {}",
             working_count(&ranked)
         );
-        // Looser than the simple run: confirming the required previous-run
-        // configs can lag one wave behind when batches complete in lockstep,
-        // so more fresh configs get probed meanwhile by design.
+        // Same structural bound as the simple run: one full first wave is
+        // `process_concurrency(4) x batch(20) = 80` configs in flight, and
+        // the stability quorum (previous run's configs are scheduled first,
+        // so batch 1 carries all 20) still resolves inside that wave — a
+        // second wave is never queued. Confirmed previous-run configs can
+        // lag one wave behind only in completion order, never in scheduling.
         assert!(
-            ranked.len() <= 60,
+            ranked.len() <= 80,
             "tested {} configs for top_n=20",
             ranked.len()
         );

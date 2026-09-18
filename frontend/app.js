@@ -993,6 +993,12 @@ function applyProbeDelta(text) {
   if (typeof d.working === "number") {
     state.snapshot.reachable_candidates = d.working;
   }
+  // Fetched count rides the delta like tested/working: the fetch phase
+  // lands before any probe result, so without this the badge sticks at the
+  // hello value until a manual reload.
+  if (typeof d.total === "number") {
+    state.snapshot.total_candidates = d.total;
+  }
   if (typeof d.bytes === "number") {
     state.snapshot.fetch_bytes = (state.snapshot.fetch_bytes || 0) + d.bytes;
   }
@@ -1140,8 +1146,23 @@ function renderStats() {
   // stale until the cycle finishes.
   const scanRunning = !!s.refreshing;
   const scanVal = scanRunning ? "—" : fmtClock(s.last_refresh);
-  const scanSub = scanRunning ? "" : ago + took;
   const scanHint = scanRunning ? "" : fmtStamp(s.last_refresh);
+  // Age above duration on two stacked sub-lines (no "·" joiner): each line
+  // ellipsizes on its own, and tickClock refreshes the age every second
+  // like the green pill.
+  const scanCard = statCard(t("cardLastScan"), scanVal, null, null, null, null, scanHint);
+  if (!scanRunning) {
+    const ageLine = el("span", ago, "stat-sub");
+    ageLine.id = "stat-scan-age";
+    ageLine.title = scanHint;
+    scanCard.appendChild(ageLine);
+    if (took) {
+      const tookLine = el("span", took, "stat-sub");
+      tookLine.id = "stat-scan-took";
+      tookLine.title = scanHint;
+      scanCard.appendChild(tookLine);
+    }
+  }
   // TUI top-strip parity: Running For / Refresh / Last Scan / Fetched /
   // Failed / Working / Sub Usage. Seven tight badges share one row (narrow
   // landscape viewports scroll horizontally instead of wrapping or
@@ -1149,7 +1170,7 @@ function renderStats() {
   // the remaining six in a fixed 3x2 grid — see style.css.
   box.appendChild(statCard(t("cardRunningFor"), uptimeText(), state.startedAt ? t("startedAt", { time: fmtClock(state.startedAt) }) : "", null, "stat-running", null, state.startedAt ? t("startedAt", { time: fmtStamp(state.startedAt) }) : ""));
   box.appendChild(statCard(t("cardRefresh"), rs.val, rs.sub, null, "stat-refresh-val", "stat-refresh-sub"));
-  box.appendChild(statCard(t("cardLastScan"), scanVal, scanSub, null, null, null, scanHint));
+  box.appendChild(scanCard);
   const fetched = statCard(t("cardFetched"), String(s.total_candidates || 0));
   fetched.id = "stat-fetched";
   box.appendChild(fetched);
@@ -1162,13 +1183,14 @@ function renderStats() {
 
 /// Overview "updated" pill: hidden with no data yet, green dot only while
 /// a refresh runs (the stamp underneath is stale then, like the Last scan
-/// card which reads "—" mid-cycle), dot + age once a cycle finished.
-/// The age phrase from `fmtAgo` is already a complete localized string, so
-/// it is concatenated — never nested inside another `t()` substitution,
-/// whose LTR isolate would scramble RTL word order.
+/// card which reads "—" mid-cycle), dot + age once the refresh finished.
+/// The pill shares the Last scan badge's anchor, so both timers always
+/// agree. The age phrase from `fmtAgo` is already a complete localized
+/// string, so it is concatenated — never nested inside another `t()`
+/// substitution, whose LTR isolate would scramble RTL word order.
 function renderUpdated() {
   const s = state.snapshot;
-  const stamp = s && !s.refreshing ? latestCycleStamp(s) : null;
+  const stamp = s && !s.refreshing ? lastRefreshStamp(s) : null;
   const wrap = $("ov-updated-wrap");
   if (wrap) {
     wrap.hidden = !s || (!s.refreshing && !stamp);
@@ -1176,23 +1198,15 @@ function renderUpdated() {
   setText($("ov-updated"), stamp ? t("ovUpdated") + " " + fmtAgo(stamp) : "");
 }
 
-/// Newest completed cycle stamp (refresh or ping): a finished ping
-/// revalidates what the dashboard shows, so the pill resets on either
-/// cadence instead of going stale between refreshes.
-function latestCycleStamp(s) {
-  let best = null;
-  let bestMs = NaN;
-  for (const iso of [s.last_refresh, s.last_ping_at]) {
-    if (!iso) {
-      continue;
-    }
-    const ms = Date.parse(iso);
-    if (!Number.isNaN(ms) && (best === null || ms > bestMs)) {
-      best = iso;
-      bestMs = ms;
-    }
+/// Last completed refresh stamp. A ping only re-times ranked rows (the
+/// Refresh badge already counts down to it), so it must not reset the
+/// "Updated" clock — otherwise the pill and the Last scan age disagree.
+function lastRefreshStamp(s) {
+  const iso = s.last_refresh;
+  if (!iso || Number.isNaN(Date.parse(iso))) {
+    return null;
   }
-  return best;
+  return iso;
 }
 
 /// Wall-clock-aligned live ticker: uptime + countdowns only. A plain
@@ -1211,6 +1225,12 @@ function tickClock() {
     const rs = refreshStatus();
     setText($("stat-refresh-val"), rs.val);
     setText($("stat-refresh-sub"), rs.sub);
+    // Last-scan age ticks every second like the pill; the took line only
+    // changes when a cycle finishes (renderStats). Mid-refresh the badge
+    // reads "—" with no age element, so the write is a safe no-op then.
+    if (!state.snapshot.refreshing) {
+      setText($("stat-scan-age"), fmtAgo(state.snapshot.last_refresh));
+    }
     renderUpdated();
   }
   scheduleClock();

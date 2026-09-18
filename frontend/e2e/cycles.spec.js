@@ -90,3 +90,12 @@ test("keyboard shortcuts r/p trigger exactly once each", async ({ page }) => {
   await page.keyboard.press("p");
   await expect.poll(() => stub.pingPosts).toBe(1);
 });
+
+test("Fetched badge follows live probe-delta totals without a reload", async ({ page }) => {
+  await page.goto(base + "/overview");
+  // Stub hello reports 8 fetched; a fetch-phase delta lands while
+  // tested/working hold still — the badge must follow it live.
+  await expect(page.locator("#stat-fetched .stat-value")).toHaveText("8");
+  stub.emit("probe-delta", { tested: 8, working: 2, total: 42, refreshing: false, pinging: false });
+  await expect(page.locator("#stat-fetched .stat-value")).toHaveText("42");
+});

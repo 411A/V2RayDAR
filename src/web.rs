@@ -1939,6 +1939,10 @@ impl Drop for FeedGuard {
 struct FeedFingerprint {
     tested: usize,
     working: usize,
+    /// Fetched count lands while tested/working hold still (the fetch phase
+    /// completes before any probe result): without it the Fetched badge
+    /// sticks at the hello value until a manual reload.
+    total: usize,
     ranked_len: usize,
     refreshing: bool,
     pinging: bool,
@@ -1960,6 +1964,7 @@ impl FeedFingerprint {
         Self {
             tested: runtime.tested_candidates,
             working: runtime.reachable_candidates,
+            total: runtime.total_candidates,
             ranked_len: runtime.ranked.len(),
             refreshing: runtime.refreshing,
             pinging: runtime.pinging,
@@ -2005,6 +2010,7 @@ async fn feed_task(runtime: SharedState, tx: UnboundedSender<Result<Event, Infal
             let delta = serde_json::json!({
                 "tested": current.tested,
                 "working": current.working,
+                "total": snapshot.total_candidates,
                 "bytes": bytes_delta,
                 // Cycle state rides every delta: the fingerprint retrips on
                 // refreshing/pinging/finished_at changes, and the UI needs the
@@ -2207,6 +2213,19 @@ mod tests {
             FeedFingerprint::of(&switched),
             FeedFingerprint::of(&unpinned)
         );
+    }
+
+    #[test]
+    fn feed_fingerprint_retrips_on_total_change() {
+        // The fetch phase lands while tested/working hold still: without
+        // total in the fingerprint no probe-delta fires and the Fetched
+        // badge sticks at the hello value until a manual reload.
+        let before = FeedFingerprint::of(&RuntimeState::default());
+        let fetched = RuntimeState {
+            total_candidates: 9482,
+            ..RuntimeState::default()
+        };
+        assert_ne!(before, FeedFingerprint::of(&fetched));
     }
 
     #[test]

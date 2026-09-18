@@ -489,6 +489,62 @@ describe("stat badges stay one-line with full stamps in tooltips", () => {
     assert.match(valueNode.title, /^2026\/09\/16 \d\d:\d\d:\d\d$/);
   });
 
+  it("Last scan stacks age above duration on two sub-lines", () => {
+    api.state.hasSummaryApi = true;
+    api.state.refreshSeconds = 300;
+    api.state.pingSeconds = 0;
+    api.state.startedAt = "2026-09-16T13:03:47+00:00";
+    api.state.snapshot = {
+      refreshing: false,
+      pinging: false,
+      total_candidates: 9482,
+      tested_candidates: 550,
+      reachable_candidates: 41,
+      fetch_bytes: 6081740,
+      last_refresh: "2026-09-16T13:03:40+00:00",
+      refresh_duration_ms: 33400,
+      ranked: [],
+      fetch_errors: [],
+      proxy_running: false,
+    };
+    api.renderStats();
+    const scan = sandbox.__elements.get("stat-cards").children[2];
+    const subs = scan.children.filter((c) => c.className === "stat-sub");
+    assert.equal(subs.length, 2);
+    assert.equal(subs[0].id, "stat-scan-age");
+    assert.equal(subs[1].id, "stat-scan-took");
+    assert.match(subs[1].textContent, /took/);
+  });
+
+  it("tickClock refreshes the scan age every second without a render", () => {
+    api.state.hasSummaryApi = true;
+    api.state.refreshSeconds = 300;
+    api.state.pingSeconds = 0;
+    api.state.startedAt = new Date(Date.now() - 3_600_000).toISOString();
+    api.state.feed = "live";
+    api.state.snapshot = {
+      refreshing: false,
+      pinging: false,
+      total_candidates: 9482,
+      tested_candidates: 550,
+      reachable_candidates: 41,
+      fetch_bytes: 6081740,
+      last_refresh: new Date(Date.now() - 90_000).toISOString(),
+      refresh_duration_ms: 33400,
+      ranked: [],
+      fetch_errors: [],
+      proxy_running: false,
+    };
+    api.renderStats();
+    // Id lookup resolves to the rendered badge (stub registry stands in
+    // for the browser's id index); the tick rewrites that node in place.
+    const age = sandbox.document.getElementById("stat-scan-age");
+    // The stamp moves forward; the next tick rewrites the age in place.
+    api.state.snapshot.last_refresh = new Date(Date.now() - 20_000).toISOString();
+    api.tickClock();
+    assert.match(age.textContent, /\d+.+s ago/);
+  });
+
   it("Fetched badge carries the phone-hide id (CSS drops it on portrait phones)", () => {
     api.state.hasSummaryApi = true;
     api.state.refreshSeconds = 300;
@@ -765,6 +821,16 @@ describe("live probe-delta confirms proxy switches", () => {
     assert.equal(api.state.snapshot.proxy_active_uri, null);
   });
 
+  it("merges the fetched total so the badge updates without a reload", () => {
+    api.state.snapshot = snap();
+    api.state.proxyPendingUri = undefined;
+    api.applyProbeDelta(JSON.stringify({ tested: 8, working: 2, total: 42 }));
+    assert.equal(api.state.snapshot.total_candidates, 42);
+    const fetched = sandbox.__elements.get("stat-cards").children[3];
+    assert.equal(fetched.id, "stat-fetched");
+    assert.equal(fetched.children[1].textContent, "42");
+  });
+
   it("settle clears a never-confirmed switch with a warning", async () => {
     api.state.snapshot = snap();
     api.state.proxyPendingUri = URI;
@@ -850,10 +916,10 @@ describe("running-for clock pauses while offline", () => {
   });
 });
 
-describe("overview updated pill tracks refresh and ping completions", () => {
+describe("overview updated pill tracks the last refresh", () => {
   const wrap = () => sandbox.document.getElementById("ov-updated-wrap");
   const text = () => sandbox.document.getElementById("ov-updated").textContent;
-  it("resets on ping, hides text mid-refresh, hides with no data", () => {
+  it("ignores pings, hides text mid-refresh, hides with no data", () => {
     const hourAgo = new Date(Date.now() - 3600_000).toISOString();
     const justNow = new Date().toISOString();
     // Refresh-only age.
@@ -861,12 +927,13 @@ describe("overview updated pill tracks refresh and ping completions", () => {
     api.renderUpdated();
     assert.equal(wrap().hidden, false);
     assert.match(text(), /1.+h ago/);
-    // Fresh ping wins over an older refresh.
+    // A fresh ping must NOT reset the pill: both timers anchor on the
+    // refresh, so the pill and the Last scan age always agree.
     api.state.snapshot = { refreshing: false, last_refresh: hourAgo, last_ping_at: justNow };
     api.renderUpdated();
     assert.equal(wrap().hidden, false);
-    assert.match(text(), /just now/);
-    // Newer refresh wins over an older ping.
+    assert.match(text(), /1.+h ago/);
+    // Newer refresh moves the pill.
     api.state.snapshot = { refreshing: false, last_refresh: justNow, last_ping_at: hourAgo };
     api.renderUpdated();
     assert.match(text(), /just now/);
@@ -884,6 +951,33 @@ describe("overview updated pill tracks refresh and ping completions", () => {
     api.state.snapshot = null;
     api.renderUpdated();
     assert.equal(wrap().hidden, true);
+  });
+
+  it("pill age matches the Last scan age line, even right after a ping", () => {
+    api.state.hasSummaryApi = true;
+    api.state.refreshSeconds = 300;
+    api.state.pingSeconds = 60;
+    api.state.startedAt = new Date(Date.now() - 3_600_000).toISOString();
+    api.state.snapshot = {
+      refreshing: false,
+      pinging: false,
+      total_candidates: 8,
+      tested_candidates: 8,
+      reachable_candidates: 2,
+      fetch_bytes: 1234,
+      last_refresh: new Date(Date.now() - 90_000).toISOString(),
+      refresh_duration_ms: 6100,
+      last_ping_at: new Date().toISOString(),
+      ranked: [],
+      fetch_errors: [],
+      proxy_running: false,
+    };
+    api.renderStats();
+    const scan = sandbox.__elements.get("stat-cards").children[2];
+    const age = scan.children.find((c) => c.id === "stat-scan-age").textContent;
+    assert.match(age, /1.+m ago/);
+    // renderStats re-renders the pill too: same anchor, same phrase.
+    assert.ok(text().endsWith(age), `pill ${JSON.stringify(text())} shares the scan age`);
   });
 });
 

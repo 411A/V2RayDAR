@@ -197,7 +197,7 @@ const EXPORT_HOOK = `;globalThis.__v2 = {
   proxyRowState, syncProxyPending, applyProbeDelta, settleProxyPending,
   setProxyMode, proxyMode, updateProxyModeButtons,
   firewallElevation, showAdminGuide,
-  tickClock, uptimeText, renderUpdated, latestCycleStamp,
+  tickClock, uptimeText, renderUpdated, lastRefreshStamp,
 };`;
 
 /** Evaluate the real frontend (i18n.js first, then app.js) in a stub DOM. */

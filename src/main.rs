@@ -1,3 +1,4 @@
+mod applog;
 mod clash;
 mod config;
 mod constants;
@@ -795,7 +796,7 @@ async fn probe_refresh_candidates(
         }
         push_tui_progress(
             state,
-            ProgressEvent::LiveLog(message.trim_end_matches('.').to_string()),
+            ProgressEvent::LiveLog(applog::warn_line(message.trim_end_matches('.'))),
             &HashSet::new(),
             true,
         )
@@ -817,10 +818,10 @@ async fn probe_refresh_candidates(
     }
     push_tui_progress(
         state,
-        ProgressEvent::LiveLog(format!(
+        ProgressEvent::LiveLog(applog::info_line(&format!(
             "{label} started: {candidate_count} candidates with {:?}",
             config.probe.mode
-        )),
+        ))),
         &HashSet::new(),
         true,
     )
@@ -907,23 +908,37 @@ fn resolve_paths(cli: &Cli) -> Result<AppPaths> {
     AppPaths::installed()
 }
 
+/// Persisted-row counts for the Live log line the caller emits.
+#[derive(Debug, Clone, Copy)]
+struct PersistStats {
+    upserted: usize,
+    stable_keys: usize,
+    cleaned: usize,
+}
+
 /// Persist probed configs and stable top-N keys; optionally clean offline rows.
 /// Shared by the fetch cycle (cleanup on) and the ping cycle (cleanup off,
 /// since the fetch cycle already handles it on its own cadence).
+/// Returns row counts so the caller can log one database line (debug for
+/// the routine upsert, info when rows were actually deleted) — the
+/// progress channel is already closed by then, so logging happens at the
+/// call site, straight into the ring.
 async fn persist_ranked_configs(
     database: &Arc<Database>,
     ranked: &[RankedConfig],
     top_n: usize,
     clean_offlines_after_days: u32,
     clean_offlines: bool,
-) -> Result<()> {
-    {
+) -> Result<PersistStats> {
+    let upserted = ranked.len();
+    let stable_keys = {
         let db = database.clone();
         let configs = ranked.to_vec();
         tokio::task::spawn_blocking(move || {
             db.upsert_configs(&configs)?;
-            if configs.is_empty() {
+            let keys: Vec<String> = if configs.is_empty() {
                 db.delete_stable_top_keys()?;
+                Vec::new()
             } else {
                 let keys: Vec<String> = configs
                     .iter()
@@ -936,27 +951,33 @@ async fn persist_ranked_configs(
                 } else {
                     db.save_stable_top_keys(&keys)?;
                 }
-            }
-            Ok::<(), anyhow::Error>(())
+                keys
+            };
+            Ok::<usize, anyhow::Error>(keys.len())
         })
         .await
         .map_err(|e| anyhow!("{e}"))?
-        .context("failed to persist configs to database")?;
-    }
+        .context("failed to persist configs to database")?
+    };
 
+    let mut cleaned = 0;
     if clean_offlines {
         let db = database.clone();
-        tokio::task::spawn_blocking(move || db.clean_offline_configs(clean_offlines_after_days))
-            .await
-            .map_err(|e| anyhow!("{e}"))?
-            .map(|deleted| {
-                if deleted > 0 {
-                    info!(deleted, "cleaned offline configs from database");
-                }
-            })
-            .context("failed to clean offline configs")?;
+        cleaned = tokio::task::spawn_blocking(move || {
+            db.clean_offline_configs(clean_offlines_after_days)
+        })
+        .await
+        .map_err(|e| anyhow!("{e}"))?
+        .context("failed to clean offline configs")?;
+        if cleaned > 0 {
+            info!(cleaned, "cleaned offline configs from database");
+        }
     }
-    Ok(())
+    Ok(PersistStats {
+        upserted,
+        stable_keys,
+        cleaned,
+    })
 }
 
 /// Cycle origin marker for Recent Logs: 🤖 automatic (timer, startup,
@@ -997,9 +1018,7 @@ async fn refresh_once(
         info!("refresh preempting running ping; partials will be carried over");
         push_tui_progress(
             &state,
-            ProgressEvent::LiveLog(timestamped_log(
-                "Refresh preempting running ping".to_string(),
-            )),
+            ProgressEvent::LiveLog(applog::info_line("Refresh preempting running ping")),
             &HashSet::new(),
             true,
         )
@@ -1056,10 +1075,6 @@ async fn refresh_once(
         ));
     }
     *runtime_config.write().await = RuntimeConfig::from(config);
-    let refresh_started_log = timestamped_log(format!(
-        "Refresh started at {}",
-        started_at.with_timezone(&Local).format("%H:%M:%S")
-    ));
     {
         let mut runtime = state.write().await;
         runtime.refreshing = true;
@@ -1080,7 +1095,14 @@ async fn refresh_once(
         if config.return_configs_asap && carry.is_none() {
             runtime.ranked.clear();
         }
-        push_live_log(&mut runtime, refresh_started_log);
+        applog::push(
+            &mut runtime,
+            applog::LogLevel::Info,
+            &format!(
+                "Refresh started at {}",
+                started_at.with_timezone(&Local).format("%H:%M:%S")
+            ),
+        );
     }
 
     let fetch_started = std::time::Instant::now();
@@ -1102,10 +1124,10 @@ async fn refresh_once(
                 successes: Vec::new(),
             }
         } else {
-            let _ = progress_tx.send(ProgressEvent::LiveLog(format!(
+            let _ = progress_tx.send(ProgressEvent::LiveLog(applog::info_line(&format!(
                 "Loaded {} previously-probed configs from database",
                 ranked_from_db.len()
-            )));
+            ))));
             FetchOutcome {
                 candidates: ranked_from_db
                     .into_iter()
@@ -1165,17 +1187,20 @@ async fn refresh_once(
             format_duration_short(fetch_started.elapsed().as_millis())
         ));
     }
-    let load_finished_log = timestamped_log(format!(
-        "Subscription loading finished: {} configs, {} source errors in {}",
-        fetched_count,
-        fetch_errors.len(),
-        format_duration_short(fetch_started.elapsed().as_millis())
-    ));
     {
         let mut runtime = state.write().await;
         runtime.total_candidates = fetched_count;
         runtime.fetch_errors.clone_from(&fetch_errors);
-        push_live_log(&mut runtime, load_finished_log);
+        applog::push(
+            &mut runtime,
+            applog::LogLevel::Info,
+            &format!(
+                "Subscription loading finished: {} configs, {} source errors in {}",
+                fetched_count,
+                fetch_errors.len(),
+                format_duration_short(fetch_started.elapsed().as_millis())
+            ),
+        );
     }
 
     // The preempted ping verified these seconds ago: keep them (they count
@@ -1251,17 +1276,20 @@ async fn refresh_once(
                             format_duration_short(retry_started.elapsed().as_millis())
                         ));
                     }
-                    let retry_finished_log = timestamped_log(format!(
-                        "Subscription retry finished: {} new configs from {} entries; {} source errors remain",
-                        retry_count,
-                        retry_before_dedup,
-                        fetch_errors.len()
-                    ));
                     {
                         let mut runtime = state.write().await;
                         runtime.total_candidates = fetched_count;
                         runtime.fetch_errors.clone_from(&fetch_errors);
-                        push_live_log(&mut runtime, retry_finished_log);
+                        applog::push(
+                            &mut runtime,
+                            applog::LogLevel::Info,
+                            &format!(
+                                "Subscription retry finished: {} new configs from {} entries; {} source errors remain",
+                                retry_count,
+                                retry_before_dedup,
+                                fetch_errors.len()
+                            ),
+                        );
                     }
                     if retry_count > 0 {
                         cache_fetched_candidates(&database, &retry.candidates).await;
@@ -1285,9 +1313,9 @@ async fn refresh_once(
                     warn!(error = %error, "proxied subscription retry failed");
                     push_tui_progress(
                         &state,
-                        ProgressEvent::LiveLog(format!(
+                        ProgressEvent::LiveLog(applog::warn_line(&format!(
                             "Subscription retry through first working config failed: {error}"
-                        )),
+                        ))),
                         &HashSet::new(),
                         true,
                     )
@@ -1297,10 +1325,9 @@ async fn refresh_once(
         } else {
             push_tui_progress(
                 &state,
-                ProgressEvent::LiveLog(
-                    "Subscription retry skipped: no emergency or active working config is available"
-                        .to_string(),
-                ),
+                ProgressEvent::LiveLog(applog::warn_line(
+                    "Subscription retry skipped: no emergency or active working config is available",
+                )),
                 &HashSet::new(),
                 true,
             )
@@ -1344,14 +1371,17 @@ async fn refresh_once(
                         format_duration_short(cache_started.elapsed().as_millis())
                     ));
                 }
-                let cache_finished_log = timestamped_log(format!(
-                    "Database fallback finished: {cache_count} configs from previously-probed entries"
-                ));
                 {
                     let mut runtime = state.write().await;
                     runtime.total_candidates = fetched_count;
                     runtime.fetch_errors.clone_from(&fetch_errors);
-                    push_live_log(&mut runtime, cache_finished_log);
+                    applog::push(
+                        &mut runtime,
+                        applog::LogLevel::Info,
+                        &format!(
+                            "Database fallback finished: {cache_count} configs from previously-probed entries"
+                        ),
+                    );
                 }
                 if cache_count > 0 {
                     // Already database rows: nothing new to remember.
@@ -1442,7 +1472,7 @@ async fn refresh_once(
         ranked.clone_from(&previous_before_refresh.ranked);
         stable_working_counts.clone_from(&previous_before_refresh.stable_working_counts);
     } else {
-        persist_ranked_configs(
+        let persisted = persist_ranked_configs(
             &database,
             &ranked,
             config.top_n,
@@ -1450,6 +1480,16 @@ async fn refresh_once(
             true,
         )
         .await?;
+        {
+            let mut runtime = state.write().await;
+            applog::log_persist_stats(
+                &mut runtime,
+                persisted.upserted,
+                persisted.stable_keys,
+                persisted.cleaned,
+                config.clean_offlines_after_days,
+            );
+        }
     }
     // Use the accumulated reachable count from probing — do NOT recalculate
     // from the final ranked list, as deduplication may reduce the count and
@@ -1509,17 +1549,19 @@ async fn refresh_once(
         runtime.total_candidates,
         failed_count,
         runtime.reachable_candidates,
-        format_bytes(refresh_fetch_bytes),
+        applog::format_bytes(refresh_fetch_bytes),
     );
     if fell_back {
-        push_live_log(
+        applog::push(
             &mut runtime,
-            timestamped_log(format!(
+            applog::LogLevel::Warn,
+            &format!(
                 "Refresh verified no working configs; kept {fallback_working} previous working configs"
-            )),
+            ),
         );
     }
-    push_runtime_log(&mut runtime, summary);
+    applog::push(&mut runtime, applog::LogLevel::Info, &summary);
+    push_runtime_log(&mut runtime, applog::info_line(&summary));
 
     if print_terminal_summary {
         print_summary(&runtime, config.top_n);
@@ -1811,8 +1853,8 @@ async fn ping_once(
             // TUI announced the manual ping.
             push_tui_progress(
                 &state,
-                ProgressEvent::LiveLog(timestamped_log(
-                    "Manual ping skipped: a cycle is already running".to_string(),
+                ProgressEvent::LiveLog(applog::info_line(
+                    "Manual ping skipped: a cycle is already running",
                 )),
                 &HashSet::new(),
                 true,
@@ -1986,6 +2028,7 @@ async fn ping_once(
             )
         };
         info!(summary = %summary, "ping preempted");
+        let summary = applog::info_line(&summary);
         if print_compact_progress {
             print_log(&summary);
         }
@@ -2103,12 +2146,32 @@ async fn ping_once(
             item.rank = index + 1;
         }
         ranked = published;
-        persist_ranked_configs(&database, &ranked, config.top_n, 0, false).await?;
+        let persisted = persist_ranked_configs(&database, &ranked, config.top_n, 0, false).await?;
+        {
+            let mut runtime = state.write().await;
+            applog::log_persist_stats(
+                &mut runtime,
+                persisted.upserted,
+                persisted.stable_keys,
+                persisted.cleaned,
+                0,
+            );
+        }
         if fill_count > 0 && still_count > 0 {
             topped_up = Some((still_count, fill_count));
         }
     } else {
-        persist_ranked_configs(&database, &ranked, config.top_n, 0, false).await?;
+        let persisted = persist_ranked_configs(&database, &ranked, config.top_n, 0, false).await?;
+        {
+            let mut runtime = state.write().await;
+            applog::log_persist_stats(
+                &mut runtime,
+                persisted.upserted,
+                persisted.stable_keys,
+                persisted.cleaned,
+                0,
+            );
+        }
     }
     // Served working count drives the top bar: it must match the published
     // reachable head, not a stale progress snapshot.
@@ -2144,6 +2207,7 @@ async fn ping_once(
         )
     };
     info!(summary = %summary, "ping finished");
+    let summary = applog::info_line(&summary);
     if print_compact_progress {
         print_log(&summary);
     }
@@ -2363,8 +2427,8 @@ fn spawn_ping_loop(
                         // so a lost start-race doesn't look like a no-op.
                         push_tui_progress(
                             &state,
-                            ProgressEvent::LiveLog(timestamped_log(
-                                "Manual ping skipped: a cycle is already running".to_string(),
+                            ProgressEvent::LiveLog(applog::info_line(
+                                "Manual ping skipped: a cycle is already running",
                             )),
                             &HashSet::new(),
                             true,
@@ -2647,8 +2711,8 @@ fn spawn_refresh_loop(
                         // so a lost start-race doesn't look like a no-op.
                         push_tui_progress(
                             &state,
-                            ProgressEvent::LiveLog(timestamped_log(
-                                "Manual refresh skipped: a refresh is already running".to_string(),
+                            ProgressEvent::LiveLog(applog::info_line(
+                                "Manual refresh skipped: a refresh is already running",
                             )),
                             &HashSet::new(),
                             true,
@@ -2835,6 +2899,11 @@ async fn record_refresh_error(state: &Arc<RwLock<RuntimeState>>, error: String) 
     state.tested_candidates = 0;
     state.reachable_candidates = 0;
     state.fetch_errors = vec![error.clone()];
+    applog::push(
+        &mut state,
+        applog::LogLevel::Error,
+        &format!("Refresh failed: {error}"),
+    );
     push_runtime_log(&mut state, format!("refresh error: {error}"));
     drop(state);
 }
@@ -3038,17 +3107,6 @@ fn format_duration_short(ms: u128) -> String {
 
 fn millis_to_seconds(ms: u128) -> u64 {
     u64::try_from(ms / 1000).unwrap_or(u64::MAX)
-}
-
-#[allow(clippy::cast_precision_loss)]
-fn format_bytes(bytes: u64) -> String {
-    if bytes < 1024 {
-        format!("{bytes} B")
-    } else if bytes < 1024 * 1024 {
-        format!("{:.2} KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{:.2} MB", bytes as f64 / (1024.0 * 1024.0))
-    }
 }
 
 impl From<&AppConfig> for RuntimeConfig {

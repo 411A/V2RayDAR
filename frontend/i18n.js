@@ -391,6 +391,11 @@ const I18N_STRINGS = {
     logsAria: "Application logs, newest at the bottom",
     logEmpty: "No log lines yet.",
     logCleared: "Log view cleared (server logs untouched).",
+    logLevel: "Level",
+    logLevelAll: "All levels",
+    logLevelInfo: "Info and above",
+    logLevelWarn: "Warnings and errors",
+    logLevelError: "Errors only",
 
     // Share tab
     shareTitle: "Share on LAN",
@@ -885,6 +890,11 @@ const I18N_STRINGS = {
     logsAria: "گزارش‌های برنامه، جدیدترین در پایین",
     logEmpty: "هنوز خط گزارشی نیست.",
     logCleared: "نمای گزارش پاک شد (گزارش‌های سرور دست نخورده‌اند).",
+    logLevel: "سطح",
+    logLevelAll: "همه",
+    logLevelInfo: "اطلاعات به بالا",
+    logLevelWarn: "هشدارها و خطاها",
+    logLevelError: "فقط خطاها",
 
     // Share tab
     shareTitle: "اشتراک‌گذاری در شبکه محلی",
@@ -1382,6 +1392,11 @@ const I18N_STRINGS = {
     logsAria: "应用日志，最新的在底部",
     logEmpty: "暂无日志。",
     logCleared: "日志视图已清空（服务端日志不受影响）。",
+    logLevel: "级别",
+    logLevelAll: "全部",
+    logLevelInfo: "信息及以上",
+    logLevelWarn: "警告及以上",
+    logLevelError: "仅错误",
 
     // Share tab
     shareTitle: "局域网分享",
@@ -1876,6 +1891,11 @@ const I18N_STRINGS = {
     logsAria: "Journaux de l'application, les plus récents en bas",
     logEmpty: "Aucune ligne de journal pour l'instant.",
     logCleared: "Vue des journaux effacée (journaux du serveur inchangés).",
+    logLevel: "Niveau",
+    logLevelAll: "Tous",
+    logLevelInfo: "Infos et plus",
+    logLevelWarn: "Avertissements et erreurs",
+    logLevelError: "Erreurs uniquement",
 
     // Share tab
     shareTitle: "Partage sur le LAN",
@@ -2370,6 +2390,11 @@ const I18N_STRINGS = {
     logsAria: "Логи приложения, новые внизу",
     logEmpty: "Строк лога пока нет.",
     logCleared: "Вид логов очищен (логи сервера не тронуты).",
+    logLevel: "Уровень",
+    logLevelAll: "Все",
+    logLevelInfo: "Инфо и выше",
+    logLevelWarn: "Предупреждения и ошибки",
+    logLevelError: "Только ошибки",
 
     // Share tab
     shareTitle: "Раздать в LAN",

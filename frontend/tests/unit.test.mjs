@@ -1537,3 +1537,102 @@ describe("settings tab: typed controls + translated rows", () => {
     assert.equal(box.children[0].children[5].children[1].children[0].textContent, "set");
   });
 });
+
+describe("live-logs severity filter contract", () => {
+  it("LOG_LEVELS/LOG_LEVEL_ORDER rank DEBUG < INFO < WARN < ERROR", () => {
+    // Arrays/objects are built inside the vm sandbox (different prototypes),
+    // so compare through JSON/fields rather than deepStrictEqual.
+    assert.equal(JSON.stringify(api.LOG_LEVELS), JSON.stringify(["DEBUG", "INFO", "WARN", "ERROR"]));
+    assert.equal(api.LOG_LEVEL_ORDER.DEBUG, 0);
+    assert.equal(api.LOG_LEVEL_ORDER.INFO, 1);
+    assert.equal(api.LOG_LEVEL_ORDER.WARN, 2);
+    assert.equal(api.LOG_LEVEL_ORDER.ERROR, 3);
+  });
+
+  it("parseLogLine splits ts/level/msg on tagged lines", () => {
+    const info = api.parseLogLine("20:20:02.792 [INFO] hello world");
+    assert.equal(info.ts, "20:20:02.792");
+    assert.equal(info.level, "INFO");
+    assert.equal(info.msg, "hello world");
+
+    const warn = api.parseLogLine("20:20:03.001 [WARN] slow peer");
+    assert.equal(warn.ts, "20:20:03.001");
+    assert.equal(warn.level, "WARN");
+    assert.equal(warn.msg, "slow peer");
+
+    const err = api.parseLogLine("20:20:04.120 [ERROR] dial failed");
+    assert.equal(err.ts, "20:20:04.120");
+    assert.equal(err.level, "ERROR");
+    assert.equal(err.msg, "dial failed");
+
+    const dbg = api.parseLogLine("20:20:05.000 [DEBUG] probe tick");
+    assert.equal(dbg.ts, "20:20:05.000");
+    assert.equal(dbg.level, "DEBUG");
+    assert.equal(dbg.msg, "probe tick");
+  });
+
+  it("parseLogLine folds unknown levels to INFO, keeps legacy/non-string", () => {
+    const unknown = api.parseLogLine("20:20:02.792 [VERBOSE] chatter");
+    assert.equal(unknown.ts, "20:20:02.792");
+    assert.equal(unknown.level, "INFO");
+    assert.equal(unknown.msg, "chatter");
+
+    const legacy = api.parseLogLine("boot ok");
+    assert.equal(legacy.ts, "");
+    assert.equal(legacy.level, "INFO");
+    assert.equal(legacy.msg, "boot ok");
+
+    const empty = api.parseLogLine("");
+    assert.equal(empty.ts, "");
+    assert.equal(empty.level, "INFO");
+    assert.equal(empty.msg, "");
+
+    for (const bad of [null, undefined, 42, {}]) {
+      const p = api.parseLogLine(bad);
+      assert.equal(p.ts, "");
+      assert.equal(p.level, "INFO");
+      assert.equal(p.msg, String(bad));
+    }
+    // A tagged line with no message renders once, not doubled.
+    const bare = api.parseLogLine("20:20:02.792 [INFO]");
+    assert.equal(bare.ts, "");
+    assert.equal(bare.msg, "20:20:02.792 [INFO]");
+  });
+
+  it("logLineVisible gates rows by severity threshold", () => {
+    const at = (level) => ({ ts: "", level, msg: "x" });
+    for (const level of ["DEBUG", "INFO", "WARN", "ERROR"]) {
+      assert.equal(api.logLineVisible(at(level), "ALL", ""), true, `ALL shows ${level}`);
+    }
+    assert.equal(api.logLineVisible(at("INFO"), "INFO", ""), true);
+    assert.equal(api.logLineVisible(at("WARN"), "INFO", ""), true);
+    assert.equal(api.logLineVisible(at("ERROR"), "INFO", ""), true);
+    assert.equal(api.logLineVisible(at("DEBUG"), "INFO", ""), false, "INFO hides DEBUG");
+    assert.equal(api.logLineVisible(at("WARN"), "WARN", ""), true);
+    assert.equal(api.logLineVisible(at("ERROR"), "WARN", ""), true);
+    assert.equal(api.logLineVisible(at("INFO"), "WARN", ""), false, "WARN hides INFO");
+    assert.equal(api.logLineVisible(at("DEBUG"), "WARN", ""), false, "WARN hides DEBUG");
+    assert.equal(api.logLineVisible(at("ERROR"), "ERROR", ""), true);
+    assert.equal(api.logLineVisible(at("WARN"), "ERROR", ""), false, "ERROR hides WARN");
+    assert.equal(api.logLineVisible(at("INFO"), "ERROR", ""), false, "ERROR hides INFO");
+    assert.equal(api.logLineVisible(at("DEBUG"), "ERROR", ""), false, "ERROR hides DEBUG");
+  });
+
+  it("logLineVisible matches query against the raw line, like the old text filter", () => {
+    const raw = "20:20:02.792 [INFO] Hello World";
+    const row = api.parseLogLine(raw);
+    assert.equal(api.logLineVisible(row, "ALL", "", raw), true, "empty query passes");
+    assert.equal(api.logLineVisible(row, "ALL", "hello", raw), true, "lowercase query hits mixed-case msg");
+    assert.equal(api.logLineVisible(row, "ALL", "missing", raw), false);
+    // Timestamp fragments and level tokens match: same scope as before.
+    assert.equal(api.logLineVisible(row, "ALL", "20:20", raw), true, "timestamp fragment matches");
+    assert.equal(api.logLineVisible(row, "ALL", "info", raw), true, "level token matches");
+    const errRaw = "20:20:04.120 [ERROR] all good";
+    const err = api.parseLogLine(errRaw);
+    assert.equal(api.logLineVisible(err, "ALL", "good", errRaw), true);
+    // Severity and text combine: both must pass.
+    assert.equal(api.logLineVisible(err, "ERROR", "good", errRaw), true);
+    assert.equal(api.logLineVisible(err, "ERROR", "missing", errRaw), false);
+    assert.equal(api.logLineVisible(api.parseLogLine("20:20:05.000 [DEBUG] good"), "ERROR", "good", "20:20:05.000 [DEBUG] good"), false);
+  });
+});

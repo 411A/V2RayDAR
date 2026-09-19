@@ -27,6 +27,7 @@ use tracing::{debug, info, warn};
 use url::Url;
 
 use crate::{
+    applog::{self, LogLevel},
     config::{ProbeConfig, ProbeMode},
     constants::{
         ACTIVE_PROBE_BATCH_CONCURRENCY_MULTIPLIER, ACTIVE_PROBE_BATCH_MAX_SIZE,
@@ -182,6 +183,7 @@ pub async fn probe_candidates(
     );
     send_progress(
         progress.as_ref(),
+        LogLevel::Info,
         format!(
             "Testing {} loaded configs with {:?} mode (concurrency {})",
             candidates.len(),
@@ -197,6 +199,7 @@ pub async fn probe_candidates(
         let failed = candidates.len();
         send_progress(
             progress.as_ref(),
+            LogLevel::Warn,
             format!(
                 "sing-box unavailable at '{}'; marking {failed} configs failed",
                 config.sing_box_path
@@ -236,6 +239,7 @@ pub async fn probe_candidates(
             if !stop_policy.scan_all_configs {
                 send_progress(
                     progress.as_ref(),
+                    LogLevel::Debug,
                     "Early stop is disabled in TCP diagnostic mode; active sing-box validation is required for shortcut results",
                 );
             }
@@ -261,6 +265,7 @@ pub async fn probe_candidates(
     info!(ranked = ranked.len(), "probe candidate queue completed");
     send_progress(
         progress.as_ref(),
+        LogLevel::Info,
         format!("Probe queue finished: {} results", ranked.len()),
     );
     rank_configs(ranked)
@@ -702,6 +707,7 @@ async fn probe_active_batched(
         let after = lock_shared(&shared).ranked.len();
         send_progress(
             progress.as_ref(),
+            LogLevel::Debug,
             format!(
                 "Batch wave finished: {} configs checked in {}",
                 after.saturating_sub(before),
@@ -743,6 +749,7 @@ async fn prepare_batched_probe_inputs(
     );
     send_progress(
         progress,
+        LogLevel::Info,
         format!(
             "Prepared active test: {} sing-box definitions represent {} loaded configs; {} unsupported configs skipped",
             prepared.len(),
@@ -764,6 +771,7 @@ async fn prepare_batched_probe_inputs(
                 .join(", ");
             send_progress(
                 progress,
+                LogLevel::Warn,
                 format!("Preparation skipped {prepared_failed} configs; top errors: {summary}"),
             );
         }
@@ -805,6 +813,7 @@ fn queue_probe_wave(
         );
         send_progress(
             progress,
+            LogLevel::Debug,
             format!(
                 "Batch {batch_index}: testing {batch_candidates} configs ({} sing-box definitions)",
                 batch.len()
@@ -831,6 +840,7 @@ async fn finish_batched_probe(
     enrich_top_speedtests(&mut ranked, config, progress, stop_policy).await;
     send_progress(
         progress,
+        LogLevel::Info,
         format!(
             "Active test finished: {} configs checked in {}",
             ranked.len(),
@@ -1096,6 +1106,7 @@ fn probe_stop_reason(
         send_ranked_snapshot(progress, stability_snapshot(ranked, policy, first_half));
         send_progress(
             progress,
+            LogLevel::Info,
             format!("Early publish: found first {first_half} working configs"),
         );
     }
@@ -1320,6 +1331,7 @@ async fn probe_active_batch_with_fallback(
                     );
                     send_progress(
                         progress,
+                        LogLevel::Debug,
                         format!(
                             "Batch {batch_index}: sing-box rejected one generated test config; retrying {} remaining definitions",
                             failure.entries.len()
@@ -1343,6 +1355,7 @@ async fn probe_active_batch_with_fallback(
                     );
                     send_progress(
                         progress,
+                        LogLevel::Debug,
                         format!(
                             "Batch {batch_index}: could not start cleanly; splitting {} server definitions and retrying",
                             failure.entries.len()
@@ -1360,6 +1373,7 @@ async fn probe_active_batch_with_fallback(
                     );
                     send_progress(
                         progress,
+                        LogLevel::Warn,
                         format!("Batch {batch_index}: probe failed: {error}"),
                     );
                     let failed_count = candidate_count(&failure.entries);
@@ -1408,6 +1422,7 @@ async fn probe_active_batch(
     let entry_candidates = candidate_count(&entries);
     send_progress(
         progress,
+        LogLevel::Debug,
         format!("Batch {batch_index}: starting sing-box test for {entry_candidates} configs"),
     );
     let reservations = match reserve_local_ports(entries.len()).await {
@@ -1502,6 +1517,7 @@ async fn probe_active_batch(
         );
         send_progress(
             progress,
+            LogLevel::Warn,
             format!("Batch {batch_index}: sing-box test process was not ready: {err}"),
         );
         return Err(BatchProbeFailure::retryable(entries, err));
@@ -1566,6 +1582,7 @@ async fn probe_active_batch(
             );
             send_progress(
                 progress,
+                LogLevel::Debug,
                 format!(
                     "Batch {batch_index}: {produced}/{total_candidates} configs checked, {working} working"
                 ),
@@ -1580,7 +1597,7 @@ async fn probe_active_batch(
                 reachable = working,
                 "active probe batch stopped early"
             );
-            send_progress(progress, reason);
+            send_progress(progress, LogLevel::Info, reason);
             // Internal broadcast only: the caller's external flag stays
             // untouched so a reached target never reports as preempted.
             stop.broadcast_target_reached();
@@ -1838,6 +1855,7 @@ async fn enrich_top_speedtests(
     indices.truncate(limit);
     send_progress(
         progress,
+        LogLevel::Info,
         format!("Speedtest: measuring {limit} top reachable configs"),
     );
 
@@ -2181,9 +2199,13 @@ fn with_sing_box_stderr(err: anyhow::Error, stderr: &str) -> anyhow::Error {
     anyhow!("{err}; sing-box stderr: {stderr}")
 }
 
-fn send_progress(progress: Option<&UnboundedSender<ProgressEvent>>, message: impl Into<String>) {
+fn send_progress(
+    progress: Option<&UnboundedSender<ProgressEvent>>,
+    level: LogLevel,
+    message: impl Into<String>,
+) {
     if let Some(progress) = progress {
-        let _ = progress.send(ProgressEvent::LiveLog(message.into()));
+        let _ = progress.send(ProgressEvent::LiveLog(applog::line(level, &message.into())));
     }
 }
 

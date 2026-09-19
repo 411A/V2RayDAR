@@ -21,6 +21,7 @@ use tokio::{
 use tracing::{error, info, warn};
 
 use crate::{
+    applog::{self, LogLevel},
     config::ProxyConfig,
     constants::{
         LOCALHOST_IP, PROXY_CLASH_API_TIMEOUT, PROXY_CLASH_CONTROLLER_PORT_ATTEMPTS,
@@ -182,9 +183,9 @@ impl PersistentProxy {
         }
     }
 
-    fn emit_log(&self, message: String) {
+    fn emit_log(&self, level: LogLevel, message: &str) {
         if let Some(tx) = &self.events {
-            let _ = tx.send(ProgressEvent::LiveLog(message));
+            let _ = tx.send(ProgressEvent::LiveLog(applog::line(level, message)));
         }
     }
 
@@ -220,7 +221,7 @@ impl PersistentProxy {
             } || self.is_process_alive().await;
             if was_running {
                 info!("proxy: disabled in config, stopping");
-                self.emit_log("proxy: disabled".into());
+                self.emit_log(LogLevel::Info, "proxy: disabled");
                 self.stop().await;
             }
             return;
@@ -251,7 +252,7 @@ impl PersistentProxy {
             // rather than leaving the proxy with nothing to serve. The pool
             // is degraded: drop the floor until a switch serves anew.
             info!("proxy: all reachable configs blacklisted, clearing blacklist");
-            self.emit_log("proxy: blacklist cleared".into());
+            self.emit_log(LogLevel::Debug, "proxy: blacklist cleared");
             let mut state = self.state.write().await;
             state.failed_config_keys.clear();
             state.degraded = true;
@@ -260,10 +261,10 @@ impl PersistentProxy {
         let Some(best) = best else {
             if config.manual_proxy_uri.is_some() {
                 info!("proxy: manual proxy config not reachable, keeping current");
-                self.emit_log("proxy: manual config not reachable".into());
+                self.emit_log(LogLevel::Warn, "proxy: manual config not reachable");
             } else {
                 warn!("proxy: no reachable configs available");
-                self.emit_log("proxy: no reachable configs".into());
+                self.emit_log(LogLevel::Warn, "proxy: no reachable configs");
             }
             return;
         };
@@ -324,14 +325,14 @@ impl PersistentProxy {
 
         if let Err(err) = self.start_with_config(best).await {
             error!(error = %err, "proxy: failed to start");
-            self.emit_log(format!("proxy: failed → {err}"));
+            self.emit_log(LogLevel::Error, &format!("proxy: failed → {err}"));
             return;
         }
 
-        self.emit_log(format!(
-            "proxy: {reason} → {} (port {})",
-            best.name, config.port
-        ));
+        self.emit_log(
+            LogLevel::Info,
+            &format!("proxy: {reason} → {} (port {})", best.name, config.port),
+        );
 
         let switched = active_uri.as_deref() != Some(best.uri.as_str());
         let mut state = self.state.write().await;
@@ -599,7 +600,8 @@ impl PersistentProxy {
                 "proxy: health check failed on a manually pinned config; staying (clear the pin to auto-failover)"
             );
             proxy.lock().await.emit_log(
-                "proxy: health fail on manual pin; staying (clear the pin to auto-failover)".into(),
+                LogLevel::Warn,
+                "proxy: health fail on manual pin; staying (clear the pin to auto-failover)",
             );
             return false;
         }
@@ -614,9 +616,10 @@ impl PersistentProxy {
                 max = PROXY_MAX_CONSECUTIVE_FAILURES,
                 "proxy: health check failed, waiting for more failures before failover"
             );
-            proxy.lock().await.emit_log(format!(
-                "proxy: health fail {failures}/{PROXY_MAX_CONSECUTIVE_FAILURES}"
-            ));
+            proxy.lock().await.emit_log(
+                LogLevel::Debug,
+                &format!("proxy: health fail {failures}/{PROXY_MAX_CONSECUTIVE_FAILURES}"),
+            );
             return false;
         }
 
@@ -626,7 +629,7 @@ impl PersistentProxy {
             proxy
                 .lock()
                 .await
-                .emit_log(format!("proxy: failover failed: {err}"));
+                .emit_log(LogLevel::Warn, &format!("proxy: failover failed: {err}"));
         }
         sync_runtime_proxy_snapshot(proxy, runtime).await;
         true
@@ -669,10 +672,13 @@ impl PersistentProxy {
             warn!(name = %best.name, "proxy: revival failed, will retry next interval");
             return;
         }
-        proxy.lock().await.emit_log(format!(
-            "proxy: revived → {} (port {})",
-            best.name, proxy_config.port
-        ));
+        proxy.lock().await.emit_log(
+            LogLevel::Info,
+            &format!(
+                "proxy: revived → {} (port {})",
+                best.name, proxy_config.port
+            ),
+        );
         write_proxy_state(proxy, |state| {
             state.active_config_uri = Some(best.uri.clone());
             state.active_config_name = Some(best.name.clone());
@@ -733,7 +739,7 @@ impl PersistentProxy {
             proxy
                 .lock()
                 .await
-                .emit_log("proxy: blacklist cleared".into());
+                .emit_log(LogLevel::Debug, "proxy: blacklist cleared");
             // Degraded pool: nothing reachable survived, so drop the floor
             // to the absolute minimum until a switch serves a new config.
             write_proxy_state(proxy, |state| {
@@ -760,10 +766,10 @@ impl PersistentProxy {
             if started && Self::health_check(proxy).await {
                 let port = read_proxy_state(proxy, |state| state.proxy_config.port).await;
                 info!(name = %candidate.name, "proxy: failover succeeded");
-                proxy.lock().await.emit_log(format!(
-                    "proxy: failover → {} (port {})",
-                    candidate.name, port
-                ));
+                proxy.lock().await.emit_log(
+                    LogLevel::Info,
+                    &format!("proxy: failover → {} (port {})", candidate.name, port),
+                );
                 write_proxy_state(proxy, |state| {
                     state.active_config_uri = Some(candidate.uri.clone());
                     state.active_config_name = Some(candidate.name.clone());
@@ -793,7 +799,7 @@ impl PersistentProxy {
         proxy
             .lock()
             .await
-            .emit_log("proxy: failover exhausted".into());
+            .emit_log(LogLevel::Warn, "proxy: failover exhausted");
         Err(anyhow!("proxy: all failover candidates exhausted"))
     }
 
@@ -805,7 +811,7 @@ impl PersistentProxy {
                 let _ = time::timeout(SING_BOX_CLEANUP_TIMEOUT, managed.child.wait()).await;
                 let _ = fs::remove_file(&managed.config_path).await;
                 info!("proxy: stopped");
-                self.emit_log("proxy: stopped".into());
+                self.emit_log(LogLevel::Info, "proxy: stopped");
             }
         }
 
@@ -1303,9 +1309,12 @@ async fn on_starved_connection(
         upload_bytes = upload,
         "proxy: connection uploaded with zero download, verifying active config"
     );
-    proxy.lock().await.emit_log(format!(
-        "proxy: a connection sent {upload} bytes with nothing back; verifying active config"
-    ));
+    proxy.lock().await.emit_log(
+        LogLevel::Debug,
+        &format!(
+            "proxy: a connection sent {upload} bytes with nothing back; verifying active config"
+        ),
+    );
     // Even a manually chosen config is transfer-verified here: the user cannot
     // tell from the list whether it actually carries data. Manual only changes
     // what happens on failure (loud stay, no auto-switch).
@@ -1324,16 +1333,16 @@ async fn on_starved_connection(
     if manual.is_some() {
         let message = "proxy: manually pinned config verified starved; staying (clear the pin to auto-failover)";
         warn!("{message}");
-        proxy.lock().await.emit_log(message.to_string());
+        proxy.lock().await.emit_log(LogLevel::Warn, message);
         return false;
     }
     warn!("proxy: active config verified starved, attempting failover");
     if let Err(err) = PersistentProxy::failover(proxy, ranked).await {
         error!(error = %err, "proxy: starvation failover failed");
-        proxy
-            .lock()
-            .await
-            .emit_log(format!("proxy: starvation failover failed: {err}"));
+        proxy.lock().await.emit_log(
+            LogLevel::Warn,
+            &format!("proxy: starvation failover failed: {err}"),
+        );
         sync_runtime_proxy_snapshot(proxy, runtime).await;
         return true;
     }

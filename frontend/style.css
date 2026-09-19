@@ -599,7 +599,8 @@ main {
 .search input,
 .dlg input,
 .dlg textarea,
-.limit select {
+.limit select,
+.check select {
   font: inherit;
   color: var(--text);
   background: var(--bg-raised);
@@ -1133,6 +1134,62 @@ td .lat-bar > span {
 
 .log-list li:last-child {
   border-block-end: 0;
+}
+
+/* ---- Log level badges ---- */
+/* Severity colors reuse the theme vars so both light and dark themes
+ * keep contrast; the overview mini-logs keep their dark panel in
+ * either theme, and the same vars still read there. */
+
+.log-ts {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas,
+    "Liberation Mono", monospace;
+  font-size: 0.85em;
+  color: var(--muted);
+  margin-inline-end: 0.5rem;
+}
+
+.log-lvl {
+  display: inline-block;
+  font-size: 0.7em;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  line-height: 1.4;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  margin-inline-end: 0.5rem;
+  white-space: nowrap;
+  vertical-align: baseline;
+}
+
+.lvl-debug {
+  color: var(--muted);
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+}
+
+.lvl-info {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+}
+
+.lvl-warn {
+  color: var(--warn);
+  background: var(--warn-soft);
+  border: 1px solid var(--warn);
+}
+
+.lvl-error {
+  color: var(--bad);
+  background: var(--bad-soft);
+  border: 1px solid var(--bad);
+}
+
+.log-msg {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 /* ---- Overview composites (TUI mirror) ---- */

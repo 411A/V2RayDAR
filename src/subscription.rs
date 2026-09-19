@@ -10,6 +10,7 @@ use tokio::{fs, sync::mpsc::UnboundedSender};
 use tracing::{debug, info, warn};
 
 use crate::{
+    applog::{self, LogLevel},
     config::{AppConfig, SubscriptionSource, redact_subscription_url},
     constants::{HTTP_EXCHANGE_OVERHEAD_BYTES, LOCALHOST_IP},
     model::{Candidate, ProgressEvent},
@@ -68,6 +69,7 @@ where
     );
     send_progress(
         progress.as_ref(),
+        LogLevel::Info,
         format!(
             "Subscription load: fetching {} enabled sources",
             sources.len()
@@ -121,6 +123,7 @@ where
     );
     send_progress(
         progress.as_ref(),
+        LogLevel::Info,
         format!(
             "Subscription retry: fetching {} failed sources through sing-box proxy",
             sources.len()
@@ -165,6 +168,41 @@ struct FetchContext {
     progress: Option<UnboundedSender<ProgressEvent>>,
 }
 
+/// One-line Live log for a finished source fetch (info): config counts,
+/// bytes and elapsed — everything about the source on one line.
+fn success_line(
+    source: &SubscriptionSource,
+    parsed: usize,
+    new_unique: usize,
+    bytes_read: u64,
+    elapsed: Duration,
+) -> String {
+    format!(
+        "Sub '{}' prio {}: OK, {parsed} configs ({new_unique} new), {} in {}",
+        source.name,
+        source.priority,
+        applog::format_bytes(bytes_read),
+        applog::format_elapsed(elapsed),
+    )
+}
+
+/// One-line Live log for a failed source fetch (warn): elapsed, bytes
+/// salvaged and the flattened headline — the URL stays redacted.
+fn failure_line(
+    source: &SubscriptionSource,
+    message: &str,
+    bytes_read: u64,
+    elapsed: Duration,
+) -> String {
+    format!(
+        "Sub '{}' prio {}: FAILED in {}, {} read — {message}",
+        source.name,
+        source.priority,
+        applog::format_elapsed(elapsed),
+        applog::format_bytes(bytes_read),
+    )
+}
+
 async fn fetch_sources_with_client<F, Fut>(
     client: Client,
     sources: Vec<SubscriptionSource>,
@@ -185,11 +223,11 @@ where
         let max_bytes = context.max_bytes;
         let source_for_result = source.clone();
         async move {
-            (
-                index,
-                source_for_result,
-                fetch_source(&client, source, max_bytes, progress).await,
-            )
+            // Timed from first poll (queue wait excluded): the per-source
+            // line below reports honest fetch + parse time.
+            let started = std::time::Instant::now();
+            let result = fetch_source(&client, source, max_bytes, progress).await;
+            (index, source_for_result, result, started.elapsed())
         }
     }))
     .buffer_unordered(context.concurrency);
@@ -197,7 +235,7 @@ where
     let mut seen_keys = HashSet::new();
     let mut unique_count: usize = 0;
 
-    while let Some((index, source, result)) = results.next().await {
+    while let Some((index, source, result, elapsed)) = results.next().await {
         match result {
             Ok(fetched) => {
                 report_subscription_bytes(fetched.bytes_read, report_bytes).await;
@@ -216,9 +254,8 @@ where
                 );
                 send_progress(
                     context.progress.as_ref(),
-                    format!(
-                        "Subscription parsed: {new_unique} unique configs from {parsed} entries",
-                    ),
+                    LogLevel::Info,
+                    success_line(&source, parsed, new_unique, fetched.bytes_read, elapsed),
                 );
                 send_fetched_delta(context.progress.as_ref(), unique_count);
                 successes.push(source);
@@ -230,7 +267,8 @@ where
                 warn!(error = %message, "subscription fetch failed");
                 send_progress(
                     context.progress.as_ref(),
-                    format!("Subscription fetch failed:\n{message}"),
+                    LogLevel::Warn,
+                    failure_line(&source, &message, err.bytes_read, elapsed),
                 );
                 errors.push(message.clone());
                 failures.push((
@@ -380,6 +418,7 @@ async fn fetch_source(
     );
     send_progress(
         progress.as_ref(),
+        LogLevel::Debug,
         format!("Fetching subscription '{}'", source.name),
     );
     let fetched = fetch_body(client, &source.url, max_bytes)
@@ -404,6 +443,7 @@ async fn fetch_source(
     );
     send_progress(
         progress.as_ref(),
+        LogLevel::Debug,
         format!(
             "Loaded subscription '{}': {} configs, {} bytes",
             source.name,
@@ -429,9 +469,13 @@ fn is_http_url(url: &str) -> bool {
     url.starts_with("http://") || url.starts_with("https://")
 }
 
-fn send_progress(progress: Option<&UnboundedSender<ProgressEvent>>, message: impl Into<String>) {
+fn send_progress(
+    progress: Option<&UnboundedSender<ProgressEvent>>,
+    level: LogLevel,
+    message: impl Into<String>,
+) {
     if let Some(progress) = progress {
-        let _ = progress.send(ProgressEvent::LiveLog(message.into()));
+        let _ = progress.send(ProgressEvent::LiveLog(applog::line(level, &message.into())));
     }
 }
 

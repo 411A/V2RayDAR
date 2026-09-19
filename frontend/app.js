@@ -17,6 +17,7 @@ const $ = (id) => document.getElementById(id);
 const POLL_SUMMARY_MS = 2000;
 const POLL_RESULTS_MS = 10000;
 const ROW_LIMIT_KEY = "v2raydar-row-limit";
+const LOG_LEVEL_KEY = "v2raydar.logLevel";
 const MAX_LOGS = 300;
 const MAX_TOASTS = 4;
 const TOAST_MS = 4500;
@@ -24,6 +25,9 @@ const THEME_KEY = "v2raydar-theme";
 const TAB_KEY = "v2raydar-tab";
 
 const TABS = ["overview", "configs", "subscriptions", "settings", "proxy", "logs", "share"];
+
+const LOG_LEVELS = ["DEBUG", "INFO", "WARN", "ERROR"];
+const LOG_LEVEL_ORDER = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 };
 
 const state = {
   snapshot: null,
@@ -51,6 +55,7 @@ const state = {
   reachableOnly: true,
   rowLimit: 0, // 0 = All; otherwise 25 | 50 | 100
   logFilter: "",
+  logLevel: "INFO",
   follow: true,
   wired: false, // wire() runs once; boot() may re-enter via Retry
   cycleInflight: { refresh: false, ping: false }, // POST in flight (buttons locked)
@@ -368,6 +373,28 @@ function saveRowLimit(limit) {
     window.localStorage.setItem(ROW_LIMIT_KEY, limit > 0 ? String(limit) : "all");
   } catch (err) {
     /* private mode etc. — limit still applies for the session */
+  }
+}
+
+/// Log-level floor persisted under LOG_LEVEL_KEY; unknown stored values
+/// fall back to "INFO" (same validate-or-default shape as loadRowLimit).
+function loadLogLevel() {
+  try {
+    const v = window.localStorage.getItem(LOG_LEVEL_KEY);
+    if (v === "ALL" || v === "INFO" || v === "WARN" || v === "ERROR") {
+      return v;
+    }
+  } catch (err) {
+    /* private mode etc. — fall through to INFO */
+  }
+  return "INFO";
+}
+
+function saveLogLevel(level) {
+  try {
+    window.localStorage.setItem(LOG_LEVEL_KEY, level);
+  } catch (err) {
+    /* private mode etc. — level still applies for the session */
   }
 }
 
@@ -1428,15 +1455,32 @@ function paintOvLogs() {
   while (list.firstChild) {
     list.removeChild(list.firstChild);
   }
-  const lines = state.logLines.slice(-5);
-  if (lines.length === 0) {
+  const visible = [];
+  for (const line of state.logLines) {
+    const parsed = parseLogLine(line);
+    if (!logLineVisible(parsed, state.logLevel, "", line)) {
+      continue;
+    }
+    visible.push({ line, parsed });
+  }
+  const tail = visible.slice(-5);
+  if (tail.length === 0) {
     const li = el("li", t("ovLogsEmpty"), "muted");
     list.appendChild(li);
     return;
   }
-  for (const line of lines) {
-    const li = el("li", line);
+  for (const { line, parsed } of tail) {
+    const li = document.createElement("li");
     li.title = line;
+    if (parsed.ts) {
+      li.appendChild(el("span", parsed.ts, "log-ts"));
+      li.appendChild(document.createTextNode(" "));
+    }
+    const badge = el("span", parsed.level, "log-lvl");
+    badge.classList.add("lvl-" + parsed.level.toLowerCase());
+    li.appendChild(badge);
+    li.appendChild(document.createTextNode(" "));
+    li.appendChild(el("span", parsed.msg, "log-msg"));
     list.appendChild(li);
   }
 }
@@ -2132,6 +2176,39 @@ async function copyText(text, okMsg) {
 
 /* ---------- logs ---------- */
 
+/// Split a raw log line into `{ ts, level, msg }`. Tagged lines look like
+/// `20:20:02.792 [INFO] message`; unknown level tokens fall back to INFO
+/// (keeping the message), and legacy lines without a prefix — plus any
+/// non-string input (shown in string form, like before) — yield an empty
+/// ts with level INFO.
+function parseLogLine(line) {
+  if (typeof line !== "string") {
+    return { ts: "", level: "INFO", msg: String(line) };
+  }
+  const m = line.match(/^(\d{2}:\d{2}:\d{2}\.\d{3}) \[([A-Z]+)\] ([\s\S]+)$/);
+  if (m) {
+    return {
+      ts: m[1],
+      level: LOG_LEVELS.includes(m[2]) ? m[2] : "INFO",
+      msg: m[3],
+    };
+  }
+  return { ts: "", level: "INFO", msg: line };
+}
+
+/// True when the parsed line passes the severity floor (`"ALL"` shows
+/// everything) and the lowercased text query matches the raw line —
+/// timestamp, level tag and message, exactly like the text filter always
+/// has. Severity itself is what the Level dropdown is for.
+function logLineVisible(parsed, minLevel, query, rawLine) {
+  const levelOk = minLevel === "ALL"
+    || LOG_LEVEL_ORDER[parsed.level] >= LOG_LEVEL_ORDER[minLevel];
+  if (!levelOk) {
+    return false;
+  }
+  return !query || String(rawLine).toLowerCase().includes(query);
+}
+
 function renderLogs() {
   preserveViewport(paintLogs);
 }
@@ -2145,10 +2222,21 @@ function paintLogs() {
   const q = state.logFilter.trim().toLowerCase();
   let shown = 0;
   for (const line of state.logLines) {
-    if (q && !line.toLowerCase().includes(q)) {
+    const parsed = parseLogLine(line);
+    if (!logLineVisible(parsed, state.logLevel, q, line)) {
       continue;
     }
-    list.appendChild(el("li", line));
+    const li = document.createElement("li");
+    if (parsed.ts) {
+      li.appendChild(el("span", parsed.ts, "log-ts"));
+      li.appendChild(document.createTextNode(" "));
+    }
+    const badge = el("span", parsed.level, "log-lvl");
+    badge.classList.add("lvl-" + parsed.level.toLowerCase());
+    li.appendChild(badge);
+    li.appendChild(document.createTextNode(" "));
+    li.appendChild(el("span", parsed.msg, "log-msg"));
+    list.appendChild(li);
     shown += 1;
   }
   $("log-empty").hidden = shown !== 0;
@@ -3853,6 +3941,21 @@ function wire() {
     state.logFilter = ev.target.value;
     renderLogs();
   });
+  const logLevelSel = $("log-level");
+  if (logLevelSel) {
+    logLevelSel.value = state.logLevel;
+    logLevelSel.addEventListener("change", (ev) => {
+      const v = ev.target.value;
+      if (v !== "ALL" && v !== "INFO" && v !== "WARN" && v !== "ERROR") {
+        ev.target.value = state.logLevel;
+        return;
+      }
+      state.logLevel = v;
+      saveLogLevel(v);
+      renderLogs();
+      renderOvLogs();
+    });
+  }
   $("log-follow").addEventListener("change", (ev) => {
     state.follow = ev.target.checked;
     if (state.follow) {
@@ -4027,6 +4130,7 @@ async function boot() {
   }
   loadTheme();
   state.rowLimit = loadRowLimit();
+  state.logLevel = loadLogLevel();
   state.serverStopped = false;
   if (redirectLegacyHash()) {
     return;

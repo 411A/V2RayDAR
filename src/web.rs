@@ -33,6 +33,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::{
+    applog::{self, LogLevel},
     config::should_include_token_in_url,
     model::{RankedConfig, RuntimeConfig},
     network,
@@ -1146,20 +1147,24 @@ pub async fn api_refresh(
         return response;
     }
     if state.runtime.read().await.refreshing {
+        log_user_act(
+            &state,
+            LogLevel::Info,
+            "Manual refresh declined: already running",
+        )
+        .await;
         return mutation_error(StatusCode::CONFLICT, "Refresh already running");
     }
-    state.refresh_tx.as_ref().map_or_else(
-        || {
-            mutation_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Manual refresh unavailable",
-            )
-        },
-        |tx| {
-            let _ = tx.send(());
-            mutation_ok("Manual refresh started")
-        },
-    )
+    let Some(tx) = state.refresh_tx.as_ref() else {
+        log_user_act(&state, LogLevel::Warn, "Manual refresh unavailable").await;
+        return mutation_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Manual refresh unavailable",
+        );
+    };
+    let _ = tx.send(());
+    log_user_act(&state, LogLevel::Info, "Manual refresh triggered").await;
+    mutation_ok("Manual refresh started")
 }
 
 /// `POST /api/shutdown` — stop the whole instance (same as Ctrl+C: proxy,
@@ -1182,6 +1187,7 @@ pub async fn api_shutdown(
             std::process::exit(0);
         });
     }
+    log_user_act(&state, LogLevel::Warn, "Shutdown requested via dashboard").await;
     mutation_ok("Server stopping")
 }
 
@@ -1198,19 +1204,28 @@ pub async fn api_ping(
     if let Err(response) = authorize(&state, remote_addr, token).await {
         return response;
     }
-    {
+    // Read the flags first and drop the guard before logging: the log
+    // takes a write lock, which would deadlock against a held read guard.
+    let busy = {
         let runtime = state.runtime.read().await;
-        if runtime.refreshing || runtime.pinging {
-            return mutation_error(StatusCode::CONFLICT, "A cycle is already running");
-        }
+        runtime.refreshing || runtime.pinging
+    };
+    if busy {
+        log_user_act(
+            &state,
+            LogLevel::Info,
+            "Manual ping declined: a cycle is already running",
+        )
+        .await;
+        return mutation_error(StatusCode::CONFLICT, "A cycle is already running");
     }
-    state.ping_tx.as_ref().map_or_else(
-        || mutation_error(StatusCode::SERVICE_UNAVAILABLE, "Manual ping unavailable"),
-        |tx| {
-            let _ = tx.send(());
-            mutation_ok("Manual ping started")
-        },
-    )
+    let Some(tx) = state.ping_tx.as_ref() else {
+        log_user_act(&state, LogLevel::Warn, "Manual ping unavailable").await;
+        return mutation_error(StatusCode::SERVICE_UNAVAILABLE, "Manual ping unavailable");
+    };
+    let _ = tx.send(());
+    log_user_act(&state, LogLevel::Info, "Manual ping triggered").await;
+    mutation_ok("Manual ping started")
 }
 
 /// New subscription payload (`POST /api/subscriptions`).
@@ -1316,20 +1331,24 @@ async fn load_db_config(state: &HttpState) -> Result<crate::config::AppConfig, R
             "Settings database unavailable",
         ));
     };
-    tokio::task::spawn_blocking(move || crate::settings::load_app_config(&db))
-        .await
-        .map_err(|error| {
-            mutation_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Load task failed: {error}"),
+    let loaded = tokio::task::spawn_blocking(move || crate::settings::load_app_config(&db)).await;
+    let loaded = match loaded {
+        Err(error) => Err(format!("Load task failed: {error}")),
+        Ok(Err(error)) => Err(format!("Unable to read settings: {error}")),
+        Ok(Ok(cfg)) => Ok(cfg),
+    };
+    match loaded {
+        Ok(cfg) => Ok(cfg),
+        Err(message) => {
+            log_user_act(
+                state,
+                LogLevel::Error,
+                &format!("DB read failed: {message}"),
             )
-        })?
-        .map_err(|error| {
-            mutation_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Unable to read settings: {error}"),
-            )
-        })
+            .await;
+            Err(mutation_error(StatusCode::INTERNAL_SERVER_ERROR, message))
+        }
+    }
 }
 
 /// Persist `cfg` to the database and push it live (broadcast + shared
@@ -1344,20 +1363,22 @@ async fn persist_config(state: &HttpState, cfg: &crate::config::AppConfig) -> Re
         ));
     };
     let snapshot = cfg.clone();
-    tokio::task::spawn_blocking(move || crate::settings::save_app_config(&db, &snapshot))
-        .await
-        .map_err(|error| {
-            mutation_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Save task failed: {error}"),
-            )
-        })?
-        .map_err(|error| {
-            mutation_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Unable to save settings: {error}"),
-            )
-        })?;
+    let saved =
+        tokio::task::spawn_blocking(move || crate::settings::save_app_config(&db, &snapshot)).await;
+    let saved = match saved {
+        Err(error) => Err(format!("Save task failed: {error}")),
+        Ok(Err(error)) => Err(format!("Unable to save settings: {error}")),
+        Ok(Ok(())) => Ok(()),
+    };
+    if let Err(message) = saved {
+        log_user_act(
+            state,
+            LogLevel::Error,
+            &format!("DB save failed: {message}"),
+        )
+        .await;
+        return Err(mutation_error(StatusCode::INTERNAL_SERVER_ERROR, message));
+    }
     *state.subscriptions.write().await = cfg.subscriptions.clone();
     *state.config.write().await = crate::model::RuntimeConfig::from(cfg);
     if let Some(tx) = state.config_tx.as_ref() {
@@ -1373,6 +1394,13 @@ async fn push_live_config(state: &HttpState, cfg: &crate::config::AppConfig) {
     if let Some(tx) = state.config_tx.as_ref() {
         let _ = tx.send(cfg.clone());
     }
+}
+
+/// One user-act line to Live logs. Best effort: a full ring drops the
+/// oldest line, and logging never fails the request itself.
+async fn log_user_act(state: &HttpState, level: LogLevel, message: &str) {
+    let mut runtime = state.runtime.write().await;
+    applog::push(&mut runtime, level, message);
 }
 
 /// `POST /api/subscriptions` — add one subscription (immediate-save).
@@ -1417,6 +1445,16 @@ pub async fn api_subscriptions_add(
     if let Err(response) = persist_config(&state, &cfg).await {
         return response;
     }
+    log_user_act(
+        &state,
+        LogLevel::Info,
+        &format!(
+            "Subscription added: '{name}' prio {} ({})",
+            body.priority,
+            if body.enabled { "enabled" } else { "disabled" }
+        ),
+    )
+    .await;
     mutation_ok(format!("Added {name}"))
 }
 
@@ -1461,6 +1499,19 @@ pub async fn api_subscriptions_patch(
     let Some(entry) = cfg.subscriptions.get_mut(index) else {
         return mutation_error(StatusCode::NOT_FOUND, "No subscription at that index");
     };
+    let mut changed: Vec<&str> = Vec::new();
+    if body.url.is_some() {
+        changed.push("url");
+    }
+    if body.name.is_some() {
+        changed.push("name");
+    }
+    if body.priority.is_some() {
+        changed.push("priority");
+    }
+    if body.enabled.is_some() {
+        changed.push("enabled");
+    }
     let mut next = entry.clone();
     if let Some(url) = body.url {
         next.url = url.trim().to_string();
@@ -1490,6 +1541,17 @@ pub async fn api_subscriptions_patch(
     if let Err(response) = persist_config(&state, &cfg).await {
         return response;
     }
+    let fields = if changed.is_empty() {
+        "no changes".to_string()
+    } else {
+        changed.join(", ")
+    };
+    log_user_act(
+        &state,
+        LogLevel::Info,
+        &format!("Subscription '{name}' updated: {fields}"),
+    )
+    .await;
     mutation_ok(format!("Updated {name}"))
 }
 
@@ -1527,6 +1589,7 @@ pub async fn api_subscriptions_toggle(
     if let Err(response) = persist_config(&state, &cfg).await {
         return response;
     }
+    log_user_act(&state, LogLevel::Info, &format!("Subscription {message}")).await;
     mutation_ok(message)
 }
 
@@ -1559,6 +1622,17 @@ pub async fn api_subscriptions_delete(
     if let Err(response) = persist_config(&state, &cfg).await {
         return response;
     }
+    log_user_act(
+        &state,
+        LogLevel::Warn,
+        &format!(
+            "Subscription '{}' deleted (was prio {}, {} left)",
+            removed.name,
+            removed.priority,
+            cfg.subscriptions.len()
+        ),
+    )
+    .await;
     mutation_ok(format!("Deleted {}", removed.name))
 }
 
@@ -1613,6 +1687,12 @@ pub async fn api_subscriptions_reorder(
     if let Err(response) = persist_config(&state, &cfg).await {
         return response;
     }
+    log_user_act(
+        &state,
+        LogLevel::Info,
+        &format!("Subscriptions reordered: {len} entries"),
+    )
+    .await;
     mutation_ok(format!("Reordered {len} subscription(s)"))
 }
 
@@ -1973,6 +2053,28 @@ pub async fn api_config_patch(
     // No instant re-fetch: the loop picks refresh-relevant edits up on the
     // next cycle (or a manual refresh), so say so when the fingerprint moved.
     let next_cycle = crate::refresh_relevant_changed(&before, &cfg);
+    let key = body.key.trim();
+    // Secrets never land in the log: only the rotation is recorded.
+    // Other values go through URL redaction first, so a URI-typed
+    // setting (emergency_config, *test_url, *download_url, …) can't
+    // leak userinfo or query secrets; plain values pass through.
+    if key.contains("token") {
+        log_user_act(&state, LogLevel::Warn, &format!("Secret '{key}' rotated")).await;
+    } else {
+        let redacted = crate::config::redact_subscription_url(&body.value);
+        let shown: String = redacted.chars().take(80).collect();
+        let shown = if redacted.chars().count() > 80 {
+            format!("{shown}…")
+        } else {
+            shown
+        };
+        log_user_act(
+            &state,
+            LogLevel::Info,
+            &format!("Setting '{key}' updated: {shown}"),
+        )
+        .await;
+    }
     mutation_applies_next_cycle(format!("Updated {}", body.key.trim()), next_cycle)
 }
 
@@ -2012,6 +2114,12 @@ pub async fn api_config_reset(
     if let Err(response) = persist_config(&state, &cfg).await {
         return response;
     }
+    log_user_act(
+        &state,
+        LogLevel::Warn,
+        "Settings reset to defaults (subscriptions kept)",
+    )
+    .await;
     let next_cycle = crate::refresh_relevant_changed(&before, &cfg);
     mutation_applies_next_cycle(
         "Defaults restored; subscriptions and essentials kept".to_string(),
@@ -2084,8 +2192,10 @@ pub async fn api_proxy_select(
     }
     push_live_config(&state, &cfg).await;
     if cfg.proxy.manual_proxy_uri.is_some() {
+        log_user_act(&state, LogLevel::Info, "Proxy pinned to config").await;
         mutation_ok("Proxy set to config")
     } else {
+        log_user_act(&state, LogLevel::Info, "Proxy pin cleared (auto-select)").await;
         mutation_ok("Proxy: auto-select (manual cleared)")
     }
 }
@@ -2171,10 +2281,26 @@ pub async fn api_proxy_mode(
         cfg.proxy.port,
         crate::constants::FIREWALL_PROXY_RULE_NAME,
     ) {
-        Ok(message) => mutation_ok(format!("Proxy {mode_label} ({message})")),
-        Err(error) => mutation_firewall_elevation(format!(
-            "Proxy {mode_label} (firewall update failed: {error})"
-        )),
+        Ok(message) => {
+            log_user_act(
+                &state,
+                LogLevel::Info,
+                &format!("Proxy mode → {mode_label}"),
+            )
+            .await;
+            mutation_ok(format!("Proxy {mode_label} ({message})"))
+        }
+        Err(error) => {
+            log_user_act(
+                &state,
+                LogLevel::Warn,
+                &format!("Proxy mode → {mode_label}, firewall update failed: {error}"),
+            )
+            .await;
+            mutation_firewall_elevation(format!(
+                "Proxy {mode_label} (firewall update failed: {error})"
+            ))
+        }
     }
 }
 
@@ -2207,10 +2333,26 @@ pub async fn api_sharing(
         cfg.bind.port(),
         crate::constants::FIREWALL_RULE_NAME,
     ) {
-        Ok(message) => mutation_ok(format!("Sharing {sharing_label} ({message})")),
-        Err(error) => mutation_firewall_elevation(format!(
-            "Sharing {sharing_label} (firewall update failed: {error})"
-        )),
+        Ok(message) => {
+            log_user_act(
+                &state,
+                LogLevel::Info,
+                &format!("LAN sharing {sharing_label}"),
+            )
+            .await;
+            mutation_ok(format!("Sharing {sharing_label} ({message})"))
+        }
+        Err(error) => {
+            log_user_act(
+                &state,
+                LogLevel::Warn,
+                &format!("LAN sharing {sharing_label}, firewall update failed: {error}"),
+            )
+            .await;
+            mutation_firewall_elevation(format!(
+                "Sharing {sharing_label} (firewall update failed: {error})"
+            ))
+        }
     }
 }
 
@@ -2240,11 +2382,27 @@ pub async fn api_cache_clean(
         );
     };
     match cleaned {
-        Ok(()) => mutation_ok("Clean cache finished: database cleared"),
-        Err(error) => mutation_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Clean cache failed: {error}"),
-        ),
+        Ok(()) => {
+            log_user_act(
+                &state,
+                LogLevel::Warn,
+                "Cache cleaned: probe database cleared",
+            )
+            .await;
+            mutation_ok("Clean cache finished: database cleared")
+        }
+        Err(error) => {
+            log_user_act(
+                &state,
+                LogLevel::Error,
+                &format!("Cache clean failed: {error}"),
+            )
+            .await;
+            mutation_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Clean cache failed: {error}"),
+            )
+        }
     }
 }
 

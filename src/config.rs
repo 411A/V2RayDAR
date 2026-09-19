@@ -115,6 +115,36 @@ pub fn canonicalize_subscriptions(subscriptions: &mut [SubscriptionSource]) {
     }
 }
 
+/// Subscription URLs are unique: the first row wins, later rows with the same
+/// (trimmed) URL are fetch-twins that double probe traffic and split results.
+/// Returns the 0-based position of the first row whose URL matches `url`,
+/// skipping `except` (the row being edited) so an echo-save is not flagged.
+pub fn find_duplicate_subscription_url(
+    subscriptions: &[SubscriptionSource],
+    url: &str,
+    except: Option<usize>,
+) -> Option<usize> {
+    let wanted = url.trim();
+    subscriptions
+        .iter()
+        .enumerate()
+        .find_map(|(index, source)| {
+            if Some(index) == except || source.url.trim() != wanted {
+                None
+            } else {
+                Some(index)
+            }
+        })
+}
+
+/// Drop later rows that repeat an earlier subscription URL (first row wins,
+/// vec order preserved). Loads converge legacy databases that already hold
+/// twins instead of erroring the boot.
+pub fn dedupe_subscription_urls(subscriptions: &mut Vec<SubscriptionSource>) {
+    let mut seen = std::collections::HashSet::new();
+    subscriptions.retain(|source| seen.insert(source.url.trim().to_string()));
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
 pub struct ProbeConfig {
     #[serde(default = "default_probe_mode")]
@@ -356,6 +386,7 @@ pub fn validate_config(mut config: AppConfig) -> Result<AppConfig> {
             ));
         }
     }
+    dedupe_subscription_urls(&mut config.subscriptions);
     canonicalize_subscriptions(&mut config.subscriptions);
 
     // Self-heal: protection without a token mints a random editable one
@@ -953,6 +984,15 @@ mod tests {
         }
     }
 
+    fn subscription_with_url(name: &str, url: &str, priority: u32) -> SubscriptionSource {
+        SubscriptionSource {
+            name: name.to_string(),
+            url: url.to_string(),
+            enabled: true,
+            priority,
+        }
+    }
+
     #[test]
     fn priority_move_lands_on_the_named_slot_and_renumbers() {
         let mut subscriptions = vec![
@@ -1101,5 +1141,70 @@ mod tests {
         super::canonicalize_subscriptions(&mut dense);
         let names: Vec<&str> = dense.iter().map(|entry| entry.name.as_str()).collect();
         assert_eq!(names, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn duplicate_url_lookup_skips_the_row_being_edited() {
+        let subscriptions = vec![
+            subscription_with_url("a", "https://example.com/a.txt", 1),
+            subscription_with_url("b", "https://example.com/b.txt", 2),
+        ];
+        assert_eq!(
+            super::find_duplicate_subscription_url(
+                &subscriptions,
+                "https://example.com/b.txt",
+                None
+            ),
+            Some(1)
+        );
+        // An echo-save of the same row is not a duplicate.
+        assert_eq!(
+            super::find_duplicate_subscription_url(
+                &subscriptions,
+                "https://example.com/b.txt",
+                Some(1)
+            ),
+            None
+        );
+        // Surrounding whitespace matches the stored URL.
+        assert_eq!(
+            super::find_duplicate_subscription_url(
+                &subscriptions,
+                "  https://example.com/a.txt\n",
+                None
+            ),
+            Some(0)
+        );
+        assert_eq!(
+            super::find_duplicate_subscription_url(
+                &subscriptions,
+                "https://example.com/new.txt",
+                None
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn validate_config_dedupes_twin_urls_and_keeps_the_first() {
+        let mut config = super::AppConfig::default_for_first_run();
+        config.subscriptions = vec![
+            subscription_with_url("a", "https://example.com/a.txt", 1),
+            subscription_with_url("twin", "https://example.com/a.txt", 2),
+            subscription_with_url("b", "https://example.com/b.txt", 3),
+        ];
+        let config = super::validate_config(config).expect("twin URLs converge instead of failing");
+        let names: Vec<&str> = config
+            .subscriptions
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["a", "b"], "first row wins, twin drops out");
+        let ranks: Vec<u32> = config
+            .subscriptions
+            .iter()
+            .map(|entry| entry.priority)
+            .collect();
+        assert_eq!(ranks, vec![1, 2]);
     }
 }

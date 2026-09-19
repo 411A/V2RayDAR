@@ -547,6 +547,8 @@ Each subscription item has:
 | `enabled` | Boolean | Whether the source is fetched. Defaults to `true` if omitted. |
 | `priority` | Integer | The 1-based list slot: editing it moves the row to that slot immediately (same as drag-and-drop in the dashboard). Out-of-range values clamp to the ends. Defaults to `100` (the end) if omitted. |
 
+Subscription URLs are unique: entering a URL that is already stored warns with the existing row's index (`Subscription URL already exists at index N`) instead of storing a twin — in the dashboard (a popup naming the index, the dialog stays open), in the TUI wizard and URL editor (a status-line warning), and over the API (`409 Conflict`). The database enforces it with a unique index, and loading an older database drops later twins (the first row wins) instead of failing the start.
+
 Example:
 
 ```yaml
@@ -857,7 +859,7 @@ The `Configurations` panel exposes the same settings as the database, including:
 - sharing token settings,
 - reset-to-defaults action.
 
-The reset action keeps the current subscriptions but restores non-subscription settings to defaults. It asks for a short confirmation code before applying.
+The reset action keeps the current subscriptions but restores non-subscription settings to defaults. Values you filled in where the shipped defaults are empty (emergency proxy, manual sing-box path) are kept — reset restores defaults, it never blanks your essentials. It asks for a short confirmation code before applying.
 
 TUI saves go straight to the database (and the live runtime) — there is no config file to keep in shape.
 

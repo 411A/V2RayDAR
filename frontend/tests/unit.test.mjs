@@ -209,6 +209,81 @@ describe("subscription dialog distinguishes add vs PATCH", () => {
     await api.submitSubDialog();
     assert.equal(posts, 0);
   });
+
+  it("duplicate URL on add pops up the twin index; nothing is sent", async () => {
+    api.state.subs = {
+      list: [
+        { url: "https://a.example/s", name: "a", priority: 1, enabled: true },
+        { url: "https://b.example/s", name: "b", priority: 2, enabled: true },
+      ],
+      dirty: false,
+    };
+    api.openSubDialog(null, null);
+    sandbox.__elements.get("dlg-sub-url").value = "https://b.example/s";
+    sandbox.__elements.get("dlg-sub-name").value = "b-again";
+    const alerts = [];
+    sandbox.window.alert = (msg) => alerts.push(String(msg));
+    let posts = 0;
+    sandbox.fetch = async () => {
+      posts += 1;
+      return { status: 200, async text() { return "{}"; } };
+    };
+    await api.submitSubDialog();
+    assert.equal(posts, 0, "twin never leaves the browser");
+    assert.equal(alerts.length, 1);
+    assert.match(alerts[0], /2/, "popup names the twin's 1-based index");
+    assert.equal(api.state.editingSub, null, "dialog stays open for a fix");
+  });
+
+  it("editing a row onto a sibling URL warns; echo-save still PATCHes", async () => {
+    api.state.subs = {
+      list: [
+        { url: "https://a.example/s", name: "a", priority: 1, enabled: true },
+        { url: "https://b.example/s", name: "b", priority: 2, enabled: true },
+      ],
+      dirty: false,
+    };
+    // Onto the sibling: popup, no PATCH.
+    api.openSubDialog(api.state.subs.list[0], 0);
+    sandbox.__elements.get("dlg-sub-url").value = "https://b.example/s";
+    const alerts = [];
+    sandbox.window.alert = (msg) => alerts.push(String(msg));
+    let patches = 0;
+    sandbox.fetch = async (url, init) => {
+      if (init && init.method === "PATCH") {
+        patches += 1;
+      }
+      return { status: 200, async text() { return '{"ok":true,"list":[],"dirty":false}'; } };
+    };
+    await api.submitSubDialog();
+    assert.equal(patches, 0);
+    assert.equal(alerts.length, 1);
+    assert.match(alerts[0], /2/);
+
+    // Echo (own URL): PATCH fires.
+    api.openSubDialog(api.state.subs.list[1], 1);
+    sandbox.__elements.get("dlg-sub-url").value = "https://b.example/s";
+    sandbox.__elements.get("dlg-sub-name").value = "b";
+    await api.submitSubDialog();
+    assert.equal(patches, 1, "echo-save of the same row is not a twin");
+  });
+
+  it("server 409 surfaces the twin index as a popup, dialog stays open", async () => {
+    api.state.subs = { list: [], dirty: false };
+    api.openSubDialog(null, null);
+    sandbox.__elements.get("dlg-sub-url").value = "https://c.example/s";
+    sandbox.__elements.get("dlg-sub-name").value = "c";
+    const alerts = [];
+    sandbox.window.alert = (msg) => alerts.push(String(msg));
+    sandbox.fetch = async () => ({
+      status: 409,
+      async text() { return '{"ok":false,"status":"Subscription URL already exists at index 2","dirty":false}'; },
+    });
+    await api.submitSubDialog();
+    assert.equal(alerts.length, 1);
+    assert.match(alerts[0], /index 2/);
+    assert.equal(api.state.editingSub, null, "dialog stays open for a fix");
+  });
 });
 
 describe("subscription drag-and-drop reorder", () => {

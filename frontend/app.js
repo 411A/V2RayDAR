@@ -107,8 +107,7 @@ function apiPath(path) {
 const FETCH_TIMEOUT_MS = 15000;
 
 async function fetchJson(path, options) {
-  const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
-  const ms = state.fetchTimeoutMs || FETCH_TIMEOUT_MS;
+  const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;  const ms = state.fetchTimeoutMs || FETCH_TIMEOUT_MS;
   const timer = ctrl ? window.setTimeout(() => ctrl.abort(), ms) : 0;
   const init = { headers: { Accept: "application/json" } };
   if (ctrl) {
@@ -2682,7 +2681,18 @@ async function submitSubDialog() {
     toast(t("subRequired"), "bad");
     return;
   }
+  // URLs are unique: warn with the twin's 1-based index before anything
+  // leaves the browser (an echo-save of the row being edited is fine).
+  // The dialog stays open so the URL can be fixed in place.
   const editing = state.editingSub;
+  const known = state.subs && Array.isArray(state.subs.list) ? state.subs.list : [];
+  const twin = known.findIndex(
+    (s, i) => i !== editing && s && typeof s.url === "string" && s.url.trim() === payload.url
+  );
+  if (twin >= 0) {
+    window.alert(t("subDuplicateUrl", { n: twin + 1 }));
+    return;
+  }
   const r = editing === null
     ? await fetchJson("/api/subscriptions", { method: "POST", body: payload })
     : await fetchJson("/api/subscriptions/" + editing, { method: "PATCH", body: payload });
@@ -2690,8 +2700,18 @@ async function submitSubDialog() {
     toast(t("subApiOldShort"), "bad");
     return;
   }
+  // A twin that slipped past the local check (stale list, direct API race):
+  // the server names the index — pop it up the same way, dialog stays open.
+  if (r.status === 409) {
+    window.alert(subMessage(r, editing === null ? t("addFailed", { status: r.status }) : t("saveFailed", { status: r.status })));
+    return;
+  }
   if (r.status >= 200 && r.status < 300) {
     state.editingSub = null;
+    const dlg = $("dlg-sub");
+    if (dlg && typeof dlg.close === "function" && dlg.open) {
+      dlg.close();
+    }
     toast(subMessage(r, editing === null ? t("added") : t("saved")), "good");
     setDirty(false);
     // The server resorts on priority, so the row may land elsewhere: remember
@@ -3452,6 +3472,10 @@ function wire() {
   });
   $("dlg-sub-form").addEventListener("submit", (ev) => {
     if (ev.submitter && ev.submitter.value === "ok") {
+      // method="dialog" would close the dialog on every OK click — even a
+      // rejected one. Keep it open until the save succeeds so a warned URL
+      // can be fixed in place; Cancel still auto-closes.
+      ev.preventDefault();
       void submitSubDialog();
     }
   });

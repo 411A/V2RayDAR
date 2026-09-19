@@ -1265,6 +1265,25 @@ fn validate_subscription(url: &str, name: &str) -> Result<(), Response> {
     Ok(())
 }
 
+/// Subscription URLs are unique: refuse a URL that already lives at another
+/// row, naming its 1-based index so the caller can point at the twin (the
+/// dashboard shows the same number as the row's priority).
+fn duplicate_subscription_rejection(
+    subscriptions: &[crate::config::SubscriptionSource],
+    url: &str,
+    except: Option<usize>,
+) -> Option<Response> {
+    crate::config::find_duplicate_subscription_url(subscriptions, url, except).map(|at| {
+        mutation_error(
+            StatusCode::CONFLICT,
+            format!(
+                "Subscription URL already exists at index {}",
+                at.saturating_add(1)
+            ),
+        )
+    })
+}
+
 /// Load the stored config: every mutation starts from the database, never
 /// from a file. Rusqlite takes a mutex, so this runs off the async runtime
 /// like persistence below.
@@ -1362,6 +1381,9 @@ pub async fn api_subscriptions_add(
         Ok(cfg) => cfg,
         Err(response) => return response,
     };
+    if let Some(response) = duplicate_subscription_rejection(&cfg.subscriptions, &url, None) {
+        return response;
+    }
     cfg.subscriptions.push(crate::config::SubscriptionSource {
         name: name.clone(),
         url,
@@ -1400,6 +1422,21 @@ pub async fn api_subscriptions_patch(
         Ok(cfg) => cfg,
         Err(response) => return response,
     };
+    let Some(entry) = cfg.subscriptions.get(index) else {
+        return mutation_error(StatusCode::NOT_FOUND, "No subscription at that index");
+    };
+    // An echo-save of the same row is fine; pointing the row at a sibling's
+    // URL is refused with the sibling's index. Checked before the mutable
+    // borrow below.
+    let next_url = body
+        .url
+        .as_deref()
+        .map_or_else(|| entry.url.clone(), |url| url.trim().to_string());
+    if let Some(response) =
+        duplicate_subscription_rejection(&cfg.subscriptions, &next_url, Some(index))
+    {
+        return response;
+    }
     let Some(entry) = cfg.subscriptions.get_mut(index) else {
         return mutation_error(StatusCode::NOT_FOUND, "No subscription at that index");
     };
@@ -1915,7 +1952,8 @@ pub async fn api_config_patch(
 }
 
 /// `POST /api/config/reset` — restore non-subscription settings from the
-/// embedded defaults (subscriptions kept, merge baseline re-anchored).
+/// embedded defaults (subscriptions kept, user-filled empty-by-default
+/// essentials kept, merge baseline re-anchored).
 pub async fn api_config_reset(
     State(state): State<HttpState>,
     headers: HeaderMap,
@@ -1948,7 +1986,7 @@ pub async fn api_config_reset(
     if let Err(response) = persist_config(&state, &cfg).await {
         return response;
     }
-    mutation_ok("Defaults restored; subscriptions kept")
+    mutation_ok("Defaults restored; subscriptions and essentials kept")
 }
 
 /// `GET /api/config/token` — reveal the LAN token to an authorized dashboard
@@ -3399,6 +3437,85 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
+    #[tokio::test]
+    async fn subscriptions_add_rejects_duplicate_url_with_its_index() {
+        let (state, _refresh_rx, _ping_rx, _config_rx) = mutation_state(RuntimeState::default());
+        seed_subscriptions(&state);
+        // "b" already lives at the second row: re-adding its URL is refused
+        // with a 409 that names the twin's 1-based index.
+        let (headers, query, connect) = no_auth();
+        let response = super::api_subscriptions_add(
+            axum::extract::State(state.clone()),
+            headers,
+            query,
+            connect,
+            axum::Json(super::SubscriptionAdd {
+                url: "https://example.com/b.txt".to_string(),
+                name: "b-again".to_string(),
+                priority: 1,
+                enabled: true,
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body reads");
+        let text = String::from_utf8_lossy(&body);
+        assert!(
+            text.contains("index 2"),
+            "rejection names the twin's index: {text}"
+        );
+        let stored = stored_config(&state);
+        assert_eq!(stored.subscriptions.len(), 3, "no twin row persists");
+    }
+
+    #[tokio::test]
+    async fn subscriptions_patch_rejects_sibling_url_but_allows_echo_save() {
+        let (state, _refresh_rx, _ping_rx, _config_rx) = mutation_state(RuntimeState::default());
+        seed_subscriptions(&state);
+        // Pointing row 0 at row 1's URL is refused with the sibling's index.
+        let (headers, query, connect) = no_auth();
+        let response = super::api_subscriptions_patch(
+            axum::extract::State(state.clone()),
+            headers,
+            query,
+            connect,
+            axum::extract::Path(0_usize),
+            axum::Json(super::SubscriptionPatch {
+                url: Some("https://example.com/b.txt".to_string()),
+                ..Default::default()
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body reads");
+        assert!(
+            String::from_utf8_lossy(&body).contains("index 2"),
+            "rejection names the sibling's index"
+        );
+
+        // Re-saving a row with its own URL is an echo, not a twin.
+        let (headers, query, connect) = no_auth();
+        let response = super::api_subscriptions_patch(
+            axum::extract::State(state.clone()),
+            headers,
+            query,
+            connect,
+            axum::extract::Path(1_usize),
+            axum::Json(super::SubscriptionPatch {
+                url: Some("https://example.com/b.txt".to_string()),
+                ..Default::default()
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
     fn seed_subscriptions(state: &HttpState) {
         let sources = ["a", "b", "c"]
             .into_iter()
@@ -3897,6 +4014,8 @@ mod tests {
         {
             let mut cfg = crate::settings::load_app_config(&db).expect("seed loads");
             cfg.top_n = embedded.top_n.saturating_add(5);
+            cfg.emergency_config = Some("vless://uuid@example.com:443#bridge".to_string());
+            cfg.probe.sing_box_path = "/tmp/sing-box".to_string();
             cfg.subscriptions
                 .push(test_sub("mine", "https://test.invalid/mine.txt", 99));
             crate::settings::save_app_config(&db, &cfg).expect("customizes");
@@ -3908,6 +4027,15 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let stored = stored_config(&state);
         assert_eq!(stored.top_n, embedded.top_n);
+        assert_eq!(
+            stored.emergency_config.as_deref(),
+            Some("vless://uuid@example.com:443#bridge"),
+            "reset keeps the user-filled emergency bridge"
+        );
+        assert_eq!(
+            stored.probe.sing_box_path, "/tmp/sing-box",
+            "reset keeps the manual sing-box path"
+        );
         let names = stored_names(&state);
         assert!(names.contains(&"mine".to_string()), "custom sub kept");
         let snapshot = db.load_defaults_snapshot().expect("snapshot reads");

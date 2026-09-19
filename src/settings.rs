@@ -307,11 +307,29 @@ fn append_missing_subscriptions(
 
 /// Restore non-subscription settings from the embedded defaults and re-anchor
 /// the merge baseline. Callers keep `config.subscriptions` as they were.
+///
+/// Reset restores defaults — it must not blank user-supplied essentials the
+/// shipped defaults leave empty (`emergency_config`, the manual sing-box
+/// path, …): a key whose embedded default is empty keeps the user's value
+/// when the user filled one in. Everything with a real default still resets.
 pub fn reset_to_embedded_defaults(db: &Database, config: &mut AppConfig) -> Result<()> {
     let embedded = embedded_defaults();
     let subscriptions = std::mem::take(&mut config.subscriptions);
-    *config = embedded;
-    config.subscriptions = subscriptions;
+    let user_map = flatten_config(config)?;
+    let mut merged = flatten_config(&embedded)?;
+    for (key, user_value) in &user_map {
+        let default_empty = merged
+            .get(key)
+            .is_none_or(|default| default == "null" || default == "\"\"");
+        let user_set = user_value != "null" && user_value != "\"\"";
+        if default_empty && user_set {
+            merged.insert(key.clone(), user_value.clone());
+        }
+    }
+    let value = unflatten_settings(&merged)?;
+    let mut restored: AppConfig = serde_json::from_value(value).context("merged defaults parse")?;
+    restored.subscriptions = subscriptions;
+    *config = crate::config::validate_config(restored)?;
     store_defaults_snapshot(db)
 }
 
@@ -822,6 +840,44 @@ mod tests {
         let snapshot = db.load_defaults_snapshot().expect("snapshot reads");
         let (_, version, _) = snapshot.expect("snapshot stored");
         assert_eq!(version, defaults_data_version());
+    }
+
+    #[test]
+    fn reset_keeps_user_filled_fields_the_defaults_leave_empty() {
+        // The reported wipe: reset blanked the emergency bridge and the
+        // manual sing-box path because the shipped defaults are null there.
+        let (db, _db_guard) = open_temp_db("reset-keep");
+        let embedded = embedded_defaults();
+        assert!(
+            embedded.emergency_config.is_none(),
+            "default leaves it empty"
+        );
+        assert!(
+            embedded.probe.sing_box_path.is_empty(),
+            "default leaves it empty"
+        );
+        let mut user = embedded.clone();
+        user.top_n = user.top_n.saturating_add(5);
+        user.emergency_config = Some("vless://uuid@example.com:443#bridge".to_string());
+        user.probe.sing_box_path = "C:\\tools\\sing-box.exe".to_string();
+        user.geoip_db_path = Some("C:\\data\\geo.mmdb".to_string());
+
+        reset_to_embedded_defaults(&db, &mut user).expect("resets");
+        assert_eq!(user.top_n, embedded.top_n, "real defaults still reset");
+        assert_eq!(
+            user.emergency_config.as_deref(),
+            Some("vless://uuid@example.com:443#bridge"),
+            "user-filled emergency bridge survives"
+        );
+        assert_eq!(
+            user.probe.sing_box_path, "C:\\tools\\sing-box.exe",
+            "manual sing-box path survives"
+        );
+        assert_eq!(
+            user.geoip_db_path.as_deref(),
+            Some("C:\\data\\geo.mmdb"),
+            "user-filled geoip path survives"
+        );
     }
 
     #[test]

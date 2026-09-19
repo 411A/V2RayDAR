@@ -31,6 +31,31 @@ test("subscriptions table renders; add dialog POSTs and resyncs", async ({ page 
   await expect(page.locator("#sub-body tr")).toHaveCount(2);
 });
 
+test("duplicate URL pops up the twin index; nothing is sent, dialog stays open", async ({ page }) => {
+  await page.goto(base + "/subscriptions");
+  const twinUrl = stub.subs[0].url;
+  const sent = stub.subAddBodies.length;
+  await page.click("#btn-sub-add");
+  await expect(page.locator("#dlg-sub")).toHaveAttribute("open", "");
+  await page.fill("#dlg-sub-url", twinUrl);
+  await page.fill("#dlg-sub-name", "twin");
+  const message = new Promise((resolve) => {
+    page.once("dialog", (dlg) => {
+      const text = dlg.message();
+      void dlg.accept().then(() => resolve(text));
+    });
+  });
+  const clicked = page.click("#dlg-sub-ok");
+  // t() wraps interpolations in BIDI isolates, so match the parts.
+  const text = await message;
+  expect(text).toContain("index");
+  expect(text).toContain("1");
+  await clicked;
+  expect(stub.subAddBodies.length).toBe(sent);
+  await expect(page.locator("#dlg-sub")).toHaveAttribute("open", "");
+  await expect(page.locator("#dlg-sub-url")).toHaveValue(twinUrl);
+});
+
 test("edit dialog PATCHes /:index; toggle flips enabled", async ({ page }) => {
   await page.goto(base + "/subscriptions");
   await page.locator("#sub-body tr").first().getByRole("button", { name: "Edit" }).click();

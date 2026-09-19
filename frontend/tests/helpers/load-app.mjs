@@ -164,6 +164,7 @@ export function makeSandbox(overrides = {}) {
     requestAnimationFrame: () => 0,
     matchMedia: undefined,
     confirm: () => true,
+    alert: () => {},
     __fetchCalls: fetchCalls,
     __elements: elements,
   };
@@ -176,6 +177,7 @@ export function makeSandbox(overrides = {}) {
     setTimeout: sandbox.setTimeout,
     clearTimeout: () => {},
     confirm: sandbox.confirm,
+    alert: sandbox.alert,
   };
   Object.assign(sandbox, overrides);
   sandbox.window.fetch = sandbox.fetch;

@@ -66,6 +66,9 @@ impl Database {
             -- weight and the list order (lower runs first, ties keep
             -- insertion order), in the TUI and on the dashboard alike.
             -- Drag-and-drop renumbers priorities, so no second column.
+            -- URLs are unique: later twins of an earlier URL drop out on
+            -- open (first row wins), then the unique index refuses any new
+            -- twin the entry guards missed.
             CREATE TABLE IF NOT EXISTS subscriptions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
@@ -73,6 +76,10 @@ impl Database {
                 enabled INTEGER NOT NULL DEFAULT 1,
                 priority INTEGER NOT NULL DEFAULT 100
             );
+            DELETE FROM subscriptions WHERE id NOT IN (
+                SELECT MIN(id) FROM subscriptions GROUP BY TRIM(url)
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS subscriptions_url_unique ON subscriptions(TRIM(url));
 
             -- Embedded-defaults snapshot: one row holding the shipped
             -- defaults file (as a single JSON blob) plus the app version
@@ -782,5 +789,67 @@ mod tests {
         assert!(!row_exists(&db, "ancient"));
         assert!(!row_exists(&db, "boundary"));
         assert!(row_exists(&db, "fresh"));
+    }
+
+    fn subscription_row(name: &str, url: &str, priority: i64) -> crate::config::SubscriptionSource {
+        crate::config::SubscriptionSource {
+            name: name.to_string(),
+            url: url.to_string(),
+            enabled: true,
+            priority: u32::try_from(priority).unwrap_or(100),
+        }
+    }
+
+    #[test]
+    fn subscription_urls_stay_unique_and_legacy_twins_converge() {
+        let db = open_temp_db("sub-unique");
+        db.save_subscriptions(&[
+            subscription_row("a", "https://example.com/a.txt", 1),
+            subscription_row("b", "https://example.com/b.txt", 2),
+        ])
+        .expect("seed persists");
+        // A twin URL (even padded) is refused by the unique index.
+        let twin = db.save_subscriptions(&[
+            subscription_row("a", "https://example.com/a.txt", 1),
+            subscription_row("twin", "  https://example.com/a.txt ", 2),
+        ]);
+        assert!(twin.is_err(), "duplicate URL must not persist");
+
+        // Legacy databases that already hold twins converge on open: the
+        // first row survives, later twins drop out, and the index lands.
+        let dir = std::env::temp_dir().join(format!(
+            "v2raydar-sub-twins-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir can be created");
+        let path = dir.join("data.db");
+        {
+            let raw = rusqlite::Connection::open(&path).expect("raw db opens");
+            raw.execute_batch(
+                "CREATE TABLE subscriptions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    url TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    priority INTEGER NOT NULL DEFAULT 100
+                );
+                INSERT INTO subscriptions (name, url, enabled, priority) VALUES
+                    ('a', 'https://example.com/a.txt', 1, 1),
+                    ('twin', 'https://example.com/a.txt', 1, 2),
+                    ('b', 'https://example.com/b.txt', 1, 3);",
+            )
+            .expect("legacy twins seed");
+        }
+        let db = Database::open(&path).expect("db with twins still opens");
+        let names: Vec<String> = db
+            .load_subscriptions()
+            .expect("subs load")
+            .into_iter()
+            .map(|source| source.name)
+            .collect();
+        assert_eq!(names, vec!["a", "b"], "first row wins, twin drops out");
     }
 }

@@ -108,6 +108,17 @@ fn commit_url(state: &mut TuiState) {
         return;
     }
 
+    // URLs are unique: pointing the selected row at a sibling's URL warns
+    // with the sibling's 1-based index instead of storing a fetch-twin.
+    let selected = state.selected_subscription_index();
+    if let Some(at) = crate::config::find_duplicate_subscription_url(
+        &state.editable.subscriptions,
+        &value,
+        selected,
+    ) {
+        state.status = format!("URL already exists at index {}", at.saturating_add(1));
+        return;
+    }
     if let Some(source) = state.selected_subscription_mut() {
         source.url = value;
         state.dirty = true;
@@ -154,6 +165,13 @@ fn commit_new_url(state: &mut TuiState) {
     let value = state.input.trim().to_string();
     if value.is_empty() {
         state.status = "URL cannot be empty".to_string();
+        return;
+    }
+    // Warn at the first wizard step: no point naming a twin.
+    if let Some(at) =
+        crate::config::find_duplicate_subscription_url(&state.editable.subscriptions, &value, None)
+    {
+        state.status = format!("URL already exists at index {}", at.saturating_add(1));
         return;
     }
     if let Some(draft) = state.new_subscription.as_mut() {
@@ -210,6 +228,17 @@ fn commit_new_enabled(state: &mut TuiState) {
         return;
     };
     draft.enabled = enabled;
+    // Re-check at the finish: the list may have changed mid-wizard. A twin
+    // aborts back to the list with its index instead of storing twice.
+    if let Some(at) = crate::config::find_duplicate_subscription_url(
+        &state.editable.subscriptions,
+        &draft.url,
+        None,
+    ) {
+        state.status = format!("URL already exists at index {}", at.saturating_add(1));
+        state.view = MenuView::Subscriptions;
+        return;
+    }
     let added = (draft.name.clone(), draft.url.clone());
     let rank = draft.priority;
     state.editable.subscriptions.push(SubscriptionSource {
@@ -254,7 +283,10 @@ fn commit_reset(state: &mut TuiState, database: &crate::db::Database) {
         Ok(()) => {
             state.reset_code = None;
             state.dirty = true;
-            finish_edit(state, "Defaults restored; subscriptions kept");
+            finish_edit(
+                state,
+                "Defaults restored; subscriptions and essentials kept",
+            );
         }
         Err(error) => {
             state.status = format!("Reset failed: {error:#}");
@@ -289,8 +321,10 @@ const fn new_subscription_guide(step: NewSubscriptionStep) -> &'static str {
 mod tests {
     use crate::config::SubscriptionSource;
 
-    use super::{commit_new_enabled, commit_priority, start_new_subscription};
-    use crate::tui::state::TuiState;
+    use super::{
+        commit_new_enabled, commit_new_url, commit_priority, commit_url, start_new_subscription,
+    };
+    use crate::tui::state::{InputMode, NewSubscriptionStep, TuiState};
 
     fn subscription(name: &str, priority: u32) -> SubscriptionSource {
         SubscriptionSource {
@@ -354,5 +388,74 @@ mod tests {
             .collect();
         assert_eq!(names, vec!["z", "a", "b"]);
         assert_eq!(state.selected_subscription, 1);
+    }
+
+    #[test]
+    fn new_url_step_warns_on_twin_with_its_index() {
+        let mut state = state_with(vec![subscription("a", 1), subscription("b", 2)]);
+        start_new_subscription(&mut state);
+        state.input.push_str("https://example.com/b.txt");
+        commit_new_url(&mut state);
+
+        assert!(
+            state.status.contains("index 2"),
+            "warning names the twin's index: {}",
+            state.status
+        );
+        assert_eq!(
+            state.input_mode,
+            InputMode::NewSubscription(NewSubscriptionStep::Url),
+            "wizard stays on the URL step"
+        );
+        assert_eq!(
+            state.new_subscription.as_ref().expect("draft kept").url,
+            "",
+            "twin URL never enters the draft"
+        );
+    }
+
+    #[test]
+    fn finish_step_refuses_twin_and_url_edit_points_at_sibling() {
+        // A draft that reaches the finish with a twin URL aborts: nothing is
+        // stored, the warning names the twin's index.
+        let mut state = state_with(vec![subscription("a", 1), subscription("b", 2)]);
+        start_new_subscription(&mut state);
+        let draft = state.new_subscription.as_mut().expect("draft starts");
+        draft.name = "twin".to_string();
+        draft.url = "https://example.com/b.txt".to_string();
+        state.input.push_str("yes");
+        commit_new_enabled(&mut state);
+
+        assert_eq!(state.editable.subscriptions.len(), 2, "no twin row stored");
+        assert!(
+            state.status.contains("index 2"),
+            "warning names the twin's index: {}",
+            state.status
+        );
+
+        // Editing row 1 onto row 2's URL warns with the sibling's index and
+        // leaves the row untouched; re-saving the row's own URL still works.
+        state.selected_subscription = 1;
+        state.input.clear();
+        state.input.push_str("https://example.com/b.txt");
+        commit_url(&mut state);
+        assert!(
+            state.status.contains("index 2"),
+            "warning names the sibling's index: {}",
+            state.status
+        );
+        assert_eq!(
+            state.editable.subscriptions[0].url, "https://example.com/a.txt",
+            "sibling URL never overwrites the row"
+        );
+        assert!(!state.dirty);
+
+        state.input.clear();
+        state.input.push_str("https://example.com/a.txt");
+        commit_url(&mut state);
+        assert_eq!(
+            state.status, "URL updated",
+            "echo-save of the same row works"
+        );
     }
 }

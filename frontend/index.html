@@ -225,6 +225,8 @@
         <h2 data-i18n="subTitle">Subscriptions</h2>
         <div class="panel-tools">
           <button type="button" class="btn primary" id="btn-sub-add" data-i18n="btnSubAdd">Add subscription</button>
+          <button type="button" class="btn" id="btn-sub-import" data-i18n="btnSubImport">Import</button>
+          <button type="button" class="btn" id="btn-sub-export" data-i18n="btnSubExport">Export</button>
           <button type="button" class="btn" id="btn-save" disabled data-i18n="btnSaveClean">Save (no changes)</button>
         </div>
       </div>
@@ -341,6 +343,34 @@
       <div class="dlg-actions">
         <button type="submit" class="btn primary" id="dlg-sub-ok" value="ok" data-i18n="btnAdd">Add</button>
         <button type="submit" class="btn" value="cancel" formnovalidate data-i18n="btnCancel">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-sub-import" aria-labelledby="dlg-sub-import-title">
+    <form method="dialog" class="dlg" id="dlg-sub-import-form">
+      <h2 id="dlg-sub-import-title" data-i18n="dlgImportSubs">Import subscriptions</h2>
+      <p class="muted" data-i18n="subImportHint">Paste subscriptions, one per line as: name, priority, url. Lines starting with # are ignored; a missing or invalid priority appends at the end.</p>
+      <label><span data-i18n="subImportLabel">Subscriptions as text</span>
+        <textarea id="sub-import-text" rows="10" data-i18n-ph="subImportPh" placeholder="My feed, 1, https://example.com/sub.txt" autocomplete="off" spellcheck="false"></textarea>
+      </label>
+      <div class="dlg-actions">
+        <button type="submit" class="btn primary" id="dlg-sub-import-ok" value="ok" data-i18n="btnImport">Import</button>
+        <button type="button" class="btn" id="dlg-sub-import-paste" data-i18n="btnPaste">Paste</button>
+        <button type="submit" class="btn" value="cancel" formnovalidate data-i18n="btnCancel">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-sub-export" aria-labelledby="dlg-sub-export-title">
+    <form method="dialog" class="dlg">
+      <h2 id="dlg-sub-export-title" data-i18n="dlgExportSubs">Export subscriptions</h2>
+      <label><span data-i18n="subExportLabel">Subscriptions as text</span>
+        <textarea id="sub-export-text" rows="10" readonly spellcheck="false"></textarea>
+      </label>
+      <div class="dlg-actions">
+        <button type="button" class="btn primary" id="dlg-sub-export-copy" data-i18n="btnCopy">Copy</button>
+        <button type="submit" class="btn" value="close" data-i18n="btnClose">Close</button>
       </div>
     </form>
   </dialog>

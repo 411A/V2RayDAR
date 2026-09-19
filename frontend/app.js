@@ -2853,6 +2853,216 @@ async function submitSubDialog() {
   toast(subMessage(r, editing === null ? t("addFailed", { status: r.status }) : t("saveFailed", { status: r.status })), "bad");
 }
 
+/* ---------- subscriptions bulk import / export (plain text) ---------- */
+
+/// Shared bulk format, one subscription per line: `name, priority, url`.
+/// The split takes the last field as the URL and the second-to-last as the
+/// priority, so names may contain commas freely with no quoting rules.
+/// Blank lines and `#` comment lines are skipped. Export always starts with
+/// a `#` header documenting the rule, so an export pastes straight back
+/// into the import box — on this or another instance.
+const SUBS_BULK_HEADER = "# name, priority, url";
+
+/// Build the export text for `list` (server order is priority order).
+function subsExportText(list) {
+  const lines = [SUBS_BULK_HEADER];
+  for (const s of list || []) {
+    if (!s || typeof s.url !== "string") {
+      continue;
+    }
+    const name = typeof s.name === "string" ? s.name.trim() : "";
+    const url = s.url.trim();
+    if (!url) {
+      continue;
+    }
+    const prio = Number(s && s.priority);
+    lines.push(name + ", " + (Number.isFinite(prio) ? String(Math.max(0, Math.floor(prio))) : "0") + ", " + url);
+  }
+  return lines.join("\n");
+}
+
+/// Parse pasted bulk text. Returns `{ entries, badLine }` — `badLine` is
+/// the 1-based line number of the first entry with an empty name/URL (or no
+/// comma at all), null when every line parses. Callers fail fast on it so a
+/// typo never half-imports. Three fields (`name, priority, url`) take the
+/// last field as the URL and the second-to-last as the priority; two fields
+/// (`name, url`) mean "append at the end". `priority` is a number, or null
+/// for "append after the highest known priority" (missing/invalid).
+function parseSubsImport(text) {
+  const entries = [];
+  const lines = String(text === undefined || text === null ? "" : text).split("\n");
+  for (let li = 0; li < lines.length; li += 1) {
+    const raw = lines[li].trim();
+    if (!raw || raw.startsWith("#")) {
+      continue;
+    }
+    const parts = raw.split(",");
+    if (parts.length < 2) {
+      return { entries, badLine: li + 1 };
+    }
+    const url = parts.pop().trim();
+    const prioRaw = parts.length > 1 ? parts.pop().trim() : "";
+    const name = parts.join(",").trim();
+    if (!name || !url) {
+      return { entries, badLine: li + 1 };
+    }
+    const prioNum = prioRaw === "" ? NaN : Number(prioRaw);
+    entries.push({
+      name,
+      priority: prioRaw !== "" && Number.isFinite(prioNum) && prioNum >= 0 ? Math.floor(prioNum) : null,
+      url,
+    });
+  }
+  return { entries, badLine: null };
+}
+
+/// Split parsed `entries` into fresh rows vs duplicates. Duplicate = URL
+/// (trimmed) already in `knownUrls` or repeated inside the paste itself —
+/// the same trimmed-URL rule the server enforces with 409, checked up front
+/// so the result toast can report "n/m added (x duplicates)".
+function partitionSubsImport(entries, knownUrls) {
+  const seen = new Set();
+  for (const u of knownUrls || []) {
+    if (typeof u === "string" && u.trim()) {
+      seen.add(u.trim());
+    }
+  }
+  const fresh = [];
+  let duplicates = 0;
+  for (const e of entries) {
+    const url = e && typeof e.url === "string" ? e.url.trim() : "";
+    if (!url || seen.has(url)) {
+      duplicates += 1;
+    } else {
+      seen.add(url);
+      fresh.push(e);
+    }
+  }
+  return { fresh, duplicates };
+}
+
+function openSubsExport() {
+  if (!state.subs) {
+    toast(t("subApiOldShort"), "bad");
+    return;
+  }
+  $("sub-export-text").value = subsExportText(state.subs.list);
+  const dlg = $("dlg-sub-export");
+  if (typeof dlg.showModal === "function") {
+    dlg.showModal();
+  }
+}
+
+function openSubsImport() {
+  if (!state.subs) {
+    toast(t("subApiOldShort"), "bad");
+    return;
+  }
+  $("sub-import-text").value = "";
+  const dlg = $("dlg-sub-import");
+  if (typeof dlg.showModal === "function") {
+    dlg.showModal();
+  }
+}
+
+/// Fill the import box from the clipboard: insert at the cursor when it
+/// already holds text, otherwise replace it. Clipboard read needs a secure
+/// context and may ask permission — on any failure (or plain-HTTP LAN use,
+/// where the API is absent) fall back to focusing the box so the user
+/// pastes with Ctrl+V instead.
+async function pasteIntoImport() {
+  const box = $("sub-import-text");
+  let text = null;
+  try {
+    if (typeof navigator !== "undefined" && navigator.clipboard && navigator.clipboard.readText) {
+      text = await navigator.clipboard.readText();
+    }
+  } catch (err) {
+    text = null;
+  }
+  if (typeof text !== "string") {
+    toast(t("pasteManual"), "bad");
+    if (box && typeof box.focus === "function") {
+      box.focus();
+    }
+    return;
+  }
+  if (box) {
+    try {
+      if (typeof box.setRangeText === "function" && typeof box.selectionStart === "number") {
+        const at = box.selectionStart;
+        box.setRangeText(text, at, typeof box.selectionEnd === "number" ? box.selectionEnd : at, "end");
+      } else {
+        box.value = (box.value ? box.value.replace(/\s+$/, "") + "\n" : "") + text;
+      }
+    } catch (err) {
+      box.value = text;
+    }
+    if (typeof box.focus === "function") {
+      box.focus();
+    }
+  }
+}
+
+/// Import the pasted bulk text: fail fast on the first malformed line (the
+/// dialog stays open so the text isn't lost), skip duplicates, POST the rest
+/// one by one through the validated single-add endpoint, then report
+/// "n/m added (x duplicates)" and resync.
+async function submitSubsImport() {
+  const parsed = parseSubsImport($("sub-import-text").value);
+  if (parsed.badLine !== null) {
+    toast(t("importBadLine", { l: parsed.badLine }), "bad");
+    return;
+  }
+  const known = state.subs && Array.isArray(state.subs.list) ? state.subs.list : [];
+  const part = partitionSubsImport(
+    parsed.entries,
+    known.map((s) => s && s.url),
+  );
+  let top = known.reduce((m, s) => {
+    const p = Number(s && s.priority);
+    return Number.isFinite(p) && p > m ? p : m;
+  }, 0);
+  let added = 0;
+  let lastAdded = null;
+  for (const e of part.fresh) {
+    const priority = e.priority === null ? top + 1 : e.priority;
+    const r = await fetchJson("/api/subscriptions", {
+      method: "POST",
+      body: { url: e.url, name: e.name, priority, enabled: true },
+    });
+    if (r.status === 404) {
+      toast(t("subApiOldShort"), "bad");
+      return;
+    }
+    if (r.status === 409) {
+      // Lost a race with another writer: count it as a duplicate, not a
+      // failure, and keep going with the rest of the batch.
+      part.duplicates += 1;
+      continue;
+    }
+    if (!(r.status >= 200 && r.status < 300)) {
+      toast(subMessage(r, t("addFailed", { status: r.status })), "bad");
+      return;
+    }
+    added += 1;
+    lastAdded = e;
+    if (priority > top) {
+      top = priority;
+    }
+  }
+  const dlg = $("dlg-sub-import");
+  if (dlg && typeof dlg.close === "function" && dlg.open) {
+    dlg.close();
+  }
+  toast(t("importResult", { n: added, m: parsed.entries.length, x: part.duplicates }), "good");
+  setDirty(false);
+  if (lastAdded) {
+    state.flashSub = { name: lastAdded.name, url: lastAdded.url };
+  }
+  await loadSubscriptions();
+}
+
 /* ---------- settings tab (progressive) ---------- */
 
 async function loadSettings() {
@@ -3623,6 +3833,21 @@ function wire() {
       ev.preventDefault();
       void submitSubDialog();
     }
+  });
+  $("btn-sub-import").addEventListener("click", () => void openSubsImport());
+  $("btn-sub-export").addEventListener("click", () => void openSubsExport());
+  $("dlg-sub-import-form").addEventListener("submit", (ev) => {
+    if (ev.submitter && ev.submitter.value === "ok") {
+      // Same as the single-add dialog: a malformed pasted line must not
+      // close the box and lose the text — keep it open, toast the line.
+      ev.preventDefault();
+      void submitSubsImport();
+    }
+  });
+  $("dlg-sub-import-paste").addEventListener("click", () => void pasteIntoImport());
+  $("dlg-sub-export-copy").addEventListener("click", () => {
+    const box = $("sub-export-text");
+    void copyText(box ? box.value : "", t("exportCopied"));
   });
   $("btn-save").addEventListener("click", () => void saveNow());
   $("btn-settings-reload").addEventListener("click", () => {

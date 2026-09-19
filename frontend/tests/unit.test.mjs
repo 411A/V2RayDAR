@@ -410,6 +410,139 @@ describe("subscription drag-and-drop reorder", () => {
   });
 });
 
+describe("subscriptions bulk import/export text format", () => {
+  it("subsExportText writes name, priority, url with a format header", () => {
+    const { api } = loadApp();
+    assert.equal(
+      api.subsExportText([
+        { name: "demo", url: "https://example.com/sub.txt", priority: 100, enabled: true },
+        { name: "Second, with comma", url: "https://example.com/s.txt", priority: 3, enabled: false },
+      ]),
+      "# name, priority, url\ndemo, 100, https://example.com/sub.txt\nSecond, with comma, 3, https://example.com/s.txt",
+    );
+    assert.equal(api.subsExportText([]), "# name, priority, url");
+  });
+
+  it("parseSubsImport splits on the last two commas; skips blanks and # lines", () => {
+    const { api } = loadApp();
+    const parsed = api.parseSubsImport(
+      "# exported backup\n\ndemo, 100, https://example.com/sub.txt\nSecond, with comma, 3, https://example.com/s.txt\nplain, https://example.com/p.txt\n",
+    );
+    assert.equal(parsed.badLine, null);
+    // Entries are built inside the vm sandbox (different Object prototype),
+    // so compare through JSON rather than deepStrictEqual.
+    assert.equal(
+      JSON.stringify(parsed.entries),
+      JSON.stringify([
+        { name: "demo", priority: 100, url: "https://example.com/sub.txt" },
+        { name: "Second, with comma", priority: 3, url: "https://example.com/s.txt" },
+        { name: "plain", priority: null, url: "https://example.com/p.txt" },
+      ]),
+    );
+  });
+
+  it("parseSubsImport fails fast on the first malformed line", () => {
+    const { api } = loadApp();
+    assert.equal(api.parseSubsImport("ok, 1, https://example.com/a.txt\nno-commas-here\nx, 2, https://example.com/b.txt").badLine, 2);
+    assert.equal(api.parseSubsImport(", 5, https://example.com/a.txt").badLine, 1, "empty name");
+    assert.equal(api.parseSubsImport("nameless, 5, ").badLine, 1, "empty url");
+  });
+
+  it("partitionSubsImport dedupes against the server list and inside the paste", () => {
+    const { api } = loadApp();
+    const part = api.partitionSubsImport(
+      [
+        { name: "fresh", priority: 1, url: "https://example.com/fresh.txt" },
+        { name: "twin", priority: 2, url: " https://example.com/demo.txt " },
+        { name: "repeat", priority: 3, url: "https://example.com/fresh.txt" },
+      ],
+      ["https://example.com/demo.txt"],
+    );
+    assert.equal(part.duplicates, 2);
+    assert.equal(
+      JSON.stringify(part.fresh),
+      JSON.stringify([{ name: "fresh", priority: 1, url: "https://example.com/fresh.txt" }]),
+    );
+  });
+
+  it("submitSubsImport POSTs fresh rows and reports n/m added (x duplicates)", async () => {
+    const { api, sandbox } = loadApp();
+    const posts = [];
+    sandbox.fetch = async (url, init) => {
+      posts.push({ url: String(url), method: init && init.method, body: init && init.body ? JSON.parse(init.body) : null });
+      if (init && init.method === "POST" && String(url).endsWith("/api/subscriptions")) {
+        return { status: 200, async text() { return '{"ok":true,"status":"Added.","dirty":false}'; } };
+      }
+      return { status: 200, async text() { return '{"list":[],"dirty":false}'; } };
+    };
+    api.state.subs = {
+      list: [{ name: "demo", url: "https://example.com/sub.txt", priority: 100, enabled: true }],
+      dirty: false,
+    };
+    sandbox.__elements.get("sub-import-text").value =
+      "fresh one, 5, https://example.com/fresh.txt\n" +
+      "twin, 6, https://example.com/sub.txt\n" +
+      "appended, https://example.com/appended.txt";
+    await api.submitSubsImport();
+    const adds = posts.filter((p) => p.method === "POST" && p.url.endsWith("/api/subscriptions"));
+    assert.equal(adds.length, 2);
+    assert.deepEqual(adds[0].body, { url: "https://example.com/fresh.txt", name: "fresh one", priority: 5, enabled: true });
+    assert.deepEqual(adds[1].body, { url: "https://example.com/appended.txt", name: "appended", priority: 101, enabled: true });
+    const toasts = sandbox.__elements.get("toasts");
+    // Interpolated counts ride FSI...PDI isolates, so match loosely around them.
+    assert.match(toasts.children[toasts.children.length - 1].textContent, /2[\s\S]*\/[\s\S]*3[\s\S]*subscriptions added \([\s\S]*1[\s\S]*duplicates\)/);
+  });
+
+  it("submitSubsImport keeps the dialog open on a malformed line", async () => {
+    const { api, sandbox } = loadApp();
+    let calls = 0;
+    sandbox.fetch = async () => {
+      calls += 1;
+      return { status: 200, async text() { return "{}"; } };
+    };
+    api.state.subs = { list: [], dirty: false };
+    sandbox.__elements.get("sub-import-text").value = "ok, 1, https://example.com/a.txt\nbroken line";
+    await api.submitSubsImport();
+    assert.equal(calls, 0, "fail fast sends nothing");
+    const toasts = sandbox.__elements.get("toasts");
+    assert.match(toasts.children[toasts.children.length - 1].textContent, /Line[\s\S]*2[\s\S]*not a valid/);
+  });
+
+  it("pasteIntoImport falls back to manual paste without a clipboard API", async () => {
+    const { api, sandbox } = loadApp();
+    await api.pasteIntoImport();
+    const toasts = sandbox.__elements.get("toasts");
+    assert.match(toasts.children[toasts.children.length - 1].textContent, /Ctrl\+V/);
+    assert.equal(sandbox.__elements.get("sub-import-text").value, "");
+  });
+
+  it("pasteIntoImport appends clipboard text after existing lines", async () => {
+    const sb = makeSandbox();
+    sb.navigator = { clipboard: { readText: async () => "pasted, 2, https://example.com/p.txt" } };
+    const { api, sandbox } = loadApp(sb);
+    sandbox.__elements.get("sub-import-text").value = "existing, 9, https://example.com/e.txt\n";
+    await api.pasteIntoImport();
+    assert.equal(
+      sandbox.__elements.get("sub-import-text").value,
+      "existing, 9, https://example.com/e.txt\npasted, 2, https://example.com/p.txt",
+    );
+  });
+
+  it("pasteIntoImport replaces an empty box and survives a denied read", async () => {
+    const sb = makeSandbox();
+    sb.navigator = { clipboard: { readText: async () => { throw new Error("denied"); } } };
+    const denied = loadApp(sb);
+    await denied.api.pasteIntoImport();
+    const toasts = denied.sandbox.__elements.get("toasts");
+    assert.match(toasts.children[toasts.children.length - 1].textContent, /Ctrl\+V/);
+    const sb2 = makeSandbox();
+    sb2.navigator = { clipboard: { readText: async () => "fresh, 1, https://example.com/f.txt" } };
+    const { api, sandbox } = loadApp(sb2);
+    await api.pasteIntoImport();
+    assert.equal(sandbox.__elements.get("sub-import-text").value, "fresh, 1, https://example.com/f.txt");
+  });
+});
+
 describe("power-off stops quietly and stays stopped", () => {
   it("shutdownServer pins the stopped screen on 200", async () => {
     const { api, sandbox } = loadApp();

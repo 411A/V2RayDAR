@@ -99,6 +99,11 @@ describe("frontend i18n: one unified strings file, English default", () => {
       " MB",
       " GB",
       " Mbps",
+      // Bulk subscriptions format: locale-independent machine tokens (the
+      // importer only accepts this exact header and comma glue, in every
+      // language — same category as URLs and units, never translated).
+      "# name, priority, url",
+      ", ",
     ]);
     const bad = [...new Set(spaced)].filter((s) => !legit.has(s));
     assert.deepEqual(bad, [], `hardcoded user strings left in app.js: ${bad.join(" | ")}`);

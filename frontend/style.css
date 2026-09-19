@@ -598,6 +598,7 @@ main {
 
 .search input,
 .dlg input,
+.dlg textarea,
 .limit select {
   font: inherit;
   color: var(--text);
@@ -605,6 +606,18 @@ main {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 0.4rem 0.6rem;
+}
+
+/* Bulk import/export boxes: tall, vertically resizable, LTR code text even
+ * in RTL locales (URLs and the comma format must not mirror). */
+.dlg textarea {
+  inline-size: 100%;
+  min-block-size: 9rem;
+  resize: block;
+  direction: ltr;
+  text-align: left;
+  font-family: ui-monospace, monospace;
+  white-space: pre;
 }
 
 .limit {
@@ -1827,6 +1840,7 @@ kbd {
   .search input,
   .limit select,
   .dlg input,
+  .dlg textarea,
   .set-row select,
   .set-row input {
     font-size: 16px;

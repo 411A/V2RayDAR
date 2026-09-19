@@ -168,6 +168,32 @@ describe("frontend i18n: one unified strings file, English default", () => {
     }
   });
 
+  it("every settings guide states the type and shows an example", () => {
+    // Enrichment contract: each setGuide_<key> names the accepted type
+    // (or is marked read-only) and is long enough to carry an example —
+    // one-liner guides regress to unexplained fields.
+    const markers = {
+      en: ["Type:", "Read-only:"],
+      fa: ["نوع:", "فقط‌خواندنی:"],
+      zh: ["类型", "只读"],
+      fr: ["Type :", "Lecture seule"],
+      ru: ["Тип:", "Только чтение"],
+    };
+    const all = allTables();
+    for (const locale of LOCALES) {
+      const guideKeys = Object.keys(all[locale]).filter((k) => k.startsWith("setGuide_"));
+      assert.ok(guideKeys.length >= 37, `${locale} lost settings guides`);
+      for (const k of guideKeys) {
+        const text = all[locale][k];
+        assert.ok(
+          markers[locale].some((m) => text.includes(m)),
+          `${locale}.${k} states no type`,
+        );
+        assert.ok(text.length >= 30, `${locale}.${k} carries no example`);
+      }
+    }
+  });
+
   it("default language is English; unknown languages are refused", () => {
     const { api } = loadApp();
     assert.equal(api.t("langAria"), "Language: English");

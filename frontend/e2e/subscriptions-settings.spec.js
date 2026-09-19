@@ -141,6 +141,8 @@ test("settings editor PATCHes a key; unknown key shows rejection toast", async (
   // Translated name + description columns flank the value control.
   await expect(page.locator(".set-row .set-name").first()).toHaveText("Bind address");
   await expect(page.locator(".set-row .guide").first()).toContainText("dashboard listens");
+  // Guides carry the accepted type plus a worked example.
+  await expect(page.locator(".set-row .guide").first()).toContainText("Example:");
   await expect(page.locator("#btn-settings-reload")).toHaveAttribute("title", "Show the current server values again (drops anything you are typing). Never changes or resets anything.");
   await page.locator(".set-row .val").first().click();
   const input = page.locator(".set-row input").first();
@@ -223,9 +225,10 @@ test("settings edits keep the viewport and focus (no scroll jump)", async ({ pag
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
   const y0 = await page.evaluate(() => window.scrollY);
   expect(y0).toBeGreaterThan(0);
-  await sw.scrollIntoViewIfNeeded();
-  const yClick = await page.evaluate(() => window.scrollY);
   await sw.click();
+  // Reference AFTER the click's own scroll-into-view: the resync must keep
+  // exactly this position (recording before the click races its scroll).
+  const yClick = await page.evaluate(() => window.scrollY);
   // The flipped value proves the PATCH + resync rebuilt the tab.
   await expect(sw).toHaveText(flipped);
   const y1 = await page.evaluate(() => window.scrollY);
@@ -248,9 +251,9 @@ test("subscriptions resyncs keep the viewport too", async ({ page }) => {
     const y0 = await page.evaluate(() => window.scrollY);
     expect(y0).toBeGreaterThan(200);
     const tgl = page.locator("#sub-body tr").last().getByRole("button", { name: /Toggle/ });
-    await tgl.scrollIntoViewIfNeeded();
-    const yClick = await page.evaluate(() => window.scrollY);
     await tgl.click();
+    // Reference AFTER the click's own scroll (see the settings test above).
+    const yClick = await page.evaluate(() => window.scrollY);
     await expect(tgl).toHaveText("❌");
     const y1 = await page.evaluate(() => window.scrollY);
     expect(Math.abs(y1 - yClick)).toBeLessThanOrEqual(2);

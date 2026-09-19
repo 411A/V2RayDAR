@@ -1021,6 +1021,9 @@ td .lat-bar > span {
   color: var(--muted);
   font-size: 0.82rem;
   overflow-wrap: anywhere;
+  /* Guides carry one section per line (description / type / example) joined
+     by newlines — render the breaks but keep normal wrapping. */
+  white-space: pre-line;
 }
 
 .set-row .val {

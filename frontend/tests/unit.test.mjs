@@ -1231,7 +1231,9 @@ describe("settings tab: typed controls + translated rows", () => {
 
   it("names/guides translate, unknown keys fall back to server strings", () => {
     assert.equal(api.settingName("bind"), "Bind address");
-    assert.equal(api.settingGuide("bind", "srv"), "host:port the dashboard listens on");
+    assert.match(api.settingGuide("bind", "srv"), /dashboard listens/);
+    assert.match(api.settingGuide("bind", "srv"), /Type:/);
+    assert.match(api.settingGuide("bind", "srv"), /Example:/);
     assert.equal(api.settingName("future.key"), "future.key");
     assert.equal(api.settingGuide("future.key", "srv"), "srv");
     assert.equal(api.settingGroupTitle({ id: "probe", title: "Probe" }), "Probe");
@@ -1255,7 +1257,8 @@ describe("settings tab: typed controls + translated rows", () => {
     assert.equal(rows[0].children[0].textContent, "Bind address");
     assert.equal(rows[0].children[0].className, "set-name");
     assert.equal(rows[0].children[1].className, "val editable");
-    assert.equal(rows[0].children[2].textContent, "host:port the dashboard listens on");
+    assert.match(rows[0].children[2].textContent, /dashboard listens/);
+    assert.match(rows[0].children[2].textContent, /Example:/);
     // Bool row renders an off switch.
     const sw = rows[2].children[1].children[0];
     assert.equal(sw.getAttribute("role"), "switch");

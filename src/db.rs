@@ -72,6 +72,20 @@ impl Database {
                 url TEXT NOT NULL,
                 enabled INTEGER NOT NULL DEFAULT 1,
                 priority INTEGER NOT NULL DEFAULT 100
+            );
+
+            -- Embedded-defaults snapshot: one row holding the shipped
+            -- defaults file (as a single JSON blob) plus the app version
+            -- that wrote it and a content fingerprint of the defaults file
+            -- itself. Upgrades three-way-merge live settings against this
+            -- baseline (untouched keys follow new defaults, customized keys
+            -- are left alone); reset re-anchors it. The binary owns this
+            -- table — installers never touch SQLite.
+            CREATE TABLE IF NOT EXISTS default_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                app_version TEXT NOT NULL,
+                data_version TEXT NOT NULL DEFAULT '',
+                defaults_json TEXT NOT NULL
             );",
         )?;
 
@@ -444,6 +458,48 @@ impl Database {
             map.insert(key, value);
         }
         Ok(map)
+    }
+
+    /// Store the embedded-defaults snapshot (single row, id 1): the app
+    /// version that wrote it, the content fingerprint of the defaults file,
+    /// and the defaults themselves as one JSON blob.
+    #[allow(clippy::significant_drop_tightening)]
+    pub fn save_defaults_snapshot(
+        &self,
+        app_version: &str,
+        data_version: &str,
+        defaults_json: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        conn.execute(
+            "INSERT INTO default_settings (id, app_version, data_version, defaults_json)
+             VALUES (1, ?1, ?2, ?3)
+             ON CONFLICT (id) DO UPDATE SET
+               app_version = excluded.app_version,
+               data_version = excluded.data_version,
+               defaults_json = excluded.defaults_json",
+            params![app_version, data_version, defaults_json],
+        )
+        .context("failed to save defaults snapshot")?;
+        Ok(())
+    }
+
+    /// Load the snapshot row: `(app_version, data_version, defaults_json)`.
+    /// `None` on fresh databases and pre-snapshot upgrades alike.
+    pub fn load_defaults_snapshot(&self) -> Result<Option<(String, String, String)>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        conn.query_row(
+            "SELECT app_version, data_version, defaults_json FROM default_settings WHERE id = 1",
+            [],
+            |row| {
+                let app_version: String = row.get(0)?;
+                let data_version: String = row.get(1)?;
+                let defaults_json: String = row.get(2)?;
+                Ok((app_version, data_version, defaults_json))
+            },
+        )
+        .optional()
+        .context("failed to read defaults snapshot")
     }
 
     /// Replace every subscription in one transaction: a killed process can

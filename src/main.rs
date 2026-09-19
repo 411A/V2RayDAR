@@ -213,6 +213,26 @@ async fn main() -> Result<()> {
         }
         crate::settings::StartupOutcome::Loaded => {}
     }
+    // Upgrade merge: brand-new default keys and subscriptions land
+    // automatically; keys the user customized are left alone. Runs on every
+    // boot but no-ops unless the embedded defaults changed.
+    match crate::settings::reconcile_with_defaults(&database, &mut config) {
+        Ok(report) => {
+            if report.changed() {
+                println!(
+                    "Applied new defaults: {} setting(s) added, {} updated to new defaults, {} subscription(s) added.",
+                    report.settings_added, report.settings_updated, report.subs_added
+                );
+                crate::settings::save_app_config(&database, &config).with_context(|| {
+                    format!(
+                        "failed to save reconciled settings in {}",
+                        db_path.display()
+                    )
+                })?;
+            }
+        }
+        Err(error) => eprintln!("warning: defaults reconcile failed: {error:#}"),
+    }
     apply_runtime_sing_box_path(&mut config);
 
     // Initialize GeoIP: MaxMind database first (most accurate), ipdeny

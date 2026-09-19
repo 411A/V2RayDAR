@@ -157,6 +157,182 @@ fn seed_defaults(db: &Database) -> Result<AppConfig> {
     Ok(config)
 }
 
+/// The shipped defaults, parsed and validated: the single source of truth
+/// for seeds, resets, and upgrade merges. `configs.example.yaml` is the
+/// default — git-tracked, embedded into the binary, no installer or network
+/// involved.
+pub fn embedded_defaults() -> AppConfig {
+    AppConfig::default_for_first_run()
+}
+
+/// Content fingerprint of the embedded defaults file (FNV-1a hex, no
+/// dependencies): `data_version` decouples "did the defaults change" from
+/// "did the app version change", so patch releases with identical defaults
+/// skip the merge and dev builds with edited defaults still reconcile.
+pub fn defaults_data_version() -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in DEFAULT_CONFIG_TEMPLATE.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
+/// Store the current embedded defaults as the merge baseline.
+pub fn store_defaults_snapshot(db: &Database) -> Result<()> {
+    let defaults = embedded_defaults();
+    let json = serde_json::to_string(&defaults).context("defaults serialize to JSON")?;
+    db.save_defaults_snapshot(env!("CARGO_PKG_VERSION"), &defaults_data_version(), &json)
+}
+
+/// What [`reconcile_with_defaults`] changed, for startup logging.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ReconcileReport {
+    pub settings_added: usize,
+    pub settings_updated: usize,
+    pub subs_added: usize,
+    pub snapshot_stored: bool,
+}
+
+impl ReconcileReport {
+    pub const fn changed(&self) -> bool {
+        self.settings_added + self.settings_updated + self.subs_added > 0
+    }
+}
+
+/// Reconcile live settings against the embedded defaults (three-way merge):
+/// keys the user never touched follow new defaults, keys the user customized
+/// are left alone, missing keys are added, and embedded subscriptions the
+/// user never had are appended by URL. A subscription present in the baseline
+/// but missing from the user's list was deleted on purpose and stays gone.
+/// Idempotent: re-running without newer defaults changes nothing.
+pub fn reconcile_with_defaults(db: &Database, config: &mut AppConfig) -> Result<ReconcileReport> {
+    let mut report = ReconcileReport::default();
+    let embedded = embedded_defaults();
+    let embedded_version = defaults_data_version();
+
+    let snapshot = db.load_defaults_snapshot()?;
+    let Some((_, snapshot_version, old_json)) = snapshot else {
+        return legacy_reconcile(db, config, &embedded, &embedded_version, &mut report);
+    };
+    if snapshot_version == embedded_version {
+        return Ok(report);
+    }
+    let Ok(old) = serde_json::from_str::<AppConfig>(&old_json) else {
+        // Corrupt baseline: self-heal through the legacy path (add-only,
+        // then re-anchor) instead of aborting the boot.
+        return legacy_reconcile(db, config, &embedded, &embedded_version, &mut report);
+    };
+
+    let user_map = flatten_config(config)?;
+    let old_map = flatten_config(&old)?;
+    let new_map = flatten_config(&embedded)?;
+    let mut merged = user_map;
+    for (key, new_value) in &new_map {
+        match (merged.get(key), old_map.get(key)) {
+            (None, _) => {
+                merged.insert(key.clone(), new_value.clone());
+                report.settings_added += 1;
+            }
+            (Some(current), old) => {
+                if old == Some(current) && current != new_value {
+                    merged.insert(key.clone(), new_value.clone());
+                    report.settings_updated += 1;
+                }
+            }
+        }
+    }
+    report.subs_added = append_missing_subscriptions(
+        &mut config.subscriptions,
+        &embedded.subscriptions,
+        &old.subscriptions,
+    );
+
+    if report.changed() {
+        let value = unflatten_settings(&merged)?;
+        let mut reconciled: AppConfig =
+            serde_json::from_value(value).context("merged settings parse")?;
+        reconciled.subscriptions = std::mem::take(&mut config.subscriptions);
+        *config = crate::config::validate_config(reconciled)?;
+    }
+    let json = serde_json::to_string(&embedded).context("defaults serialize to JSON")?;
+    db.save_defaults_snapshot(env!("CARGO_PKG_VERSION"), &embedded_version, &json)?;
+    report.snapshot_stored = true;
+    Ok(report)
+}
+
+/// No-baseline path (legacy database, or a seed that predates snapshots):
+/// keys already defaulted via serde, so only append subscriptions the user
+/// never had, then anchor the baseline. A previously-deleted default returns
+/// once here — afterwards the baseline tells deleted apart from new.
+fn legacy_reconcile(
+    db: &Database,
+    config: &mut AppConfig,
+    embedded: &AppConfig,
+    embedded_version: &str,
+    report: &mut ReconcileReport,
+) -> Result<ReconcileReport> {
+    report.subs_added =
+        append_missing_subscriptions(&mut config.subscriptions, &embedded.subscriptions, &[]);
+    if report.subs_added > 0 {
+        crate::config::canonicalize_subscriptions(&mut config.subscriptions);
+    }
+    let json = serde_json::to_string(embedded).context("defaults serialize to JSON")?;
+    db.save_defaults_snapshot(env!("CARGO_PKG_VERSION"), embedded_version, &json)?;
+    report.snapshot_stored = true;
+    Ok(std::mem::take(report))
+}
+
+/// Append embedded subscriptions whose URL the user never had. A URL present
+/// in the baseline but missing from the user's list was deleted on purpose
+/// and is not resurrected. Returns the number appended.
+fn append_missing_subscriptions(
+    user: &mut Vec<crate::config::SubscriptionSource>,
+    embedded: &[crate::config::SubscriptionSource],
+    baseline: &[crate::config::SubscriptionSource],
+) -> usize {
+    let mut added = 0;
+    for source in embedded {
+        if user.iter().any(|own| own.url == source.url) {
+            continue;
+        }
+        if baseline.iter().any(|old| old.url == source.url) {
+            continue;
+        }
+        user.push(source.clone());
+        added += 1;
+    }
+    added
+}
+
+/// Restore non-subscription settings from the embedded defaults and re-anchor
+/// the merge baseline. Callers keep `config.subscriptions` as they were.
+pub fn reset_to_embedded_defaults(db: &Database, config: &mut AppConfig) -> Result<()> {
+    let embedded = embedded_defaults();
+    let subscriptions = std::mem::take(&mut config.subscriptions);
+    *config = embedded;
+    config.subscriptions = subscriptions;
+    store_defaults_snapshot(db)
+}
+
+fn flatten_config(config: &AppConfig) -> Result<HashMap<String, String>> {
+    let value = serde_json::to_value(config).context("settings serialize to JSON")?;
+    let Value::Object(map) = value else {
+        anyhow::bail!("settings serialize to a JSON object");
+    };
+    let mut rows = Vec::new();
+    let mut keys: Vec<&String> = map.keys().collect();
+    keys.sort();
+    for key in keys {
+        if key == "subscriptions" {
+            continue;
+        }
+        flatten_value(key, &map[key], &mut rows);
+    }
+    rows.sort();
+    Ok(rows.into_iter().collect())
+}
+
 /// Drop runtime-only state before persisting: an auto-detected sing-box path
 /// re-resolves every start, and a manual proxy pin is live-only by design.
 fn persistable_config(config: &AppConfig) -> AppConfig {
@@ -520,5 +696,140 @@ mod tests {
                 .all(|w| w[0].priority < w[1].priority),
             "vec order is priority order"
         );
+    }
+
+    fn test_source(name: &str, url: &str) -> crate::config::SubscriptionSource {
+        crate::config::SubscriptionSource {
+            name: name.to_string(),
+            url: url.to_string(),
+            enabled: true,
+            priority: 1,
+        }
+    }
+
+    fn store_old_snapshot(db: &Database, old: &AppConfig) {
+        let json = serde_json::to_string(old).expect("old serializes");
+        db.save_defaults_snapshot("0.0.1", "old-fingerprint", &json)
+            .expect("snapshot stores");
+    }
+
+    #[test]
+    fn untouched_settings_follow_new_defaults_customized_are_kept() {
+        let (db, _db_guard) = open_temp_db("merge");
+        let embedded = embedded_defaults();
+        assert!(
+            !embedded.subscriptions.is_empty(),
+            "example defaults carry subscriptions"
+        );
+        let keep_url = embedded.subscriptions[0].url.clone();
+
+        // Pretend the previous defaults: top_n differed, subs had one extra.
+        let mut old = embedded.clone();
+        old.top_n = embedded.top_n.saturating_add(100);
+        old.subscriptions = vec![
+            test_source("keep", &keep_url),
+            test_source("gone", "https://test.invalid/gone.txt"),
+        ];
+
+        // The user never touched top_n (= old default) but customized ping
+        // and deleted the gone subscription while adding their own.
+        let mut user = old.clone();
+        user.ping_seconds = embedded.ping_seconds.saturating_add(61);
+        user.subscriptions = vec![
+            test_source("keep", &keep_url),
+            test_source("mine", "https://test.invalid/mine.txt"),
+        ];
+        store_old_snapshot(&db, &old);
+
+        let report = reconcile_with_defaults(&db, &mut user).expect("reconciles");
+        assert_eq!(
+            user.top_n, embedded.top_n,
+            "untouched key follows the new default"
+        );
+        assert_eq!(
+            user.ping_seconds,
+            embedded.ping_seconds.saturating_add(61),
+            "customized key is left alone"
+        );
+        assert_eq!(report.settings_updated, 1);
+        let urls: Vec<&str> = user.subscriptions.iter().map(|s| s.url.as_str()).collect();
+        assert!(urls.contains(&keep_url.as_str()), "kept sub stays");
+        assert!(
+            urls.contains(&"https://test.invalid/mine.txt"),
+            "user sub stays"
+        );
+        assert!(
+            !urls.contains(&"https://test.invalid/gone.txt"),
+            "deleted default is not resurrected"
+        );
+        for source in &embedded.subscriptions {
+            assert!(
+                urls.contains(&source.url.as_str()),
+                "new default sub is appended"
+            );
+        }
+        assert_eq!(report.subs_added, embedded.subscriptions.len() - 1);
+        assert!(report.snapshot_stored);
+        assert!(report.changed());
+
+        // Second run with the stored baseline is a no-op.
+        let again = reconcile_with_defaults(&db, &mut user).expect("reconciles");
+        assert_eq!(again, ReconcileReport::default());
+    }
+
+    #[test]
+    fn legacy_database_without_snapshot_only_appends() {
+        let (db, _db_guard) = open_temp_db("legacy-merge");
+        let embedded = embedded_defaults();
+        let mut user = embedded.clone();
+        user.top_n = user.top_n.saturating_add(5);
+        user.subscriptions.truncate(1);
+        let kept = user.subscriptions[0].url.clone();
+        // No snapshot stored: first contact with the new system.
+
+        let report = reconcile_with_defaults(&db, &mut user).expect("reconciles");
+        assert_eq!(
+            user.top_n,
+            embedded.top_n.saturating_add(5),
+            "legacy values are treated as custom, never overwritten"
+        );
+        for source in &embedded.subscriptions {
+            assert!(
+                user.subscriptions.iter().any(|s| s.url == source.url),
+                "missing default sub is appended"
+            );
+        }
+        assert!(user.subscriptions.iter().any(|s| s.url == kept));
+        assert_eq!(report.subs_added, embedded.subscriptions.len() - 1);
+        assert!(report.snapshot_stored);
+        // Baseline anchored now: the next run is a no-op.
+        let again = reconcile_with_defaults(&db, &mut user).expect("reconciles");
+        assert_eq!(again, ReconcileReport::default());
+    }
+
+    #[test]
+    fn reset_restores_settings_keeps_subscriptions_and_reanchors() {
+        let (db, _db_guard) = open_temp_db("reset");
+        let embedded = embedded_defaults();
+        let mut user = embedded.clone();
+        user.top_n = user.top_n.saturating_add(5);
+        user.subscriptions = vec![test_source("mine", "https://test.invalid/mine.txt")];
+
+        reset_to_embedded_defaults(&db, &mut user).expect("resets");
+        assert_eq!(user.top_n, embedded.top_n);
+        assert_eq!(user.subscriptions.len(), 1);
+        assert_eq!(user.subscriptions[0].url, "https://test.invalid/mine.txt");
+        let snapshot = db.load_defaults_snapshot().expect("snapshot reads");
+        let (_, version, _) = snapshot.expect("snapshot stored");
+        assert_eq!(version, defaults_data_version());
+    }
+
+    #[test]
+    fn data_version_is_stable_hex() {
+        let first = defaults_data_version();
+        let second = defaults_data_version();
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 16);
+        assert!(first.chars().all(|c| c.is_ascii_hexdigit()));
     }
 }

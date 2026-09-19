@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
-use crate::config::{AppConfig, SubscriptionSource};
+use crate::config::SubscriptionSource;
 
 use super::{
     events::EventResult,
@@ -46,7 +46,11 @@ pub fn start_input(state: &mut TuiState, mode: InputMode, value: &str) {
     };
 }
 
-pub fn handle_input_key(state: &mut TuiState, key: KeyEvent) -> EventResult {
+pub fn handle_input_key(
+    state: &mut TuiState,
+    key: KeyEvent,
+    database: &crate::db::Database,
+) -> EventResult {
     match key.code {
         KeyCode::Esc => {
             state.input_mode = InputMode::None;
@@ -58,7 +62,7 @@ pub fn handle_input_key(state: &mut TuiState, key: KeyEvent) -> EventResult {
             state.input.clear();
             state.status = "Edit cancelled".to_string();
         }
-        KeyCode::Enter => commit_input(state),
+        KeyCode::Enter => commit_input(state, database),
         KeyCode::Backspace => {
             state.input.pop();
         }
@@ -71,7 +75,7 @@ pub fn handle_input_key(state: &mut TuiState, key: KeyEvent) -> EventResult {
     EventResult::Continue
 }
 
-fn commit_input(state: &mut TuiState) {
+fn commit_input(state: &mut TuiState, database: &crate::db::Database) {
     match state.input_mode {
         InputMode::None | InputMode::Command | InputMode::CleanCacheConfirm => {}
         InputMode::NewSubscription(step) => commit_new_subscription_step(state, step),
@@ -79,7 +83,7 @@ fn commit_input(state: &mut TuiState) {
         InputMode::Url => commit_url(state),
         InputMode::Priority => commit_priority(state),
         InputMode::ConfigValue(key) => commit_config(state, key),
-        InputMode::ResetConfirm => commit_reset(state),
+        InputMode::ResetConfirm => commit_reset(state, database),
     }
 }
 
@@ -240,18 +244,22 @@ fn commit_config(state: &mut TuiState, key: super::state::ConfigKey) {
     }
 }
 
-fn commit_reset(state: &mut TuiState) {
+fn commit_reset(state: &mut TuiState, database: &crate::db::Database) {
     let expected = state.reset_code.clone().unwrap_or_default();
     if state.input.trim() != expected {
         state.status = "Reset code did not match".to_string();
         return;
     }
-    let subscriptions = state.editable.subscriptions.clone();
-    state.editable = AppConfig::default_for_first_run();
-    state.editable.subscriptions = subscriptions;
-    state.reset_code = None;
-    state.dirty = true;
-    finish_edit(state, "Defaults restored; subscriptions kept");
+    match crate::settings::reset_to_embedded_defaults(database, &mut state.editable) {
+        Ok(()) => {
+            state.reset_code = None;
+            state.dirty = true;
+            finish_edit(state, "Defaults restored; subscriptions kept");
+        }
+        Err(error) => {
+            state.status = format!("Reset failed: {error:#}");
+        }
+    }
 }
 
 fn finish_edit(state: &mut TuiState, message: &str) {

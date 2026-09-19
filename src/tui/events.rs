@@ -70,7 +70,7 @@ pub fn handle_key(
         | InputMode::Url
         | InputMode::Priority
         | InputMode::ConfigValue(_)
-        | InputMode::ResetConfirm => Ok(handle_input_key(state, key)),
+        | InputMode::ResetConfirm => Ok(handle_input_key(state, key, database)),
         InputMode::CleanCacheConfirm => handle_clean_cache_key(state, key, database),
         InputMode::None => {
             handle_normal_key(state, key, paths, runtime_config, database, config_tx)

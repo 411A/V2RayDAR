@@ -1232,13 +1232,16 @@ function paintStats() {
 /// Overview "updated" pill: hidden with no data yet, green dot only while
 /// a refresh runs (the stamp underneath is stale then, like the Last scan
 /// card which reads "—" mid-cycle), dot + age once the refresh finished.
-/// The pill shares the Last scan badge's anchor, so both timers always
-/// agree. The age phrase from `fmtAgo` is already a complete localized
-/// string, so it is concatenated — never nested inside another `t()`
-/// substitution, whose LTR isolate would scramble RTL word order.
+/// The pill counts from the freshest data touch — refresh OR ping — so
+/// after a ping it honestly runs ahead of the Last scan card, which keeps
+/// the refresh anchor only. The age phrase from `fmtAgo` is already a
+/// complete localized string, so it is concatenated — never nested inside
+/// another `t()` substitution (nesting is direction-safe since `t()` uses
+/// FSI isolates, but concatenation keeps the pill's two runs independently
+/// wrappable).
 function renderUpdated() {
   const s = state.snapshot;
-  const stamp = s && !s.refreshing ? lastRefreshStamp(s) : null;
+  const stamp = s && !s.refreshing ? pillStamp(s) : null;
   const wrap = $("ov-updated-wrap");
   if (wrap) {
     wrap.hidden = !s || (!s.refreshing && !stamp);
@@ -1246,9 +1249,32 @@ function renderUpdated() {
   setText($("ov-updated"), stamp ? t("ovUpdated") + " " + fmtAgo(stamp) : "");
 }
 
-/// Last completed refresh stamp. A ping only re-times ranked rows (the
-/// Refresh badge already counts down to it), so it must not reset the
-/// "Updated" clock — otherwise the pill and the Last scan age disagree.
+/// Freshest data touch for the green pill: a ping re-times every ranked
+/// row, so the pill counts from the newer of the last refresh and the last
+/// ping (either anchor missing or unparseable is skipped; null when neither
+/// parses). Old servers without `last_ping_at` degrade to refresh-only.
+function pillStamp(s) {
+  let best = null;
+  let bestMs = NaN;
+  for (const iso of [s.last_refresh, s.last_ping_at]) {
+    if (typeof iso !== "string") {
+      continue;
+    }
+    const ms = Date.parse(iso);
+    if (Number.isNaN(ms)) {
+      continue;
+    }
+    if (best === null || ms > bestMs) {
+      best = iso;
+      bestMs = ms;
+    }
+  }
+  return best;
+}
+
+/// Last completed refresh stamp — the Last scan card's anchor only. A ping
+/// re-times rows but is not a scan, so it must not move this clock (see
+/// pillStamp for the pill's fresher anchor).
 function lastRefreshStamp(s) {
   const iso = s.last_refresh;
   if (!iso || Number.isNaN(Date.parse(iso))) {

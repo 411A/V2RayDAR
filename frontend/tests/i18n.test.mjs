@@ -106,29 +106,50 @@ describe("frontend i18n: one unified strings file, English default", () => {
 
   it("t() substitutes placeholders and falls back to the key", () => {
     const { api } = loadApp();
-    // Substituted values are bidi-isolated (U+2066 LRI … U+2069 PDI) so
-    // Latin numbers/URLs keep their place inside RTL sentences.
-    const LRI = "\u2066";
+    // Substituted values are bidi-isolated (U+2068 FSI … U+2069 PDI) so
+    // Latin numbers/URLs keep their place inside RTL sentences, while a
+    // nested localized phrase keeps its own word order (FSI takes the
+    // direction from the value's first strong character, never forced LTR).
+    const FSI = "\u2068";
     const PDI = "\u2069";
     assert.equal(api.t("btnRefresh"), "Refresh");
     assert.equal(
       api.t("cfgCount", { n: 3, total: 9, limit: "" }),
-      `Showing ${LRI}3${PDI} of ${LRI}9${PDI} ranked configs.`,
+      `Showing ${FSI}3${PDI} of ${FSI}9${PDI} ranked configs.`,
     );
     assert.equal(
       api.t("cfgCount", { n: 3, total: 9, limit: api.t("cfgLimit", { limit: 25 }) }),
-      `Showing ${LRI}3${PDI} of ${LRI}9${PDI} ranked configs${LRI} (limit ${LRI}25${PDI})${PDI}.`,
+      `Showing ${FSI}3${PDI} of ${FSI}9${PDI} ranked configs${FSI} (limit ${FSI}25${PDI})${PDI}.`,
     );
     assert.equal(api.setLanguage("fa"), true);
     assert.equal(api.t("btnRefresh"), "به‌روزرسانی");
     assert.equal(
       api.t("cfgCount", { n: 3, total: 9, limit: "" }),
-      `نمایش ${LRI}3${PDI} از ${LRI}9${PDI} کانفیگ رتبه‌بندی‌شده.`,
+      `نمایش ${FSI}3${PDI} از ${FSI}9${PDI} کانفیگ رتبه‌بندی‌شده.`,
     );
     // The reported case: the count stays glued to the sentence start.
-    assert.ok(api.t("fetchErrSubN", { n: 3 }).startsWith(`${LRI}3${PDI} منبع`));
+    assert.ok(api.t("fetchErrSubN", { n: 3 }).startsWith(`${FSI}3${PDI} منبع`));
     assert.equal(api.setLanguage("en"), true);
     assert.equal(api.t("definitely-not-a-key"), "definitely-not-a-key");
+  });
+
+  it("nested offline-banner phrase keeps RTL number order (2 دقیقه پیش)", () => {
+    // Reported BiDi bug: the offline banner nests an already-localized
+    // phrase — t("bannerConnLostBody", { ago: t("minAgo", { m }) }) — and
+    // the old U+2066 LRI isolate forced that phrase left-to-right, so fa
+    // rendered "… دقیقه پیش 2" instead of "… 2 دقیقه پیش". FSI takes the
+    // direction from the phrase's first strong character (RTL here), so the
+    // logical order "2 دقیقه پیش" renders as written.
+    const { api } = loadApp();
+    assert.equal(api.setLanguage("fa"), true);
+    const s = api.t("bannerConnLostBody", { ago: api.t("minAgo", { m: 2 }) });
+    assert.ok(!s.includes("\u2066"), `no forced-LTR isolate in: ${JSON.stringify(s)}`);
+    assert.ok(s.indexOf("2") < s.indexOf("دقیقه"), `number precedes noun in: ${JSON.stringify(s)}`);
+    assert.ok(
+      s.includes("نمایش داده‌های \u2068\u20682\u2069 دقیقه پیش\u2069."),
+      `phrase intact in: ${JSON.stringify(s)}`,
+    );
+    assert.equal(api.setLanguage("en"), true);
   });
 
   it("every settings key has a translated name/guide in every locale", () => {

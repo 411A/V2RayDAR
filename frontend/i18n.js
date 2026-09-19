@@ -20,8 +20,11 @@
  * - Server-provided content (setting guides, fetch-error lines, log lines,
  *   config names) is NOT in this file — the backend owns those bytes.
  * - RTL: `setDocLang` mirrors the page direction (`fa` → rtl); `t()` wraps
- *   every substituted value in U+2066 LRI … U+2069 PDI isolates so Latin
- *   numbers/URLs inside RTL sentences keep their place.
+ *   every substituted value in U+2068 FSI … U+2069 PDI isolates so Latin
+ *   numbers/URLs inside RTL sentences keep their place. FSI (not LRI):
+ *   a nested already-localized phrase (e.g. "{m} دقیقه پیش") takes its
+ *   direction from its own first strong character instead of being forced
+ *   left-to-right, which would push a leading number to the wrong end.
  */
 
 const I18N_LANG_KEY = "v2raydar-lang";
@@ -2445,11 +2448,16 @@ function t(key, vars) {
   let s = Object.prototype.hasOwnProperty.call(table, key) ? table[key] : key;
   if (vars) {
     for (const k of Object.keys(vars)) {
-      // Bidi-isolate every substituted value (U+2066 LRI / U+2069 PDI):
+      // Bidi-isolate every substituted value (U+2068 FSI / U+2069 PDI):
       // without this a Latin number/URL inside an RTL sentence jumps to the
-      // wrong end ("3 ..." renders as "... 3"). Empty values stay empty.
+      // wrong end ("3 ..." renders as "... 3"). FSI — not LRI — because a
+      // value can itself be an already-localized phrase ("2 دقیقه پیش"):
+      // forced-LTR would scramble its word order, while FSI takes the
+      // direction from the value's first strong character (RTL here) and
+      // falls back to the surrounding paragraph for bare numbers/URLs.
+      // Empty values stay empty.
       const v = String(vars[k]);
-      s = s.split("{" + k + "}").join(v === "" ? "" : "\u2066" + v + "\u2069");
+      s = s.split("{" + k + "}").join(v === "" ? "" : "\u2068" + v + "\u2069");
     }
   }
   return s;

@@ -1064,10 +1064,10 @@ describe("running-for clock pauses while offline", () => {
   });
 });
 
-describe("overview updated pill tracks the last refresh", () => {
+describe("overview updated pill tracks the freshest data touch", () => {
   const wrap = () => sandbox.document.getElementById("ov-updated-wrap");
   const text = () => sandbox.document.getElementById("ov-updated").textContent;
-  it("ignores pings, hides text mid-refresh, hides with no data", () => {
+  it("follows refresh or ping (whichever is newer), hides mid-refresh and with no data", () => {
     const hourAgo = new Date(Date.now() - 3600_000).toISOString();
     const justNow = new Date().toISOString();
     // Refresh-only age.
@@ -1075,13 +1075,13 @@ describe("overview updated pill tracks the last refresh", () => {
     api.renderUpdated();
     assert.equal(wrap().hidden, false);
     assert.match(text(), /1.+h ago/);
-    // A fresh ping must NOT reset the pill: both timers anchor on the
-    // refresh, so the pill and the Last scan age always agree.
+    // A fresh ping moves the pill even though no scan ran: the ping
+    // re-timed every ranked row, so "Updated" counts from the ping.
     api.state.snapshot = { refreshing: false, last_refresh: hourAgo, last_ping_at: justNow };
     api.renderUpdated();
     assert.equal(wrap().hidden, false);
-    assert.match(text(), /1.+h ago/);
-    // Newer refresh moves the pill.
+    assert.match(text(), /just now/);
+    // Newer refresh moves the pill too.
     api.state.snapshot = { refreshing: false, last_refresh: justNow, last_ping_at: hourAgo };
     api.renderUpdated();
     assert.match(text(), /just now/);
@@ -1101,7 +1101,7 @@ describe("overview updated pill tracks the last refresh", () => {
     assert.equal(wrap().hidden, true);
   });
 
-  it("pill age matches the Last scan age line, even right after a ping", () => {
+  it("pill runs ahead of the Last scan age right after a ping", () => {
     api.state.hasSummaryApi = true;
     api.state.refreshSeconds = 300;
     api.state.pingSeconds = 60;
@@ -1124,8 +1124,10 @@ describe("overview updated pill tracks the last refresh", () => {
     const scan = sandbox.__elements.get("stat-cards").children[2];
     const age = scan.children.find((c) => c.id === "stat-scan-age").textContent;
     assert.match(age, /1.+m ago/);
-    // renderStats re-renders the pill too: same anchor, same phrase.
-    assert.ok(text().endsWith(age), `pill ${JSON.stringify(text())} shares the scan age`);
+    // renderStats re-renders the pill too: it counts from the fresh ping
+    // while the Last scan age line keeps the refresh anchor.
+    assert.match(text(), /just now/, `pill ${JSON.stringify(text())} follows the ping`);
+    assert.ok(!text().endsWith(age), `pill ${JSON.stringify(text())} runs ahead of scan age ${JSON.stringify(age)}`);
   });
 });
 

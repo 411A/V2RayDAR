@@ -39,6 +39,11 @@ pub const DEFAULT_REQUIRE_TOKEN: bool = false;
 pub const DEFAULT_SHARING_TOKEN: &str = "";
 pub const DEFAULT_FETCH_TIMEOUT_MS: u64 = 30_000;
 pub const DEFAULT_FETCH_CONCURRENCY: usize = 8;
+/// Total HTTP attempts per subscription fetch, first try included.
+/// Only transient failures (connect resets, timeouts, 429/5xx) retry.
+pub const FETCH_RETRY_ATTEMPTS: usize = 3;
+/// Base delay before a fetch retry; doubles per attempt (1000ms, then 2s).
+pub const FETCH_RETRY_BASE_DELAY_MS: u64 = 1000;
 pub const DEFAULT_MAX_SUBSCRIPTION_BYTES: usize = 32 * 1024 * 1024;
 pub const DEFAULT_USE_CACHE_ONLY: bool = false;
 pub const DEFAULT_SUBSCRIPTION_PRIORITY: u32 = 100;

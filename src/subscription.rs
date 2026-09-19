@@ -6,13 +6,15 @@ use futures_util::{StreamExt, stream};
 use percent_encoding::percent_decode_str;
 use reqwest::Client;
 use reqwest::Proxy;
-use tokio::{fs, sync::mpsc::UnboundedSender};
+use tokio::{fs, sync::mpsc::UnboundedSender, time::sleep};
 use tracing::{debug, info, warn};
 
 use crate::{
     applog::{self, LogLevel},
     config::{AppConfig, SubscriptionSource, redact_subscription_url},
-    constants::{HTTP_EXCHANGE_OVERHEAD_BYTES, LOCALHOST_IP},
+    constants::{
+        FETCH_RETRY_ATTEMPTS, FETCH_RETRY_BASE_DELAY_MS, HTTP_EXCHANGE_OVERHEAD_BYTES, LOCALHOST_IP,
+    },
     model::{Candidate, ProgressEvent},
     parser::parse_subscription_document,
     probe::run_with_sing_box_proxy,
@@ -30,6 +32,10 @@ pub struct FetchOutcome {
 pub struct FetchFailure {
     pub source: SubscriptionSource,
     pub error: String,
+    /// The failure looks egress-scoped (blocked connect/DNS, timeout,
+    /// 403/429), so fetching through a working proxy may succeed where
+    /// the direct path failed. Decides the proxy-retry gate in `main`.
+    pub proxy_retry: bool,
 }
 
 pub async fn load_candidates_with_cache<F, Fut>(
@@ -276,6 +282,7 @@ where
                     FetchFailure {
                         source,
                         error: message,
+                        proxy_retry: proxy_may_help(&err.error),
                     },
                 ));
             }
@@ -421,11 +428,17 @@ async fn fetch_source(
         LogLevel::Debug,
         format!("Fetching subscription '{}'", source.name),
     );
-    let fetched = fetch_body(client, &source.url, max_bytes)
-        .await
-        .map_err(|err| {
-            err.with_error_context(format!("failed to fetch subscription '{}'", source.name))
-        })?;
+    let fetched = fetch_body_with_retries(
+        client,
+        &source.url,
+        max_bytes,
+        &source.name,
+        progress.as_ref(),
+    )
+    .await
+    .map_err(|err| {
+        err.with_error_context(format!("failed to fetch subscription '{}'", source.name))
+    })?;
     info!(
         source = %source.name,
         body_bytes = fetched.body.len(),
@@ -467,6 +480,75 @@ async fn fetch_source(
 
 fn is_http_url(url: &str) -> bool {
     url.starts_with("http://") || url.starts_with("https://")
+}
+
+/// Failures where fetching through a working proxy may succeed: the
+/// direct path looks network-restricted (blocked connect/DNS, timeouts)
+/// or the status is commonly per-IP / geo-scoped (403, 429). Origin-side
+/// failures (other 4xx/5xx, bad content) would fail identically through
+/// a proxy, so they never trigger the proxy path.
+fn proxy_may_help(error: &anyhow::Error) -> bool {
+    let Some(request_error) = error.downcast_ref::<reqwest::Error>() else {
+        return false;
+    };
+    request_error.is_connect()
+        || request_error.is_timeout()
+        || matches!(request_error.status(), Some(status) if status.as_u16() == 403 || status.as_u16() == 429)
+}
+
+/// Transient fetch failures worth another direct attempt: connect-phase
+/// resets (e.g. WSAECONNRESET 10054 on Windows), timeouts, and 429/5xx
+/// statuses. Everything else (other 4xx, TLS verification, local
+/// file/data: errors) fails fast — retrying those only burns time.
+fn is_transient_fetch_error(error: &anyhow::Error) -> bool {
+    let Some(request_error) = error.downcast_ref::<reqwest::Error>() else {
+        return false;
+    };
+    request_error.is_timeout()
+        || request_error.is_connect()
+        || matches!(request_error.status(), Some(status) if status.as_u16() == 429 || status.is_server_error())
+}
+
+/// Backoff before retry `attempt` (1-based): 500ms, then 1s.
+const fn fetch_retry_delay_ms(attempt: usize) -> u64 {
+    FETCH_RETRY_BASE_DELAY_MS.saturating_mul(1u64 << attempt.saturating_sub(1))
+}
+
+/// Fetch one body, retrying transient failures with exponential backoff.
+/// The final error is returned undecorated (the caller adds its context
+/// once), so failure text is identical to a first-try failure.
+async fn fetch_body_with_retries(
+    client: &Client,
+    url: &str,
+    max_bytes: usize,
+    source_name: &str,
+    progress: Option<&UnboundedSender<ProgressEvent>>,
+) -> FetchResult<FetchedBody> {
+    let mut attempt: usize = 0;
+    loop {
+        attempt = attempt.saturating_add(1);
+        match fetch_body(client, url, max_bytes).await {
+            Ok(fetched) => return Ok(fetched),
+            Err(err) if attempt < FETCH_RETRY_ATTEMPTS && is_transient_fetch_error(&err.error) => {
+                let delay_ms = fetch_retry_delay_ms(attempt);
+                let detail = format!("{:#}", err.error);
+                let detail = if is_http_url(url) {
+                    detail.replace(url, &redact_subscription_url(url))
+                } else {
+                    detail
+                };
+                send_progress(
+                    progress,
+                    LogLevel::Debug,
+                    format!(
+                        "Sub '{source_name}': attempt {attempt} failed ({detail}), retrying in {delay_ms}ms"
+                    ),
+                );
+                sleep(Duration::from_millis(delay_ms)).await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
 }
 
 fn send_progress(
@@ -615,6 +697,11 @@ fn parse_data_url(url: &str) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     #[test]
     fn data_url_parsing_works() {
@@ -665,5 +752,247 @@ mod tests {
             message,
             "failed to fetch subscription 'local':\nunable to read local subscription file /tmp/sub.txt: permission denied"
         );
+    }
+
+    #[test]
+    fn fetch_retry_backoff_doubles() {
+        assert_eq!(fetch_retry_delay_ms(1), 1000);
+        assert_eq!(fetch_retry_delay_ms(2), 2000);
+        assert_eq!(FETCH_RETRY_ATTEMPTS, 3);
+    }
+
+    #[tokio::test]
+    async fn transient_classifier_covers_connect_refused() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback");
+        let port = listener.local_addr().expect("loopback addr").port();
+        drop(listener);
+        let err = Client::new()
+            .get(format!("http://127.0.0.1:{port}/sub"))
+            .send()
+            .await
+            .expect_err("refused port fails");
+        assert!(err.is_connect());
+        let anyhow_err: anyhow::Error = err.into();
+        assert!(is_transient_fetch_error(&anyhow_err));
+    }
+
+    #[tokio::test]
+    async fn transient_classifier_covers_timeout() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback");
+        let port = listener.local_addr().expect("loopback addr").port();
+        tokio::spawn(async move {
+            if let Ok((_socket, _)) = listener.accept().await {
+                // Hold the connection open without responding: the client
+                // must give up via its own timeout, not a server close.
+                tokio::time::sleep(Duration::from_secs(30)).await;
+            }
+        });
+        let client = Client::builder()
+            .timeout(Duration::from_millis(100))
+            .build()
+            .expect("client");
+        let err = client
+            .get(format!("http://127.0.0.1:{port}/sub"))
+            .send()
+            .await
+            .expect_err("silent server times out");
+        assert!(err.is_timeout());
+        let anyhow_err: anyhow::Error = err.into();
+        assert!(is_transient_fetch_error(&anyhow_err));
+    }
+
+    /// One-shot local HTTP server replying `status` to the next connection.
+    async fn serve_status_once(status: u16) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback");
+        let url = format!(
+            "http://{}/sub",
+            listener.local_addr().expect("loopback addr")
+        );
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                // Read the request first: answering (or closing) before the
+                // client finishes sending aborts the connection (WSA 10053)
+                // instead of delivering the intended status.
+                let mut head = vec![0u8; 1024];
+                let mut seen = 0;
+                while seen < head.len() {
+                    let Ok(read) = socket.read(&mut head[seen..]).await else {
+                        break;
+                    };
+                    if read == 0 {
+                        break;
+                    }
+                    seen += read;
+                    if head[..seen].windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let phrase = match status {
+                    503 => "Service Unavailable",
+                    404 => "Not Found",
+                    403 => "Forbidden",
+                    429 => "Too Many Requests",
+                    _ => "OK",
+                };
+                let response = format!(
+                    "HTTP/1.1 {status} {phrase}\r\ncontent-length: 1\r\nconnection: close\r\n\r\nx"
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+            }
+        });
+        url
+    }
+
+    #[tokio::test]
+    async fn transient_classifier_splits_status_codes() {
+        let client = Client::new();
+        let busy = client
+            .get(serve_status_once(503).await)
+            .send()
+            .await
+            .expect("503 responds");
+        let err = busy.error_for_status().expect_err("503 is an error");
+        assert_eq!(err.status(), Some(reqwest::StatusCode::SERVICE_UNAVAILABLE));
+        let anyhow_err: anyhow::Error = err.into();
+        assert!(is_transient_fetch_error(&anyhow_err));
+
+        let missing = client
+            .get(serve_status_once(404).await)
+            .send()
+            .await
+            .expect("404 responds");
+        let err = missing.error_for_status().expect_err("404 is an error");
+        let anyhow_err: anyhow::Error = err.into();
+        assert!(!is_transient_fetch_error(&anyhow_err));
+
+        assert!(!is_transient_fetch_error(&anyhow!("boom")));
+    }
+
+    #[tokio::test]
+    async fn proxy_classifier_covers_restricted_not_origin() {
+        let client = Client::new();
+        for (status, expected) in [(403, true), (429, true), (503, false), (404, false)] {
+            let response = client
+                .get(serve_status_once(status).await)
+                .send()
+                .await
+                .expect("status responds");
+            let err = response.error_for_status().expect_err("status is an error");
+            let anyhow_err: anyhow::Error = err.into();
+            assert_eq!(proxy_may_help(&anyhow_err), expected, "status {status}");
+        }
+        assert!(!proxy_may_help(&anyhow!("boom")));
+    }
+
+    #[tokio::test]
+    async fn failure_flag_marks_proxy_retry_only_for_restricted() {
+        // Refused port (blocked connect) qualifies for the proxy path; a
+        // 404 origin fails identically through any egress, so it does not.
+        let refused = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback");
+        let port = refused.local_addr().expect("loopback addr").port();
+        drop(refused);
+        let sources = vec![
+            SubscriptionSource {
+                name: "blocked".to_string(),
+                url: format!("http://127.0.0.1:{port}/sub"),
+                enabled: true,
+                priority: 1,
+            },
+            SubscriptionSource {
+                name: "gone".to_string(),
+                url: serve_status_once(404).await,
+                enabled: true,
+                priority: 2,
+            },
+        ];
+        let outcome = fetch_sources_with_client(
+            Client::new(),
+            sources,
+            FetchContext {
+                max_bytes: 1024 * 1024,
+                concurrency: 2,
+                progress: None,
+            },
+            &mut |_bytes: u64| async {},
+        )
+        .await;
+        assert_eq!(outcome.failures.len(), 2);
+        let blocked = outcome
+            .failures
+            .iter()
+            .find(|failure| failure.source.name == "blocked")
+            .expect("blocked fails");
+        assert!(blocked.proxy_retry);
+        let gone = outcome
+            .failures
+            .iter()
+            .find(|failure| failure.source.name == "gone")
+            .expect("gone fails");
+        assert!(!gone.proxy_retry);
+    }
+
+    #[tokio::test]
+    async fn fetch_recovers_after_transient_503s() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback");
+        let url = format!(
+            "http://{}/sub",
+            listener.local_addr().expect("loopback addr")
+        );
+        let hits = Arc::new(AtomicUsize::new(0));
+        let served = Arc::clone(&hits);
+        tokio::spawn(async move {
+            for _ in 0..3 {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut head = vec![0u8; 1024];
+                let mut seen = 0;
+                while seen < head.len() {
+                    let Ok(read) = socket.read(&mut head[seen..]).await else {
+                        break;
+                    };
+                    if read == 0 {
+                        break;
+                    }
+                    seen += read;
+                    if head[..seen].windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let attempt = served.fetch_add(1, Ordering::SeqCst) + 1;
+                let response = if attempt < 3 {
+                    "HTTP/1.1 503 Service Unavailable\r\ncontent-length: 1\r\nconnection: close\r\n\r\nx"
+                        .to_string()
+                } else {
+                    let body = "# nothing\n";
+                    format!(
+                        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                };
+                let _ = socket.write_all(response.as_bytes()).await;
+            }
+        });
+        let source = SubscriptionSource {
+            name: "flappy".to_string(),
+            url,
+            enabled: true,
+            priority: 1,
+        };
+        let fetched = fetch_source(&Client::new(), source, 1024 * 1024, None)
+            .await
+            .expect("recovers after 503s");
+        assert!(fetched.candidates.is_empty());
+        assert_eq!(hits.load(Ordering::SeqCst), 3);
     }
 }

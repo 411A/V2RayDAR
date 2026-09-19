@@ -1233,8 +1233,15 @@ async fn refresh_once(
     )
     .await;
 
+    // The proxy path is for restricted networks only: spinning sing-box
+    // up pays off solely when a failure looks egress-scoped (blocked
+    // connect/DNS, timeouts, 403/429). Deterministic failures (404, sick
+    // origins, bad content) would fail identically through a proxy, so a
+    // batch of only those skips the proxy run entirely.
     if !cache_only && !fetched.failures.is_empty() {
-        if let Some(proxy_uri) =
+        if !fetched.failures.iter().any(|failure| failure.proxy_retry) {
+            debug!("proxy retry skipped: failures look origin-side, not restricted");
+        } else if let Some(proxy_uri) =
             subscription_retry_proxy_uri(config, &ranked, &previous_before_refresh)
         {
             let retry_started = std::time::Instant::now();

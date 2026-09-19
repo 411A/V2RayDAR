@@ -1068,12 +1068,33 @@ struct MutationResult {
 /// Firewall rule change failed while toggling proxy mode or sharing.
 const FIREWALL_ELEVATION_CODE: &str = "firewall_elevation";
 
+/// Setting saved, but refresh-relevant data changed: the loop does NOT
+/// re-fetch at once (a settings tweak must never cost an extra subscription
+/// fetch), so the dashboard pops a "takes effect on the next refresh — or
+/// press Refresh" notice from this machine flag. Only PATCH/reset responses
+/// whose fingerprint actually moved carry it; plain saves stay flag-free.
+const APPLIES_NEXT_CYCLE_CODE: &str = "applies_next_cycle";
+
 fn mutation_ok(status: impl Into<String>) -> Response {
     Json(MutationResult {
         ok: true,
         status: status.into(),
         dirty: false,
         code: None,
+        os: None,
+    })
+    .into_response()
+}
+
+/// Setting saved with refresh-relevant data changed: same 200 + `ok` as a
+/// plain success (existing tests and old frontends only look at those),
+/// plus the machine flag new frontends use for the next-cycle notice.
+fn mutation_applies_next_cycle(status: String, applies_next_cycle: bool) -> Response {
+    Json(MutationResult {
+        ok: true,
+        status,
+        dirty: false,
+        code: applies_next_cycle.then_some(APPLIES_NEXT_CYCLE_CODE),
         os: None,
     })
     .into_response()
@@ -1942,13 +1963,17 @@ pub async fn api_config_patch(
         Ok(cfg) => cfg,
         Err(response) => return response,
     };
+    let before = cfg.clone();
     if let Err(message) = apply_web_setting(&mut cfg, body.key.trim(), &body.value) {
         return mutation_error(StatusCode::BAD_REQUEST, message);
     }
     if let Err(response) = persist_config(&state, &cfg).await {
         return response;
     }
-    mutation_ok(format!("Updated {}", body.key.trim()))
+    // No instant re-fetch: the loop picks refresh-relevant edits up on the
+    // next cycle (or a manual refresh), so say so when the fingerprint moved.
+    let next_cycle = crate::refresh_relevant_changed(&before, &cfg);
+    mutation_applies_next_cycle(format!("Updated {}", body.key.trim()), next_cycle)
 }
 
 /// `POST /api/config/reset` — restore non-subscription settings from the
@@ -1977,6 +2002,7 @@ pub async fn api_config_reset(
         Ok(cfg) => cfg,
         Err(response) => return response,
     };
+    let before = cfg.clone();
     if let Err(error) = crate::settings::reset_to_embedded_defaults(&db, &mut cfg) {
         return mutation_error(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1986,7 +2012,11 @@ pub async fn api_config_reset(
     if let Err(response) = persist_config(&state, &cfg).await {
         return response;
     }
-    mutation_ok("Defaults restored; subscriptions and essentials kept")
+    let next_cycle = crate::refresh_relevant_changed(&before, &cfg);
+    mutation_applies_next_cycle(
+        "Defaults restored; subscriptions and essentials kept".to_string(),
+        next_cycle,
+    )
 }
 
 /// `GET /api/config/token` — reveal the LAN token to an authorized dashboard
@@ -3686,6 +3716,80 @@ mod tests {
         let stored = stored_config(&state);
         assert_eq!(stored.top_n, 25);
         assert_eq!(state.config.read().await.top_n, 25);
+    }
+
+    #[tokio::test]
+    async fn config_patch_flags_next_cycle_only_for_refresh_relevant_edits() {
+        // A settings tweak never re-fetches at once, so the dashboard must be
+        // told when the edit lands on the next cycle instead.
+        async fn patch_code(state: &HttpState, key: &str, value: &str) -> serde_json::Value {
+            let (headers, query, connect) = no_auth();
+            let response = super::api_config_patch(
+                axum::extract::State(state.clone()),
+                headers,
+                query,
+                connect,
+                axum::Json(super::ConfigPatch {
+                    key: key.to_string(),
+                    value: value.to_string(),
+                }),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK, "key: {key}");
+            let body = to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body reads");
+            serde_json::from_slice(&body).expect("mutation is json")
+        }
+        let (state, _refresh_rx, _ping_rx, _config_rx) = mutation_state(RuntimeState::default());
+        let changed = patch_code(&state, "top_n", "25").await;
+        assert_eq!(
+            changed["code"],
+            serde_json::Value::String(super::APPLIES_NEXT_CYCLE_CODE.to_string()),
+            "refresh-relevant edit flags next-cycle: {changed}"
+        );
+        let plain = patch_code(&state, "bind", "127.0.0.1:27142").await;
+        assert!(
+            plain.get("code").is_none(),
+            "restart-only edit stays flag-free: {plain}"
+        );
+    }
+
+    #[tokio::test]
+    async fn config_reset_flags_next_cycle_only_when_refresh_data_moved() {
+        let (state, _refresh_rx, _ping_rx, _config_rx) = mutation_state(RuntimeState::default());
+        let db = state.database.clone().expect("test db present");
+        let reset_once = || async {
+            let (headers, query, connect) = no_auth();
+            let response = super::api_config_reset(
+                axum::extract::State(state.clone()),
+                headers,
+                query,
+                connect,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body reads");
+            serde_json::from_slice::<serde_json::Value>(&body).expect("mutation is json")
+        };
+        let pristine = reset_once().await;
+        assert!(
+            pristine.get("code").is_none(),
+            "reset over defaults stays flag-free: {pristine}"
+        );
+        {
+            let mut cfg = crate::settings::load_app_config(&db).expect("seed loads");
+            cfg.top_n = cfg.top_n.saturating_add(5);
+            crate::settings::save_app_config(&db, &cfg).expect("customizes");
+        }
+        let moved = reset_once().await;
+        assert_eq!(
+            moved["code"],
+            serde_json::Value::String(super::APPLIES_NEXT_CYCLE_CODE.to_string()),
+            "reset restoring refresh settings flags next-cycle: {moved}"
+        );
     }
 
     #[test]

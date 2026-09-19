@@ -1178,6 +1178,25 @@ describe("pure helpers", () => {
     assert.equal(api.subMessage({ data: null }, "fb"), "fb");
   });
 
+  it("nextCycleMessage flags deferred settings edits in every locale", () => {
+    // A refresh-relevant PATCH/reset no longer re-fetches at once: the toast
+    // must promise the next cycle (naming the real Refresh button) instead
+    // of a plain saved note. Anything else falls through to subMessage.
+    for (const locale of ["en", "ir", "cn", "fr", "ru"]) {
+      api.selectLang(locale);
+      const msg = api.nextCycleMessage({ data: { status: "Updated top_n", code: "applies_next_cycle" } }, "fb");
+      assert.ok(!msg.includes("applies_next_cycle"), `${locale}: no machine flag leaks`);
+      assert.ok(msg.includes(api.t("btnRefresh")), `${locale}: names the Refresh button`);
+      assert.equal(
+        api.nextCycleMessage({ data: { status: "Updated bind" } }, "fb"),
+        "Updated bind",
+        `${locale}: plain saves keep server status`,
+      );
+      assert.equal(api.nextCycleMessage({ data: null }, "fb"), "fb", `${locale}: fallback`);
+    }
+    api.selectLang("en");
+  });
+
   it("fetchJson aborts a hung server into status 0 (fail fast)", async () => {
     const sb = makeSandbox();
     sb.setTimeout = setTimeout;

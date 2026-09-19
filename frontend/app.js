@@ -2707,6 +2707,17 @@ function subMessage(r, fallback) {
   return (r.data && r.data.status) || fallback;
 }
 
+/// Next-cycle flag from settings PATCH/reset: the value is saved but the
+/// loop deliberately did NOT re-fetch, so the toast must say the edit lands
+/// on the next refresh — or on a manual Refresh — instead of a plain saved
+/// note that would read as "already applied".
+function nextCycleMessage(r, fallback) {
+  if (r && r.data && r.data.code === "applies_next_cycle") {
+    return t("setNextCycle", { refresh: t("btnRefresh") });
+  }
+  return subMessage(r, fallback);
+}
+
 /// Firewall-elevation flag from proxy/sharing mutations: the setting is
 /// saved but the rule change needs admin/root, so the caller pops the guide
 /// instead of the success toast. Returns the server OS (the browser may sit
@@ -2940,7 +2951,7 @@ async function patchSetting(key, value) {
     return;
   }
   if (r.status >= 200 && r.status < 300) {
-    toast(subMessage(r, t("saved")), "good");
+    toast(nextCycleMessage(r, t("saved")), "good");
     setDirty(!!(r.data && r.data.dirty));
     await loadSettings();
     void loadOvConfig();
@@ -2959,7 +2970,7 @@ async function resetSettings() {
     return;
   }
   if (r.status >= 200 && r.status < 300) {
-    toast(subMessage(r, t("resetDone")), "good");
+    toast(nextCycleMessage(r, t("resetDone")), "good");
     setDirty(!!(r.data && r.data.dirty));
     await loadSettings();
     void loadOvConfig();

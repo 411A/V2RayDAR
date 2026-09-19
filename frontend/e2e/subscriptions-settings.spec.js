@@ -163,6 +163,9 @@ test("settings editor PATCHes a key; unknown key shows rejection toast", async (
   await num.press("Enter");
   await expect.poll(() => stub.configPatch.length).toBe(2);
   expect(stub.configPatch[1]).toMatchObject({ key: "top_n", value: "8" });
+  // Refresh-relevant edit: no instant re-fetch — the toast promises the
+  // next cycle and names the manual Refresh instead of a plain "Saved."
+  await expect(page.locator("#toasts")).toContainText("next refresh");
   // One Enter sends exactly one PATCH: the keystroke must not bubble into a
   // second (empty) editor that would commit "" on the next blur. Clicking a
   // neutral row name blurs anything left open; the count must not move.
@@ -188,7 +191,7 @@ test("reset button asks first; cancel sends nothing, confirm POSTs reset", async
   await page.locator("#dlg-reset-ok").click();
   await expect(dlg).toBeHidden();
   await expect.poll(() => stub.configReset.length).toBe(1);
-  await expect(page.locator("#toasts")).toContainText("Defaults restored.");
+  await expect(page.locator("#toasts")).toContainText("next refresh");
 });
 
 test("secret row Shows the token on demand and hides it again", async ({ page }) => {
@@ -209,6 +212,7 @@ test("bool switch PATCHes the flipped value; readonly rows stay static", async (
   await sw.click();
   await expect.poll(() => stub.configPatch.length).toBe(1);
   expect(stub.configPatch[0]).toMatchObject({ key: "encoded_subscription", value: "false" });
+  await expect(page.locator("#toasts")).toContainText("next refresh");
   // Read-only rows render no control at all (5th stub row = the switch).
   const ro = page.locator(".set-row").nth(4).locator(".val");
   await expect(ro).toContainText("false");

@@ -193,7 +193,7 @@ const EXPORT_HOOK = `;globalThis.__v2 = {
   dropIndex, subReorder, shutdownServer, showStopped,
   refreshBusy, pingBusy, updateCycleButtons, triggerCycle, wire,
   openSubDialog, submitSubDialog, selectProxy, subToggle, subDelete, subEdit,
-  flagFor, apiPath, subMessage, maskedHost, currentTab, showTab, goTab,
+  flagFor, apiPath, subMessage, nextCycleMessage, maskedHost, currentTab, showTab, goTab,
   saveNow, fetchJson, toast, setStatus, setDirty, renderStats, loadResults,
   applyRanked, renderOvConfigs, renderConfigs, pingSub, refreshStatus,
   renderStats,   fmtClock, fmtStamp, fmtDuration, fmtAgo, fmtBytes, fmtLatency, fmtLatencyMs, ltr,

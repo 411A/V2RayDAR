@@ -761,7 +761,7 @@ After that:
 - `Ctrl+R` triggers one manual refresh (re-fetch); refused while a refresh is running.
 - `Ctrl+P` triggers one manual re-ping; refused while any cycle is running.
 - `refresh_seconds: 0` disables timer refreshes.
-- Manual changes from the TUI or dashboard apply immediately even when `refresh_seconds` is `0`.
+- Settings edits never re-fetch at once — not even with the timer on. Refresh-relevant changes (timeouts, `top_n`, probe, …) apply on the next scheduled cycle, or on a manual refresh (`Ctrl+R`, `:refresh`, the dashboard Refresh button, `POST /api/refresh`); the dashboard says so on save. Only the feed list changing (added/removed/moved/toggled subscription) still fetches immediately, including when `refresh_seconds` is `0`.
 - When a newer version adds settings, they default automatically on load; your stored values and subscriptions are left untouched.
 
 Headless mode prints compact progress by default and a detailed trace with `--verbose`.
@@ -1089,7 +1089,7 @@ The refresh pipeline in `src/main.rs` is roughly:
 10. Clean up configs not seen online for `clean_offlines_after_days` days.
 11. Record refresh duration, errors, byte counters, logs, and consecutive-top-N counters.
 
-The refresh loop starts immediately on app launch. Later refreshes are driven by the timer or relevant config-file changes.
+The refresh loop starts immediately on app launch. Later refreshes are driven by the timer or a manual trigger — never by a settings edit (those wait for the next cycle; only feed-list changes re-fetch at once).
 
 ## HTTP Server Behavior
 

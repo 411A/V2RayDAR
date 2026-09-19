@@ -2555,7 +2555,7 @@ fn spawn_refresh_loop(
                 let config = config_rx.borrow().clone();
                 *runtime_config.write().await = RuntimeConfig::from(&config);
                 let fingerprint = RefreshFingerprint::from(&config);
-                if last_refresh_fingerprint.as_ref() != Some(&fingerprint) {
+                if should_refresh_now(last_refresh_fingerprint.as_ref(), &fingerprint) {
                     last_refresh_fingerprint = Some(fingerprint);
                     if let Err(err) = refresh_once(
                         &config,
@@ -2577,6 +2577,11 @@ fn spawn_refresh_loop(
                         // countdown full instead of resuming a stale partial one.
                         let _ = ping_restart_tx.send(());
                     }
+                } else {
+                    // Refresh-setting edit while auto-refresh is off: record the
+                    // fingerprint so the config is current, but don't fetch —
+                    // the dashboard notice points at a manual refresh instead.
+                    last_refresh_fingerprint = Some(fingerprint);
                 }
 
                 // Always update proxy on config change — even if the refresh
@@ -2589,9 +2594,10 @@ fn spawn_refresh_loop(
             let now = std::time::Instant::now();
             // Re-arm full only when the interval changed, there is no
             // deadline yet, or the previous one already passed (a cycle just
-            // ran). A `changed` wake-up with an unchanged fingerprint keeps
-            // the existing deadline below, so proxy-only edits never reset
-            // the fetch timer.
+            // ran). A `changed` wake-up keeps the existing deadline below —
+            // neither proxy-only edits nor deferred refresh-setting edits may
+            // reset the fetch timer; only a feed-list edit (which re-fetches
+            // at once) re-arms it full.
             let rearm = last_refresh_seconds != Some(refresh_seconds)
                 || refresh_deadline.is_none_or(|deadline| deadline <= now);
             if rearm {
@@ -2677,9 +2683,7 @@ fn spawn_refresh_loop(
                     let config = config_rx.borrow().clone();
                     *runtime_config.write().await = RuntimeConfig::from(&config);
                     let fingerprint = RefreshFingerprint::from(&config);
-                    if last_refresh_fingerprint.as_ref() == Some(&fingerprint) {
-                        last_refresh_seconds = Some(refresh_seconds);
-                    } else {
+                    if should_refresh_now(last_refresh_fingerprint.as_ref(), &fingerprint) {
                         last_refresh_fingerprint = Some(fingerprint);
                         if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), cycle.clone(), print_terminal_summary, print_compact_progress, Some(ping_cancel.clone()), false).await {
                             error!(error = %err, "refresh after config reload failed");
@@ -2689,12 +2693,21 @@ fn spawn_refresh_loop(
                             // countdown full instead of resuming a stale partial one.
                             let _ = ping_restart_tx.send(());
                         }
-                        // A fingerprint-changing edit re-fetched: re-arm full.
+                        // A feed-list edit re-fetched: re-arm full.
                         let deadline =
                             std::time::Instant::now() + Duration::from_secs(refresh_seconds);
                         refresh_deadline = Some(deadline);
                         last_refresh_seconds = Some(refresh_seconds);
                         state.write().await.next_refresh_instant = Some(deadline);
+                    } else {
+                        // Refresh-setting edit: take the config now so the next
+                        // scheduled cycle uses it, but don't fetch — the
+                        // existing deadline above is preserved (never re-armed),
+                        // so one settings tweak can't pull a fetch forward.
+                        // The dashboard notice says the edit lands on the next
+                        // cycle or a manual refresh.
+                        last_refresh_fingerprint = Some(fingerprint);
+                        last_refresh_seconds = Some(refresh_seconds);
                     }
 
                     // Always update proxy on config change — even if the refresh
@@ -2789,6 +2802,27 @@ impl From<&AppConfig> for RefreshFingerprint {
             subscriptions: config.subscriptions.clone(),
         }
     }
+}
+
+/// Whether a config broadcast should re-fetch subscriptions at once. Only
+/// the feed list changing (added/removed/moved/toggled subscription)
+/// fetches immediately — refresh-setting edits (timeouts, `top_n`, probe, …)
+/// wait for the next scheduled cycle or a manual refresh, so tweaking
+/// settings never costs an extra subscription fetch. `None` (no refresh
+/// ran yet) keeps the old fetch-now behavior.
+fn should_refresh_now(old: Option<&RefreshFingerprint>, new: &RefreshFingerprint) -> bool {
+    old.is_none_or(|previous| previous != new && previous.subscriptions != new.subscriptions)
+}
+
+/// Whether an edit moved refresh-relevant data (same fingerprint the loop
+/// compares). The dashboard PATCH/reset endpoints use this — not a key
+/// list — so the "takes effect on the next refresh" notice can never drift
+/// from what actually re-fetches.
+pub(crate) fn refresh_relevant_changed(
+    old: &crate::config::AppConfig,
+    new: &crate::config::AppConfig,
+) -> bool {
+    RefreshFingerprint::from(old) != RefreshFingerprint::from(new)
 }
 
 async fn record_refresh_error(state: &Arc<RwLock<RuntimeState>>, error: String) {
@@ -3871,6 +3905,61 @@ mod tests {
         let runtime = state.read().await;
         assert!(!runtime.ranked.iter().any(|item| item.reachable));
         drop(runtime);
+    }
+
+    #[test]
+    fn config_broadcast_refreshes_at_once_only_for_feed_list_changes() {
+        // Settings tweaks must never cost an extra subscription fetch: only
+        // the feed list changing re-fetches immediately, everything else
+        // waits for the next cycle or a manual refresh.
+        let base = crate::config::AppConfig::default_for_first_run();
+        let base_fp = RefreshFingerprint::from(&base);
+        assert!(
+            super::should_refresh_now(None, &base_fp),
+            "no refresh ran yet"
+        );
+        assert!(
+            !super::should_refresh_now(Some(&base_fp), &base_fp),
+            "identical broadcast stays quiet"
+        );
+        let mut settings_only = base.clone();
+        settings_only.top_n = settings_only.top_n.saturating_add(1);
+        settings_only.fetch_timeout_ms = settings_only.fetch_timeout_ms.saturating_add(1);
+        let settings_fp = RefreshFingerprint::from(&settings_only);
+        assert!(
+            !super::should_refresh_now(Some(&base_fp), &settings_fp),
+            "refresh-setting edits defer to the next cycle"
+        );
+        assert!(
+            super::refresh_relevant_changed(&base, &settings_only),
+            "but the dashboard still flags them next-cycle"
+        );
+        let mut feed_only = base.clone();
+        feed_only
+            .subscriptions
+            .push(crate::config::SubscriptionSource {
+                name: "fresh".to_string(),
+                url: "https://example.invalid/fresh.txt".to_string(),
+                enabled: true,
+                priority: 1,
+            });
+        let feed_fp = RefreshFingerprint::from(&feed_only);
+        assert!(
+            super::should_refresh_now(Some(&base_fp), &feed_fp),
+            "a new feed still fetches at once"
+        );
+        let mut both = settings_only;
+        both.subscriptions = feed_only.subscriptions;
+        assert!(
+            super::should_refresh_now(Some(&base_fp), &RefreshFingerprint::from(&both)),
+            "feed change carries settings edits along"
+        );
+        let mut unrelated_only = base.clone();
+        unrelated_only.ping_seconds = unrelated_only.ping_seconds.saturating_add(1);
+        assert!(
+            !super::refresh_relevant_changed(&base, &unrelated_only),
+            "non-refresh keys stay flag-free"
+        );
     }
 
     #[tokio::test]

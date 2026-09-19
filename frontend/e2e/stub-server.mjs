@@ -357,13 +357,21 @@ export function createStub() {
       if (Object.prototype.hasOwnProperty.call(stub.configValues, body.key)) {
         stub.configValues[body.key] = String(body.value);
       }
-      json(res, 200, { ok: true, status: "Saved.", dirty: false });
+      // Mirror the server's applies_next_cycle flag: refresh-relevant keys
+      // (everything here but bind/sharing.token) defer to the next cycle.
+      const nextCycle = body.key !== "bind" && body.key !== "sharing.token";
+      json(res, 200, {
+        ok: true,
+        status: "Saved.",
+        dirty: false,
+        ...(nextCycle ? { code: "applies_next_cycle" } : {}),
+      });
       return;
     }
     if (req.method === "POST" && p === "/api/config/reset") {
       await readBody(req);
       stub.configReset.push(Date.now());
-      json(res, 200, { ok: true, status: "Defaults restored.", dirty: false });
+      json(res, 200, { ok: true, status: "Defaults restored.", dirty: false, code: "applies_next_cycle" });
       return;
     }
     if (req.method === "GET" && p === "/api/config/token") {

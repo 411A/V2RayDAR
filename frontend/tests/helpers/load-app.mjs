@@ -189,7 +189,7 @@ const EXPORT_HOOK = `;globalThis.__v2 = {
   toggleLangMenu, selectLang, closeLangMenu, reapplyFeedStatus, renderSettings,
   settingKind, settingName, settingGuide, settingGroupTitle, patchSetting,
   normalizeSettingInput, resetSettings, shareUrlLabel,
-  el, cell,
+  el, cell, preserveViewport,
   dropIndex, subReorder, shutdownServer, showStopped,
   refreshBusy, pingBusy, updateCycleButtons, triggerCycle, wire,
   openSubDialog, submitSubDialog, selectProxy, subToggle, subDelete, subEdit,

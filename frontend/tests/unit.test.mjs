@@ -286,6 +286,79 @@ describe("subscription dialog distinguishes add vs PATCH", () => {
   });
 });
 
+describe("preserveViewport keeps the viewport and focus across repaints", () => {
+  it("restores scroll offsets across a collapsing paint", () => {
+    const scrolled = [];
+    sandbox.window.scrollX = 0;
+    sandbox.window.scrollY = 231;
+    sandbox.window.scrollTo = (x, y) => scrolled.push([x, y]);
+    let painted = 0;
+    const out = api.preserveViewport(() => {
+      painted += 1;
+      return "painted";
+    });
+    assert.equal(painted, 1);
+    assert.equal(out, "painted", "return value passes through");
+    assert.deepEqual(scrolled, [[0, 231]]);
+  });
+
+  it("refocuses the rebuilt twin by data-key when the control is destroyed", () => {
+    const scrolled = [];
+    sandbox.window.scrollX = 0;
+    sandbox.window.scrollY = 500;
+    sandbox.window.scrollTo = (x, y) => scrolled.push([x, y]);
+    const dead = sandbox.document.createElement("button");
+    dead.setAttribute("data-key", "top_n");
+    let focused = 0;
+    const twin = sandbox.document.createElement("button");
+    twin.focus = () => { focused += 1; };
+    let seenSelector = "";
+    sandbox.document.querySelector = (sel) => {
+      seenSelector = String(sel);
+      return twin;
+    };
+    sandbox.document.activeElement = dead;
+    api.preserveViewport(() => {
+      // The repaint destroys the focused control: focus falls to body.
+      sandbox.document.activeElement = sandbox.document.body;
+    });
+    assert.equal(seenSelector, '[data-key="top_n"]');
+    assert.equal(focused, 1, "rebuilt twin regains focus");
+    assert.deepEqual(scrolled, [[0, 500]], "scroll still restored");
+  });
+
+  it("keeps focus alone when nothing is destroyed; survives a missing twin", () => {
+    sandbox.window.scrollTo = () => {};
+    const kept = sandbox.document.createElement("button");
+    sandbox.document.activeElement = kept;
+    let queried = 0;
+    sandbox.document.querySelector = () => {
+      queried += 1;
+      return null;
+    };
+    api.preserveViewport(() => {});
+    assert.equal(queried, 0, "no twin lookup when focus survives");
+    sandbox.document.activeElement = sandbox.document.body;
+    const stray = sandbox.document.createElement("button");
+    stray.setAttribute("data-key", "bind");
+    sandbox.document.activeElement = stray;
+    api.preserveViewport(() => {
+      sandbox.document.activeElement = sandbox.document.body;
+    });
+    assert.equal(queried, 1, "lookup runs on focus loss");
+  });
+
+  it("async paints restore once settled", async () => {
+    const scrolled = [];
+    sandbox.window.scrollX = 0;
+    sandbox.window.scrollY = 77;
+    sandbox.window.scrollTo = (x, y) => scrolled.push([x, y]);
+    const out = await api.preserveViewport(async () => "async-painted");
+    assert.equal(out, "async-painted");
+    assert.deepEqual(scrolled, [[0, 77]]);
+  });
+});
+
 describe("subscription drag-and-drop reorder", () => {
   it("dropIndex lands after/before in post-removal coordinates", () => {
     const { api } = loadApp();

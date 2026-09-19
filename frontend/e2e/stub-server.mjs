@@ -124,6 +124,16 @@ export function createStub() {
     subs: [
       { url: "https://example.com/sub.txt", name: "demo", priority: 100, enabled: true },
     ],
+    // Mutable settings store: PATCH persists like the server's
+    // immediate-save, so a resync re-renders the flipped value.
+    configValues: {
+      bind: "127.0.0.1:27141",
+      top_n: "8",
+      encoded_subscription: "true",
+      "probe.download_url": "off",
+      "probe.speedtest_enabled": "false",
+      "sharing.token": "set",
+    },
   };
 
   const json = (res, status, obj) => {
@@ -317,6 +327,7 @@ export function createStub() {
       return;
     }
     if (req.method === "GET" && p === "/api/config") {
+      const v = stub.configValues;
       json(res, 200, {
         dirty: false,
         groups: [
@@ -324,12 +335,12 @@ export function createStub() {
             id: "connection",
             title: "Connection",
             keys: [
-              { key: "bind", value: "127.0.0.1:27141", guide: "Local bind address.", kind: "text", options: [] },
-              { key: "top_n", value: "8", guide: "Configs to publish.", kind: "int", options: [] },
-              { key: "encoded_subscription", value: "true", guide: "Base64 or raw list.", kind: "bool", options: [] },
-              { key: "probe.download_url", value: "off", guide: "Speedtest link.", kind: "text", options: [] },
-              { key: "probe.speedtest_enabled", value: "false", guide: "Follows the link.", kind: "readonly", options: [] },
-              { key: "sharing.token", value: "set", guide: "Secret.", kind: "secret", options: [] },
+              { key: "bind", value: v.bind, guide: "Local bind address.", kind: "text", options: [] },
+              { key: "top_n", value: v.top_n, guide: "Configs to publish.", kind: "int", options: [] },
+              { key: "encoded_subscription", value: v.encoded_subscription, guide: "Base64 or raw list.", kind: "bool", options: [] },
+              { key: "probe.download_url", value: v["probe.download_url"], guide: "Speedtest link.", kind: "text", options: [] },
+              { key: "probe.speedtest_enabled", value: v["probe.speedtest_enabled"], guide: "Follows the link.", kind: "readonly", options: [] },
+              { key: "sharing.token", value: v["sharing.token"], guide: "Secret.", kind: "secret", options: [] },
             ],
           },
         ],
@@ -342,6 +353,9 @@ export function createStub() {
       if (body.key === "bogus_key") {
         json(res, 400, { ok: false, status: "unknown key", dirty: false });
         return;
+      }
+      if (Object.prototype.hasOwnProperty.call(stub.configValues, body.key)) {
+        stub.configValues[body.key] = String(body.value);
       }
       json(res, 200, { ok: true, status: "Saved.", dirty: false });
       return;

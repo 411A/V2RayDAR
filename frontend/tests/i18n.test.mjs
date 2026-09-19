@@ -82,6 +82,10 @@ describe("frontend i18n: one unified strings file, English default", () => {
       "btn small",
       "val editable",
       "drag-cell cell-grip",
+      // Code fragments (the scanner pairs quotes naively, so the selector
+      // glue below surfaces with its neighbouring single quotes attached).
+      " + key + ",
+      "' + key + '",
       " ",
       " · ",
       " http://",

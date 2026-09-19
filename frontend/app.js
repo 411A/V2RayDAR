@@ -81,6 +81,44 @@ function cell(text, label) {
   return td;
 }
 
+/// Re-render without moving the viewport: tearing a tall container down to
+/// empty collapses the document, so the browser clamps window.scrollY upward
+/// and the rebuilt content appears under a jumped viewport (the settings-tab
+/// jump after every save). Snapshot the offsets, run the paint, then put them
+/// back. When the paint destroys the focused control, focus its rebuilt twin
+/// (matched by the row's data-key) so keyboard users keep their place too.
+/// Promise-transparent: an async paint restores once it settles.
+function preserveViewport(paint) {
+  const x = typeof window.scrollX === "number" ? window.scrollX : 0;
+  const y = typeof window.scrollY === "number" ? window.scrollY : 0;
+  const active = document.activeElement;
+  const key = active && typeof active.getAttribute === "function"
+    ? active.getAttribute("data-key")
+    : null;
+  const restore = () => {
+    if (key && document.activeElement !== active) {
+      const twin = typeof document.querySelector === "function"
+        ? document.querySelector('[data-key="' + key + '"]')
+        : null;
+      if (twin && twin !== active && typeof twin.focus === "function") {
+        twin.focus({ preventScroll: true });
+      }
+    }
+    if (typeof window.scrollTo === "function") {
+      window.scrollTo(x, y);
+    }
+  };
+  const out = paint();
+  if (out && typeof out.then === "function") {
+    return out.then(
+      (value) => { restore(); return value; },
+      (error) => { restore(); throw error; },
+    );
+  }
+  restore();
+  return out;
+}
+
 function getToken() {
   try {
     const q = new URLSearchParams(window.location.search);
@@ -1128,6 +1166,11 @@ function statCard(label, value, sub, valueCls, valueId, subId, hint) {
 }
 
 function renderStats() {
+  preserveViewport(paintStats);
+}
+
+/// Synchronous DOM rebuild for renderStats (viewport-preserving wrapper above).
+function paintStats() {
   const box = $("stat-cards");
   while (box.firstChild) {
     box.removeChild(box.firstChild);
@@ -1280,6 +1323,11 @@ function proxyPill(running, uri) {
 
 /// Overview "Recent logs": last 5 lines, newest at the bottom (TUI order).
 function renderOvLogs() {
+  preserveViewport(paintOvLogs);
+}
+
+/// Synchronous DOM rebuild for renderOvLogs (viewport-preserving wrapper above).
+function paintOvLogs() {
   const list = $("ov-logs");
   while (list.firstChild) {
     list.removeChild(list.firstChild);
@@ -1308,6 +1356,11 @@ function ovQrShown() {
 /// slice) — up to 15 while the overview QR image is shown, filling the
 /// taller Endpoints column instead of leaving a gap below the table.
 function renderOvConfigs() {
+  preserveViewport(paintOvConfigs);
+}
+
+/// Synchronous DOM rebuild for renderOvConfigs (viewport-preserving wrapper above).
+function paintOvConfigs() {
   const body = $("ov-cfg-body");
   while (body.firstChild) {
     body.removeChild(body.firstChild);
@@ -1371,6 +1424,11 @@ function ovConfigRow(box, key, value) {
 /// from the cached `/api/config` payload (keys absent from the API are
 /// skipped, never faked).
 function renderOvConfig() {
+  preserveViewport(paintOvConfig);
+}
+
+/// Synchronous DOM rebuild for renderOvConfig (viewport-preserving wrapper above).
+function paintOvConfig() {
   const svc = $("ov-svc");
   const net = $("ov-net");
   while (svc.firstChild) {
@@ -1491,6 +1549,11 @@ function telegramProxyUrl() {
 }
 
 function renderEndpoints() {
+  preserveViewport(paintEndpoints);
+}
+
+/// Synchronous DOM rebuild for renderEndpoints (viewport-preserving wrapper above).
+function paintEndpoints() {
   const list = $("endpoint-list");
   while (list.firstChild) {
     list.removeChild(list.firstChild);
@@ -1510,6 +1573,11 @@ function renderEndpoints() {
 }
 
 function renderFetchErrors() {
+  preserveViewport(paintFetchErrors);
+}
+
+/// Synchronous DOM rebuild for renderFetchErrors (viewport-preserving wrapper above).
+function paintFetchErrors() {
   const s = state.snapshot;
   const card = $("fetch-errors-card");
   const wrap = $("fetch-errors-wrap");
@@ -1589,6 +1657,11 @@ function visibleRanked() {
 }
 
 function renderConfigs() {
+  preserveViewport(paintConfigs);
+}
+
+/// Synchronous DOM rebuild for renderConfigs (viewport-preserving wrapper above).
+function paintConfigs() {
   const rows = visibleRanked();
   const body = $("cfg-body");
   while (body.firstChild) {
@@ -1964,6 +2037,11 @@ async function copyText(text, okMsg) {
 /* ---------- logs ---------- */
 
 function renderLogs() {
+  preserveViewport(paintLogs);
+}
+
+/// Synchronous DOM rebuild for renderLogs (viewport-preserving wrapper above).
+function paintLogs() {
   const list = $("log-list");
   while (list.firstChild) {
     list.removeChild(list.firstChild);
@@ -2062,6 +2140,11 @@ function kvFill(box, pairs) {
 }
 
 function renderProxyTab() {
+  preserveViewport(paintProxyTab);
+}
+
+/// Synchronous DOM rebuild for renderProxyTab (viewport-preserving wrapper above).
+function paintProxyTab() {
   const s = state.snapshot;
   const pillSlot = $("proxy-pill");
   while (pillSlot.firstChild) {
@@ -2103,6 +2186,11 @@ function shareUrlLabel(key) {
 }
 
 async function renderShare() {
+  return preserveViewport(paintShare);
+}
+
+/// DOM rebuild for renderShare (viewport-preserving wrapper above).
+async function paintShare() {
   const list = $("share-list");
   while (list.firstChild) {
     list.removeChild(list.firstChild);
@@ -2380,6 +2468,11 @@ async function loadSubscriptions() {
 }
 
 function renderSubs() {
+  preserveViewport(paintSubs);
+}
+
+/// Synchronous DOM rebuild for renderSubs (viewport-preserving wrapper above).
+function paintSubs() {
   const body = $("sub-body");
   while (body.firstChild) {
     body.removeChild(body.firstChild);
@@ -2860,6 +2953,12 @@ function renderSettings() {
   if (state.settingsEditing) {
     return;
   }
+  preserveViewport(paintSettings);
+}
+
+/// Synchronous DOM rebuild for renderSettings (viewport-preserving wrapper
+/// above). Skipped while an inline editor is open (see renderSettings).
+function paintSettings() {
   const box = $("settings-groups");
   const note = $("settings-note");
   while (box.firstChild) {
@@ -2907,6 +3006,7 @@ function settingControl(k, key, name) {
     sw.setAttribute("role", "switch");
     sw.setAttribute("aria-checked", on ? "true" : "false");
     sw.setAttribute("aria-label", name);
+    sw.setAttribute("data-key", key);
     sw.addEventListener("click", () => void patchSetting(key, on ? "false" : "true"));
     const wrap = el("span", null, "val");
     wrap.appendChild(sw);
@@ -2916,6 +3016,7 @@ function settingControl(k, key, name) {
     const options = (k.options && k.options.length) ? k.options : ["active", "tcp"];
     const sel = document.createElement("select");
     sel.setAttribute("aria-label", name);
+    sel.setAttribute("data-key", key);
     for (const opt of options) {
       const o = document.createElement("option");
       o.value = opt;
@@ -2941,6 +3042,7 @@ function settingControl(k, key, name) {
   const val = el("span", value, "val editable");
   val.tabIndex = 0;
   val.setAttribute("role", "button");
+  val.setAttribute("data-key", key);
   val.title = t("tipEditSetting");
   val.addEventListener("click", () => editSettingText(key, name, val, kind === "int"));
   val.addEventListener("keydown", (ev) => {
@@ -2970,6 +3072,7 @@ function settingSecretControl(k, key, name) {
   }
   const change = el("button", t("setChange"), "btn small");
   change.type = "button";
+  change.setAttribute("data-key", key);
   change.addEventListener("click", () => editSecret(key, name, wrap));
   wrap.appendChild(change);
   if (present) {
@@ -3245,6 +3348,11 @@ function currentTab() {
 function showTab(name) {
   if (!TABS.includes(name)) {
     name = "overview";
+  }
+  // Tab switches land on top on purpose: same-tab resyncs preserve the
+  // viewport (see preserveViewport), so the switch itself must set it.
+  if (typeof window.scrollTo === "function") {
+    window.scrollTo(0, 0);
   }
   for (const t of TABS) {
     const panel = $("panel-" + t);

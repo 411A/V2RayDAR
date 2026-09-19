@@ -212,3 +212,49 @@ test("bool switch PATCHes the flipped value; readonly rows stay static", async (
   await expect(ro).toContainText("false");
   await expect(ro.locator("button, input, select")).toHaveCount(0);
 });
+
+test("settings edits keep the viewport and focus (no scroll jump)", async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 350 });
+  await page.goto(base + "/settings");
+  const sw = page.locator(".set-row .switch").first();
+  // Order-independent: the bool test earlier in the file may have flipped it.
+  const was = (await sw.textContent()).trim();
+  const flipped = was === "On" ? "Off" : "On";
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  const y0 = await page.evaluate(() => window.scrollY);
+  expect(y0).toBeGreaterThan(0);
+  await sw.scrollIntoViewIfNeeded();
+  const yClick = await page.evaluate(() => window.scrollY);
+  await sw.click();
+  // The flipped value proves the PATCH + resync rebuilt the tab.
+  await expect(sw).toHaveText(flipped);
+  const y1 = await page.evaluate(() => window.scrollY);
+  expect(Math.abs(y1 - yClick)).toBeLessThanOrEqual(2);
+  await expect(sw).toBeFocused();
+});
+
+test("subscriptions resyncs keep the viewport too", async ({ page }) => {
+  // A tall table: one row cannot collapse the document, so seed bulk rows
+  // (removed at the end) to make the teardown move the viewport when broken.
+  const had = stub.subs.length;
+  for (let i = 0; i < 30; i++) {
+    stub.subs.push({ url: `https://example.com/bulk-${i}.txt`, name: `bulk-${i}`, priority: 100 + i, enabled: true });
+  }
+  try {
+    await page.setViewportSize({ width: 800, height: 220 });
+    await page.goto(base + "/subscriptions");
+    await expect(page.locator("#sub-body tr")).toHaveCount(had + 30);
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    const y0 = await page.evaluate(() => window.scrollY);
+    expect(y0).toBeGreaterThan(200);
+    const tgl = page.locator("#sub-body tr").last().getByRole("button", { name: /Toggle/ });
+    await tgl.scrollIntoViewIfNeeded();
+    const yClick = await page.evaluate(() => window.scrollY);
+    await tgl.click();
+    await expect(tgl).toHaveText("❌");
+    const y1 = await page.evaluate(() => window.scrollY);
+    expect(Math.abs(y1 - yClick)).toBeLessThanOrEqual(2);
+  } finally {
+    stub.subs.splice(had);
+  }
+});

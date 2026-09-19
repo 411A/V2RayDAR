@@ -411,7 +411,7 @@ The loader validates values before the app starts or before a live config reload
 - `probe.accepted_statuses` must contain valid HTTP status codes from `100` through `599`.
 - `probe.download_bytes_limit` must be greater than `0`.
 - Every subscription must have a non-empty `name` and `url`.
-- `sharing.require_token: true` requires `sharing.token` to be a string or `true`.
+- `sharing.require_token: true` requires `sharing.token` to be a string or `true`. Flipping protection on with no token (or clearing it while on) auto-generates a random token you can edit afterwards.
 
 String-like null values such as `null`, `"null"`, empty strings, `"none"`, and `"off"` are normalized for optional fields where supported.
 

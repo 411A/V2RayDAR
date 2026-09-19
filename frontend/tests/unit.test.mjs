@@ -1153,4 +1153,39 @@ describe("settings tab: typed controls + translated rows", () => {
     // Genuine garbage passes through for the server to refuse.
     assert.equal(api.normalizeSettingInput("abc", true), "abc");
   });
+
+  it("shareUrlLabel reuses the endpoint labels, honoring base64 mode", () => {
+    api.state.ovConfig = new Map([["encoded_subscription", "true"]]);
+    assert.equal(api.shareUrlLabel("subscription"), "Subscription (base64)");
+    assert.equal(api.shareUrlLabel("subscription_txt"), "Subscription (plain text)");
+    assert.equal(api.shareUrlLabel("mihomo"), "Mihomo YAML");
+    api.state.ovConfig = new Map([["encoded_subscription", "false"]]);
+    assert.equal(api.shareUrlLabel("subscription"), "Subscription (plain text)");
+  });
+
+  it("secret row Shows the token on demand, copies, and hides again", async () => {
+    const seen = [];
+    sandbox.fetch = async (url, init) => {
+      seen.push(String(url));
+      return { status: 200, async text() { return '{"token":"unit-secret"}'; } };
+    };
+    const withToken = payload();
+    withToken.groups[0].keys[4].value = "set";
+    api.state.settings = withToken;
+    api.state.settingsStatus = 200;
+    api.renderSettings();
+    const box = sandbox.__elements.get("settings-groups");
+    const wrap = box.children[0].children[5].children[1];
+    const show = wrap.children[1];
+    assert.equal(show.textContent, "Show");
+    show.__listeners.get("click")[0]();
+    await new Promise((r) => setTimeout(r, 50));
+    assert.ok(seen.some((u) => u.includes("/api/config/token")), "fetches only on Show");
+    const code = wrap.children[0];
+    assert.equal(code.textContent, "unit-secret");
+    const hide = wrap.children[2];
+    assert.equal(hide.textContent, "Hide");
+    hide.__listeners.get("click")[0]();
+    assert.equal(box.children[0].children[5].children[1].children[0].textContent, "set");
+  });
 });

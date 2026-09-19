@@ -202,6 +202,23 @@ impl RuntimeConfig {
 
         url
     }
+
+    /// Full Mihomo endpoint for a LAN host, tokenized like [`Self::subscription_url`].
+    #[must_use]
+    pub fn mihomo_url(&self, host: &str) -> String {
+        let mut url = format!(
+            "http://{}:{}/mihomo.yaml",
+            format_url_host(host),
+            self.bind.port()
+        );
+
+        if should_include_token_in_url(&self.token) {
+            url.push_str("?token=");
+            url.push_str(&self.token);
+        }
+
+        url
+    }
 }
 
 fn format_url_host(host: &str) -> String {

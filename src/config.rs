@@ -358,11 +358,9 @@ pub fn validate_config(mut config: AppConfig) -> Result<AppConfig> {
     }
     canonicalize_subscriptions(&mut config.subscriptions);
 
-    if config.sharing.require_token && config.sharing.token.is_empty() {
-        return Err(anyhow!(
-            "sharing.token must be a string or true when sharing.require_token is true"
-        ));
-    }
+    // Self-heal: protection without a token mints a random editable one
+    // instead of persisting a config the next load would refuse.
+    ensure_sharing_token(&mut config);
 
     if config.proxy.enabled {
         if config.proxy.port == 0 {
@@ -438,6 +436,16 @@ pub fn normalize_sharing_token(value: &str) -> String {
         generate_token()
     } else {
         value
+    }
+}
+
+/// Token protection without a token persists a config the next load refuses
+/// (`sharing.token must be a string...`), bricking the app after a restart.
+/// Flipping the switch (or clearing the token while protection is on) must
+/// therefore mint a random editable token instead of storing the trap.
+pub fn ensure_sharing_token(config: &mut AppConfig) {
+    if config.sharing.require_token && config.sharing.token.trim().is_empty() {
+        config.sharing.token = normalize_sharing_token("true");
     }
 }
 
@@ -808,11 +816,11 @@ mod tests {
         let mut config = valid_config();
         config.sharing.require_token = true;
         config.sharing.token.clear();
+        let healed = validate_config(config).expect("missing token self-heals instead of failing");
+        assert!(healed.sharing.require_token);
         assert!(
-            validate_config(config)
-                .expect_err("missing required token should fail")
-                .to_string()
-                .contains("sharing.token")
+            !healed.sharing.token.trim().is_empty(),
+            "protection without a token mints one"
         );
 
         let mut config = valid_config();
@@ -1042,6 +1050,35 @@ mod tests {
         assert_eq!(names, vec!["s2", "s3", "s1"]);
         let ranks: Vec<u32> = subscriptions.iter().map(|entry| entry.priority).collect();
         assert_eq!(ranks, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn enabling_token_protection_without_a_token_mints_one() {
+        // The reported brick: flipping the switch with no token stored a
+        // config the next load refused.
+        let mut config = super::AppConfig::default_for_first_run();
+        config.sharing.require_token = true;
+        config.sharing.token.clear();
+        let config = super::validate_config(config).expect("protection without a token self-heals");
+        assert!(config.sharing.require_token);
+        assert!(
+            !config.sharing.token.trim().is_empty(),
+            "a random editable token is minted"
+        );
+
+        // An existing token is never overwritten.
+        let mut config = super::AppConfig::default_for_first_run();
+        config.sharing.require_token = true;
+        config.sharing.token = "user-token".to_string();
+        let config = super::validate_config(config).expect("explicit token validates");
+        assert_eq!(config.sharing.token, "user-token");
+
+        // Protection off leaves emptiness alone.
+        let mut config = super::AppConfig::default_for_first_run();
+        config.sharing.require_token = false;
+        config.sharing.token.clear();
+        let config = super::validate_config(config).expect("disabled protection validates");
+        assert!(config.sharing.token.is_empty());
     }
 
     #[test]

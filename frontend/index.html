@@ -252,6 +252,7 @@
         <h2 data-i18n="setTitle">Settings</h2>
         <div class="panel-tools">
           <button type="button" class="btn" id="btn-settings-reload" data-i18n="btnSetReload" data-i18n-title="btnSetReloadTitle">Refresh values</button>
+          <button type="button" class="btn danger" id="btn-settings-reset" data-i18n="btnResetDefaults" data-i18n-title="btnResetDefaultsTitle">Reset to defaults</button>
         </div>
       </div>
       <p class="muted" id="settings-note"></p>
@@ -379,6 +380,17 @@
       <div class="dlg-actions">
         <button type="button" class="btn" id="dlg-power-cancel" data-i18n="btnCancel">Cancel</button>
         <button type="button" class="btn danger" id="dlg-power-ok" data-i18n="btnStopNow">Yes, stop</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="dlg-reset" aria-labelledby="dlg-reset-title">
+    <div class="dlg">
+      <h2 id="dlg-reset-title" data-i18n="dlgResetTitle">Reset to defaults?</h2>
+      <p class="muted" data-i18n="dlgResetBody">This rewrites every setting to the shipped defaults. Your subscriptions are kept. This cannot be undone.</p>
+      <div class="dlg-actions">
+        <button type="button" class="btn" id="dlg-reset-cancel" data-i18n="btnCancel">Cancel</button>
+        <button type="button" class="btn danger" id="dlg-reset-ok" data-i18n="btnResetNow">Yes, reset</button>
       </div>
     </div>
   </dialog>

@@ -113,6 +113,9 @@ export function createStub() {
     subDelete: [],
     subReorder: [],
     configPatch: [],
+    configReset: [],
+    tokenReveals: [],
+    shareUrls: [],
     savePosts: 0,
     cacheClean: [],
     shutdownPosts: 0,
@@ -326,6 +329,7 @@ export function createStub() {
               { key: "encoded_subscription", value: "true", guide: "Base64 or raw list.", kind: "bool", options: [] },
               { key: "probe.download_url", value: "off", guide: "Speedtest link.", kind: "text", options: [] },
               { key: "probe.speedtest_enabled", value: "false", guide: "Follows the link.", kind: "readonly", options: [] },
+              { key: "sharing.token", value: "set", guide: "Secret.", kind: "secret", options: [] },
             ],
           },
         ],
@@ -340,6 +344,29 @@ export function createStub() {
         return;
       }
       json(res, 200, { ok: true, status: "Saved.", dirty: false });
+      return;
+    }
+    if (req.method === "POST" && p === "/api/config/reset") {
+      await readBody(req);
+      stub.configReset.push(Date.now());
+      json(res, 200, { ok: true, status: "Defaults restored.", dirty: false });
+      return;
+    }
+    if (req.method === "GET" && p === "/api/config/token") {
+      stub.tokenReveals.push(Date.now());
+      json(res, 200, { token: "stub-token" });
+      return;
+    }
+    if (req.method === "GET" && p === "/api/share-urls") {
+      stub.shareUrls.push(Date.now());
+      json(res, 200, {
+        urls: [
+          { key: "subscription", url: "http://192.0.2.2:27141/subscription?token=stub-token" },
+          { key: "subscription_txt", url: "http://192.0.2.2:27141/subscription.txt?token=stub-token" },
+          { key: "mihomo", url: "http://192.0.2.2:27141/mihomo.yaml?token=stub-token" },
+        ],
+        sharing_enabled: true,
+      });
       return;
     }
     if (req.method === "POST" && p === "/api/save") {

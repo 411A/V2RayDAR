@@ -1053,7 +1053,7 @@ function applyRanked(text) {
   state.snapshot.ranked = Array.isArray(d) ? d : d.ranked || state.snapshot.ranked;
   renderOvConfigs();
   renderConfigs();
-  renderShare();
+  void renderShare();
 }
 
 function pushLogLine(text) {
@@ -1093,7 +1093,7 @@ function renderAll() {
   renderConfigs();
   renderLogs();
   renderProxyTab();
-  renderShare();
+  void renderShare();
   void renderOvQr();
 }
 
@@ -2090,12 +2090,36 @@ function renderProxyTab() {
   updateProxyModeButtons();
 }
 
-function renderShare() {
+/// Label for a server share-URL key: the `/subscription` label follows the
+/// encoded_subscription setting like the local list does.
+function shareUrlLabel(key) {
+  if (key === "mihomo") {
+    return t("epMihomo");
+  }
+  if (key === "subscription_txt") {
+    return t("epPlainText");
+  }
+  const enc = state.ovConfig ? state.ovConfig.get("encoded_subscription") : undefined;
+  return enc !== "false" && enc !== false ? t("epBase64") : t("epPlainText");
+}
+
+async function renderShare() {
   const list = $("share-list");
   while (list.firstChild) {
     list.removeChild(list.firstChild);
   }
-  for (const [label, url] of endpointItems().slice(0, 3)) {
+  // The hint never depends on the server: paint it synchronously so language
+  // switches re-tint it in the same tick.
+  $("share-hint").textContent = getToken() ? t("shareHintToken") : t("shareHintLocal");
+  // Prefer the server's tokenized LAN URLs (the raw token stays masked, so
+  // the client could never build these); fall back to the origin-based list
+  // on old servers or while sharing is off.
+  let items = null;
+  const r = await fetchJson("/api/share-urls");
+  if (r.status === 200 && r.data && Array.isArray(r.data.urls) && r.data.urls.length > 0) {
+    items = r.data.urls.map((u) => [shareUrlLabel(u.key), u.url]);
+  }
+  for (const [label, url] of items || endpointItems().slice(0, 3)) {
     const li = document.createElement("li");
     li.appendChild(el("strong", label));
     const code = el("code", url);
@@ -2107,7 +2131,6 @@ function renderShare() {
     li.appendChild(btn);
     list.appendChild(li);
   }
-  $("share-hint").textContent = getToken() ? t("shareHintToken") : t("shareHintLocal");
   const img = $("qr-img");
   const note = $("qr-note");
   img.hidden = true;
@@ -2788,6 +2811,25 @@ async function patchSetting(key, value) {
   toast(t("rejected", { msg }), "bad");
 }
 
+/// Reset non-subscription settings to the embedded defaults (subscriptions
+/// kept): confirm first, then POST and resync the tab + overview.
+async function resetSettings() {
+  const r = await fetchJson("/api/config/reset", { method: "POST", body: {} });
+  if (r.status === 404) {
+    toast(t("resetApiOld"), "bad");
+    return;
+  }
+  if (r.status >= 200 && r.status < 300) {
+    toast(subMessage(r, t("resetDone")), "good");
+    setDirty(!!(r.data && r.data.dirty));
+    await loadSettings();
+    void loadOvConfig();
+    return;
+  }
+  toast(subMessage(r, t("resetFailed", { status: r.status })), "bad");
+  void loadSettings();
+}
+
 /// Paint the settings tab from the cached payload (no fetch). Skips while an
 /// inline editor is open (blur auto-commits, so rebuilding the DOM could
 /// PATCH a half-typed value) and when nothing ever loaded.
@@ -2900,6 +2942,12 @@ function settingSecretControl(k, key, name) {
   const wrap = el("span", null, "val");
   wrap.classList.add("set-secret");
   wrap.appendChild(el("span", present ? t("setPresentSet") : t("setPresentEmpty"), "set-presence"));
+  if (present && key === "sharing.token") {
+    const show = el("button", t("setShow"), "btn small");
+    show.type = "button";
+    show.addEventListener("click", () => void revealToken(key, wrap));
+    wrap.appendChild(show);
+  }
   const change = el("button", t("setChange"), "btn small");
   change.type = "button";
   change.addEventListener("click", () => editSecret(key, name, wrap));
@@ -2911,6 +2959,34 @@ function settingSecretControl(k, key, name) {
     wrap.appendChild(clear);
   }
   return wrap;
+}
+
+/// Explicit token reveal: the Settings table masks the secret, so fetch the
+/// real value once for display + copy. Old servers 404 (no such route).
+async function revealToken(key, wrap) {
+  const r = await fetchJson("/api/config/token");
+  if (r.status === 404) {
+    toast(t("tokenApiOld"), "bad");
+    return;
+  }
+  const token = r.status >= 200 && r.status < 300 && r.data ? String(r.data.token || "") : "";
+  if (!token) {
+    toast(subMessage(r, t("tokenRevealFailed", { status: r.status })), "bad");
+    return;
+  }
+  while (wrap.firstChild) {
+    wrap.removeChild(wrap.firstChild);
+  }
+  const code = el("code", token, "token-revealed");
+  wrap.appendChild(code);
+  const copy = el("button", t("btnCopy"), "btn small");
+  copy.type = "button";
+  copy.addEventListener("click", () => void copyText(token, t("subUrlCopied")));
+  wrap.appendChild(copy);
+  const hide = el("button", t("setHide"), "btn small");
+  hide.type = "button";
+  hide.addEventListener("click", () => renderSettings());
+  wrap.appendChild(hide);
 }
 
 function editSecret(key, name, wrap) {
@@ -3173,7 +3249,7 @@ function showTab(name) {
     void renderOvQr();
   }
   if (name === "share") {
-    renderShare();
+    void renderShare();
   }
 }
 
@@ -3297,6 +3373,17 @@ function wire() {
   $("dlg-power-ok").addEventListener("click", () => {
     $("dlg-power").close();
     void shutdownServer();
+  });
+  $("btn-settings-reset").addEventListener("click", () => {
+    const d = $("dlg-reset");
+    if (typeof d.showModal === "function") {
+      d.showModal();
+    }
+  });
+  $("dlg-reset-cancel").addEventListener("click", () => $("dlg-reset").close());
+  $("dlg-reset-ok").addEventListener("click", () => {
+    $("dlg-reset").close();
+    void resetSettings();
   });
   $("dlg-admin-ok").addEventListener("click", () => $("dlg-admin").close());
 

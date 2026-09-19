@@ -115,7 +115,10 @@ fn router(state: HttpState) -> Router {
             "/api/config",
             get(crate::web::api_config).patch(crate::web::api_config_patch),
         )
+        .route("/api/config/reset", post(crate::web::api_config_reset))
+        .route("/api/config/token", get(crate::web::api_config_token))
         .route("/api/events", get(crate::web::api_events))
+        .route("/api/share-urls", get(crate::web::api_share_urls))
         .route("/api/qr/generate", post(crate::web::api_qr_generate))
         .route("/api/qr.jpg", get(crate::web::api_qr_image))
         .route("/api/refresh", post(crate::web::api_refresh))

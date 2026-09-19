@@ -202,8 +202,16 @@ pub fn apply(config: &mut crate::config::AppConfig, key: ConfigKey, raw: &str) -
         ConfigKey::CleanOfflineDays => {
             config.clean_offlines_after_days = positive(value, label(key))?;
         }
-        ConfigKey::TokenRequired => config.sharing.require_token = bool_value(value)?,
-        ConfigKey::Token => config.sharing.token = normalize_sharing_token(value),
+        ConfigKey::TokenRequired => {
+            config.sharing.require_token = bool_value(value)?;
+            // Same trap as the dashboard path: mint a token when enabling
+            // protection with none set.
+            crate::config::ensure_sharing_token(config);
+        }
+        ConfigKey::Token => {
+            config.sharing.token = normalize_sharing_token(value);
+            crate::config::ensure_sharing_token(config);
+        }
         ConfigKey::ProxyEnabled => config.proxy.enabled = bool_value(value)?,
         ConfigKey::ProxyPort => config.proxy.port = positive(value, label(key))?,
         ConfigKey::ProxyDiscoverable => config.proxy.discoverable = bool_value(value)?,
@@ -294,5 +302,31 @@ fn optional_positive(value: &str, label: &str) -> Result<Option<usize>> {
     match value.to_ascii_lowercase().as_str() {
         "" | "auto" | "off" | "none" | "null" => Ok(None),
         _ => positive(value, label).map(Some),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ConfigKey, apply};
+    use crate::config::AppConfig;
+
+    #[test]
+    fn enabling_token_protection_without_a_token_mints_one() {
+        let mut config = AppConfig::default_for_first_run();
+        config.sharing.token.clear();
+        apply(&mut config, ConfigKey::TokenRequired, "true").expect("enables");
+        assert!(config.sharing.require_token);
+        assert!(
+            !config.sharing.token.trim().is_empty(),
+            "random editable token minted"
+        );
+
+        // Clearing the token while protection is on re-mints.
+        apply(&mut config, ConfigKey::Token, "").expect("clears");
+        assert!(!config.sharing.token.trim().is_empty());
+
+        // An explicit token is never overwritten.
+        apply(&mut config, ConfigKey::Token, "user-token").expect("sets");
+        assert_eq!(config.sharing.token, "user-token");
     }
 }

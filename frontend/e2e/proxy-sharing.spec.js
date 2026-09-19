@@ -67,6 +67,17 @@ test("sharing button POSTs and locks in-flight", async ({ page }) => {
   expect(stub.sharingPosts).toBeLessThanOrEqual(3);
 });
 
+test("share tab prefers server tokenized URLs over origin guesses", async ({ page }) => {
+  await page.goto(base + "/share");
+  const rows = page.locator("#share-list li");
+  await expect(rows).toHaveCount(3);
+  await expect(rows.nth(0).locator("strong")).toHaveText("Subscription (base64)");
+  await expect(rows.nth(0).locator("code")).toContainText("http://192.0.2.2:27141/subscription?token=stub-token");
+  await expect(rows.nth(1).locator("code")).toContainText("subscription.txt?token=stub-token");
+  await expect(rows.nth(2).locator("code")).toContainText("mihomo.yaml?token=stub-token");
+  expect(stub.shareUrls.length).toBeGreaterThanOrEqual(1);
+});
+
 test("sharing firewall failure pops the run-as-admin guide", async ({ page }) => {
   await page.route("**/api/sharing", (route) => route.fulfill({
     status: 200,

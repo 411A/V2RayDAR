@@ -35,6 +35,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use crate::{
     config::should_include_token_in_url,
     model::{RankedConfig, RuntimeConfig},
+    network,
     server::{AuthQuery, HttpState, SharedState, authorize, bearer_token},
 };
 
@@ -405,6 +406,76 @@ pub async fn api_subscriptions(
     subscriptions_response(&state, remote_addr, token).await
 }
 
+/// Ready-to-copy LAN share URL: the endpoint key renders client-side
+/// (`subscription`, `subscription_txt`, `mihomo`) so no locale gains strings.
+#[derive(Debug, Clone, Serialize)]
+struct ShareUrl {
+    key: &'static str,
+    url: String,
+}
+
+/// Ready-to-copy LAN share URLs (`GET /api/share-urls`): the same tokenized
+/// links the QR sheet encodes, for dashboards where the raw token stays
+/// masked — token protection would otherwise hand out a secret nobody can
+/// retrieve. Only reachable by loopback owners and token-holding LAN viewers
+/// (same authorization as every route), so nothing new leaks. Empty while
+/// LAN sharing is off or no LAN host is found; the dashboard then falls back
+/// to its origin-based list.
+#[derive(Debug, Clone, Serialize)]
+struct ShareUrlsResponse {
+    urls: Vec<ShareUrl>,
+    sharing_enabled: bool,
+}
+
+fn share_urls(config: &RuntimeConfig, host: &str) -> Vec<ShareUrl> {
+    vec![
+        ShareUrl {
+            key: "subscription",
+            url: config.subscription_url(host, false),
+        },
+        ShareUrl {
+            key: "subscription_txt",
+            url: config.subscription_url(host, true),
+        },
+        ShareUrl {
+            key: "mihomo",
+            url: config.mihomo_url(host),
+        },
+    ]
+}
+
+/// `GET /api/share-urls` — tokenized LAN share URLs, ready to copy.
+pub async fn api_share_urls(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    ConnectInfo(remote_addr): ConnectInfo<std::net::SocketAddr>,
+) -> Response {
+    let token = query.token.as_deref().or_else(|| bearer_token(&headers));
+    if let Err(response) = authorize(&state, remote_addr, token).await {
+        return response;
+    }
+    // Clone out from under the snapshot lock: discovery below is blocking
+    // network I/O and must never hold the guard.
+    let config = state.config.read().await.clone();
+    if config.sharing_enabled {
+        let hosts = network::discoverable_hosts(&config);
+        let urls = hosts
+            .first()
+            .map_or_else(Vec::new, |host| share_urls(&config, host));
+        return Json(ShareUrlsResponse {
+            urls,
+            sharing_enabled: true,
+        })
+        .into_response();
+    }
+    Json(ShareUrlsResponse {
+        urls: Vec::new(),
+        sharing_enabled: false,
+    })
+    .into_response()
+}
+
 async fn subscriptions_response(
     state: &HttpState,
     remote_addr: std::net::SocketAddr,
@@ -511,7 +582,9 @@ fn status_list(statuses: &[u16]) -> String {
     format!("[{inner}]")
 }
 
-/// Token presence marker — the secret itself must never enter a response.
+/// Token presence marker for the polled settings table — the secret itself
+/// must never enter a response here (explicit reveal lives behind
+/// `GET /api/config/token`, fetched only on Show).
 fn token_presence(token: &str) -> &'static str {
     if should_include_token_in_url(token) {
         "set"
@@ -740,7 +813,7 @@ fn sharing_group(config: &RuntimeConfig) -> ConfigGroup {
             config_row_kind(
                 "sharing.token",
                 token_presence(&config.token).to_string(),
-                "presence only; the secret never leaves the server",
+                "presence only; press Show to reveal it once",
                 "secret",
                 &[],
             ),
@@ -1747,9 +1820,15 @@ fn apply_sharing_proxy_setting(
         "sharing.require_token" => {
             cfg.sharing.require_token =
                 parse_bool(value).ok_or_else(|| "expected true/false".to_string())?;
+            // Flipping protection on with no token mints a random editable
+            // one: storing the trap would brick the next settings load.
+            crate::config::ensure_sharing_token(cfg);
         }
         "sharing.token" => {
             cfg.sharing.token = crate::config::normalize_sharing_token(value);
+            // Clearing the token while protection is on re-mints instead of
+            // storing the trap.
+            crate::config::ensure_sharing_token(cfg);
         }
         "proxy.enabled" => {
             cfg.proxy.enabled =
@@ -1833,6 +1912,63 @@ pub async fn api_config_patch(
         return response;
     }
     mutation_ok(format!("Updated {}", body.key.trim()))
+}
+
+/// `POST /api/config/reset` — restore non-subscription settings from the
+/// embedded defaults (subscriptions kept, merge baseline re-anchored).
+pub async fn api_config_reset(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    ConnectInfo(remote_addr): ConnectInfo<std::net::SocketAddr>,
+) -> Response {
+    let token = query.token.as_deref().or_else(|| bearer_token(&headers));
+    if let Err(response) = authorize(&state, remote_addr, token).await {
+        return response;
+    }
+    if state.config_tx.is_none() {
+        return mutation_error(StatusCode::SERVICE_UNAVAILABLE, "Settings API unavailable");
+    }
+    let Some(db) = state.database.clone() else {
+        return mutation_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Settings database unavailable",
+        );
+    };
+    let mut cfg = match load_db_config(&state).await {
+        Ok(cfg) => cfg,
+        Err(response) => return response,
+    };
+    if let Err(error) = crate::settings::reset_to_embedded_defaults(&db, &mut cfg) {
+        return mutation_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Unable to restore defaults: {error:#}"),
+        );
+    }
+    if let Err(response) = persist_config(&state, &cfg).await {
+        return response;
+    }
+    mutation_ok("Defaults restored; subscriptions kept")
+}
+
+/// `GET /api/config/token` — reveal the LAN token to an authorized dashboard
+/// viewer. The Settings table masks it by default and the UI fetches it only
+/// on explicit Show, so the secret never sits in a polled response. Same
+/// authorization as every route: viewers are loopback owners (the TUI shows
+/// them the token in plaintext too) or token-holding LAN readers who already
+/// know it — nothing new leaks.
+pub async fn api_config_token(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    ConnectInfo(remote_addr): ConnectInfo<std::net::SocketAddr>,
+) -> Response {
+    let token = query.token.as_deref().or_else(|| bearer_token(&headers));
+    if let Err(response) = authorize(&state, remote_addr, token).await {
+        return response;
+    }
+    let config = state.config.read().await.clone();
+    Json(serde_json::json!({ "token": config.token })).into_response()
 }
 
 /// `POST /api/save` — compatibility no-op: the dashboard persists
@@ -3621,6 +3757,166 @@ mod tests {
         .await;
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(stored_names(&state), vec!["src-1", "src-2", "src-3"]);
+    }
+
+    #[tokio::test]
+    async fn require_token_without_a_token_mints_one() {
+        // The reported brick: the switch persisted protection with no token
+        // and the next settings load failed. Flipping it on must mint a
+        // random editable token that survives a reload.
+        let (state, _refresh_rx, _ping_rx, _config_rx) = mutation_state(RuntimeState::default());
+        let (headers, query, connect) = no_auth();
+        let response = super::api_config_patch(
+            axum::extract::State(state.clone()),
+            headers,
+            query,
+            connect,
+            axum::Json(super::ConfigPatch {
+                key: "sharing.require_token".to_string(),
+                value: "true".to_string(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let stored = stored_config(&state);
+        assert!(stored.sharing.require_token);
+        assert!(
+            !stored.sharing.token.trim().is_empty(),
+            "a token is minted and the reload validates"
+        );
+        // Clearing the token while protection is on re-mints instead of
+        // storing the trap.
+        let (headers, query, connect) = no_auth();
+        let response = super::api_config_patch(
+            axum::extract::State(state.clone()),
+            headers,
+            query,
+            connect,
+            axum::Json(super::ConfigPatch {
+                key: "sharing.token".to_string(),
+                value: String::new(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let stored = stored_config(&state);
+        assert!(!stored.sharing.token.trim().is_empty());
+    }
+
+    #[test]
+    fn share_urls_tokenize_protected_links() {
+        // The dashboard masks the raw token, so the Share tab could never
+        // offer a working protected link. These server-built URLs carry
+        // ?token= like the QR sheet does.
+        let mut cfg = crate::config::AppConfig::default_for_first_run();
+        cfg.sharing.enabled = true;
+        cfg.sharing.require_token = true;
+        cfg.sharing.token = "secret".to_string();
+        let runtime = crate::model::RuntimeConfig::from(&cfg);
+        let urls = super::share_urls(&runtime, "192.0.2.2");
+        assert_eq!(urls.len(), 3);
+        let bodies: Vec<&str> = urls.iter().map(|u| u.url.as_str()).collect();
+        assert!(
+            bodies
+                .iter()
+                .all(|u| u.starts_with("http://192.0.2.2:27141/"))
+        );
+        assert!(bodies.iter().all(|u| u.contains("?token=secret")));
+        assert!(bodies.iter().any(|u| u.contains("/subscription?token=")));
+        assert!(
+            bodies
+                .iter()
+                .any(|u| u.contains("/subscription.txt?token="))
+        );
+        assert!(bodies.iter().any(|u| u.contains("/mihomo.yaml?token=")));
+
+        // Unprotected sharing serves bare URLs.
+        let mut cfg = crate::config::AppConfig::default_for_first_run();
+        cfg.sharing.enabled = true;
+        cfg.sharing.require_token = false;
+        cfg.sharing.token.clear();
+        let runtime = crate::model::RuntimeConfig::from(&cfg);
+        let urls = super::share_urls(&runtime, "192.0.2.2");
+        assert!(urls.iter().all(|u| !u.url.contains("?token=")));
+    }
+
+    #[tokio::test]
+    async fn share_urls_empty_while_sharing_off() {
+        // Deterministic without touching the network: discovery runs only
+        // when sharing is on.
+        let (state, _refresh_rx, _ping_rx, _config_rx) = mutation_state(RuntimeState::default());
+        let (headers, query, connect) = no_auth();
+        let response =
+            super::api_share_urls(axum::extract::State(state), headers, query, connect).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body reads");
+        let text = String::from_utf8(body.to_vec()).expect("body is text");
+        assert!(
+            text.contains("\"urls\":[]"),
+            "no links while sharing is off"
+        );
+    }
+
+    #[tokio::test]
+    async fn config_token_reveals_to_authorized_viewer() {
+        let (state, _refresh_rx, _ping_rx, _config_rx) = mutation_state(RuntimeState::default());
+        let db = state.database.clone().expect("test db present");
+        {
+            let mut cfg = crate::settings::load_app_config(&db).expect("seed loads");
+            cfg.sharing.require_token = true;
+            cfg.sharing.token = "viewer-token".to_string();
+            crate::settings::save_app_config(&db, &cfg).expect("customizes");
+        }
+        // Push the customized config live like persist_config would.
+        {
+            let cfg = crate::settings::load_app_config(&db).expect("reloads");
+            *state.config.write().await = crate::model::RuntimeConfig::from(&cfg);
+        }
+        let (headers, query, connect) = no_auth();
+        let response =
+            super::api_config_token(axum::extract::State(state.clone()), headers, query, connect)
+                .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body reads");
+        let text = String::from_utf8(body.to_vec()).expect("body is text");
+        assert!(
+            text.contains("viewer-token"),
+            "explicit Show reveals the token"
+        );
+    }
+
+    #[tokio::test]
+    async fn config_reset_restores_defaults_and_keeps_subscriptions() {
+        let (state, _refresh_rx, _ping_rx, _config_rx) = mutation_state(RuntimeState::default());
+        let db = state.database.clone().expect("test db present");
+        let embedded = crate::settings::embedded_defaults();
+        {
+            let mut cfg = crate::settings::load_app_config(&db).expect("seed loads");
+            cfg.top_n = embedded.top_n.saturating_add(5);
+            cfg.subscriptions
+                .push(test_sub("mine", "https://test.invalid/mine.txt", 99));
+            crate::settings::save_app_config(&db, &cfg).expect("customizes");
+        }
+        let (headers, query, connect) = no_auth();
+        let response =
+            super::api_config_reset(axum::extract::State(state.clone()), headers, query, connect)
+                .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let stored = stored_config(&state);
+        assert_eq!(stored.top_n, embedded.top_n);
+        let names = stored_names(&state);
+        assert!(names.contains(&"mine".to_string()), "custom sub kept");
+        let snapshot = db.load_defaults_snapshot().expect("snapshot reads");
+        assert!(snapshot.is_some(), "reset re-anchors the baseline");
+        {
+            let live = state.subscriptions.read().await;
+            assert!(live.iter().any(|s| s.name == "mine"));
+            drop(live);
+        }
     }
 
     #[tokio::test]

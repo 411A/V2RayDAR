@@ -112,7 +112,7 @@ test("delete asks for confirm; cancel sends nothing", async ({ page }) => {
 
 test("settings editor PATCHes a key; unknown key shows rejection toast", async ({ page }) => {
   await page.goto(base + "/settings");
-  await expect(page.locator(".set-row")).toHaveCount(5);
+  await expect(page.locator(".set-row")).toHaveCount(6);
   // Translated name + description columns flank the value control.
   await expect(page.locator(".set-row .set-name").first()).toHaveText("Bind address");
   await expect(page.locator(".set-row .guide").first()).toContainText("dashboard listens");
@@ -144,6 +144,35 @@ test("settings editor PATCHes a key; unknown key shows rejection toast", async (
   // Absence check: a phantom empty commit would land within a round-trip.
   await page.waitForTimeout(500);
   expect(stub.configPatch.length).toBe(2);
+});
+
+test("reset button asks first; cancel sends nothing, confirm POSTs reset", async ({ page }) => {
+  await page.goto(base + "/settings");
+  await page.locator("#btn-settings-reset").click();
+  const dlg = page.locator("#dlg-reset");
+  await expect(dlg).toBeVisible();
+  await expect(dlg.locator("#dlg-reset-title")).toHaveText("Reset to defaults?");
+  await expect(dlg.locator("p.muted")).toContainText("subscriptions are kept");
+  await page.locator("#dlg-reset-cancel").click();
+  await expect(dlg).toBeHidden();
+  expect(stub.configReset).toEqual([]);
+  await page.locator("#btn-settings-reset").click();
+  await expect(dlg).toBeVisible();
+  await page.locator("#dlg-reset-ok").click();
+  await expect(dlg).toBeHidden();
+  await expect.poll(() => stub.configReset.length).toBe(1);
+  await expect(page.locator("#toasts")).toContainText("Defaults restored.");
+});
+
+test("secret row Shows the token on demand and hides it again", async ({ page }) => {
+  await page.goto(base + "/settings");
+  const row = page.locator(".set-row").nth(5);
+  await expect(row.locator(".set-presence")).toHaveText("set");
+  await row.getByRole("button", { name: "Show" }).click();
+  await expect(row.locator("code")).toHaveText("stub-token");
+  await expect.poll(() => stub.tokenReveals.length).toBe(1);
+  await row.getByRole("button", { name: "Hide" }).click();
+  await expect(row.locator(".set-presence")).toHaveText("set");
 });
 
 test("bool switch PATCHes the flipped value; readonly rows stay static", async ({ page }) => {

@@ -445,32 +445,32 @@ pub fn country_flag(code: &str) -> String {
 /// Format a display name for a config.
 ///
 /// Rules:
-/// 1. `GeoIP` flag (if available) always goes at the beginning.
-/// 2. If the remark already has a flag emoji, it is removed from its current
-///    position to avoid duplicates.
-/// 3. If no `GeoIP` flag is available but the remark contains one, that flag
-///    is moved to the beginning.
+/// 1. A bare two-letter remark ("NL") is a country code without its flag:
+///    prepend the flag but keep the provider's text.
+/// 2. A flag emoji already in the remark always wins: it is found anywhere
+///    in the name and moved to the beginning, even when `GeoIP` disagrees —
+///    the provider's own flag is never overwritten and never doubled.
+/// 3. Only when the remark carries no flag does the `GeoIP` flag go at the
+///    beginning.
 /// 4. If neither has a flag, the remark is returned as-is.
 ///
 /// Examples:
+/// - `country_code=None, remark="NL"` -> `"🇳🇱 NL"`
 /// - `country_code=Some("US"), remark="@ProxyChannel"` -> `"🇺🇸 @ProxyChannel"`
-/// - `country_code=Some("NL"), remark="🇳🇱 | @WhiteDNS"` -> `"🇳🇱 @WhiteDNS"`
+/// - `country_code=Some("US"), remark="🇳🇱 | @WhiteDNS"` -> `"🇳🇱 @WhiteDNS"`
+/// - `country_code=Some("DE"), remark="Server 🇫🇷 fast"` -> `"🇫🇷 Server fast"`
 /// - `country_code=None, remark="@WhiteDNS 🇳🇱"` -> `"🇳🇱 @WhiteDNS"`
 pub fn format_display_name(country_code: Option<&str>, remark: &str) -> String {
-    let geoip_flag = country_code.and_then(|code| {
-        let f = country_code_flag(code);
-        if f.is_empty() { None } else { Some(f) }
-    });
-
-    if let Some(flag) = geoip_flag {
-        let stripped = strip_leading_flag(remark);
-        if stripped.is_empty() {
-            return flag;
+    // Bare country code: plain ASCII carries no Regional Indicators, so this
+    // never collides with the flag search below.
+    let trimmed = remark.trim();
+    if trimmed.len() == 2 && trimmed.bytes().all(|b| b.is_ascii_alphabetic()) {
+        let flag = country_code_flag(trimmed);
+        if !flag.is_empty() {
+            return format!("{flag} {trimmed}");
         }
-        return format!("{flag} {stripped}");
     }
-
-    // No GeoIP flag — check if remark has one and move it to the front
+    // The remark's own flag first: found anywhere, moved to the front.
     if let Some((existing_flag, rest)) = extract_any_flag(remark) {
         let rest = rest.trim();
         if rest.is_empty() {
@@ -478,7 +478,18 @@ pub fn format_display_name(country_code: Option<&str>, remark: &str) -> String {
         }
         return format!("{existing_flag} {rest}");
     }
-
+    // No flag in the remark — GeoIP fills in when available.
+    let geoip_flag = country_code.and_then(|code| {
+        let f = country_code_flag(code);
+        if f.is_empty() { None } else { Some(f) }
+    });
+    if let Some(flag) = geoip_flag {
+        let trimmed = remark.trim();
+        if trimmed.is_empty() {
+            return flag;
+        }
+        return format!("{flag} {trimmed}");
+    }
     remark.to_string()
 }
 
@@ -513,28 +524,6 @@ fn extract_any_flag(text: &str) -> Option<(String, String)> {
 /// Return the two-character Regional Indicator flag for a 2-letter ISO code.
 fn country_code_flag(code: &str) -> String {
     country_flag(code)
-}
-
-/// Strip a leading Regional Indicator flag emoji (two chars) from a string.
-///
-/// Also strips a single trailing space or pipe+space that often follows flags in
-/// proxy remarks (e.g. `"🇳🇱 | @WhiteDNS"` -> `"@WhiteDNS"`).
-fn strip_leading_flag(remark: &str) -> String {
-    let chars: Vec<char> = remark.chars().collect();
-    if chars.len() >= 2 {
-        let first = chars[0] as u32;
-        let second = chars[1] as u32;
-        if (0x1F1E6..=0x1F1FF).contains(&first) && (0x1F1E6..=0x1F1FF).contains(&second) {
-            let rest: String = chars[2..].iter().collect();
-            let rest = rest.trim_start();
-            // Strip leading pipe that often follows flags: "🇳🇱 | @WhiteDNS" -> "@WhiteDNS"
-            if let Some(stripped) = rest.strip_prefix('|') {
-                return stripped.trim().to_string();
-            }
-            return rest.to_string();
-        }
-    }
-    remark.to_string()
 }
 
 #[cfg(test)]
@@ -871,27 +860,12 @@ mod tests {
     }
 
     #[test]
-    fn strip_leading_flag_removes_emoji() {
-        let input = "🇳🇱 | @WhiteDNS";
-        assert_eq!(strip_leading_flag(input), "@WhiteDNS");
-    }
-
-    #[test]
-    fn strip_leading_flag_no_flag() {
-        assert_eq!(strip_leading_flag("Plain remark"), "Plain remark");
-    }
-
-    #[test]
-    fn strip_leading_flag_with_space_after() {
-        let input = "🇺🇸 some name";
-        assert_eq!(strip_leading_flag(input), "some name");
-    }
-
-    #[test]
-    fn format_replaces_existing_flag_with_geoip() {
+    fn format_remark_flag_wins_over_disagreeing_geoip() {
+        // The provider's own flag is kept (moved to the front), never
+        // overwritten by GeoIP and never doubled.
         let existing = "🇳🇱 | @WhiteDNS";
         let result = format_display_name(Some("US"), existing);
-        assert_eq!(result, "🇺🇸 @WhiteDNS");
+        assert_eq!(result, "🇳🇱 @WhiteDNS");
     }
 
     #[test]
@@ -937,10 +911,30 @@ mod tests {
     }
 
     #[test]
-    fn format_geoip_replaces_existing_flag() {
-        let existing = "🇳🇱 | @WhiteDNS";
-        let result = format_display_name(Some("US"), existing);
-        assert_eq!(result, "🇺🇸 @WhiteDNS");
+    fn format_remark_flag_found_anywhere_despite_geoip() {
+        // Mid-remark flag + disagreeing GeoIP: the remark's flag moves to
+        // the front, GeoIP adds nothing — a single flag total.
+        let result = format_display_name(Some("DE"), "Server 🇫🇷 fast");
+        assert_eq!(result, "🇫🇷 Server fast");
+    }
+
+    #[test]
+    fn format_agreeing_flags_never_double() {
+        let result = format_display_name(Some("NL"), "🇳🇱 | @WhiteDNS");
+        assert_eq!(result, "🇳🇱 @WhiteDNS");
+    }
+
+    #[test]
+    fn format_bare_code_remark_gets_flag_up_front() {
+        // Provider named the node with a bare country code ("NL"): prepend
+        // the flag but keep the provider's text — never reduce it to the
+        // flag alone.
+        assert_eq!(format_display_name(None, "NL"), "🇳🇱 NL");
+        assert_eq!(format_display_name(None, "GB"), "🇬🇧 GB");
+        // A GeoIP code on top changes nothing: the remark already says it.
+        assert_eq!(format_display_name(Some("DE"), "NL"), "🇳🇱 NL");
+        // Original casing is preserved, not normalized away.
+        assert_eq!(format_display_name(None, "nl"), "🇳🇱 nl");
     }
 
     #[test]

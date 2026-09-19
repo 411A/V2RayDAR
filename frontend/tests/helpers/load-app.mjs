@@ -198,7 +198,7 @@ const EXPORT_HOOK = `;globalThis.__v2 = {
   flagFor, apiPath, subMessage, nextCycleMessage, maskedHost, currentTab, showTab, goTab,
   saveNow, fetchJson, toast, setStatus, setDirty, renderStats, loadResults,
   applyRanked, renderOvConfigs, renderConfigs, pingSub, refreshStatus,
-  renderStats,   fmtClock, fmtStamp, fmtDuration, fmtAgo, fmtBytes, fmtLatency, fmtLatencyMs, ltr,
+  renderStats,   fmtClock, fmtStamp, fmtDuration, fmtAgo, fmtBytes, fmtLatency, fmtLatencyMs, ltr, flagFor, extractFlag, flagCode, countryFlag, displayName,
   openDetail, wireRowDialog, selectProxy, toggleProxy,
   proxyRowState, syncProxyPending, applyProbeDelta, settleProxyPending,
   setProxyMode, proxyMode, updateProxyModeButtons,

@@ -48,3 +48,44 @@ test("overview top-configs follows live ranked events like the configs tab", asy
   await expect(page.locator("#cfg-body tr")).toHaveCount(3);
   stub.rankedPush = null;
 });
+
+test("country cell shows the config's own flag, not a disagreeing GeoIP code", async ({ page }) => {
+  // Server rule (geoip.rs format_display_name): the name's own flag always
+  // wins — the Country badge must agree with the Name cell, not the code.
+  // A bare two-letter name ("NL") is a flagless country code: flag up front,
+  // provider text kept.
+  const row = (name, cc) => ({
+    rank: 1,
+    stability_count: 0,
+    id: `vless://flagged-${cc || "none"}.example.com:443`,
+    dedup_key: `vless://flagged-${cc || "none"}.example.com:443`,
+    source: "e2e",
+    priority: 100,
+    protocol: "vless",
+    name,
+    endpoint: { host: "flagged.example.com", port: 443 },
+    uri: "vless://uuid@flagged.example.com:443#flagged-node",
+    reachable: true,
+    validation: "active_http",
+    latency_ms: 10,
+    http_status: 204,
+    download_mbps: null,
+    download_bytes: null,
+    error: null,
+    country_code: cc,
+  });
+  stub.rankedPush = [row("🇳🇱 flagged-node", "DE"), row("NL", null)];
+  await page.goto(base + "/configs");
+  // The pushed `ranked` event replaces the two seed rows (~300 ms after
+  // hello, like the overview test above).
+  await expect(page.locator("#cfg-body tr")).toHaveCount(2, { timeout: 5000 });
+  const flagged = page.locator("#cfg-body tr").nth(0).locator("td[data-th='Country']");
+  await expect(flagged).toHaveText("🇳🇱");
+  await expect(flagged.locator("span")).toHaveAttribute("title", "NL");
+  const bare = page.locator("#cfg-body tr").nth(1);
+  await expect(bare.locator("td.cell-main strong")).toHaveText("🇳🇱 NL");
+  const bareCountry = bare.locator("td[data-th='Country']");
+  await expect(bareCountry).toHaveText("🇳🇱");
+  await expect(bareCountry.locator("span")).toHaveAttribute("title", "NL");
+  stub.rankedPush = null;
+});

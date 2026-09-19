@@ -663,6 +663,76 @@ function flagFor(cc) {
   return String.fromCodePoint(up.charCodeAt(0) + 0x1F1A5, up.charCodeAt(1) + 0x1F1A5);
 }
 
+/// First Regional Indicator flag pair anywhere in `s` ("" when none) —
+/// the config's own flag, mirroring the server's `extract_any_flag`.
+function extractFlag(s) {
+  if (typeof s !== "string") {
+    return "";
+  }
+  const chars = [...s];
+  for (let i = 0; i + 1 < chars.length; i += 1) {
+    const a = chars[i].codePointAt(0);
+    const b = chars[i + 1].codePointAt(0);
+    if (a >= 0x1F1E6 && a <= 0x1F1FF && b >= 0x1F1E6 && b <= 0x1F1FF) {
+      return chars[i] + chars[i + 1];
+    }
+  }
+  return "";
+}
+
+/// ISO code behind an RI flag pair ("🇳🇱" -> "NL"); "" when malformed.
+function flagCode(flag) {
+  const chars = [...String(flag)];
+  if (chars.length !== 2) {
+    return "";
+  }
+  const a = chars[0].codePointAt(0) - 0x1F1E6 + 0x41;
+  const b = chars[1].codePointAt(0) - 0x1F1E6 + 0x41;
+  if (a < 0x41 || a > 0x5A || b < 0x41 || b > 0x5A) {
+    return "";
+  }
+  return String.fromCharCode(a, b);
+}
+
+/// Country badge for a config row, mirroring the server display-name rule
+/// (`format_display_name` in geoip.rs): the name's own flag always wins —
+/// found anywhere, even when the GeoIP code disagrees; a bare two-letter
+/// name ("NL") is a flagless country code and flags itself; the GeoIP code
+/// only fills in when the name carries neither. Returns `{ flag, code }`
+/// (`code` feeds the tooltip/aria-label). Both empty when no source has one.
+function countryFlag(name, cc) {
+  const own = extractFlag(name);
+  if (own) {
+    return { flag: own, code: flagCode(own) };
+  }
+  if (typeof name === "string") {
+    const bare = name.trim();
+    if (/^[A-Za-z]{2}$/.test(bare)) {
+      const up = bare.toUpperCase();
+      return { flag: flagFor(up), code: up };
+    }
+  }
+  const flag = flagFor(cc);
+  return { flag, code: flag ? String(cc).toUpperCase() : "" };
+}
+
+/// Display name for a config row, mirroring the server rule: a bare
+/// two-letter remark ("NL") is a flagless country code — prepend its flag
+/// but keep the provider's text ("🇳🇱 NL"), never reduce it to the flag
+/// alone. Anything else renders verbatim.
+function displayName(name) {
+  if (typeof name === "string") {
+    const bare = name.trim();
+    if (/^[A-Za-z]{2}$/.test(bare)) {
+      const flag = flagFor(bare);
+      if (flag) {
+        return flag + " " + bare;
+      }
+    }
+  }
+  return name;
+}
+
 /* ---------- connection / feed ---------- */
 
 function setConn(connState, detail) {
@@ -1407,7 +1477,7 @@ function paintOvConfigs() {
     tr.appendChild(cell(c.rank !== undefined ? String(c.rank) : "—", t("thRank")));
     const nameTd = document.createElement("td");
     nameTd.className = "cell-main";
-    nameTd.appendChild(el("strong", c.name || t("unnamed")));
+    nameTd.appendChild(el("strong", displayName(c.name) || t("unnamed")));
     tr.appendChild(nameTd);
     tr.appendChild(cell(fmtLatency(c.latency_ms), t("thLatency")));
     wireRowDialog(tr, c);
@@ -1725,7 +1795,7 @@ function paintConfigs() {
 
     const nameTd = document.createElement("td");
     nameTd.className = "cell-main";
-    nameTd.appendChild(el("strong", c.name || t("unnamed")));
+    nameTd.appendChild(el("strong", displayName(c.name) || t("unnamed")));
     if (c.source) {
       nameTd.appendChild(el("div", c.source, "muted"));
     }
@@ -1753,16 +1823,17 @@ function paintConfigs() {
     tr.appendChild(cell(c.stability_count ? ltr("\u00d7" + c.stability_count) : "—", t("thStability")));
     // Flag glyph only (+ code in the tooltip): regional indicators render as
     // the two letters on platforms without flag emoji (notably Windows), so
-    // showing both would duplicate ("DE DE").
-    const ccFlag = flagFor(c.country_code);
+    // showing both would duplicate ("DE DE"). The flag mirrors the server's
+    // display-name rule: the config's own flag (found anywhere in the name)
+    // wins over the GeoIP country code.
+    const cc = countryFlag(c.name, c.country_code);
     const ccTd = document.createElement("td");
     ccTd.dataset.th = t("thCountry");
-    if (ccFlag) {
-      const ccUp = String(c.country_code).toUpperCase();
-      const glyph = el("span", ccFlag);
+    if (cc.flag) {
+      const glyph = el("span", cc.flag);
       glyph.setAttribute("role", "img");
-      glyph.setAttribute("aria-label", ccUp);
-      glyph.title = ccUp;
+      glyph.setAttribute("aria-label", cc.code);
+      glyph.title = cc.code;
       ccTd.appendChild(glyph);
     } else {
       ccTd.textContent = "—";
@@ -1808,10 +1879,9 @@ function openDetail(c) {
   while (kv.firstChild) {
     kv.removeChild(kv.firstChild);
   }
-  const ccFlag = flagFor(c.country_code);
-  const ccUp = ccFlag ? String(c.country_code).toUpperCase() : "";
+  const cc = countryFlag(c.name, c.country_code);
   const pairs = [
-    [t("fName"), c.name || t("unnamed")],
+    [t("fName"), displayName(c.name) || t("unnamed")],
     [t("fRank"), c.rank !== undefined ? String(c.rank) : "—"],
     [t("fProtocol"), c.protocol || "—"],
     [t("fEndpoint"), maskedHost(c.endpoint)],
@@ -1822,16 +1892,16 @@ function openDetail(c) {
     [t("fLatency"), fmtLatencyMs(c.latency_ms)],
     [t("fHttp"), c.http_status !== null && c.http_status !== undefined ? String(c.http_status) : "—"],
     [t("fSpeed"), c.download_mbps !== null && c.download_mbps !== undefined ? ltr(Number(c.download_mbps).toFixed(2) + t("speedUnit")) : "—"],
-    [t("fCountry"), ccFlag ? ccFlag : "—"],
+    [t("fCountry"), cc.flag ? cc.flag : "—"],
     [t("fError"), c.error || "—"],
   ];
   for (const [k, v] of pairs) {
     kv.appendChild(el("dt", k));
     const dd = el("dd", v);
-    if (k === t("fCountry") && ccFlag) {
-      dd.title = ccUp;
+    if (k === t("fCountry") && cc.flag) {
+      dd.title = cc.code;
       dd.setAttribute("role", "img");
-      dd.setAttribute("aria-label", ccUp);
+      dd.setAttribute("aria-label", cc.code);
     }
     kv.appendChild(dd);
   }
@@ -1865,7 +1935,7 @@ function openQr(c) {
   // Kept in a JS variable only — the full link is passed to the encoder
   // and painted to canvas, never written into the DOM as text.
   state.qrUri = uri;
-  $("dlg-qr-title").textContent = t("qrTitlePrefix", { name: c.name || t("unnamed") });
+  $("dlg-qr-title").textContent = t("qrTitlePrefix", { name: displayName(c.name) || t("unnamed") });
   if (!drawQr(uri)) {
     return;
   }

@@ -1178,6 +1178,49 @@ describe("proxy mode segmented control", () => {
   });
 });
 
+describe("country badge mirrors the server display-name rule", () => {
+  // countryFlag objects are built inside the vm sandbox (different Object
+  // prototype), so compare through JSON rather than deepStrictEqual.
+  const flag = (api, name, cc) => JSON.stringify(api.countryFlag(name, cc));
+  it("the name's own flag wins over a disagreeing GeoIP code", () => {
+    const { api } = loadApp();
+    assert.equal(flag(api, "🇳🇱 | @WhiteDNS", "US"), JSON.stringify({ flag: "🇳🇱", code: "NL" }));
+    assert.equal(flag(api, "Server 🇫🇷 fast", "DE"), JSON.stringify({ flag: "🇫🇷", code: "FR" }));
+  });
+
+  it("the GeoIP code fills in only when the name carries no flag", () => {
+    const { api } = loadApp();
+    assert.equal(flag(api, "@ProxyChannel", "us"), JSON.stringify({ flag: "🇺🇸", code: "US" }));
+    assert.equal(flag(api, "plain", null), JSON.stringify({ flag: "", code: "" }));
+    assert.equal(flag(api, "plain", "USA"), JSON.stringify({ flag: "", code: "" }));
+    assert.equal(flag(api, "plain", ""), JSON.stringify({ flag: "", code: "" }));
+  });
+
+  it("a bare two-letter name flags itself without dropping its text", () => {
+    const { api } = loadApp();
+    // Provider named the node "NL": the badge and the display name both
+    // become flag + original text — never the flag alone.
+    assert.equal(flag(api, "NL", null), JSON.stringify({ flag: "🇳🇱", code: "NL" }));
+    assert.equal(flag(api, "GB", "DE"), JSON.stringify({ flag: "🇬🇧", code: "GB" }));
+    assert.equal(api.displayName("NL"), "🇳🇱 NL");
+    assert.equal(api.displayName("GB"), "🇬🇧 GB");
+    assert.equal(api.displayName("🇳🇱 x"), "🇳🇱 x");
+    assert.equal(api.displayName("plain name"), "plain name");
+    assert.equal(api.displayName(""), "");
+    assert.equal(api.displayName(null), null);
+  });
+
+  it("extractFlag finds a pair anywhere; flagCode inverts it", () => {
+    const { api } = loadApp();
+    assert.equal(api.extractFlag("a🇯🇵b"), "🇯🇵");
+    assert.equal(api.extractFlag("plain"), "");
+    assert.equal(api.extractFlag(null), "");
+    assert.equal(api.flagCode("🇩🇪"), "DE");
+    assert.equal(api.flagCode(""), "");
+    assert.equal(api.flagCode("x"), "");
+  });
+});
+
 describe("running-for clock pauses while offline", () => {
   it("tickClock freezes badges on offline, advances on live", () => {
     api.state.startedAt = new Date(Date.now() - 3600_000).toISOString();

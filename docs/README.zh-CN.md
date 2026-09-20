@@ -256,6 +256,12 @@ Windows 用户将 `v2raydar` 替换为 `v2raydar.exe`。macOS 上首次打开捆
 
 </details>
 
+### 🗄️ 查看数据库
+
+可以下载这个免费软件查看或修改（不推荐）数据库文件（`data.db`）：https://sqlitebrowser.org/dl
+
+注意，直接修改数据库可能会导致系统出现问题。
+
 行为细节、示例、迁移说明与高级配置请参阅[开发者指南](guide.md)。
 
 ## 📡 客户端配置

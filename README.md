@@ -261,6 +261,12 @@ Windows users replace `v2raydar` with `v2raydar.exe`. On macOS open the bundled 
 
 </details>
 
+### 🗄️ Viewing the database
+
+You can view or change (not recommended) the database file (`data.db`) by downloading & using this free software: https://sqlitebrowser.org/dl
+
+Note that changing the database directly may cause issues in the system.
+
 For detailed behavior, examples, migration notes, and advanced configuration, see the [detailed guide](docs/guide.md).
 
 ## 📡 Client Setup

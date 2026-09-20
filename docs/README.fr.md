@@ -256,6 +256,12 @@ Les utilisateurs Windows remplacent `v2raydar` par `v2raydar.exe`. Sous macOS, o
 
 </details>
 
+### 🗄️ Consulter la base de données
+
+Vous pouvez afficher ou modifier (déconseillé) le fichier de base de données (`data.db`) en téléchargeant ce logiciel gratuit : https://sqlitebrowser.org/dl
+
+Notez que modifier directement la base de données peut provoquer des dysfonctionnements.
+
 Pour le comportement détaillé, les exemples, les notes de migration et la configuration avancée, voir le [guide développeur](guide.md).
 
 ## 📡 Configuration des clients

@@ -105,7 +105,11 @@
 &#x200F;پس از اجرای برنامه، نشانی http://127.0.0.1:27141 را در مرورگر باز کنید.
 
 <p align="center">
-  <img src="../assets/Frontend_v0.6.1.png" alt="داشبورد وب V2RayDAR" width="100%">
+  <img src="../assets/WebUI_v0.9.0.png" alt="داشبورد وب V2RayDAR" width="100%">
+</p>
+
+<p align="center">
+  <img src="../assets/WebUI-Mobile_v0.9.0.png" alt="داشبورد وب V2RayDAR در موبایل" width="300">
 </p>
 
 ### &#x200F;🖥️ رابط ترمینالی اختیاری (<code>--tui</code>)
@@ -113,7 +117,7 @@
 &#x200F;با <code>v2raydar --tui</code> اجرا کنید تا رابط ترمینالی کلاسیک را در کنار داشبورد و اندپوینت داشته باشید. این حالت اضافه‌تر پاک‌سازی کش و بازگشت به تنظیمات پیش‌فرض را هم ارائه می‌کند — بقیه قابلیت‌ها در داشبورد هم هستند.
 
 <p align="center">
-  <img src="../assets/Windows_TUI_v0.6.0.png" alt="رابط ترمینالی V2RayDAR در ویندوز" width="100%">
+  <img src="../assets/Windows_TUI_v0.9.0.png" alt="رابط ترمینالی V2RayDAR در ویندوز" width="100%">
 </p>
 
 ## &#x200F;📦 نصب

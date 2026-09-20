@@ -99,7 +99,11 @@ Le tableau de bord web est l'interface par défaut et couvre l'usage quotidien d
 Après avoir démarré l'application, ouvrez http://127.0.0.1:27141 dans votre navigateur.
 
 <p align="center">
-  <img src="../assets/Frontend_v0.6.1.png" alt="Tableau de bord web V2RayDAR" width="100%">
+  <img src="../assets/WebUI_v0.9.0.png" alt="Tableau de bord web V2RayDAR" width="100%">
+</p>
+
+<p align="center">
+  <img src="../assets/WebUI-Mobile_v0.9.0.png" alt="Tableau de bord web V2RayDAR sur mobile" width="300">
 </p>
 
 ### 🖥️ TUI optionnel (`--tui`)
@@ -107,7 +111,7 @@ Après avoir démarré l'application, ouvrez http://127.0.0.1:27141 dans votre n
 Lancez avec `v2raydar --tui` pour l'interface terminal classique, en plus du tableau de bord et de l'endpoint. Il offre en plus le nettoyage du cache et la réinitialisation aux valeurs par défaut — tout le reste est aussi dans le tableau de bord.
 
 <p align="center">
-  <img src="../assets/Windows_TUI_v0.6.0.png" alt="TUI V2RayDAR sous Windows" width="100%">
+  <img src="../assets/Windows_TUI_v0.9.0.png" alt="TUI V2RayDAR sous Windows" width="100%">
 </p>
 
 ## 📦 Installation

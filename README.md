@@ -103,7 +103,11 @@ The web dashboard is the default interface and covers daily use end to end from 
 After starting the app, open http://127.0.0.1:27141 in your browser.
 
 <p align="center">
-  <img src="assets/Frontend_v0.6.1.png" alt="V2RayDAR web dashboard" width="100%">
+  <img src="assets/WebUI_v0.9.0.png" alt="V2RayDAR web dashboard" width="100%">
+</p>
+
+<p align="center">
+  <img src="assets/WebUI-Mobile_v0.9.0.png" alt="V2RayDAR web dashboard on mobile" width="300">
 </p>
 
 ### 🖥️ Optional TUI (`--tui`)
@@ -111,7 +115,7 @@ After starting the app, open http://127.0.0.1:27141 in your browser.
 Run with `v2raydar --tui` for the classic terminal UI alongside the dashboard and the endpoint. It additionally offers cache cleanup and reset-to-defaults — everything else lives in the dashboard too.
 
 <p align="center">
-  <img src="assets/Windows_TUI_v0.6.0.png" alt="V2RayDAR TUI on Windows" width="100%">
+  <img src="assets/Windows_TUI_v0.9.0.png" alt="V2RayDAR TUI on Windows" width="100%">
 </p>
 
 ## 📦 Installation

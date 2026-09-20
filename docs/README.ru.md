@@ -99,7 +99,11 @@
 После запуска приложения откройте http://127.0.0.1:27141 в браузере.
 
 <p align="center">
-  <img src="../assets/Frontend_v0.6.1.png" alt="Веб-дашборд V2RayDAR" width="100%">
+  <img src="../assets/WebUI_v0.9.0.png" alt="Веб-дашборд V2RayDAR" width="100%">
+</p>
+
+<p align="center">
+  <img src="../assets/WebUI-Mobile_v0.9.0.png" alt="Веб-дашборд V2RayDAR на телефоне" width="300">
 </p>
 
 ### 🖥️ Опциональный TUI (`--tui`)
@@ -107,7 +111,7 @@
 Запускайте с `v2raydar --tui`, чтобы получить классический терминальный интерфейс рядом с дашбордом и эндпоинтом. Дополнительно в нём есть очистка кэша и сброс к настройкам по умолчанию — всё остальное есть и в дашборде.
 
 <p align="center">
-  <img src="../assets/Windows_TUI_v0.6.0.png" alt="TUI V2RayDAR в Windows" width="100%">
+  <img src="../assets/Windows_TUI_v0.9.0.png" alt="TUI V2RayDAR в Windows" width="100%">
 </p>
 
 ## 📦 Установка

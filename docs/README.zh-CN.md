@@ -99,7 +99,11 @@ Web 仪表盘是默认界面，在单个浏览器页面覆盖日常使用的完�
 启动应用后，在浏览器中打开 http://127.0.0.1:27141。
 
 <p align="center">
-  <img src="../assets/Frontend_v0.6.1.png" alt="V2RayDAR Web 仪表盘" width="100%">
+  <img src="../assets/WebUI_v0.9.0.png" alt="V2RayDAR Web 仪表盘" width="100%">
+</p>
+
+<p align="center">
+  <img src="../assets/WebUI-Mobile_v0.9.0.png" alt="手机上的 V2RayDAR Web 仪表盘" width="300">
 </p>
 
 ### 🖥️ 可选 TUI（`--tui`）
@@ -107,7 +111,7 @@ Web 仪表盘是默认界面，在单个浏览器页面覆盖日常使用的完�
 使用 `v2raydar --tui` 可在仪表盘和端点之外同时启动经典终端界面。它额外提供缓存清理、恢复默认设置等操作——其余功能仪表盘中同样具备。
 
 <p align="center">
-  <img src="../assets/Windows_TUI_v0.6.0.png" alt="Windows 上的 V2RayDAR TUI" width="100%">
+  <img src="../assets/Windows_TUI_v0.9.0.png" alt="Windows 上的 V2RayDAR TUI" width="100%">
 </p>
 
 ## 📦 安装

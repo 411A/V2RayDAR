@@ -52,7 +52,7 @@
 
 ## &#x200F;🖥️ رابط ترمینالی اختیاری (<code>--tui</code>)
 
-&#x200F;با <code>v2raydar --tui</code> اجرا کنید تا رابط ترمینالی کلاسیک را در کنار داشبورد و اندپوینت داشته باشید. این حالت اضافه‌تر پاک‌سازی کش، بازگشت به تنظیمات پیش‌فرض و باز کردن فایل کانفیگ قدیمی را هم ارائه می‌کند — بقیه قابلیت‌ها در داشبورد هم هستند.
+&#x200F;با <code>v2raydar --tui</code> اجرا کنید تا رابط ترمینالی کلاسیک را در کنار داشبورد و اندپوینت داشته باشید. این حالت اضافه‌تر پاک‌سازی کش و بازگشت به تنظیمات پیش‌فرض را هم ارائه می‌کند — بقیه قابلیت‌ها در داشبورد هم هستند.
 
 <p align="center">
   <img src="../assets/Windows_TUI_v0.6.0.png" alt="Windows TUI" width="100%">
@@ -148,9 +148,9 @@ pkg update -y && apt update && apt full-upgrade -y && pkg install -y curl tar &&
 
 </div>
 
-3. &#x200F;<strong>از داشبورد استفاده کنید</strong> در <code>http://127.0.0.1:27141</code> — زبانه‌های Overview، Configs، Subscriptions، Settings، Proxy، Logs و Share. همه چیز بی‌درنگ در پایگاه داده و ران‌تایم زنده ذخیره می‌شود.
+3. &#x200F;<strong>از داشبورد استفاده کنید</strong> در <code>http://127.0.0.1:27141</code> — زبانه‌های Overview، Configs، Subscriptions، Settings، Proxy، Logs و Share. همه چیز بی‌درنگ در پایگاه داده و ران‌تایم زنده ذخیره می‌شود؛ تنظیماتی که روی رفرش اثر می‌گذارند در چرخه بعدی اعمال می‌شوند (داشبورد هنگام ذخیره اعلام می‌کند)، ولی تغییر فهرست منابع بلافاصله واکشی تازه انجام می‌دهد.
 
-4. &#x200F;<strong>تغییر تنظیمات</strong> &#x200F;از زبانه Settings داشبورد (یا صفحه Configurations رابط ترمینالی با <code>--tui</code>) — تغییرات بی‌درنگ اعمال می‌شوند. تنظیمات کلیدی: <code>top_n</code>، <code>refresh_seconds</code>، <code>ping_seconds</code>، <code>sharing.enabled</code>، <code>probe.mode</code>. تنظیمات جدید نسخه‌های تازه‌تر خودکار مقدار پیش‌فرض می‌گیرند؛ مقادیر ذخیره‌شده شما هرگز بازنویسی نمی‌شوند.
+4. &#x200F;<strong>تغییر تنظیمات</strong> &#x200F;از زبانه Settings داشبورد (یا صفحه Configurations رابط ترمینالی با <code>--tui</code>) — تغییرها بی‌درنگ ذخیره می‌شوند و تنظیماتی که روی رفرش اثر می‌گذارند در چرخه زمان‌بندی‌شده بعدی یا با رفرش دستی اعمال می‌شوند. تنظیمات کلیدی: <code>top_n</code>، <code>refresh_seconds</code>، <code>ping_seconds</code>، <code>sharing.enabled</code>، <code>probe.mode</code>. تنظیمات جدید نسخه‌های تازه‌تر خودکار مقدار پیش‌فرض می‌گیرند؛ مقادیر ذخیره‌شده شما هرگز بازنویسی نمی‌شوند.
 5. &#x200F;<strong>خروج</strong> &#x200F;با <code>Ctrl + C</code>. با خروج برنامه، اندپوینت متوقف می‌شود.
 
 ### &#x200F;کنترل‌های اختیاری رابط ترمینالی (<code>v2raydar --tui</code>)
@@ -219,7 +219,8 @@ v2raydar --uninstall    # حذف داده‌های برنامه و قوانین 
 | <code>proxy.enabled</code> | <code>false</code> | &#x200F;شروع پروکسی SOCKS5/HTTP پایدار |
 | <code>proxy.port</code> | <code>27910</code> | &#x200F;پورت پروکسی مختلط SOCKS5/HTTP |
 | <code>proxy.discoverable</code> | <code>false</code> | &#x200F;اتصال به 0.0.0.0 و قانون فایروال برای LAN |
-| <code>proxy.health_check_url</code> | <code>https://www.gstatic.com/generate_204</code> | &#x200F;URL تست سلامت پروکسی |
+| <code>proxy.rotating_proxy</code> | <code>true</code> | &#x200F;با true پروکسی هر چرخه به کانفیگ کم‌پینگ‌تر می‌رود؛ با false کانفیگ فعلی تا وقتی آنلاین است می‌ماند |
+| <code>proxy.health_check_url</code> | <code>https://cp.cloudflare.com</code> | &#x200F;URL تست سلامت پروکسی |
 | <code>proxy.health_check_interval_seconds</code> | <code>60</code> | &#x200F; ثانیه بین بررسی‌های سلامت |
 | <code>probe.mode</code> | <code>active</code> | &#x200F;حالت بررسی |
 | <code>probe.sing_box_path</code> | <code>null</code> | &#x200F;مسیر sing-box |

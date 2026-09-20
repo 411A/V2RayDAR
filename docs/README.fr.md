@@ -46,7 +46,7 @@ Après avoir démarré l'application, ouvrez http://127.0.0.1:27141 dans votre n
 
 ## 🖥️ TUI optionnel (`--tui`)
 
-Lancez avec `v2raydar --tui` pour l'interface terminal classique, en plus du tableau de bord et de l'endpoint. Il offre en plus le nettoyage du cache, la réinitialisation aux valeurs par défaut et l'ouverture du fichier de config historique — tout le reste est aussi dans le tableau de bord.
+Lancez avec `v2raydar --tui` pour l'interface terminal classique, en plus du tableau de bord et de l'endpoint. Il offre en plus le nettoyage du cache et la réinitialisation aux valeurs par défaut — tout le reste est aussi dans le tableau de bord.
 
 <p align="center">
   <img src="../assets/Windows_TUI_v0.6.0.png" alt="Windows TUI" width="100%">
@@ -123,9 +123,9 @@ Après l'installation avec le script ci-dessus, lancez `v2raydar` (ou `v2raydar.
 | sing-box | `http://127.0.0.1:27141/subscription.txt` (brut) |
 | Clash Verge / Mihomo | `http://127.0.0.1:27141/mihomo.yaml` |
 
-3. **Utilisez le tableau de bord** sur `http://127.0.0.1:27141` — onglets Overview, Configs, Subscriptions, Settings, Proxy, Logs et Share. Tout est enregistré instantanément dans la base et appliqué au runtime.
+3. **Utilisez le tableau de bord** sur `http://127.0.0.1:27141` — onglets Overview, Configs, Subscriptions, Settings, Proxy, Logs et Share. Tout est enregistré instantanément dans la base et appliqué au runtime ; les réglages qui affectent le rafraîchissement s'appliquent au cycle suivant (le tableau de bord le signale à l'enregistrement), tandis que les changements de la liste des sources relancent une récupération aussitôt.
 
-4. **Modifiez les paramètres** depuis l'onglet Settings du tableau de bord (ou l'écran Configurations du TUI avec `--tui`) — les changements s'appliquent immédiatement. Paramètres clés : `top_n`, `refresh_seconds`, `ping_seconds`, `sharing.enabled`, `probe.mode`. Les nouveaux réglages reçoivent leurs valeurs par défaut automatiquement ; vos valeurs sont conservées.
+4. **Modifiez les paramètres** depuis l'onglet Settings du tableau de bord (ou l'écran Configurations du TUI avec `--tui`) — les changements sont enregistrés aussitôt, les réglages qui affectent le rafraîchissement prenant effet au prochain cycle planifié ou lors d'un rafraîchissement manuel. Paramètres clés : `top_n`, `refresh_seconds`, `ping_seconds`, `sharing.enabled`, `probe.mode`. Les nouveaux réglages reçoivent leurs valeurs par défaut automatiquement ; vos valeurs sont conservées.
 5. **Quittez** avec `Ctrl + C`. L'endpoint s'arrête à la fermeture.
 
 ### Contrôles TUI optionnels (`v2raydar --tui`)
@@ -182,7 +182,8 @@ Les utilisateurs Windows remplacent `v2raydar` par `v2raydar.exe`. Sous macOS, o
 | `proxy.enabled` | `false` | Démarre un processus SOCKS5/HTTP persistant via `sing-box`. |
 | `proxy.port` | `27910` | Port du proxy mixte SOCKS5/HTTP. |
 | `proxy.discoverable` | `false` | Lie sur `0.0.0.0` et ajoute une règle de pare-feu pour l'accès LAN. |
-| `proxy.health_check_url` | `https://www.gstatic.com/generate_204` | URL testée via le proxy pour vérifier son état. |
+| `proxy.rotating_proxy` | `true` | `true` fait basculer le proxy vers la config au ping le plus bas à chaque cycle ; `false` conserve la config actuelle tant qu'elle reste joignable. |
+| `proxy.health_check_url` | `https://cp.cloudflare.com` | URL testée via le proxy pour vérifier son état. |
 | `proxy.health_check_interval_seconds` | `60` | Secondes entre les vérifications de santé. Bascul automatique en cas d'échec. |
 | `probe.mode` | `active` | `active` utilise `sing-box` ; `tcp` est uniquement diagnostique. |
 | `probe.sing_box_path` | `null` | Chemin optionnel vers `sing-box`. Laissez `null` pour les builds `_with_singbox` de bureau ou Termux avec `sing-box` intégré. |

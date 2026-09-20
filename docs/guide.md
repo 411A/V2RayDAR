@@ -296,7 +296,7 @@ With the default bind address, V2RayDAR serves these URLs:
 | `http://127.0.0.1:27141/mihomo.yaml` | Full Mihomo YAML config with proxies, proxy-groups, and rules (raw). |
 | `http://127.0.0.1:27141/results` | JSON runtime state, diagnostics, errors, logs, and ranked configs. |
 | `http://127.0.0.1:27141/health` | `ok` health response. |
-| `http://127.0.0.1:27141/` (plus `/overview`, `/configs`, … tab paths) | Built-in web dashboard (beta). |
+| `http://127.0.0.1:27141/` (plus `/overview`, `/configs`, … tab paths) | Built-in web dashboard. |
 
 `/subscription` and `/subscription.txt` wait up to 20 seconds during an active refresh so clients have a chance to receive early working results instead of an empty feed. `/mihomo.yaml` behaves the same way.
 
@@ -446,7 +446,7 @@ String-like null values such as `null`, `"null"`, empty strings, `"none"`, and `
 | `sharing.require_token` | Boolean | `false` | Requires `?token=...` for LAN endpoint requests. |
 | `sharing.token` | String, boolean, or null | `null` | `null`/empty disables token text, `true` generates a token, and a string uses that exact token. |
 
-If `sharing.token: true` is configured, V2RayDAR generates a URL-safe token and saves it back into the config file.
+If `sharing.token: true` is configured, V2RayDAR generates a URL-safe token and saves it back into the database.
 
 Token checks apply only to LAN requests. Local requests from `127.0.0.1` are allowed even when token protection is enabled.
 
@@ -457,7 +457,8 @@ Token checks apply only to LAN requests. Local requests from `127.0.0.1` are all
 | `proxy.enabled` | Boolean | `false` | Starts a persistent `sing-box` process with the best-ranked config, exposing a mixed SOCKS5/HTTP proxy on `proxy.port`. |
 | `proxy.port` | Integer | `27910` | Port for the mixed SOCKS5/HTTP proxy. Must not equal `bind` port. |
 | `proxy.discoverable` | Boolean | `false` | Binds to `0.0.0.0` instead of `127.0.0.1` and adds a firewall rule for LAN access. |
-| `proxy.health_check_url` | String | `https://www.gstatic.com/generate_204` | URL tested through the proxy to verify it's alive. |
+| `proxy.rotating_proxy` | Boolean | `true` | `true` switches the proxy to the lowest-ping config on each cycle; `false` keeps the current config while it stays reachable. |
+| `proxy.health_check_url` | String | `https://cp.cloudflare.com` | URL tested through the proxy to verify it's alive. |
 | `proxy.health_check_interval_seconds` | Integer | `60` | Seconds between proxy health checks. On failure, auto-failovers to the next ranked config. |
 
 When `proxy.discoverable: true`, other devices on the same LAN can use the proxy. Replace `YOUR_LAN_IP` with the actual LAN IP shown in the TUI's **Current Configuration** panel under **Network**, and open the URL on your phone:
@@ -478,7 +479,8 @@ proxy:
   enabled: true
   port: 27910
   discoverable: true
-  health_check_url: https://www.gstatic.com/generate_204
+  rotating_proxy: true
+  health_check_url: https://cp.cloudflare.com
   health_check_interval_seconds: 60
 ```
 
@@ -744,7 +746,9 @@ When `scan_all_configs: true`, V2RayDAR attempts to validate every loaded candid
 
 ## Live Config Reloading
 
-While the app is running, it watches the config file once per second. If the file changes and the changed settings affect fetching, probing, ranking, or subscriptions, V2RayDAR refreshes automatically.
+While the app is running, dashboard and TUI edits save straight into `data.db` and publish through a live channel, so the refresh/ping loops and the web UI pick them up at once — no restart, no file watching.
+
+Settings edits never re-fetch at once: refresh-relevant changes wait for the next scheduled cycle or a manual refresh, and only feed-list changes (added/removed/moved/toggled subscription) fetch immediately. `bind` and `geoip_db_path` are the restart-only exceptions.
 
 The HTTP bind address is special. If `bind` changes while the app is running, the config is reloaded but the existing listener continues using the original bind address. Restart V2RayDAR to apply a changed `bind`.
 
@@ -781,7 +785,6 @@ The optional TUI (`v2raydar --tui`) runs alongside the dashboard and the endpoin
 
 Main menu items:
 
-- `Open Configs File`
 - `Share subscription URL on LAN`
 - `Persistent proxy for app traffic`
 - `Subscriptions`
@@ -912,8 +915,7 @@ Typical files and folders:
 
 | Artifact | Meaning |
 | --- | --- |
-| `data.db` | SQLite database: settings, subscriptions, and probe cache. Seeded on first run. |
-| `data.db` | SQLite database storing previously-probed configs and stable top-N keys. |
+| `data.db` | SQLite database: settings, subscriptions, previously-probed configs, and stable top-N keys. Seeded on first run. |
 | `.v2raydar-firewall.json` | Records firewall rules created by V2RayDAR. |
 
 Legacy marker names are still recognized during cleanup:
@@ -1164,7 +1166,7 @@ The TUI uses:
 
 The TUI stores recent logs in memory only. Runtime log buffers are capped by `MAX_TUI_LOGS`.
 
-Opening the config file uses platform-aware editor detection. If no editor can be launched, the TUI displays the config path for manual editing.
+There is no config file to open: everything lives in `data.db`, and the `Configurations` screen edits the live database directly. The merge helpers in `src/tui/util.rs` diff the TUI's in-memory copy against the load-time snapshot when saving, so concurrent dashboard edits to other settings survive a TUI save.
 
 ## Testing And Checks
 
@@ -1180,10 +1182,10 @@ Run formatting check:
 cargo fmt --check
 ```
 
-Run Clippy:
+Run Clippy (strict — nursery and pedantic lints are deny-by-policy):
 
 ```bash
-cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo clippy --locked --all-targets -- -D warnings -W clippy::nursery -W clippy::pedantic
 ```
 
 Build a release binary:

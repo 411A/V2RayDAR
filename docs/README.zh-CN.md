@@ -46,7 +46,7 @@
 
 ## 🖥️ 可选 TUI（`--tui`）
 
-使用 `v2raydar --tui` 可在仪表盘和端点之外同时启动经典终端界面。它额外提供缓存清理、恢复默认设置、打开旧版配置文件等操作——其余功能仪表盘中同样具备。
+使用 `v2raydar --tui` 可在仪表盘和端点之外同时启动经典终端界面。它额外提供缓存清理、恢复默认设置等操作——其余功能仪表盘中同样具备。
 
 <p align="center">
   <img src="../assets/Windows_TUI_v0.6.0.png" alt="Windows TUI" width="100%">
@@ -123,9 +123,9 @@ irm https://raw.githubusercontent.com/411A/V2RayDAR/main/install.ps1 | iex
 | sing-box | `http://127.0.0.1:27141/subscription.txt`（纯文本） |
 | Clash Verge / Mihomo | `http://127.0.0.1:27141/mihomo.yaml` |
 
-3. **使用仪表盘** `http://127.0.0.1:27141` — Overview、Configs、Subscriptions、Settings、Proxy、Logs 和 Share 共 7 个标签页。所有修改即时保存到数据库并实时生效。
+3. **使用仪表盘** `http://127.0.0.1:27141` — Overview、Configs、Subscriptions、Settings、Proxy、Logs 和 Share 共 7 个标签页。所有修改即时保存到数据库并同步到实时运行状态；影响刷新的设置将在下一个周期生效（保存时仪表盘会有说明），订阅源列表的变更则会立即重新获取。
 
-4. **更改设置** — 在仪表盘 Settings 标签页（或带 `--tui` 的 TUI Configurations 界面）中修改，立即生效。关键设置：`top_n`、`refresh_seconds`、`ping_seconds`、`sharing.enabled`、`probe.mode`。新版本新增的设置项会自动使用默认值，你已有的值不会被改动。
+4. **更改设置** — 在仪表盘 Settings 标签页（或带 `--tui` 的 TUI Configurations 界面）中修改，修改即时保存，影响刷新的设置在下一个计划周期或手动刷新时生效。关键设置：`top_n`、`refresh_seconds`、`ping_seconds`、`sharing.enabled`、`probe.mode`。新版本新增的设置项会自动使用默认值，你已有的值不会被改动。
 5. **退出** — 按 `Ctrl + C`。退出后端点停止服务。
 
 ### 可选 TUI 快捷键（`v2raydar --tui`）
@@ -182,7 +182,8 @@ Windows 用户将 `v2raydar` 替换为 `v2raydar.exe`。macOS 上首次打开捆
 | `proxy.enabled` | `false` | 启动持久的 `sing-box` 进程，对外提供混合 SOCKS5/HTTP 代理。 |
 | `proxy.port` | `27910` | 混合 SOCKS5/HTTP 代理端口。 |
 | `proxy.discoverable` | `false` | 绑定到 `0.0.0.0` 并添加防火墙规则以允许局域网访问。 |
-| `proxy.health_check_url` | `https://www.gstatic.com/generate_204` | 通过代理测试的健康检查 URL。 |
+| `proxy.rotating_proxy` | `true` | `true` 表示每个周期将代理切换到延迟最低的配置；`false` 表示当前配置可用时保持不变。 |
+| `proxy.health_check_url` | `https://cp.cloudflare.com` | 通过代理测试的健康检查 URL。 |
 | `proxy.health_check_interval_seconds` | `60` | 代理健康检查间隔（秒）。故障时自动切换。 |
 | `probe.mode` | `active` | `active` 使用 `sing-box`；`tcp` 仅用于诊断。 |
 | `probe.sing_box_path` | `null` | 可选的 `sing-box` 路径。桌面 `_with_singbox` 构建或内置 `sing-box` 的 Termux 构建可设为 `null`。 |

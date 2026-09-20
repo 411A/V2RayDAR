@@ -46,7 +46,7 @@ After starting the app, open http://127.0.0.1:27141 in your browser. The dashboa
 
 ## 🖥️ Optional TUI (`--tui`)
 
-Run with `v2raydar --tui` for the classic terminal UI alongside the dashboard and the endpoint. It additionally offers cache cleanup, reset-to-defaults, and opening the legacy config file — everything else lives in the dashboard too.
+Run with `v2raydar --tui` for the classic terminal UI alongside the dashboard and the endpoint. It additionally offers cache cleanup and reset-to-defaults — everything else lives in the dashboard too.
 
 <p align="center">
   <img src="assets/Windows_TUI_v0.6.0.png" alt="Windows TUI" width="100%">
@@ -123,9 +123,9 @@ After installing with the script above, run `v2raydar` (or `v2raydar.exe` on Win
 | sing-box | `http://127.0.0.1:27141/subscription.txt` (plain) |
 | Clash Verge / Mihomo | `http://127.0.0.1:27141/mihomo.yaml` |
 
-3. **Use the dashboard** at `http://127.0.0.1:27141` — Overview, Configs, Subscriptions, Settings, Proxy, Logs, and Share tabs. Everything saves instantly to the database and the live runtime.
+3. **Use the dashboard** at `http://127.0.0.1:27141` — Overview, Configs, Subscriptions, Settings, Proxy, Logs, and Share tabs. Everything saves instantly to the database and the live runtime; settings that affect refresh apply on the next cycle (the dashboard says so on save), while feed-list changes re-fetch at once.
 
-4. **Change settings** from the dashboard Settings tab (or the TUI Configurations screen with `--tui`) — changes apply immediately. Key settings: `top_n`, `refresh_seconds`, `ping_seconds`, `sharing.enabled`, `probe.mode`. Settings added by newer versions default automatically; your stored values are never overwritten.
+4. **Change settings** from the dashboard Settings tab (or the TUI Configurations screen with `--tui`) — changes save immediately, with refresh-affecting settings taking effect on the next scheduled cycle or a manual refresh. Key settings: `top_n`, `refresh_seconds`, `ping_seconds`, `sharing.enabled`, `probe.mode`. Settings added by newer versions default automatically; your stored values are never overwritten.
 5. **Exit** with `Ctrl + C`. The endpoint stops when the app exits.
 
 ### Optional TUI controls (`v2raydar --tui`)
@@ -182,7 +182,8 @@ Windows users replace `v2raydar` with `v2raydar.exe`. On macOS open the bundled 
 | `proxy.enabled` | `false` | Starts a persistent `sing-box` process exposing a mixed SOCKS5/HTTP proxy. |
 | `proxy.port` | `27910` | Port for the mixed SOCKS5/HTTP proxy. |
 | `proxy.discoverable` | `false` | Binds to `0.0.0.0` and adds a firewall rule for LAN access. |
-| `proxy.health_check_url` | `https://www.gstatic.com/generate_204` | URL tested through the proxy to verify it's alive. |
+| `proxy.rotating_proxy` | `true` | `true` switches the proxy to the lowest-ping config on each cycle; `false` keeps the current config while it stays reachable. |
+| `proxy.health_check_url` | `https://cp.cloudflare.com` | URL tested through the proxy to verify it's alive. |
 | `proxy.health_check_interval_seconds` | `60` | Seconds between proxy health checks. Auto-failover on failure. |
 | `probe.mode` | `active` | `active` uses `sing-box`; `tcp` is diagnostic only. |
 | `probe.sing_box_path` | `null` | Optional path to `sing-box`. Leave `null` for desktop `_with_singbox` or Termux builds with bundled `sing-box`. |

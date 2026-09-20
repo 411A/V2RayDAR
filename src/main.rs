@@ -753,6 +753,12 @@ struct PingCarry {
     working: Vec<RankedConfig>,
     tested: usize,
     reachable: usize,
+    /// Dedup keys of EVERY row the ping had tested when preempted (working
+    /// and failed alike). The refresh filters all of them from its probe
+    /// inputs: re-probing them would count the same configs twice (once as
+    /// carried partials, once as fresh results) and waste the work the ping
+    /// just did.
+    tested_keys: HashSet<String>,
 }
 
 /// Snapshot the live ping partials for a refresh that is about to preempt it.
@@ -768,6 +774,11 @@ async fn take_ping_carry(state: &Arc<RwLock<RuntimeState>>) -> PingCarry {
             .collect(),
         tested: runtime.tested_candidates,
         reachable: runtime.reachable_candidates,
+        tested_keys: runtime
+            .ranked
+            .iter()
+            .map(|item| item.dedup_key.clone())
+            .collect(),
     }
 }
 
@@ -1204,16 +1215,23 @@ async fn refresh_once(
     }
 
     // The preempted ping verified these seconds ago: keep them (they count
-    // toward top_n via the stop policy) and don't probe them again. They join
-    // every probe input's seen-set so retry/cache paths can't reintroduce them.
-    let carried_keys: HashSet<&str> = carry
+    // toward top_n via the stop policy) and don't probe them again. Every
+    // tested key joins every probe input's seen-set so retry/cache paths
+    // can't reintroduce them either; otherwise the same configs would count
+    // twice (carried partials + fresh results) and Failed would outgrow
+    // Fetched with configs that were never tested twice.
+    let carried_keys: HashSet<String> = carry
         .iter()
-        .flat_map(|carry| carry.working.iter().map(|item| item.dedup_key.as_str()))
+        .flat_map(|carry| carry.tested_keys.iter().cloned())
         .collect();
-    seen_candidate_keys.extend(carried_keys.iter().map(|key| (*key).to_string()));
+    seen_candidate_keys.extend(carried_keys.iter().cloned());
+    let pre_filter_count = fetched.candidates.len();
     fetched
         .candidates
         .retain(|candidate| !carried_keys.contains(candidate.dedup_key.as_str()));
+    // Fresh pool actually sent to probe: Fetched must not advertise configs
+    // the ping just verified and the refresh deliberately skips.
+    let carried_skipped = pre_filter_count.saturating_sub(fetched.candidates.len());
 
     // Remember every sighting (insert-only) before probing consumes the
     // list: untested leftovers stay available for ping backfill.
@@ -1522,7 +1540,7 @@ async fn refresh_once(
         next_ping_instant: progress_state.next_ping_instant,
         last_ping_instant: progress_state.last_ping_instant,
         last_ping_at: previous_before_refresh.last_ping_at.clone(),
-        total_candidates: fetched_count,
+        total_candidates: fetched_count.saturating_sub(carried_skipped),
         tested_candidates: carry
             .as_ref()
             .map_or(0, |carry| carry.tested)
@@ -1547,8 +1565,19 @@ async fn refresh_once(
     let failed_count = runtime
         .tested_candidates
         .saturating_sub(runtime.reachable_candidates);
+    // Name the carried pool when a preempted ping contributed: otherwise a
+    // big carried failure count next to a small fresh Fetched total reads as
+    // configs tested twice (which this used to be — carried keys are now
+    // filtered from every probe input, so each config counts exactly once).
+    let carried_note = carry.as_ref().map_or(String::new(), |carry| {
+        if carry.tested == 0 {
+            String::new()
+        } else {
+            format!(" (+{} carried)", carry.tested)
+        }
+    });
     let summary = format!(
-        "{} {} → {} ({}) · {} fetched, {} failed, {} working ({} used)",
+        "{} {} → {} ({}) · {} fetched, {} failed, {} working ({} used){}",
         cycle_actor(manual),
         started_at.with_timezone(&Local).format("%H:%M:%S"),
         finished_at.with_timezone(&Local).format("%H:%M:%S"),
@@ -1557,6 +1586,7 @@ async fn refresh_once(
         failed_count,
         runtime.reachable_candidates,
         applog::format_bytes(refresh_fetch_bytes),
+        carried_note,
     );
     if fell_back {
         applog::push(
@@ -4409,6 +4439,74 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("🤖") && line.contains("fetched,"))
         );
+        drop(runtime);
+    }
+
+    #[tokio::test]
+    async fn refresh_skips_ping_tested_failures_instead_of_double_counting() {
+        // Regression: a refresh preempting a ping used to re-probe (and
+        // recount) the ping's failed partials — Failed outgrew Fetched with
+        // configs that were never tested twice. Every ping-tested key is now
+        // filtered from all probe inputs, so each config counts exactly once
+        // and Fetched scopes to the fresh pool actually sent to probe.
+        let config = manual_trigger_test_config();
+        let database = manual_trigger_test_database();
+        // The stub subscription yields this candidate; the preempted ping
+        // already tested it (as a failure) alongside one working row.
+        let fetched_uri = "vless://00000000-0000-0000-0000-000000000000@127.0.0.1:9#e2e";
+        let failed_key = crate::parser::parse_share_link("local", 1, fetched_uri)
+            .expect("stub uri parses")
+            .dedup_key;
+        let mut failed = ranked("failed", fetched_uri, false, None);
+        failed.dedup_key = failed_key;
+        let carried = ranked("carried", "vless://carried@example.com:443", true, Some(50));
+        let state = Arc::new(tokio::sync::RwLock::new(RuntimeState {
+            ranked: vec![failed, carried],
+            tested_candidates: 7,
+            reachable_candidates: 1,
+            pinging: true,
+            ..Default::default()
+        }));
+        let runtime_config = Arc::new(tokio::sync::RwLock::new(RuntimeConfig::from(&config)));
+        let cycle = Arc::new(tokio::sync::Mutex::new(()));
+        let ping_cancel = Arc::new(AtomicBool::new(true));
+
+        refresh_once(
+            &config,
+            database,
+            state.clone(),
+            runtime_config,
+            cycle,
+            false,
+            false,
+            Some(ping_cancel.clone()),
+            false,
+        )
+        .await
+        .expect("refresh succeeds");
+
+        assert!(!ping_cancel.load(AtomicOrdering::SeqCst));
+        let runtime = state.read().await;
+        // The overlapping candidate was skipped, not re-probed: only the
+        // carried working row is served ...
+        assert_eq!(runtime.ranked.len(), 1);
+        assert!(
+            runtime
+                .ranked
+                .iter()
+                .any(|item| item.uri == "vless://carried@example.com:443" && item.reachable)
+        );
+        // ... Fetched counts the fresh pool minus the skip, and the total
+        // counts each verification exactly once (7 carried + 0 fresh).
+        assert_eq!(runtime.total_candidates, 0);
+        assert_eq!(runtime.tested_candidates, 7);
+        assert_eq!(runtime.reachable_candidates, 1);
+        // The summary names the carried pool so failed-vs-fetched stays
+        // readable instead of looking doubly counted.
+        assert!(runtime.logs.iter().any(|line| line.contains("0 fetched,")
+            && line.contains("6 failed")
+            && line.contains("1 working")
+            && line.contains("(+7 carried)")));
         drop(runtime);
     }
 

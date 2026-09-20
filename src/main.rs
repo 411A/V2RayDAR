@@ -759,26 +759,31 @@ struct PingCarry {
     /// carried partials, once as fresh results) and waste the work the ping
     /// just did.
     tested_keys: HashSet<String>,
+    /// Every partial row (working and failed). Merged into the published
+    /// ranked list so it stays the full pool: without the failed rows the
+    /// list would collapse to the carried working set and the stability
+    /// memory (`retain`) would wipe every other key each preemption.
+    partial_ranked: Vec<RankedConfig>,
 }
 
 /// Snapshot the live ping partials for a refresh that is about to preempt it.
 /// Called after the cycle lock is held, so the ping's final write is done.
 async fn take_ping_carry(state: &Arc<RwLock<RuntimeState>>) -> PingCarry {
     let runtime = state.read().await;
+    let partial_ranked = runtime.ranked.clone();
     PingCarry {
-        working: runtime
-            .ranked
+        working: partial_ranked
             .iter()
             .filter(|item| item.reachable)
             .cloned()
             .collect(),
         tested: runtime.tested_candidates,
         reachable: runtime.reachable_candidates,
-        tested_keys: runtime
-            .ranked
+        tested_keys: partial_ranked
             .iter()
             .map(|item| item.dedup_key.clone())
             .collect(),
+        partial_ranked,
     }
 }
 
@@ -1097,9 +1102,12 @@ async fn refresh_once(
         runtime.next_refresh_instant = None;
         runtime.refresh_duration_ms = None;
         runtime.total_candidates = 0;
-        // A carried-over ping keeps its count: the refresh gathers the
-        // shortfall on top instead of dropping to zero mid-cycle.
-        runtime.tested_candidates = carry.as_ref().map_or(0, |carry| carry.tested);
+        // Per-cycle counters: Tested counts only what THIS refresh probes
+        // (a preempted ping's partials were already reported under the ping,
+        // so carrying them here would count every config twice). Working
+        // keeps its served value instead: the carried working set stays
+        // published until fresh results replace it.
+        runtime.tested_candidates = 0;
         runtime.reachable_candidates = carry.as_ref().map_or(0, |carry| carry.reachable);
         runtime.fetch_errors.clear();
         runtime.live_logs.clear();
@@ -1459,9 +1467,11 @@ async fn refresh_once(
         // Fresh results win: carried configs were verified by the preempted
         // ping, new ones just now. No overlap is expected (carried keys were
         // filtered from every probe input); the dedupe is defensive.
+        // Every partial row joins (not just the working ones) so the
+        // published list stays the full pool and stability memory survives.
         let fresh_keys: HashSet<&str> = ranked.iter().map(|item| item.dedup_key.as_str()).collect();
         let carried: Vec<RankedConfig> = carry
-            .working
+            .partial_ranked
             .iter()
             .filter(|item| !fresh_keys.contains(item.dedup_key.as_str()))
             .cloned()
@@ -1541,10 +1551,9 @@ async fn refresh_once(
         last_ping_instant: progress_state.last_ping_instant,
         last_ping_at: previous_before_refresh.last_ping_at.clone(),
         total_candidates: fetched_count.saturating_sub(carried_skipped),
-        tested_candidates: carry
-            .as_ref()
-            .map_or(0, |carry| carry.tested)
-            .saturating_add(fresh_tested),
+        // This refresh's probes only: a preempted ping's partials were
+        // already reported under the ping and must not accumulate here.
+        tested_candidates: fresh_tested,
         reachable_candidates: if fell_back {
             fallback_working
         } else {
@@ -1562,13 +1571,16 @@ async fn refresh_once(
         proxy_discoverable: progress_state.proxy_discoverable,
     };
 
-    let failed_count = runtime
-        .tested_candidates
-        .saturating_sub(runtime.reachable_candidates);
-    // Name the carried pool when a preempted ping contributed: otherwise a
-    // big carried failure count next to a small fresh Fetched total reads as
-    // configs tested twice (which this used to be — carried keys are now
-    // filtered from every probe input, so each config counts exactly once).
+    // Failed is scoped to this refresh too: fresh probes minus fresh
+    // working (the served Working badge above additionally carries the
+    // still-published carried set, which was already counted by the ping).
+    let carry_reachable = carry.as_ref().map_or(0, |carry| carry.reachable);
+    let fresh_working = progress_state
+        .reachable_candidates
+        .saturating_sub(carry_reachable);
+    let failed_count = fresh_tested.saturating_sub(fresh_working);
+    // Name the carried pool when a preempted ping contributed rows to the
+    // served set, so the Working badge stays explainable.
     let carried_note = carry.as_ref().map_or(String::new(), |carry| {
         if carry.tested == 0 {
             String::new()
@@ -4429,8 +4441,9 @@ mod tests {
         );
         assert_eq!(runtime.total_candidates, 1);
         assert_eq!(runtime.reachable_candidates, 1);
-        // Counters continue from the carried values plus the fresh probe.
-        assert_eq!(runtime.tested_candidates, 6);
+        // Per-cycle counters: only the fresh probe counts (the carried
+        // partials were already reported under the ping).
+        assert_eq!(runtime.tested_candidates, 1);
         assert!(!runtime.refreshing);
         // Automatic refresh: Recent Logs summary carries 🤖.
         assert!(
@@ -4487,27 +4500,100 @@ mod tests {
 
         assert!(!ping_cancel.load(AtomicOrdering::SeqCst));
         let runtime = state.read().await;
-        // The overlapping candidate was skipped, not re-probed: only the
-        // carried working row is served ...
-        assert_eq!(runtime.ranked.len(), 1);
+        // The overlapping candidate was skipped, not re-probed: the served
+        // list is the carried working row plus the carried (ping-verified)
+        // failure row, so the pool stays whole for stability memory ...
+        assert_eq!(runtime.ranked.len(), 2);
         assert!(
             runtime
                 .ranked
                 .iter()
                 .any(|item| item.uri == "vless://carried@example.com:443" && item.reachable)
         );
-        // ... Fetched counts the fresh pool minus the skip, and the total
-        // counts each verification exactly once (7 carried + 0 fresh).
+        assert!(
+            runtime
+                .ranked
+                .iter()
+                .any(|item| item.uri == fetched_uri && !item.reachable)
+        );
+        // ... Fetched counts the fresh pool minus the skip, Tested counts
+        // only this refresh's probes (the 7 carried verifications were
+        // already reported under the ping), and the summary names the
+        // carried pool so the served Working badge stays explainable.
         assert_eq!(runtime.total_candidates, 0);
-        assert_eq!(runtime.tested_candidates, 7);
+        assert_eq!(runtime.tested_candidates, 0);
         assert_eq!(runtime.reachable_candidates, 1);
         // The summary names the carried pool so failed-vs-fetched stays
         // readable instead of looking doubly counted.
         assert!(runtime.logs.iter().any(|line| line.contains("0 fetched,")
-            && line.contains("6 failed")
+            && line.contains("0 failed")
             && line.contains("1 working")
             && line.contains("(+7 carried)")));
         drop(runtime);
+    }
+
+    #[tokio::test]
+    async fn stability_counts_grow_across_refreshes_for_reverified_configs() {
+        // End-to-end through refresh_once (TCP mode against a local
+        // listener): the same config verifies 3 cycles in a row, so its
+        // Stability badge must read 1, then 2, then 3 — never stuck at x1.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("test listener binds");
+        let port = listener.local_addr().expect("listener addr").port();
+        std::thread::spawn(move || {
+            let _ = listener.set_nonblocking(true);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+            let mut served = 0;
+            while std::time::Instant::now() < deadline && served < 20 {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        drop(stream);
+                        served += 1;
+                    }
+                    Err(_) => std::thread::sleep(std::time::Duration::from_millis(20)),
+                }
+            }
+        });
+        let mut config = manual_trigger_test_config();
+        config.subscriptions = vec![crate::config::SubscriptionSource {
+            name: "local".to_string(),
+            url: format!(
+                "data:,vless://11111111-1111-1111-1111-111111111111@127.0.0.1:{port}%23local1"
+            ),
+            enabled: true,
+            priority: 1,
+        }];
+        let database = manual_trigger_test_database();
+        let state = Arc::new(tokio::sync::RwLock::new(RuntimeState::default()));
+        let runtime_config = Arc::new(tokio::sync::RwLock::new(RuntimeConfig::from(&config)));
+        let cycle = Arc::new(tokio::sync::Mutex::new(()));
+
+        for expected in 1..=3u32 {
+            refresh_once(
+                &config,
+                database.clone(),
+                state.clone(),
+                runtime_config.clone(),
+                cycle.clone(),
+                false,
+                false,
+                None,
+                false,
+            )
+            .await
+            .expect("refresh succeeds");
+            let runtime = state.read().await;
+            let row = runtime
+                .ranked
+                .iter()
+                .find(|item| item.name == "local1")
+                .expect("local config is served");
+            assert!(row.reachable, "local TCP target verifies");
+            assert_eq!(
+                row.stability_count, expected,
+                "stability grows across back-to-back refreshes"
+            );
+            drop(runtime);
+        }
     }
 
     #[tokio::test]

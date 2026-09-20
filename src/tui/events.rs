@@ -395,7 +395,7 @@ fn activate(
         return Ok(());
     }
     match state.view {
-        MenuView::Main => activate_main(state, paths, runtime_config, database),
+        MenuView::Main => activate_main(state, paths, runtime_config, database, config_tx),
         MenuView::Subscriptions => {
             if state.selected_subscription == 0 {
                 run_action(state, Action::Add, database)?;
@@ -500,7 +500,7 @@ fn set_found_as_proxy(
     }
 
     // Push the updated config to the refresh loop (in-memory, no file write)
-    let _ = config_tx.send(state.editable.clone());
+    push_editable(config_tx, state);
     update_live_runtime_config(runtime_config, state);
     state.selected_found = None;
     state.status = if state.editable.proxy.manual_proxy_uri.is_some() {
@@ -510,11 +510,20 @@ fn set_found_as_proxy(
     };
 }
 
+/// Broadcast the TUI's editable config to the refresh/ping loops
+/// (in-memory, no file write): without this the loops keep running on the
+/// startup config and never learn about TUI-side changes (proxy mode,
+/// manual pin) until restart.
+fn push_editable(config_tx: &watch::Sender<AppConfig>, state: &TuiState) {
+    let _ = config_tx.send(state.editable.clone());
+}
+
 fn activate_main(
     state: &mut TuiState,
     paths: &AppPaths,
     runtime_config: &Arc<RwLock<RuntimeConfig>>,
     database: &Arc<Database>,
+    config_tx: &watch::Sender<AppConfig>,
 ) -> Result<()> {
     match visible_main_items()[state.selected_main] {
         MainItem::Sharing => {
@@ -554,6 +563,10 @@ fn activate_main(
             state.dirty = true;
             super::util::save_merged(database, &state.startup_editable, &state.editable)?;
             update_live_runtime_config(runtime_config, state);
+            // The loops run on the broadcast config, not the file: without
+            // this the proxy mode toggle would persist yet never start (or
+            // stop) the proxy until restart — and no 🚪 door would appear.
+            push_editable(config_tx, state);
             state.dirty = false;
             state.status = match super::firewall::apply(
                 &paths.root_dir,
@@ -869,5 +882,22 @@ mod tests {
         set_found_as_proxy(&mut state, 0, &tx, &runtime);
         assert!(state.editable.proxy.manual_proxy_uri.is_none());
         assert!(state.proxy_pending_uri.is_none());
+    }
+
+    #[test]
+    fn editable_broadcast_carries_current_proxy_mode_to_loops() {
+        // Regression: the proxy mode toggle persisted to the DB but never
+        // broadcast, so the refresh/ping loops kept `enabled=false` and no
+        // 🚪 door ever appeared until restart. `push_editable` is the call
+        // both the toggle arm and the pin path share.
+        let (mut state, tx, _runtime) = state_with_found(PROXY_URI);
+        state.editable.proxy.enabled = true;
+        state.editable.proxy.discoverable = true;
+        let rx = tx.subscribe();
+        super::push_editable(&tx, &state);
+        // No broadcast → the receiver would still see the startup config
+        // (`enabled=false`); the assertions below only pass if it fired.
+        assert!(rx.borrow().proxy.enabled);
+        assert!(rx.borrow().proxy.discoverable);
     }
 }

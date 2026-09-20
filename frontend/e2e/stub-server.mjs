@@ -84,6 +84,7 @@ export function createStub() {
   const stub = {
     refreshPosts: 0,
     pingPosts: 0,
+    resultsGets: 0,
     refreshDelayMs: 0,
     pingDelayMs: 0,
     rankedPush: null,
@@ -208,6 +209,7 @@ export function createStub() {
       return;
     }
     if (req.method === "GET" && p === "/results") {
+      stub.resultsGets += 1;
       json(res, 200, snapshot({ refreshing: stub.busyRefreshing, pinging: stub.busyPinging, fetch_errors: stub.fetchErrors, proxy_active_uri: stub.proxyActiveUri, proxy_running: stub.proxyEnabled, proxy_discoverable: stub.proxyDiscoverable }));
       return;
     }

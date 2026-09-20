@@ -4097,6 +4097,15 @@ function wire() {
   $("dlg-qr-close").addEventListener("click", () => $("dlg-qr").close());
 
   window.addEventListener("popstate", () => showTab(currentTab()));
+  // Minimized/background windows get throttled timers and may sit on a dead
+  // SSE connection for hours: resync the moment the page is visible again
+  // instead of waiting for the next throttled tick, so every badge jumps to
+  // current truth in one repaint.
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+      void loadResults();
+    }
+  });
   // In-app tab links navigate instantly (no reload); anything else (skip
   // link, dialogs, external URLs) keeps native behavior.
   document.addEventListener("click", (ev) => {

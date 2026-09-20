@@ -22,7 +22,9 @@ test("running-for pauses while the server is unreachable", async ({ page }) => {
   await page.goto(base + "/overview");
   await expect(page.locator("#stat-cards .card")).toHaveCount(7);
   const before = await page.locator("#stat-running").textContent();
-  expect(before).toMatch(/^\d\d:\d\d:\d\d$/);
+  // Hours are unbounded (the stub's fixed start date ages past 99h over
+  // real calendar time), so accept 2+ digits there, exactly two elsewhere.
+  expect(before).toMatch(/^\d\d+:\d\d:\d\d$/);
 
   // Hard-drop the origin (plain close() would leave the SSE socket hanging):
   // EventSource errors, the reconnect probe fails, feed goes offline.

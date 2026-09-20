@@ -1,9 +1,15 @@
-use crossterm::event::{KeyCode, KeyEvent};
+use std::sync::Arc;
 
-use crate::config::SubscriptionSource;
+use crossterm::event::{KeyCode, KeyEvent};
+use tokio::sync::{RwLock, watch};
+
+use crate::{
+    config::{AppConfig, SubscriptionSource},
+    model::RuntimeConfig,
+};
 
 use super::{
-    events::EventResult,
+    events::{EventResult, push_editable, update_live_runtime_config},
     state::{InputMode, MenuView, NewSubscriptionStep, SubscriptionDraft, TuiState},
 };
 
@@ -50,6 +56,8 @@ pub fn handle_input_key(
     state: &mut TuiState,
     key: KeyEvent,
     database: &crate::db::Database,
+    config_tx: &watch::Sender<AppConfig>,
+    runtime_config: &Arc<RwLock<RuntimeConfig>>,
 ) -> EventResult {
     match key.code {
         KeyCode::Esc => {
@@ -62,7 +70,7 @@ pub fn handle_input_key(
             state.input.clear();
             state.status = "Edit cancelled".to_string();
         }
-        KeyCode::Enter => commit_input(state, database),
+        KeyCode::Enter => commit_input(state, database, config_tx, runtime_config),
         KeyCode::Backspace => {
             state.input.pop();
         }
@@ -75,19 +83,30 @@ pub fn handle_input_key(
     EventResult::Continue
 }
 
-fn commit_input(state: &mut TuiState, database: &crate::db::Database) {
+fn commit_input(
+    state: &mut TuiState,
+    database: &crate::db::Database,
+    config_tx: &watch::Sender<AppConfig>,
+    runtime_config: &Arc<RwLock<RuntimeConfig>>,
+) {
     match state.input_mode {
         InputMode::None | InputMode::Command | InputMode::CleanCacheConfirm => {}
-        InputMode::NewSubscription(step) => commit_new_subscription_step(state, step),
-        InputMode::Name => commit_name(state),
-        InputMode::Url => commit_url(state),
-        InputMode::Priority => commit_priority(state),
-        InputMode::ConfigValue(key) => commit_config(state, key),
-        InputMode::ResetConfirm => commit_reset(state, database),
+        InputMode::NewSubscription(step) => {
+            commit_new_subscription_step(state, step, config_tx, runtime_config);
+        }
+        InputMode::Name => commit_name(state, config_tx, runtime_config),
+        InputMode::Url => commit_url(state, config_tx, runtime_config),
+        InputMode::Priority => commit_priority(state, config_tx, runtime_config),
+        InputMode::ConfigValue(key) => commit_config(state, key, config_tx, runtime_config),
+        InputMode::ResetConfirm => commit_reset(state, database, config_tx, runtime_config),
     }
 }
 
-fn commit_name(state: &mut TuiState) {
+fn commit_name(
+    state: &mut TuiState,
+    config_tx: &watch::Sender<AppConfig>,
+    runtime_config: &Arc<RwLock<RuntimeConfig>>,
+) {
     let value = state.input.trim().to_string();
     if value.is_empty() {
         state.status = "Name cannot be empty".to_string();
@@ -97,11 +116,15 @@ fn commit_name(state: &mut TuiState) {
     if let Some(source) = state.selected_subscription_mut() {
         source.name = value;
         state.dirty = true;
-        finish_edit(state, "Name updated");
+        finish_edit(state, "Name updated", config_tx, runtime_config);
     }
 }
 
-fn commit_url(state: &mut TuiState) {
+fn commit_url(
+    state: &mut TuiState,
+    config_tx: &watch::Sender<AppConfig>,
+    runtime_config: &Arc<RwLock<RuntimeConfig>>,
+) {
     let value = state.input.trim().to_string();
     if value.is_empty() {
         state.status = "URL cannot be empty".to_string();
@@ -122,11 +145,15 @@ fn commit_url(state: &mut TuiState) {
     if let Some(source) = state.selected_subscription_mut() {
         source.url = value;
         state.dirty = true;
-        finish_edit(state, "URL updated");
+        finish_edit(state, "URL updated", config_tx, runtime_config);
     }
 }
 
-fn commit_priority(state: &mut TuiState) {
+fn commit_priority(
+    state: &mut TuiState,
+    config_tx: &watch::Sender<AppConfig>,
+    runtime_config: &Arc<RwLock<RuntimeConfig>>,
+) {
     let Some(value) = crate::config::parse_setting_number::<u32>(&state.input) else {
         state.status = "Priority must be a number".to_string();
         return;
@@ -149,15 +176,20 @@ fn commit_priority(state: &mut TuiState) {
         .position(|source| source.name == moved.0 && source.url == moved.1)
         .map_or(1, |slot| slot + 1);
     state.dirty = true;
-    finish_edit(state, "Priority updated");
+    finish_edit(state, "Priority updated", config_tx, runtime_config);
 }
 
-fn commit_new_subscription_step(state: &mut TuiState, step: NewSubscriptionStep) {
+fn commit_new_subscription_step(
+    state: &mut TuiState,
+    step: NewSubscriptionStep,
+    config_tx: &watch::Sender<AppConfig>,
+    runtime_config: &Arc<RwLock<RuntimeConfig>>,
+) {
     match step {
         NewSubscriptionStep::Url => commit_new_url(state),
         NewSubscriptionStep::Name => commit_new_name(state),
         NewSubscriptionStep::Priority => commit_new_priority(state),
-        NewSubscriptionStep::Enabled => commit_new_enabled(state),
+        NewSubscriptionStep::Enabled => commit_new_enabled(state, config_tx, runtime_config),
     }
 }
 
@@ -217,7 +249,11 @@ fn commit_new_priority(state: &mut TuiState) {
     }
 }
 
-fn commit_new_enabled(state: &mut TuiState) {
+fn commit_new_enabled(
+    state: &mut TuiState,
+    config_tx: &watch::Sender<AppConfig>,
+    runtime_config: &Arc<RwLock<RuntimeConfig>>,
+) {
     let Some(enabled) = parse_bool(state.input.trim()) else {
         state.status = "Enabled must be yes/no, true/false, on/off, or 1/0".to_string();
         return;
@@ -259,21 +295,31 @@ fn commit_new_enabled(state: &mut TuiState) {
         .map_or(state.editable.subscriptions.len(), |slot| slot + 1);
     state.view = MenuView::Subscriptions;
     state.dirty = true;
-    finish_edit(state, "Subscription added");
+    finish_edit(state, "Subscription added", config_tx, runtime_config);
 }
 
-fn commit_config(state: &mut TuiState, key: super::state::ConfigKey) {
+fn commit_config(
+    state: &mut TuiState,
+    key: super::state::ConfigKey,
+    config_tx: &watch::Sender<AppConfig>,
+    runtime_config: &Arc<RwLock<RuntimeConfig>>,
+) {
     let input = state.input.clone();
     match super::config_editor::apply(&mut state.editable, key, &input) {
         Ok(()) => {
             state.dirty = true;
-            finish_edit(state, "Configuration updated");
+            finish_edit(state, "Configuration updated", config_tx, runtime_config);
         }
         Err(error) => state.status = error.to_string(),
     }
 }
 
-fn commit_reset(state: &mut TuiState, database: &crate::db::Database) {
+fn commit_reset(
+    state: &mut TuiState,
+    database: &crate::db::Database,
+    config_tx: &watch::Sender<AppConfig>,
+    runtime_config: &Arc<RwLock<RuntimeConfig>>,
+) {
     let expected = state.reset_code.clone().unwrap_or_default();
     if state.input.trim() != expected {
         state.status = "Reset code did not match".to_string();
@@ -286,6 +332,8 @@ fn commit_reset(state: &mut TuiState, database: &crate::db::Database) {
             finish_edit(
                 state,
                 "Defaults restored; subscriptions and essentials kept",
+                config_tx,
+                runtime_config,
             );
         }
         Err(error) => {
@@ -294,10 +342,19 @@ fn commit_reset(state: &mut TuiState, database: &crate::db::Database) {
     }
 }
 
-fn finish_edit(state: &mut TuiState, message: &str) {
+/// A committed edit lands everywhere at once: the loops run on the
+/// broadcast config and the dashboard reads the live snapshot.
+fn finish_edit(
+    state: &mut TuiState,
+    message: &str,
+    config_tx: &watch::Sender<AppConfig>,
+    runtime_config: &Arc<RwLock<RuntimeConfig>>,
+) {
     state.input_mode = InputMode::None;
     state.input.clear();
     state.status = message.to_string();
+    push_editable(config_tx, state);
+    update_live_runtime_config(runtime_config, state);
 }
 
 fn parse_bool(value: &str) -> Option<bool> {
@@ -341,6 +398,20 @@ mod tests {
         state
     }
 
+    /// Dummy broadcast endpoints: commits publish here like the live loops
+    /// listen in production.
+    fn broadcast_pair() -> (
+        tokio::sync::watch::Sender<crate::config::AppConfig>,
+        std::sync::Arc<tokio::sync::RwLock<crate::model::RuntimeConfig>>,
+    ) {
+        let config = crate::config::AppConfig::default_for_first_run();
+        let (tx, _rx) = tokio::sync::watch::channel(config.clone());
+        let runtime = std::sync::Arc::new(tokio::sync::RwLock::new(
+            crate::model::RuntimeConfig::from(&config),
+        ));
+        (tx, runtime)
+    }
+
     #[test]
     fn priority_edit_moves_row_and_selection_follows() {
         let mut state = state_with(vec![
@@ -351,7 +422,9 @@ mod tests {
         // Select "c" (1-based position 3) and retitle its rank to the top.
         state.selected_subscription = 3;
         state.input.push('0');
-        commit_priority(&mut state);
+        let live = broadcast_pair();
+        let rx = live.0.subscribe();
+        commit_priority(&mut state, &live.0, &live.1);
 
         let names: Vec<&str> = state
             .editable
@@ -366,6 +439,15 @@ mod tests {
         );
         assert!(state.dirty);
         assert_eq!(state.status, "Priority updated");
+        // The reorder reaches the loops, not just the screen.
+        let broadcast: Vec<String> = {
+            let seen = rx.borrow();
+            seen.subscriptions
+                .iter()
+                .map(|source| source.name.clone())
+                .collect()
+        };
+        assert_eq!(broadcast, vec!["c", "a", "b"]);
     }
 
     #[test]
@@ -378,7 +460,8 @@ mod tests {
         draft.priority = 0;
         draft.enabled = true;
         state.input.push_str("yes");
-        commit_new_enabled(&mut state);
+        let live = broadcast_pair();
+        commit_new_enabled(&mut state, &live.0, &live.1);
 
         let names: Vec<&str> = state
             .editable
@@ -424,7 +507,8 @@ mod tests {
         draft.name = "twin".to_string();
         draft.url = "https://example.com/b.txt".to_string();
         state.input.push_str("yes");
-        commit_new_enabled(&mut state);
+        let live = broadcast_pair();
+        commit_new_enabled(&mut state, &live.0, &live.1);
 
         assert_eq!(state.editable.subscriptions.len(), 2, "no twin row stored");
         assert!(
@@ -438,7 +522,8 @@ mod tests {
         state.selected_subscription = 1;
         state.input.clear();
         state.input.push_str("https://example.com/b.txt");
-        commit_url(&mut state);
+        let live = broadcast_pair();
+        commit_url(&mut state, &live.0, &live.1);
         assert!(
             state.status.contains("index 2"),
             "warning names the sibling's index: {}",
@@ -452,7 +537,7 @@ mod tests {
 
         state.input.clear();
         state.input.push_str("https://example.com/a.txt");
-        commit_url(&mut state);
+        commit_url(&mut state, &live.0, &live.1);
         assert_eq!(
             state.status, "URL updated",
             "echo-save of the same row works"

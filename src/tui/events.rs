@@ -64,13 +64,19 @@ pub fn handle_key(
     }
 
     match state.input_mode {
-        InputMode::Command => handle_command_key(state, key, database),
+        InputMode::Command => handle_command_key(state, key, database, config_tx, runtime_config),
         InputMode::NewSubscription(_)
         | InputMode::Name
         | InputMode::Url
         | InputMode::Priority
         | InputMode::ConfigValue(_)
-        | InputMode::ResetConfirm => Ok(handle_input_key(state, key, database)),
+        | InputMode::ResetConfirm => Ok(handle_input_key(
+            state,
+            key,
+            database,
+            config_tx,
+            runtime_config,
+        )),
         InputMode::CleanCacheConfirm => handle_clean_cache_key(state, key, database),
         InputMode::None => {
             handle_normal_key(state, key, paths, runtime_config, database, config_tx)
@@ -95,8 +101,10 @@ fn handle_normal_key(
         KeyCode::Down | KeyCode::Char('j') => move_down(state),
         KeyCode::Char('e' | 'E') => edit_selected_subscription(state),
         KeyCode::Char(':') => start_input(state, InputMode::Command, ""),
-        KeyCode::Char(' ') => run_action(state, Action::Toggle, database)?,
-        KeyCode::Char('s') => run_action(state, Action::Save, database)?,
+        KeyCode::Char(' ') => {
+            run_action(state, Action::Toggle, database, config_tx, runtime_config)?;
+        }
+        KeyCode::Char('s') => run_action(state, Action::Save, database, config_tx, runtime_config)?,
         _ => {}
     }
 
@@ -118,10 +126,14 @@ fn handle_command_key(
     state: &mut TuiState,
     key: KeyEvent,
     database: &Arc<Database>,
+    config_tx: &watch::Sender<AppConfig>,
+    runtime_config: &Arc<RwLock<RuntimeConfig>>,
 ) -> Result<EventResult> {
     match key.code {
         KeyCode::Esc => cancel_command(state),
-        KeyCode::Enter => return run_command(state, database),
+        KeyCode::Enter => {
+            return run_command(state, database, config_tx, runtime_config);
+        }
         KeyCode::Backspace => {
             state.input.pop();
         }
@@ -134,20 +146,33 @@ fn handle_command_key(
     Ok(EventResult::Continue)
 }
 
-fn run_command(state: &mut TuiState, database: &Arc<Database>) -> Result<EventResult> {
+fn run_command(
+    state: &mut TuiState,
+    database: &Arc<Database>,
+    config_tx: &watch::Sender<AppConfig>,
+    runtime_config: &Arc<RwLock<RuntimeConfig>>,
+) -> Result<EventResult> {
     let command = state.input.trim().to_ascii_lowercase();
     state.input.clear();
     state.input_mode = InputMode::None;
 
     match command.as_str() {
         "q" | "quit" => return Ok(EventResult::Quit),
-        "a" | "add" => run_action(state, Action::Add, database)?,
-        "n" | "name" => run_action(state, Action::EditName, database)?,
-        "u" | "url" => run_action(state, Action::EditUrl, database)?,
-        "p" | "priority" => run_action(state, Action::EditPriority, database)?,
-        "t" | "toggle" => run_action(state, Action::Toggle, database)?,
-        "d" | "delete" => run_action(state, Action::Delete, database)?,
-        "w" | "save" => run_action(state, Action::Save, database)?,
+        "a" | "add" => run_action(state, Action::Add, database, config_tx, runtime_config)?,
+        "n" | "name" => run_action(state, Action::EditName, database, config_tx, runtime_config)?,
+        "u" | "url" => run_action(state, Action::EditUrl, database, config_tx, runtime_config)?,
+        "p" | "priority" => {
+            run_action(
+                state,
+                Action::EditPriority,
+                database,
+                config_tx,
+                runtime_config,
+            )?;
+        }
+        "t" | "toggle" => run_action(state, Action::Toggle, database, config_tx, runtime_config)?,
+        "d" | "delete" => run_action(state, Action::Delete, database, config_tx, runtime_config)?,
+        "w" | "save" => run_action(state, Action::Save, database, config_tx, runtime_config)?,
         "r" | "refresh" => return Ok(trigger_refresh(state)),
         "ping" => return Ok(trigger_ping(state)),
         "" => state.status = "Command cancelled".to_string(),
@@ -398,14 +423,16 @@ fn activate(
         MenuView::Main => activate_main(state, paths, runtime_config, database, config_tx),
         MenuView::Subscriptions => {
             if state.selected_subscription == 0 {
-                run_action(state, Action::Add, database)?;
+                run_action(state, Action::Add, database, config_tx, runtime_config)?;
             } else {
-                run_action(state, Action::Toggle, database)?;
+                run_action(state, Action::Toggle, database, config_tx, runtime_config)?;
             }
             Ok(())
         }
         MenuView::NewSubscription | MenuView::Logs => Ok(()),
-        MenuView::SubscriptionActions => activate_subscription_action(state, database),
+        MenuView::SubscriptionActions => {
+            activate_subscription_action(state, database, config_tx, runtime_config)
+        }
         MenuView::Configurations => {
             let key = CONFIG_KEYS[state.selected_config];
             if key == ConfigKey::ResetDefaults {
@@ -514,7 +541,7 @@ fn set_found_as_proxy(
 /// (in-memory, no file write): without this the loops keep running on the
 /// startup config and never learn about TUI-side changes (proxy mode,
 /// manual pin) until restart.
-fn push_editable(config_tx: &watch::Sender<AppConfig>, state: &TuiState) {
+pub(super) fn push_editable(config_tx: &watch::Sender<AppConfig>, state: &TuiState) {
     let _ = config_tx.send(state.editable.clone());
 }
 
@@ -531,6 +558,7 @@ fn activate_main(
             state.dirty = true;
             super::util::save_merged(database, &state.startup_editable, &state.editable)?;
             update_live_runtime_config(runtime_config, state);
+            push_editable(config_tx, state);
             state.dirty = false;
             state.status = match super::firewall::apply(
                 &paths.root_dir,
@@ -657,7 +685,10 @@ fn handle_clean_cache_key(
     Ok(EventResult::Continue)
 }
 
-fn update_live_runtime_config(runtime_config: &Arc<RwLock<RuntimeConfig>>, state: &mut TuiState) {
+pub(super) fn update_live_runtime_config(
+    runtime_config: &Arc<RwLock<RuntimeConfig>>,
+    state: &mut TuiState,
+) {
     match runtime_config.try_write() {
         Ok(mut config) => *config = RuntimeConfig::from(&state.editable),
         Err(_) => {
@@ -667,14 +698,33 @@ fn update_live_runtime_config(runtime_config: &Arc<RwLock<RuntimeConfig>>, state
     }
 }
 
-fn activate_subscription_action(state: &mut TuiState, database: &Arc<Database>) -> Result<()> {
+fn activate_subscription_action(
+    state: &mut TuiState,
+    database: &Arc<Database>,
+    config_tx: &watch::Sender<AppConfig>,
+    runtime_config: &Arc<RwLock<RuntimeConfig>>,
+) -> Result<()> {
     match SUBSCRIPTION_ACTIONS[state.selected_action] {
-        SubscriptionAction::EditName => run_action(state, Action::EditName, database)?,
-        SubscriptionAction::EditUrl => run_action(state, Action::EditUrl, database)?,
-        SubscriptionAction::EditPriority => run_action(state, Action::EditPriority, database)?,
-        SubscriptionAction::Toggle => run_action(state, Action::Toggle, database)?,
+        SubscriptionAction::EditName => {
+            run_action(state, Action::EditName, database, config_tx, runtime_config)?;
+        }
+        SubscriptionAction::EditUrl => {
+            run_action(state, Action::EditUrl, database, config_tx, runtime_config)?;
+        }
+        SubscriptionAction::EditPriority => {
+            run_action(
+                state,
+                Action::EditPriority,
+                database,
+                config_tx,
+                runtime_config,
+            )?;
+        }
+        SubscriptionAction::Toggle => {
+            run_action(state, Action::Toggle, database, config_tx, runtime_config)?;
+        }
         SubscriptionAction::Delete => {
-            run_action(state, Action::Delete, database)?;
+            run_action(state, Action::Delete, database, config_tx, runtime_config)?;
             state.view = MenuView::Subscriptions;
         }
         SubscriptionAction::Back => state.view = MenuView::Subscriptions,

@@ -1,13 +1,23 @@
+use std::sync::Arc;
+
 use anyhow::Result;
+use tokio::sync::{RwLock, watch};
 
 use super::{
+    events::{push_editable, update_live_runtime_config},
     input_handlers::{start_input, start_new_subscription},
     state::{Action, InputMode, TuiState},
     util::save_merged,
 };
-use crate::db::Database;
+use crate::{config::AppConfig, db::Database, model::RuntimeConfig};
 
-pub fn run_action(state: &mut TuiState, action: Action, db: &Database) -> Result<()> {
+pub fn run_action(
+    state: &mut TuiState,
+    action: Action,
+    db: &Database,
+    config_tx: &watch::Sender<AppConfig>,
+    runtime_config: &Arc<RwLock<RuntimeConfig>>,
+) -> Result<()> {
     match action {
         Action::Add => start_new_subscription(state),
         Action::EditName => {
@@ -22,9 +32,21 @@ pub fn run_action(state: &mut TuiState, action: Action, db: &Database) -> Result
             let value = selected_value(state, |source| source.priority.to_string());
             start_input(state, InputMode::Priority, &value);
         }
-        Action::Toggle => toggle_subscription(state),
-        Action::Delete => delete_subscription(state),
-        Action::Save => save_now(state, db)?,
+        Action::Toggle => {
+            toggle_subscription(state);
+            push_editable(config_tx, state);
+            update_live_runtime_config(runtime_config, state);
+        }
+        Action::Delete => {
+            delete_subscription(state);
+            push_editable(config_tx, state);
+            update_live_runtime_config(runtime_config, state);
+        }
+        Action::Save => {
+            save_now(state, db)?;
+            push_editable(config_tx, state);
+            update_live_runtime_config(runtime_config, state);
+        }
     }
 
     Ok(())

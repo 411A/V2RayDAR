@@ -1362,6 +1362,14 @@ async fn persist_config(state: &HttpState, cfg: &crate::config::AppConfig) -> Re
             "Settings database unavailable",
         ));
     };
+    // Auto-detect is memory-only by design (a save never stores a working
+    // auto path), so a config rebuilt from a database load carries an empty
+    // path. Re-resolve it here or the published live config breaks every
+    // Active probe until restart. Manual paths are untouched.
+    let mut cfg = cfg.clone();
+    if cfg.probe.sing_box_path.trim().is_empty() {
+        crate::sing_box::apply_runtime_sing_box_path(&mut cfg);
+    }
     let snapshot = cfg.clone();
     let saved =
         tokio::task::spawn_blocking(move || crate::settings::save_app_config(&db, &snapshot)).await;
@@ -1380,9 +1388,9 @@ async fn persist_config(state: &HttpState, cfg: &crate::config::AppConfig) -> Re
         return Err(mutation_error(StatusCode::INTERNAL_SERVER_ERROR, message));
     }
     *state.subscriptions.write().await = cfg.subscriptions.clone();
-    *state.config.write().await = crate::model::RuntimeConfig::from(cfg);
+    *state.config.write().await = crate::model::RuntimeConfig::from(&cfg);
     if let Some(tx) = state.config_tx.as_ref() {
-        let _ = tx.send(cfg.clone());
+        let _ = tx.send(cfg);
     }
     Ok(())
 }
@@ -3462,6 +3470,45 @@ mod tests {
     fn stored_config(state: &HttpState) -> crate::config::AppConfig {
         crate::settings::load_app_config(state.database.as_ref().expect("test db present"))
             .expect("settings reload")
+    }
+
+    #[tokio::test]
+    async fn persist_config_keeps_manual_sing_box_path_live() {
+        // A dashboard write rebuilds the live config from a database load.
+        // A manual sing-box path must survive that round trip byte for byte
+        // (the re-resolve step only fills empty paths).
+        let (state, _refresh_rx, _ping_rx, config_rx) = mutation_state(RuntimeState::default());
+        let mut cfg = stored_config(&state);
+        cfg.probe.sing_box_path = "C:\\Tools\\sing-box\\sing-box.exe".to_string();
+        super::persist_config(&state, &cfg)
+            .await
+            .expect("persist succeeds");
+        assert_eq!(
+            config_rx.borrow().probe.sing_box_path,
+            "C:\\Tools\\sing-box\\sing-box.exe",
+            "manual path stays live after persist"
+        );
+        assert_eq!(
+            stored_config(&state).probe.sing_box_path,
+            "C:\\Tools\\sing-box\\sing-box.exe",
+            "manual path stays stored after persist"
+        );
+    }
+
+    #[tokio::test]
+    async fn persist_config_empty_path_persists_without_error() {
+        // No bundled sing-box ships beside the test binary, so an empty path
+        // stays empty — but the persist itself must succeed and publish.
+        let (state, _refresh_rx, _ping_rx, config_rx) = mutation_state(RuntimeState::default());
+        let mut cfg = stored_config(&state);
+        cfg.probe.sing_box_path.clear();
+        super::persist_config(&state, &cfg)
+            .await
+            .expect("persist succeeds");
+        assert!(
+            config_rx.borrow().probe.sing_box_path.trim().is_empty(),
+            "nothing bundled in test env, path stays empty"
+        );
     }
 
     fn no_auth() -> (

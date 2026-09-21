@@ -348,6 +348,15 @@ GEOIP_MMDB_FILE="GeoLite2-Country.mmdb"
 # app are the integrity layers).
 GEOIP_MMDB_MIN_BYTES=1000000
 
+# A folder with only the bare binary ran in installed mode (data under the
+# XDG app root); a v2raydar_data dir or a bundled sing-box beside the binary
+# means portable. Updates must preserve whichever layout is live — dropping
+# sing-box next to a bare binary would flip portable auto-detect and orphan
+# the user's database.
+found_layout_is_portable() {
+    [ -d "$FOUND_PATH/v2raydar_data" ] || [ -f "$FOUND_PATH/sing-box" ] || [ -f "$FOUND_PATH/sing-box.exe" ]
+}
+
 # Data dir for an existing install: user-mode binaries live in a bin dir, so
 # their data follows the XDG-style app root; portable installs keep data
 # next to the binary.
@@ -356,7 +365,11 @@ geoip_data_dir_for_found() {
         "$HOME/.local/bin"|"${PREFIX:-/usr/local}/bin")
             printf '%s' "${XDG_DATA_HOME:-$HOME/.local/share}/V2RayDAR/v2raydar_data/geoip" ;;
         *)
-            printf '%s' "$FOUND_PATH/v2raydar_data/geoip" ;;
+            if found_layout_is_portable; then
+                printf '%s' "$FOUND_PATH/v2raydar_data/geoip"
+            else
+                printf '%s' "${XDG_DATA_HOME:-$HOME/.local/share}/V2RayDAR/v2raydar_data/geoip"
+            fi ;;
     esac
 }
 
@@ -558,6 +571,38 @@ extract_archive() {
 
 # ─── Install ───────────────────────────────────────────────────────────────────
 
+# Repairs damage from the pre-fix updater, which copied sing-box beside
+# bare-binary installs: that flipped portable auto-detect and exposed a stale
+# portable database while the real one sat under the XDG app root. If that
+# looks like what happened here (an installed-root database exists and is
+# bigger than the portable one), back the portable dir up and promote the real
+# database. Never deletes user data.
+heal_flipped_database() {
+    _target="$1"
+    _installed_db="${XDG_DATA_HOME:-$HOME/.local/share}/V2RayDAR/v2raydar_data/data.db"
+    [ -f "$_installed_db" ] || return 0
+    _portable_db="$_target/v2raydar_data/data.db"
+    _installed_size="$(wc -c < "$_installed_db" 2>/dev/null | tr -cd '0-9')"
+    _portable_size=0
+    if [ -f "$_portable_db" ]; then
+        _portable_size="$(wc -c < "$_portable_db" 2>/dev/null | tr -cd '0-9')"
+    fi
+    [ -z "$_installed_size" ] && _installed_size=0
+    [ -z "$_portable_size" ] && _portable_size=0
+    if [ "$_installed_size" -le "$_portable_size" ]; then return 0; fi
+    _stamp="$(date +%Y%m%d-%H%M%S 2>/dev/null || echo backup)"
+    if [ -d "$_target/v2raydar_data" ]; then
+        mv "$_target/v2raydar_data" "$_target/v2raydar_data.backup-$_stamp"
+        info "backed up stale portable data to $_target/v2raydar_data.backup-$_stamp"
+    fi
+    mkdir -p "$_target/v2raydar_data"
+    if cp "$_installed_db" "$_portable_db" 2>/dev/null; then
+        info "restored your real database from $_installed_db"
+    else
+        warn "could not restore database (stop the server and re-run the installer)"
+    fi
+}
+
 do_portable_install() {
     _target="$1"
 
@@ -565,6 +610,7 @@ do_portable_install() {
     if [ -f "$_target/$APP_NAME" ] || [ -f "$_target/${APP_NAME}.exe" ]; then
         info "existing V2RayDAR installation found at $_target"
         if confirm "update to latest version?"; then
+            heal_flipped_database "$_target"
             _tmpdir="$(mktemp_d)"
             _archive="$_tmpdir/$ASSET"
 
@@ -881,8 +927,10 @@ main() {
                     info "location: $FOUND_PATH/$APP_NAME"
                 fi
                 echo ""
-                # No new app version: still refresh country data (MaxMind
-                # database first, zones.txt as its fallback).
+                # No new app version: still repair a flipped database and
+                # refresh country data (MaxMind database first, zones.txt as
+                # its fallback).
+                heal_flipped_database "$FOUND_PATH"
                 cleanup_legacy_mmdb
                 ( refresh_geoip_mmdb "$(geoip_data_dir_for_found)" ) \
                     || warn "GeoIP database update failed, keeping existing data"
@@ -921,6 +969,7 @@ main() {
                     info "location: $FOUND_PATH/$APP_NAME"
                 fi
                 echo ""
+                heal_flipped_database "$FOUND_PATH"
                 cleanup_legacy_mmdb
                 ( refresh_geoip_mmdb "$(geoip_data_dir_for_found)" ) \
                     || warn "GeoIP database update failed, keeping existing data"
@@ -960,8 +1009,15 @@ main() {
                 INSTALL_DIR="$FOUND_PATH"
                 ;;
             *)
-                INSTALL_MODE="portable"
                 INSTALL_DIR="$FOUND_PATH"
+                if found_layout_is_portable; then
+                    INSTALL_MODE="portable"
+                else
+                    # Bare-binary folder: it ran in installed mode, so update
+                    # the binary in place (no sing-box drop, no PATH change).
+                    INSTALL_MODE="user"
+                    _IN_PLACE=1
+                fi
                 ;;
         esac
         info "auto mode: updating in place at $INSTALL_DIR"
@@ -996,7 +1052,7 @@ main() {
     case "$INSTALL_MODE" in
         portable)   do_portable_install "$INSTALL_DIR" ;;
         user)       do_user_install "$INSTALL_DIR"
-                    add_to_path "$INSTALL_DIR" ;;
+                    if [ -z "${_IN_PLACE:-}" ]; then add_to_path "$INSTALL_DIR"; fi ;;
     esac
 
     # Remove a stale release archive from older installers (binaries only).

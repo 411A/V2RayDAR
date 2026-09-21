@@ -352,10 +352,59 @@ $GeoipMmdbFile = "GeoLite2-Country.mmdb"
 # app are the integrity layers).
 $GeoipMmdbMinBytes = 1000000
 
-# Data dir for an existing install. On Windows both portable and user-mode
-# installs keep the data root next to the install dir (<dir>/v2raydar_data).
+# Data dir for an existing install: portable layouts keep it next to the
+# binary (<dir>/v2raydar_data), user-mode installs under LocalAppData.
 function Get-GeoipDirForFound {
-    return Join-Path $Script:FoundPath "v2raydar_data/geoip"
+    # User-mode data lives under LocalAppData; only portable layouts keep it
+    # beside the binary. Pointing a bare-exe install here would create a
+    # v2raydar_data dir and flip portable auto-detect on the next start.
+    if (Test-PortableLayout -Path $Script:FoundPath) {
+        return Join-Path $Script:FoundPath "v2raydar_data/geoip"
+    }
+    $localAppData = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { "$env:USERPROFILE\AppData\Local" }
+    return Join-Path $localAppData "V2RayDAR/v2raydar_data/geoip"
+}
+
+# True when a folder already runs as portable: a data dir beside the binary,
+# or the bundled sing-box beside it. A bare-exe folder ran in installed mode
+# (data under LocalAppData) — updates must preserve that layout, or the
+# binary flips databases on the next start.
+function Test-PortableLayout {
+    param([string]$Path)
+    return ((Test-Path (Join-Path $Path "v2raydar_data")) -or (Test-Path (Join-Path $Path "sing-box.exe")))
+}
+
+function Heal-FlippedDatabase {
+    param([string]$Target)
+    # Repairs damage from the pre-fix updater, which dropped sing-box.exe
+    # beside bare-exe installs: that flipped portable auto-detect and exposed
+    # a stale portable database while the real one sat under LocalAppData. If
+    # that looks like what happened here (an installed-root database exists
+    # and is bigger than the portable one), back the portable dir up and
+    # promote the real database. Never deletes user data.
+    $localAppData = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { "$env:USERPROFILE\AppData\Local" }
+    $installedDb = Join-Path $localAppData "V2RayDAR/v2raydar_data/data.db"
+    if (-not (Test-Path $installedDb)) { return }
+    $portableDb = Join-Path $Target "v2raydar_data/data.db"
+    $installedSize = (Get-Item $installedDb).Length
+    $portableSize = 0
+    if (Test-Path $portableDb) { $portableSize = (Get-Item $portableDb).Length }
+    if ($installedSize -le $portableSize) { return }
+    $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $portableDir = Join-Path $Target "v2raydar_data"
+    if (Test-Path $portableDir) {
+        $backup = Join-Path $Target "v2raydar_data.backup-$stamp"
+        Move-Item -Path $portableDir -Destination $backup -Force
+        Write-Info "backed up stale portable data to $backup"
+    }
+    New-Item -ItemType Directory -Path $portableDir -Force | Out-Null
+    try {
+        Copy-Item -Path $installedDb -Destination $portableDb -Force
+        Write-Info "restored your real database from $installedDb"
+    }
+    catch {
+        Write-Warn "could not restore database (stop the server and re-run the installer): $($_.Exception.Message)"
+    }
 }
 
 # Remove databases from the retired GeoLite2 era (replaced by zone files).
@@ -603,6 +652,7 @@ function Do-PortableInstall {
     if ($existing) {
         Write-Info "existing V2RayDAR installation found at $Target"
         if (Confirm -Prompt "update to latest version?") {
+            Heal-FlippedDatabase -Target $Target
             $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
             New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
             $Script:TempPaths += $tmpDir
@@ -875,8 +925,9 @@ function Main {
                         Write-Info "location: $($Script:FoundPath)\$AppName.exe"
                     }
                     Write-Host ""
-                    # No new app version: still refresh country data (MaxMind
-                    # database first, zones.txt as its fallback).
+                    # No new app version: still repair a flipped database and
+                    # refresh country data.
+                    Heal-FlippedDatabase -Target $Script:FoundPath
                     Remove-LegacyMmdb -Roots @($Script:FoundPath)
                     if (-not (Update-GeoipMmdb -GeoipDir (Get-GeoipDirForFound))) {
                         Write-Warn "GeoIP database update failed, keeping existing data"
@@ -909,6 +960,7 @@ function Main {
                     }
                     Write-Host ""
                     Remove-LegacyMmdb -Roots @($Script:FoundPath)
+                    Heal-FlippedDatabase -Target $Script:FoundPath
                     if (-not (Update-GeoipMmdb -GeoipDir (Get-GeoipDirForFound))) {
                         Write-Warn "GeoIP database update failed, keeping existing data"
                     }
@@ -948,8 +1000,15 @@ function Main {
             if ($Script:FoundPath -eq $defaultUserDir) {
                 $Script:InstallMode = "user"
             }
-            else {
+            elseif (Test-PortableLayout -Path $Script:FoundPath) {
                 $Script:InstallMode = "portable"
+            }
+            else {
+                # Bare-exe folder: it ran in installed mode (data under
+                # LocalAppData), so update the binary in place without
+                # dropping sing-box.exe beside it — that would flip portable
+                # auto-detect and orphan the user's database.
+                $Script:InstallMode = "user"
             }
             $Script:InstallDir = $Script:FoundPath
             Write-Info "auto mode: updating in place at $($Script:InstallDir)"
@@ -984,8 +1043,17 @@ function Main {
             "user"     { Do-UserInstall -BinDir $InstallDir }
         }
 
-        # Fresh country data next to the new install.
-        $geoipDir = Join-Path $InstallDir "v2raydar_data/geoip"
+        # Fresh country data where the running binary reads it: user-mode
+        # data lives under LocalAppData, portable data next to the install
+        # dir. (Creating a v2raydar_data dir beside a bare-exe install would
+        # flip portable auto-detect and orphan the user's database.)
+        if ($Script:InstallMode -eq "user") {
+            $localAppData = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { "$env:USERPROFILE\AppData\Local" }
+            $geoipDir = Join-Path $localAppData "V2RayDAR/v2raydar_data/geoip"
+        }
+        else {
+            $geoipDir = Join-Path $InstallDir "v2raydar_data/geoip"
+        }
         Remove-LegacyMmdb -Roots @($Script:FoundPath, $InstallDir)
         if (-not (Update-GeoipMmdb -GeoipDir $geoipDir)) {
             Write-Warn "GeoIP database update failed, keeping existing data"

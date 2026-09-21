@@ -1399,6 +1399,54 @@ describe("pure helpers", () => {
   });
 });
 
+describe("polling fallback recovers capabilities after transient failure", () => {
+  it("status 0 on /api/summary stays unknown + retries, 200 promotes", async () => {
+    const timers = [];
+    const sb = makeSandbox();
+    let summaryCalls = 0;
+    sb.fetch = async (url) => {
+      if (String(url).includes("/api/summary")) {
+        summaryCalls += 1;
+        if (summaryCalls === 1) {
+          return { status: 0, async text() { return ""; } };
+        }
+        return { status: 200, async text() { return '{"refresh_seconds":900,"ping_seconds":300}'; } };
+      }
+      return { status: 0, async text() { return ""; } };
+    };
+    sb.window.setTimeout = (fn, ms) => { timers.push({ fn, ms }); return timers.length; };
+    sb.window.clearTimeout = () => {};
+    sb.window.setInterval = () => 0;
+    sb.window.clearInterval = () => {};
+    sb.setTimeout = (fn, ms) => { timers.push({ fn, ms }); return timers.length; };
+    const { api: fresh } = loadApp(sb);
+    fresh.startPolling(false);
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(fresh.state.hasSummaryApi, null, "transient summary failure stays unknown, never false");
+    const retry = timers.find((t) => t.ms === 30000);
+    assert.ok(retry, "schedules one capabilities retry");
+    retry.fn();
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(summaryCalls, 2, "retry re-requests capabilities");
+    assert.equal(fresh.state.hasSummaryApi, true, "retry promotes capabilities on 200");
+  });
+
+  it("404 on /api/summary cements false with no retry (old server)", async () => {
+    const timers = [];
+    const sb = makeSandbox();
+    sb.fetch = async () => ({ status: 404, async text() { return ""; } });
+    sb.window.setTimeout = (fn, ms) => { timers.push({ fn, ms }); return timers.length; };
+    sb.window.clearTimeout = () => {};
+    sb.window.setInterval = () => 0;
+    sb.window.clearInterval = () => {};
+    const { api: fresh } = loadApp(sb);
+    fresh.startPolling(false);
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(fresh.state.hasSummaryApi, false, "old server stays on full polling");
+    assert.ok(!timers.some((t) => t.ms === 30000), "no retry scheduled for a proven-absent API");
+  });
+});
+
 describe("settings tab: typed controls + translated rows", () => {
   const payload = () => ({
     dirty: false,

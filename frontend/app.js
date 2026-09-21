@@ -982,16 +982,29 @@ function startPolling(summaryAvailable) {
     }
   };
   const checkSummary = async () => {
+    stopPolling();
     const r = await fetchJson("/api/summary");
     if (r.status === 200 && r.data) {
       state.hasSummaryApi = true;
       setFeedStatus("polling", { detail: t("feedPoll2") });
       applySummary(r.data);
       state.pollTimer = window.setInterval(tickSummary, POLL_SUMMARY_MS);
-    } else {
+    } else if (r.status === 404) {
+      // Old server without the summary API: stay on full polling.
       state.hasSummaryApi = false;
       void tick();
       state.pollTimer = window.setInterval(tick, POLL_RESULTS_MS);
+    } else {
+      // Transient (server restarting, blip): poll full results now, but do
+      // not cement `false` — retry capabilities once so the Refresh
+      // countdown and ping line recover instead of showing "—" forever.
+      void tick();
+      state.pollTimer = window.setInterval(tick, POLL_RESULTS_MS);
+      window.setTimeout(() => {
+        if (state.hasSummaryApi === null && !state.sse) {
+          void checkSummary();
+        }
+      }, 30000);
     }
   };
   const tickSummary = async () => {
@@ -2429,10 +2442,15 @@ async function loadQrImage() {
     if (r.status === 200 && r.data && typeof r.data.qr_available === "boolean") {
       state.hasSummaryApi = true;
       storeCapabilities(r.data);
-    } else {
+    } else if (r.status === 404) {
+      // Old server without the summary API.
       state.hasSummaryApi = false;
       state.qrKnown = false;
       note.textContent = t("qrNeedsServer");
+      return;
+    } else {
+      // Transient (server restarting, blip): leave capabilities unknown so
+      // a later probe recovers instead of cementing "no summary API".
       return;
     }
   }
@@ -2506,10 +2524,12 @@ async function renderOvQr() {
       if (r.status === 200 && r.data && typeof r.data.qr_available === "boolean") {
         state.hasSummaryApi = true;
         storeCapabilities(r.data);
-      } else {
+      } else if (r.status === 404) {
+        // Old server without the summary API.
         state.hasSummaryApi = false;
         state.qrKnown = false;
       }
+      // Transient failures leave both unknown: the next render retries.
     } finally {
       state.ovQrProbing = false;
     }

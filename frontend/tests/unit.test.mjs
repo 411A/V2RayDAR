@@ -851,6 +851,32 @@ describe("stat badges stay one-line with full stamps in tooltips", () => {
     assert.match(cards[3].children[0].textContent, /Fetched/);
   });
 
+  it("Failed references the fetched pile while Working references the tested set", () => {
+    api.state.hasSummaryApi = true;
+    api.state.refreshSeconds = 300;
+    api.state.pingSeconds = 0;
+    api.state.startedAt = "2026-09-16T13:03:47+00:00";
+    api.state.snapshot = {
+      refreshing: false,
+      pinging: false,
+      total_candidates: 9482,
+      tested_candidates: 550,
+      reachable_candidates: 41,
+      fetch_bytes: 6081740,
+      last_refresh: "2026-09-16T13:03:40+00:00",
+      refresh_duration_ms: 33400,
+      ranked: [],
+      fetch_errors: [],
+      proxy_running: false,
+    };
+    api.renderStats();
+    const cards = sandbox.__elements.get("stat-cards").children;
+    assert.equal(cards[4].children[1].textContent, "509");
+    assert.match(cards[4].children[2].textContent, /of .*9482.* fetched/);
+    assert.equal(cards[5].children[1].textContent, "41");
+    assert.match(cards[5].children[2].textContent, /of .*550.* tested/);
+  });
+
   it("Last scan reads — while a refresh runs (TUI parity)", () => {
     api.state.hasSummaryApi = true;
     api.state.refreshSeconds = 300;
@@ -1716,7 +1742,7 @@ describe("stat cards: deltas refresh numbers, clocks stay ticker-owned", () => {
     const runningNode = cards()[0].children[1];
     const refreshNode = cards()[1].children[1];
     const ageNode = cards()[2].children[2];
-    assert.match(cards()[5].children[2].textContent, /100/);
+    assert.match(cards()[5].children[2].textContent, /50/);
     // Same shape (no language/refreshing/snapshot flip): numbers move...
     api.state.snapshot.tested_candidates = 60;
     api.state.snapshot.reachable_candidates = 15;
@@ -1726,7 +1752,8 @@ describe("stat cards: deltas refresh numbers, clocks stay ticker-owned", () => {
     assert.equal(sandbox.document.getElementById("stat-failed-val").textContent, "45");
     assert.equal(sandbox.document.getElementById("stat-working-val").textContent, "15");
     assert.equal(sandbox.document.getElementById("stat-fetched-val").textContent, "110");
-    assert.match(sandbox.document.getElementById("stat-working-sub").textContent, /110/);
+    assert.match(sandbox.document.getElementById("stat-working-sub").textContent, /60/);
+    assert.match(sandbox.document.getElementById("stat-failed-sub").textContent, /110/);
     // ...while the skeleton is reused untouched...
     assert.strictEqual(cards()[0].children[1], runningNode);
     assert.strictEqual(cards()[1].children[1], refreshNode);

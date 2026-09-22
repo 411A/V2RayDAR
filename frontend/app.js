@@ -1313,9 +1313,9 @@ function updateStatNumbers(s) {
   setText($("stat-fetched-val"), String(s.total_candidates || 0));
   const failed = Math.max(0, (s.tested_candidates || 0) - (s.reachable_candidates || 0));
   setText($("stat-failed-val"), String(failed));
-  setText($("stat-failed-sub"), t("failedOfTested", { tested: s.tested_candidates || 0 }));
+  setText($("stat-failed-sub"), t("failedOfFetched", { fetched: s.total_candidates || 0 }));
   setText($("stat-working-val"), String(s.reachable_candidates || 0));
-  setText($("stat-working-sub"), t("workingOfFetched", { fetched: s.total_candidates || 0 }));
+  setText($("stat-working-sub"), t("workingOfTested", { tested: s.tested_candidates || 0 }));
   setText($("stat-subusage-val"), fmtBytes(s.fetch_bytes));
   const tookNode = $("stat-scan-took");
   if (tookNode) {
@@ -1380,8 +1380,8 @@ function buildStatCards(box, s) {
   const fetched = statCard(t("cardFetched"), String(s.total_candidates || 0), null, null, "stat-fetched-val");
   fetched.id = "stat-fetched";
   box.appendChild(fetched);
-  box.appendChild(statCard(t("cardFailed"), String(failed), t("failedOfTested", { tested }), null, "stat-failed-val", "stat-failed-sub"));
-  box.appendChild(statCard(t("cardWorking"), String(s.reachable_candidates || 0), t("workingOfFetched", { fetched: s.total_candidates || 0 }), null, "stat-working-val", "stat-working-sub"));
+  box.appendChild(statCard(t("cardFailed"), String(failed), t("failedOfFetched", { fetched: s.total_candidates || 0 }), null, "stat-failed-val", "stat-failed-sub"));
+  box.appendChild(statCard(t("cardWorking"), String(s.reachable_candidates || 0), t("workingOfTested", { tested }), null, "stat-working-val", "stat-working-sub"));
   box.appendChild(statCard(t("cardSubUsage"), fmtBytes(s.fetch_bytes), null, null, "stat-subusage-val"));
   renderUpdated();
 }

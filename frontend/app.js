@@ -1279,17 +1279,64 @@ function renderStats() {
   preserveViewport(paintStats);
 }
 
-/// Synchronous DOM rebuild for renderStats (viewport-preserving wrapper above).
+/// Overview cards: skeleton vs numbers split. The skeleton (labels, clock
+/// nodes, structure) builds once per shape — language, snapshot presence,
+/// refresh running — while probe deltas only refresh the number badges in
+/// place. Clock nodes (uptime, refresh countdown, scan age, pill) are written
+/// solely by tickClock: recomputing them mid-second on every delta made the
+/// seconds visibly jump whenever Failed/Working updated (Math.round ages
+/// disagree with the aligned ticker by a second either way), and rebuilding
+/// seven cards per delta thrashed the DOM for no new information.
+let statCardsShape = "";
+function statCardsShapeOf(s) {
+  return (document.documentElement.lang || "") + ":" + (!!s) + ":" + (!!s && !!s.refreshing);
+}
+
 function paintStats() {
   const box = $("stat-cards");
+  if (!box) {
+    return;
+  }
+  const s = state.snapshot;
+  const shape = statCardsShapeOf(s);
+  if (statCardsShape !== shape) {
+    buildStatCards(box, s);
+    statCardsShape = shape;
+  } else if (s) {
+    updateStatNumbers(s);
+  }
+  updateCycleButtons();
+}
+
+/// Number badges only (probe deltas): clock nodes are owned by tickClock.
+function updateStatNumbers(s) {
+  setText($("stat-fetched-val"), String(s.total_candidates || 0));
+  const failed = Math.max(0, (s.tested_candidates || 0) - (s.reachable_candidates || 0));
+  setText($("stat-failed-val"), String(failed));
+  setText($("stat-failed-sub"), t("failedOfTested", { tested: s.tested_candidates || 0 }));
+  setText($("stat-working-val"), String(s.reachable_candidates || 0));
+  setText($("stat-subusage-val"), fmtBytes(s.fetch_bytes));
+  const tookNode = $("stat-scan-took");
+  if (tookNode) {
+    const took = s.refresh_duration_ms !== null && s.refresh_duration_ms !== undefined
+      ? t("tookMs", { dur: fmtDuration(s.refresh_duration_ms) })
+      : "";
+    if (took) {
+      setText(tookNode, took);
+    }
+  }
+}
+
+/// Full card skeleton (first paint, language switch, refresh start/stop,
+/// snapshot arrival). Clock texts are painted once here and owned by
+/// tickClock afterwards; see updateStatNumbers.
+function buildStatCards(box, s) {
   while (box.firstChild) {
     box.removeChild(box.firstChild);
   }
-  const s = state.snapshot;
   if (!s) {
     box.appendChild(statCard("Status", t("statusNoData")));
     renderUpdated();
-    updateCycleButtons();
     return;
   }
   const failed = Math.max(0, (s.tested_candidates || 0) - (s.reachable_candidates || 0));
@@ -1329,14 +1376,13 @@ function paintStats() {
   box.appendChild(statCard(t("cardRunningFor"), uptimeText(), state.startedAt ? t("startedAt", { time: fmtClock(state.startedAt) }) : "", null, "stat-running", null, state.startedAt ? t("startedAt", { time: fmtStamp(state.startedAt) }) : ""));
   box.appendChild(statCard(t("cardRefresh"), rs.val, rs.sub, null, "stat-refresh-val", "stat-refresh-sub"));
   box.appendChild(scanCard);
-  const fetched = statCard(t("cardFetched"), String(s.total_candidates || 0));
+  const fetched = statCard(t("cardFetched"), String(s.total_candidates || 0), null, null, "stat-fetched-val");
   fetched.id = "stat-fetched";
   box.appendChild(fetched);
-  box.appendChild(statCard(t("cardFailed"), String(failed), t("failedOfTested", { tested })));
-  box.appendChild(statCard(t("cardWorking"), String(s.reachable_candidates || 0)));
-  box.appendChild(statCard(t("cardSubUsage"), fmtBytes(s.fetch_bytes)));
+  box.appendChild(statCard(t("cardFailed"), String(failed), t("failedOfTested", { tested }), null, "stat-failed-val", "stat-failed-sub"));
+  box.appendChild(statCard(t("cardWorking"), String(s.reachable_candidates || 0), null, null, "stat-working-val"));
+  box.appendChild(statCard(t("cardSubUsage"), fmtBytes(s.fetch_bytes), null, null, "stat-subusage-val"));
   renderUpdated();
-  updateCycleButtons();
 }
 
 /// Overview "updated" pill: hidden with no data yet, green dot only while

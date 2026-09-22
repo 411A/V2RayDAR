@@ -1684,3 +1684,62 @@ describe("live-logs severity filter contract", () => {
     assert.equal(api.logLineVisible(api.parseLogLine("20:20:05.000 [DEBUG] good"), "ERROR", "good", "20:20:05.000 [DEBUG] good"), false);
   });
 });
+
+describe("stat cards: deltas refresh numbers, clocks stay ticker-owned", () => {
+  const seed = () => {
+    api.state.hasSummaryApi = true;
+    api.state.refreshSeconds = 300;
+    api.state.pingSeconds = 0;
+    api.state.startedAt = "2026-09-16T13:03:47+00:00";
+    api.state.snapshot = {
+      refreshing: false,
+      pinging: false,
+      total_candidates: 100,
+      tested_candidates: 50,
+      reachable_candidates: 10,
+      fetch_bytes: 1024,
+      last_refresh: "2026-09-16T13:03:40+00:00",
+      refresh_duration_ms: 33400,
+      ranked: [],
+      fetch_errors: [],
+      proxy_running: false,
+    };
+  };
+
+  it("probe deltas update badges without recomputing clock text", () => {
+    seed();
+    api.renderStats();
+    const age = sandbox.document.getElementById("stat-scan-age").textContent;
+    const running = sandbox.document.getElementById("stat-running").textContent;
+    const refresh = sandbox.document.getElementById("stat-refresh-val").textContent;
+    // Same shape (no language/refreshing/snapshot flip): numbers move...
+    api.state.snapshot.tested_candidates = 60;
+    api.state.snapshot.reachable_candidates = 15;
+    api.state.snapshot.total_candidates = 110;
+    api.state.snapshot.fetch_bytes = 2048;
+    api.renderStats();
+    assert.equal(sandbox.document.getElementById("stat-failed-val").textContent, "45");
+    assert.equal(sandbox.document.getElementById("stat-working-val").textContent, "15");
+    assert.equal(sandbox.document.getElementById("stat-fetched-val").textContent, "110");
+    // ...while every clock node keeps the exact text the ticker wrote.
+    assert.equal(sandbox.document.getElementById("stat-scan-age").textContent, age);
+    assert.equal(sandbox.document.getElementById("stat-running").textContent, running);
+    assert.equal(sandbox.document.getElementById("stat-refresh-val").textContent, refresh);
+  });
+
+  it("refresh start/stop rebuilds the skeleton once", () => {
+    seed();
+    api.renderStats();
+    const before = sandbox.__elements.get("stat-cards").children.length;
+    assert.equal(before, 7);
+    // Same shape again: skeleton reused, children identical.
+    api.renderStats();
+    assert.equal(sandbox.__elements.get("stat-cards").children.length, 7);
+    // Shape flip (refresh starts): Last scan badge reads running dash.
+    api.state.snapshot.refreshing = true;
+    api.renderStats();
+    const cards = sandbox.__elements.get("stat-cards").children;
+    const text = cards[2].children.map((c) => c.textContent).join("|");
+    assert.equal(text, "Last scan|—");
+  });
+});

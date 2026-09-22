@@ -970,6 +970,15 @@ describe("config detail popup (row click)", () => {
     assert.equal(td.children[0].textContent, "vless");
   });
 
+  it("cell() pins numeric values to one line so a rank never splits rows", () => {
+    const plain = api.cell("vless", "Protocol");
+    assert.equal(plain.className, "");
+    const num = api.cell("14", "Rank", "cell-num");
+    assert.equal(num.className, "cell-num");
+    assert.equal(num.children[0].textContent, "14");
+    assert.equal(num.children[0].className, "cell-text");
+  });
+
   it("openDetail marks the active proxy row", () => {
     api.state.snapshot = { proxy_active_uri: row.uri };
     api.openDetail(row);

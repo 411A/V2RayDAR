@@ -79,9 +79,12 @@ function el(tag, text, className) {
 /// collapse into labeled cards, and each value reads its `data-th` (the
 /// already-localized column header) as the card-line label. Desktop and
 /// tablets render plain tables and ignore the attribute entirely.
-function cell(text, label) {
+function cell(text, label, cls) {
   const td = document.createElement("td");
   td.dataset.th = label;
+  if (cls) {
+    td.className = cls;
+  }
   td.appendChild(el("span", text, "cell-text"));
   return td;
 }
@@ -1578,12 +1581,12 @@ function paintOvConfigs() {
     } else if (proxyRowState(c.uri) === "pending") {
       tr.className = "is-pending";
     }
-    tr.appendChild(cell(c.rank !== undefined ? String(c.rank) : "—", t("thRank")));
+    tr.appendChild(cell(c.rank !== undefined ? String(c.rank) : "—", t("thRank"), "cell-num"));
     const nameTd = document.createElement("td");
     nameTd.className = "cell-main";
     nameTd.appendChild(el("strong", displayName(c.name) || t("unnamed")));
     tr.appendChild(nameTd);
-    tr.appendChild(cell(fmtLatency(c.latency_ms), t("thLatency")));
+    tr.appendChild(cell(fmtLatency(c.latency_ms), t("thLatency"), "cell-num"));
     wireRowDialog(tr, c);
     body.appendChild(tr);
   }
@@ -1895,7 +1898,7 @@ function paintConfigs() {
     } else if (proxyRowState(c.uri) === "pending") {
       tr.className = "is-pending";
     }
-    tr.appendChild(cell(c.rank !== undefined ? String(c.rank) : "—", t("thRank")));
+    tr.appendChild(cell(c.rank !== undefined ? String(c.rank) : "—", t("thRank"), "cell-num"));
 
     const nameTd = document.createElement("td");
     nameTd.className = "cell-main";
@@ -1924,7 +1927,7 @@ function paintConfigs() {
     latTd.appendChild(bar);
     tr.appendChild(latTd);
 
-    tr.appendChild(cell(c.stability_count ? ltr("\u00d7" + c.stability_count) : "—", t("thStability")));
+    tr.appendChild(cell(c.stability_count ? ltr("\u00d7" + c.stability_count) : "—", t("thStability"), "cell-num"));
     // Flag glyph only (+ code in the tooltip): regional indicators render as
     // the two letters on platforms without flag emoji (notably Windows), so
     // showing both would duplicate ("DE DE"). The flag mirrors the server's
@@ -2762,7 +2765,7 @@ function paintSubs() {
     onTd.appendChild(tgl);
     tr.appendChild(onTd);
 
-    tr.appendChild(cell(sub.priority !== undefined ? String(sub.priority) : "—", t("thPriority")));
+    tr.appendChild(cell(sub.priority !== undefined ? String(sub.priority) : "—", t("thPriority"), "cell-num"));
     tr.appendChild(el("td", sub.name || t("subFallback", { i: i + 1 }), "cell-main"));
 
     const urlTd = document.createElement("td");

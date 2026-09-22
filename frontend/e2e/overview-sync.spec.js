@@ -89,3 +89,51 @@ test("country cell shows the config's own flag, not a disagreeing GeoIP code", a
   await expect(bareCountry.locator("span")).toHaveAttribute("title", "NL");
   stub.rankedPush = null;
 });
+
+// Regression: a two-digit rank wrapped mid-number ("1"/"4" on separate
+// lines) on narrow screens — `.cell-text` allows breaks anywhere, which is
+// right for long values but must never split a number.
+test("rank digits never split across lines, even on a 360px phone", async ({ page }) => {
+  const row = (i) => ({
+    rank: i + 1,
+    stability_count: 12,
+    id: `vless://wrap${i}.example.com:443`,
+    dedup_key: `vless://wrap${i}.example.com:443`,
+    source: "src-16",
+    priority: 100,
+    protocol: "vless",
+    // The exact provider remark from the report: pipes and emoji are data.
+    name: i === 13 ? "SE Sweden Stockholm |\u23F1395ms |\u26A1826KB/s | @NamazVPN" : `wrap-node-${i}`,
+    endpoint: { host: "wrap.example.com", port: 443 + i },
+    uri: `vless://uuid@wrap.example.com:${443 + i}?security=tls#wrap-node-${i}`,
+    reachable: true,
+    validation: "active_http",
+    latency_ms: 395,
+    http_status: 204,
+    download_mbps: null,
+    download_bytes: null,
+    error: null,
+    country_code: "SE",
+  });
+  stub.rankedPush = Array.from({ length: 14 }, (_, i) => row(i));
+  await page.setViewportSize({ width: 360, height: 740 });
+  await page.goto(base + "/configs");
+  await expect(page.locator("#cfg-body tr")).toHaveCount(14, { timeout: 5000 });
+  // Every numeric cell is pinned to one line by construction.
+  const nums = await page.$$eval("#cfg-body tr td.cell-num .cell-text", (els) =>
+    els.map((el) => ({
+      text: el.textContent,
+      ws: getComputedStyle(el).whiteSpace,
+      single: el.scrollHeight <= el.clientHeight + 1,
+    })),
+  );
+  expect(nums.length).toBeGreaterThan(0);
+  for (const n of nums) {
+    expect(n.ws, `white-space of ${n.text}`).toBe("nowrap");
+    expect(n.single, `single line: ${n.text}`).toBe(true);
+  }
+  // The reported row itself: rank reads "14" on exactly one line.
+  const rank14 = page.locator("#cfg-body tr").nth(13).locator("td.cell-num .cell-text").first();
+  await expect(rank14).toHaveText("14");
+  stub.rankedPush = null;
+});

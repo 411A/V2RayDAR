@@ -991,6 +991,14 @@ td .lat-bar > span {
   overflow-wrap: anywhere;
 }
 
+/* Numeric values (rank, latency, stability, priority) never split across
+ * lines: a wrapped "14" reads as two rows. Tabular figures keep columns
+ * steady while numbers tick. */
+.cell-num .cell-text {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ---- Key/value + settings ---- */
 
 .kv {

@@ -1709,9 +1709,14 @@ describe("stat cards: deltas refresh numbers, clocks stay ticker-owned", () => {
   it("probe deltas update badges without recomputing clock text", () => {
     seed();
     api.renderStats();
-    const age = sandbox.document.getElementById("stat-scan-age").textContent;
-    const running = sandbox.document.getElementById("stat-running").textContent;
-    const refresh = sandbox.document.getElementById("stat-refresh-val").textContent;
+    // NOTE: stub getElementById resolves detached registry nodes, not the
+    // rendered tree (browsers search live DOM) — tree reads pin structure,
+    // registry reads pin id-addressed writes, like the tickClock test.
+    const cards = () => sandbox.__elements.get("stat-cards").children;
+    const runningNode = cards()[0].children[1];
+    const refreshNode = cards()[1].children[1];
+    const ageNode = cards()[2].children[2];
+    assert.match(cards()[5].children[2].textContent, /100/);
     // Same shape (no language/refreshing/snapshot flip): numbers move...
     api.state.snapshot.tested_candidates = 60;
     api.state.snapshot.reachable_candidates = 15;
@@ -1721,10 +1726,15 @@ describe("stat cards: deltas refresh numbers, clocks stay ticker-owned", () => {
     assert.equal(sandbox.document.getElementById("stat-failed-val").textContent, "45");
     assert.equal(sandbox.document.getElementById("stat-working-val").textContent, "15");
     assert.equal(sandbox.document.getElementById("stat-fetched-val").textContent, "110");
-    // ...while every clock node keeps the exact text the ticker wrote.
-    assert.equal(sandbox.document.getElementById("stat-scan-age").textContent, age);
-    assert.equal(sandbox.document.getElementById("stat-running").textContent, running);
-    assert.equal(sandbox.document.getElementById("stat-refresh-val").textContent, refresh);
+    assert.match(sandbox.document.getElementById("stat-working-sub").textContent, /110/);
+    // ...while the skeleton is reused untouched...
+    assert.strictEqual(cards()[0].children[1], runningNode);
+    assert.strictEqual(cards()[1].children[1], refreshNode);
+    assert.strictEqual(cards()[2].children[2], ageNode);
+    // ...and clock registry nodes stay unwritten by the update path.
+    assert.equal(sandbox.document.getElementById("stat-running").textContent, "");
+    assert.equal(sandbox.document.getElementById("stat-scan-age").textContent, "");
+    assert.equal(sandbox.document.getElementById("stat-refresh-val").textContent, "");
   });
 
   it("refresh start/stop rebuilds the skeleton once", () => {

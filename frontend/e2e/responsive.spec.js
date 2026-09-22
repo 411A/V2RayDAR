@@ -176,6 +176,8 @@ function sweep(suiteName, use, mode) {
             // nothing scrolls horizontally.
             const fetchedDisplay = await page.$eval("#stat-fetched", (el) => getComputedStyle(el).display);
             expect(fetchedDisplay, "Fetched badge hidden on phones").toBe("none");
+            const workingSubDisplay = await page.$eval("#stat-working-sub", (el) => getComputedStyle(el).display);
+            expect(workingSubDisplay, "working sub carries the fetched fallback on phones").not.toBe("none");
             const scrollable = await page.$eval("#stat-cards", (el) => el.scrollWidth > el.clientWidth + 1);
             expect(scrollable, "stat grid does not scroll").toBe(false);
             const cols = await page.$eval("#stat-cards", (el) => getComputedStyle(el).gridTemplateColumns.split(" ").length);
@@ -299,6 +301,19 @@ test.describe("rtl phone 360x740", () => {
       els.filter((el) => el.scrollWidth > el.clientWidth + 1
         || el.scrollHeight > el.clientHeight + 1).length);
     expect(clipped, "stat subs fit without clipping").toBe(0);
+    expect(errors).toEqual([]);
+  });
+});
+
+// Large screens show the Fetched badge, so the Working card's fetched
+// fallback sub must stay hidden there (mirrors the phone assertion above).
+test.describe("desktop overview", () => {
+  test.use({ viewport: { width: 1536, height: 864 }, ...mouse });
+  test("fetched badge shows, working sub hides", async ({ page }) => {
+    const errors = [];
+    await gotoRoute(page, ROUTES[0], errors);
+    await expect(page.locator("#stat-fetched")).toBeVisible();
+    await expect(page.locator("#stat-working-sub")).toBeHidden();
     expect(errors).toEqual([]);
   });
 });

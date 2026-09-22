@@ -749,6 +749,14 @@ main {
   padding-block-start: 0.15rem;
 }
 
+/* The Working card's fetched total is a small-screen fallback only: larger
+ * screens already show the Fetched badge, so the duplicate stays off there.
+ * Portrait phones re-enable it below (where #stat-fetched hides).
+ */
+#stat-working-sub {
+  display: none;
+}
+
 .two-col {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1591,6 +1599,13 @@ kbd {
     -webkit-box-orient: vertical;
     overflow-wrap: anywhere;
     font-size: 0.7rem;
+  }
+
+  /* Small-screen fallback for the hidden Fetched badge (see the global
+   * #stat-working-sub rule): explicit so it never depends on specificity.
+   */
+  #stat-cards #stat-working-sub {
+    display: -webkit-box;
   }
 
   .cards > .card {

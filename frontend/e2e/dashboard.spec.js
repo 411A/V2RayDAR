@@ -35,11 +35,14 @@ test("dashboard boots with zero console/page/network errors", async ({ page }) =
   expect(overflows.every((d) => d <= 1)).toBe(true);
   // Last scan stacks age above duration on two sub-lines.
   await expect(page.locator('#stat-cards .card').nth(2).locator('.stat-sub')).toHaveCount(2);
-  // Every card's last sub-line sits on the same bottom baseline
-  // (flex-pinned; multi-line cards only add lines above it).
+  // Every card's last *visible* sub-line sits on the same bottom baseline
+  // (flex-pinned; multi-line cards only add lines above it). Hidden
+  // responsive fallbacks (e.g. the working card's fetched sub on desktop)
+  // report a zero rect and are excluded.
   const bottoms = await page.$$eval("#stat-cards .card", (cards) =>
     cards
-      .map((c) => c.querySelectorAll(".stat-sub"))
+      .map((c) => [...c.querySelectorAll(".stat-sub")]
+        .filter((el) => getComputedStyle(el).display !== "none"))
       .filter((subs) => subs.length > 0)
       .map((subs) => Math.round(subs[subs.length - 1].getBoundingClientRect().bottom)),
   );

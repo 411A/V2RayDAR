@@ -1315,6 +1315,7 @@ function updateStatNumbers(s) {
   setText($("stat-failed-val"), String(failed));
   setText($("stat-failed-sub"), t("failedOfTested", { tested: s.tested_candidates || 0 }));
   setText($("stat-working-val"), String(s.reachable_candidates || 0));
+  setText($("stat-working-sub"), t("workingOfFetched", { fetched: s.total_candidates || 0 }));
   setText($("stat-subusage-val"), fmtBytes(s.fetch_bytes));
   const tookNode = $("stat-scan-took");
   if (tookNode) {
@@ -1380,7 +1381,7 @@ function buildStatCards(box, s) {
   fetched.id = "stat-fetched";
   box.appendChild(fetched);
   box.appendChild(statCard(t("cardFailed"), String(failed), t("failedOfTested", { tested }), null, "stat-failed-val", "stat-failed-sub"));
-  box.appendChild(statCard(t("cardWorking"), String(s.reachable_candidates || 0), null, null, "stat-working-val"));
+  box.appendChild(statCard(t("cardWorking"), String(s.reachable_candidates || 0), t("workingOfFetched", { fetched: s.total_candidates || 0 }), null, "stat-working-val", "stat-working-sub"));
   box.appendChild(statCard(t("cardSubUsage"), fmtBytes(s.fetch_bytes), null, null, "stat-subusage-val"));
   renderUpdated();
 }

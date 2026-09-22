@@ -373,6 +373,36 @@ geoip_data_dir_for_found() {
     esac
 }
 
+# One status report, printed before any prompt: installed version (if any)
+# against the requested version, so every later question is informed.
+show_install_status() {
+    if [ -n "${FOUND_PATH:-}" ]; then
+        _where="$FOUND_PATH/$APP_NAME"
+        if [ "$DEV_BUILD" = "1" ]; then
+            if [ -n "${FOUND_VERSION:-}" ]; then
+                warn "Installed: V2RayDAR v${FOUND_VERSION} at $_where."
+            else
+                warn "Installed: V2RayDAR at $_where (version unknown)."
+            fi
+            info "Requested: dev-build ($TAG) - binaries will be replaced, user data preserved."
+        elif [ -n "${FOUND_VERSION:-}" ]; then
+            version_compare "$FOUND_VERSION" "$VERSION" && true
+            _cmp_exit=$?
+            if [ "$_cmp_exit" = "0" ]; then
+                printf '\033[1;32m✓\033[0m V2RayDAR v%s is already installed at %s.\n' "$FOUND_VERSION" "$_where"
+            elif [ "$_cmp_exit" = "2" ]; then
+                printf '\033[1;33m!\033[0m V2RayDAR v%s is installed at %s, v%s is available.\n' "$FOUND_VERSION" "$_where" "$VERSION"
+            else
+                printf '\033[1;32m✓\033[0m V2RayDAR v%s is installed at %s (newer than requested v%s).\n' "$FOUND_VERSION" "$_where" "$VERSION"
+            fi
+        else
+            warn "Installed: V2RayDAR at $_where (version unknown). Requested: v$VERSION."
+        fi
+    else
+        info "No existing installation found. Fresh install of $DISPLAY_VERSION."
+    fi
+}
+
 # Remove databases from the retired GeoLite2 era (replaced by zone files).
 cleanup_legacy_mmdb() {
     for _mmdb in \
@@ -655,14 +685,7 @@ do_portable_install() {
 
     chmod +x "$_target/$APP_NAME" 2>/dev/null || true
     chmod +x "$_target/sing-box" 2>/dev/null || true
-
-    echo ""
-    info "installed to: $_target/$APP_NAME"
-    if [ "$IS_TERMUX" = "1" ]; then
-        info "run:  cd $_target && ./$APP_NAME"
-    else
-        info "run:  cd $_target && ./$APP_NAME --portable"
-    fi
+    # Location and run hints print once in main's result block below.
 }
 
 do_user_install() {
@@ -713,14 +736,7 @@ do_user_install() {
     fi
 
     chmod +x "$_bin_dir/$APP_NAME"
-
-    echo ""
-    info "installed to: $_bin_dir/$APP_NAME"
-    if [ "$IS_TERMUX" = "1" ]; then
-        info "run:  $APP_NAME"
-    else
-        info "run:  $APP_NAME"
-    fi
+    # Location and run hints print once in main's result block below.
 }
 
 # ─── PATH Management ──────────────────────────────────────────────────────────
@@ -885,6 +901,13 @@ main() {
     echo ""
     info "Detected: ${_detected_os} ${ARCH}"
 
+    # Detect first: every question below is asked with the full
+    # picture (installed version vs requested version) already shown.
+    FOUND_IT=0
+    if find_installed; then FOUND_IT=1; fi
+    echo ""
+    show_install_status
+
     # ─── One-question auto mode ───────────────────────────────────────────────
     # A single Enter (default Y) installs/updates with defaults and asks
     # nothing else; N keeps the step-by-step prompts below.
@@ -897,18 +920,13 @@ main() {
         fi
     fi
 
-    if find_installed; then
+    if [ "$FOUND_IT" = "1" ]; then
         # Found an existing installation
         if [ "$DEV_BUILD" = "1" ]; then
             # Developer pre-release: skip semver comparison (dev-build is not
             # a version number) and offer a straight binary replacement.
             echo ""
-            if [ -n "$FOUND_VERSION" ]; then
-                warn "V2RayDAR v${FOUND_VERSION} is installed at $FOUND_PATH/$APP_NAME."
-            else
-                warn "V2RayDAR is installed at $FOUND_PATH/$APP_NAME (version unknown)."
-            fi
-            info "dev-build requested: binaries will be replaced, user data preserved."
+            # Installed state was reported above; confirm the replacement.
             echo ""
             if [ "${NON_INTERACTIVE:-0}" = "1" ]; then
                 info "non-interactive mode: proceeding with dev-build install"
@@ -922,14 +940,8 @@ main() {
             if version_compare "$FOUND_VERSION" "$VERSION"; then
                 # Same version
                 echo ""
-                printf '\033[1;32m✓\033[0m V2RayDAR v%s (latest version) is already installed.\n' "$FOUND_VERSION"
-                if [ -n "$FOUND_PATH" ]; then
-                    info "location: $FOUND_PATH/$APP_NAME"
-                fi
-                echo ""
-                # No new app version: still repair a flipped database and
-                # refresh country data (MaxMind database first, zones.txt as
-                # its fallback).
+                # Already up to date (reported above): repair a flipped
+                # database and refresh country data, then stop.
                 heal_flipped_database "$FOUND_PATH"
                 cleanup_legacy_mmdb
                 ( refresh_geoip_mmdb "$(geoip_data_dir_for_found)" ) \
@@ -944,12 +956,7 @@ main() {
             version_compare "$FOUND_VERSION" "$VERSION" && true  # dummy to avoid set -e issues
             _cmp_exit=$?
             if [ "$_cmp_exit" = "2" ]; then
-                # FOUND_VERSION < VERSION → outdated
-                echo ""
-                printf '\033[1;33m!\033[0m V2RayDAR v%s is installed, but v%s is available.\n' "$FOUND_VERSION" "$VERSION"
-                if [ -n "$FOUND_PATH" ]; then
-                    info "location: $FOUND_PATH/$APP_NAME"
-                fi
+                # FOUND_VERSION < VERSION → outdated (reported above)
                 echo ""
                 if [ "${NON_INTERACTIVE:-0}" = "1" ]; then
                     info "non-interactive mode: proceeding with update"
@@ -962,12 +969,8 @@ main() {
                     info "non-interactive mode detected, proceeding with update"
                 fi
             else
-                # FOUND_VERSION > VERSION → installed is newer than latest (unusual)
-                echo ""
-                printf '\033[1;32m✓\033[0m V2RayDAR v%s is already installed (newer than latest release v%s).\n' "$FOUND_VERSION" "$VERSION"
-                if [ -n "$FOUND_PATH" ]; then
-                    info "location: $FOUND_PATH/$APP_NAME"
-                fi
+                # FOUND_VERSION > VERSION → installed is newer than requested
+                # (reported above): refresh country data, then stop.
                 echo ""
                 heal_flipped_database "$FOUND_PATH"
                 cleanup_legacy_mmdb
@@ -979,9 +982,7 @@ main() {
                 return
             fi
         else
-            # Found binary but couldn't determine version
-            echo ""
-            warn "V2RayDAR is installed at $FOUND_PATH/$APP_NAME, but could not determine its version."
+            # Found binary but couldn't determine version (reported above)
             echo ""
             if [ "${NON_INTERACTIVE:-0}" = "1" ]; then
                 info "non-interactive mode: proceeding with update"
@@ -994,11 +995,8 @@ main() {
                 info "non-interactive mode detected, proceeding with update"
             fi
         fi
-    else
-        # Not installed
-        echo ""
-        info "V2RayDAR is not installed."
     fi
+    # Not installed was reported above: fall through to a fresh install.
 
     # Auto mode with an existing install: update in place instead of dropping
     # a second copy at the portable default (explicit -d/-p/-u flags still win).
@@ -1073,8 +1071,21 @@ main() {
     ( refresh_geoip_data "$_geoip_dir" ) \
         || warn "country IP database update failed, keeping existing data"
 
+    # --- Result: one human-friendly summary of what changed ---
+    if [ "$INSTALL_MODE" = "user" ]; then
+        _data_dir="${XDG_DATA_HOME:-$HOME/.local/share}/V2RayDAR/v2raydar_data"
+        _run_hint="$INSTALL_DIR/$APP_NAME"
+    else
+        _data_dir="$INSTALL_DIR/v2raydar_data"
+        _run_hint="cd $INSTALL_DIR && ./$APP_NAME"
+    fi
     echo ""
-    info "done!"
+    printf '\033[1;32m========================================\033[0m\n'
+    printf '\033[1;32m  Result: V2RayDAR %s ready\033[0m\n' "$DISPLAY_VERSION"
+    printf '  Location: %s/%s\n' "$INSTALL_DIR" "$APP_NAME"
+    printf '  Data:       %s\n' "$_data_dir"
+    printf '  Run:        %s\n' "$_run_hint"
+    printf '\033[1;32m========================================\033[0m\n'
     echo ""
 }
 

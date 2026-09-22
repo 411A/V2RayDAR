@@ -126,6 +126,43 @@ function Find-Installed {
     return $false
 }
 
+# One status report, printed before any prompt: installed version (if any)
+# against the requested version, so every later question is informed.
+function Show-InstallStatus {
+    param([string]$Version, [string]$DisplayVersion, [bool]$DevBuild, [string]$Tag)
+
+    if ($Script:FoundPath) {
+        $where = "$($Script:FoundPath)\$AppName.exe"
+        if ($DevBuild) {
+            if ($Script:FoundVersion) {
+                Write-Warn "Installed: V2RayDAR v$($Script:FoundVersion) at $where."
+            }
+            else {
+                Write-Warn "Installed: V2RayDAR at $where (version unknown)."
+            }
+            Write-Info "Requested: dev-build ($Tag) -- binaries will be replaced, user data preserved."
+        }
+        elseif ($Script:FoundVersion) {
+            $cmp = Compare-Version -Left $Script:FoundVersion -Right $Version
+            if ($cmp -eq 0) {
+                Write-Host "> V2RayDAR v$($Script:FoundVersion) is already installed at $where." -ForegroundColor Green
+            }
+            elseif ($cmp -lt 0) {
+                Write-Host "! V2RayDAR v$($Script:FoundVersion) is installed at $where, v$Version is available." -ForegroundColor Yellow
+            }
+            else {
+                Write-Host "> V2RayDAR v$($Script:FoundVersion) is installed at $where (newer than requested v$Version)." -ForegroundColor Green
+            }
+        }
+        else {
+            Write-Warn "Installed: V2RayDAR at $where (version unknown). Requested: v$Version."
+        }
+    }
+    else {
+        Write-Info "No existing installation found. Fresh install of $DisplayVersion."
+    }
+}
+
 # Extract version from a binary by running --version.
 function Get-VersionFromBinary {
     param([string]$Path)
@@ -367,7 +404,7 @@ function Get-GeoipDirForFound {
 
 # True when a folder already runs as portable: a data dir beside the binary,
 # or the bundled sing-box beside it. A bare-exe folder ran in installed mode
-# (data under LocalAppData) — updates must preserve that layout, or the
+# (data under LocalAppData) -- updates must preserve that layout, or the
 # binary flips databases on the next start.
 function Test-PortableLayout {
     param([string]$Path)
@@ -427,7 +464,7 @@ function Remove-LegacyMmdb {
 # Verify an extracted zone tree: every country file we would install must be
 # listed in MD5SUM with a matching hash, and unexpected files fail the run.
 # Files the listing mentions but the archive does not ship (publisher
-# placeholders such as ap.zone) are skipped with a note — the app runs fine
+# placeholders such as ap.zone) are skipped with a note -- the app runs fine
 # on the remaining countries.
 function Test-ZoneTree {
     param([string]$Dir, [string]$Md5Data)
@@ -701,12 +738,9 @@ function Do-PortableInstall {
         Extract-Archive -FilePath $archive -Dest $Target
         Remove-Item -Path $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
 
-        Write-Info "installed V2RayDAR"
+            Write-Info "installed V2RayDAR"
     }
-
-    Write-Host ""
-    Write-Info "installed to: $exePath"
-    Write-Info "run:  cd $Target; .\$AppName.exe --portable"
+    # Location and run hints print once in Main's result block below.
 }
 
 function Do-UserInstall {
@@ -780,13 +814,10 @@ function Do-UserInstall {
             else { Write-Err "could not find $AppName.exe in archive" }
         }
 
-        Remove-Item -Path $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
-        Write-Info "installed binary"
+            Remove-Item -Path $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Info "installed binary"
     }
-
-    Write-Host ""
-    Write-Info "installed to: $exePath"
-    Write-Info "run:  $AppName"
+    # Location and run hints print once in Main's result block below.
 }
 
 # --- Interactive Prompts -------------------------------------------------------
@@ -877,6 +908,10 @@ function Main {
         $Asset = Select-Asset -Arch $arch
         Write-Info "asset: $Asset"
 
+        # Detect first: every question below is asked with the full
+        # picture (installed version vs requested version) already shown.
+        $found = Find-Installed
+
         # --- Check for existing installation ------------------------------------
         Write-Host ""
         Write-Host "  ========================================"
@@ -884,6 +919,8 @@ function Main {
         Write-Host "  ========================================"
         Write-Host ""
         Write-Info "Detected: Windows $arch"
+        Write-Host ""
+        Show-InstallStatus -Version $Version -DisplayVersion $DisplayVersion -DevBuild $DevBuild -Tag $Tag
 
         # One-question auto mode: a single Enter (default Y) installs/updates
         # with defaults and asks nothing else; N keeps the step-by-step prompts.
@@ -894,19 +931,9 @@ function Main {
             }
         }
 
-        $found = Find-Installed
-
         if ($found -and $DevBuild) {
             # Developer pre-release: skip semver comparison and offer a
-            # straight binary replacement.
-            Write-Host ""
-            if ($Script:FoundVersion) {
-                Write-Warn "V2RayDAR v$($Script:FoundVersion) is installed at $($Script:FoundPath)\$AppName.exe."
-            }
-            else {
-                Write-Warn "V2RayDAR is installed at $($Script:FoundPath)\$AppName.exe (version unknown)."
-            }
-            Write-Info "dev-build requested: binaries will be replaced, user data preserved."
+            # straight binary replacement (status reported above).
             Write-Host ""
             if (-not (Confirm -Prompt "install dev-build ($Tag)?")) {
                 Write-Info "cancelled"
@@ -918,15 +945,9 @@ function Main {
                 $cmp = Compare-Version -Left $Script:FoundVersion -Right $Version
 
                 if ($cmp -eq 0) {
-                    # Same version - already up to date
+                    # Already up to date (reported above): repair a flipped
+                    # database and refresh country data, then stop.
                     Write-Host ""
-                    Write-Host "> V2RayDAR v$($Script:FoundVersion) (latest version) is already installed." -ForegroundColor Green
-                    if ($Script:FoundPath) {
-                        Write-Info "location: $($Script:FoundPath)\$AppName.exe"
-                    }
-                    Write-Host ""
-                    # No new app version: still repair a flipped database and
-                    # refresh country data.
                     Heal-FlippedDatabase -Target $Script:FoundPath
                     Remove-LegacyMmdb -Roots @($Script:FoundPath)
                     if (-not (Update-GeoipMmdb -GeoipDir (Get-GeoipDirForFound))) {
@@ -939,12 +960,7 @@ function Main {
                     return
                 }
                 elseif ($cmp -lt 0) {
-                    # Installed version is older - outdated
-                    Write-Host ""
-                    Write-Host "! V2RayDAR v$($Script:FoundVersion) is installed, but v$Version is available." -ForegroundColor Yellow
-                    if ($Script:FoundPath) {
-                        Write-Info "location: $($Script:FoundPath)\$AppName.exe"
-                    }
+                    # Installed version is older (reported above) - outdated
                     Write-Host ""
                     if (-not (Confirm -Prompt "update from v$($Script:FoundVersion) to v$($Version)?")) {
                         Write-Info "cancelled"
@@ -952,12 +968,8 @@ function Main {
                     }
                 }
                 else {
-                    # Installed version is newer than latest release (unusual)
-                    Write-Host ""
-                    Write-Host "> V2RayDAR v$($Script:FoundVersion) is already installed (newer than latest release v$Version)." -ForegroundColor Green
-                    if ($Script:FoundPath) {
-                        Write-Info "location: $($Script:FoundPath)\$AppName.exe"
-                    }
+                    # Installed version is newer than requested (reported
+                    # above): refresh country data, then stop.
                     Write-Host ""
                     Remove-LegacyMmdb -Roots @($Script:FoundPath)
                     Heal-FlippedDatabase -Target $Script:FoundPath
@@ -972,9 +984,7 @@ function Main {
                 }
             }
             else {
-                # Found binary but couldn't determine version
-                Write-Host ""
-                Write-Warn "V2RayDAR is installed at $($Script:FoundPath)\$AppName.exe, but could not determine its version."
+                # Found binary but couldn't determine version (reported above)
                 Write-Host ""
                 if (-not (Confirm -Prompt "update to latest version?")) {
                     Write-Info "cancelled"
@@ -982,11 +992,7 @@ function Main {
                 }
             }
         }
-        else {
-            # Not installed
-            Write-Host ""
-            Write-Info "V2RayDAR is not installed."
-        }
+        # Not installed was reported above: fall through to a fresh install.
 
         # --- Proceed with installation ------------------------------------------
         Write-Host ""
@@ -1006,7 +1012,7 @@ function Main {
             else {
                 # Bare-exe folder: it ran in installed mode (data under
                 # LocalAppData), so update the binary in place without
-                # dropping sing-box.exe beside it — that would flip portable
+                # dropping sing-box.exe beside it -- that would flip portable
                 # auto-detect and orphan the user's database.
                 $Script:InstallMode = "user"
             }
@@ -1068,8 +1074,23 @@ function Main {
             Write-Warn "country IP database update failed, keeping existing data"
         }
 
+        # --- Result: one human-friendly summary of what changed ---------------
+        $localAppData = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { "$env:USERPROFILE\AppData\Local" }
+        if ($Script:InstallMode -eq "user") {
+            $dataDir = Join-Path $localAppData "V2RayDAR/v2raydar_data"
+            $runHint = "$InstallDir\$AppName.exe"
+        }
+        else {
+            $dataDir = Join-Path $Script:InstallDir "v2raydar_data"
+            $runHint = "cd $($Script:InstallDir); .\$AppName.exe"
+        }
         Write-Host ""
-        Write-Info "done!"
+        Write-Host "  ========================================" -ForegroundColor Green
+        Write-Host "  Result: V2RayDAR $DisplayVersion ready" -ForegroundColor Green
+        Write-Host "  Location: $($Script:InstallDir)\$AppName.exe"
+        Write-Host "  Data:       $dataDir"
+        Write-Host "  Run:        $runHint"
+        Write-Host "  ========================================" -ForegroundColor Green
         Write-Host ""
     }
     finally {

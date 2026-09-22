@@ -1574,6 +1574,25 @@ kbd {
     display: none;
   }
 
+  /* Portrait phones: overview sub-lines wrap instead of cutting. At three
+   * columns a ~100px card cannot hold long strings (Persian especially) on
+   * one 0.78rem line, so they ellipsized mid-word ("..."). A two-line clamp
+   * plus slightly smaller text shows the full string; shrinking to a third
+   * of the size would drop below legibility (~4px), so the floor stays here.
+   */
+  #stat-cards .card {
+    padding: 0.65rem 0.7rem;
+  }
+
+  #stat-cards .stat-sub {
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow-wrap: anywhere;
+    font-size: 0.7rem;
+  }
+
   .cards > .card {
     scroll-snap-align: start;
   }

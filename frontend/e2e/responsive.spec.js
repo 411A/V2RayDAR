@@ -278,3 +278,27 @@ test.describe("rtl phone 390x844", () => {
     });
   }
 });
+
+// Narrowest portrait phone in Persian: overview sub-lines must show fully —
+// single-line ellipsis used to cut them mid-word ("..."), so assert content
+// fits in both dimensions instead of only page-level scrollWidth.
+test.describe("rtl phone 360x740", () => {
+  test.use({ viewport: { width: 360, height: 740 }, ...touch });
+  test("overview stat subs fit without clipping", async ({ page }) => {
+    const errors = [];
+    await page.addInitScript(() => {
+      try {
+        window.localStorage.setItem("v2raydar-lang", "fa");
+      } catch (err) {
+        /* private mode: default language still exercises layout */
+      }
+    });
+    await gotoRoute(page, ROUTES[0], errors);
+    expect(await page.evaluate(() => document.documentElement.dir)).toBe("rtl");
+    const clipped = await page.$$eval("#stat-cards .stat-sub", (els) =>
+      els.filter((el) => el.scrollWidth > el.clientWidth + 1
+        || el.scrollHeight > el.clientHeight + 1).length);
+    expect(clipped, "stat subs fit without clipping").toBe(0);
+    expect(errors).toEqual([]);
+  });
+});

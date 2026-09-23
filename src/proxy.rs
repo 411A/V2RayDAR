@@ -519,11 +519,18 @@ impl PersistentProxy {
             warn!("proxy: invalid proxy URL for health check");
             return false;
         };
-        let Ok(client) = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .timeout(timeout)
-            .proxy(proxy_client)
-            .build()
-        else {
+            .proxy(proxy_client);
+        // Same Android bypass as the fetch/probe clients: without it the
+        // default https health URL aborts Termux builds inside
+        // rustls-platform-verifier, which needs a JVM we do not have.
+        if cfg!(target_os = "android")
+            && let Some(tls) = crate::FALLBACK_TLS.get()
+        {
+            builder = builder.tls_backend_preconfigured(tls.clone());
+        }
+        let Ok(client) = builder.build() else {
             warn!("proxy: health check client build failed");
             return false;
         };

@@ -334,9 +334,48 @@ fn fetch_error_message(name: &str, error: &anyhow::Error, source_url: &str) -> S
     let detail = if source_url.is_empty() {
         detail.to_string()
     } else {
-        detail.replace(source_url, &redact_subscription_url(source_url))
+        redact_urls_in(detail)
     };
     format!("{headline}:\n{detail}")
+}
+
+/// Redact every URL that appears in a free-form error message.
+///
+/// The failing URL inside a reqwest error is the *rendered* one, which is
+/// not always byte-identical to the configured URL: reqwest drops the
+/// userinfo but keeps the query and the fragment. Redacting by replacing the
+/// configured URL therefore misses the rendered one and leaks a private
+/// `?token=` value into `fetch_errors` (which the dashboard and the TUI
+/// both show). Scan the text instead and redact every URL-looking run.
+fn redact_urls_in(text: &str) -> String {
+    const SCHEMES: [&str; 2] = ["https://", "http://"];
+
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while !rest.is_empty() {
+        // Earliest scheme start wins.
+        let mut found: Option<(usize, &str)> = None;
+        for scheme in SCHEMES {
+            if let Some(index) = rest.find(scheme)
+                && found.is_none_or(|(earliest, _)| index < earliest)
+            {
+                found = Some((index, scheme));
+            }
+        }
+        let Some((index, _)) = found else {
+            out.push_str(rest);
+            break;
+        };
+        out.push_str(&rest[..index]);
+        let tail = &rest[index..];
+        // A URL run ends at whitespace or at a closing/quoting delimiter.
+        let end = tail
+            .find(|ch: char| ch.is_whitespace() || matches!(ch, ')' | '"' | '\'' | '<' | '>'))
+            .unwrap_or(tail.len());
+        out.push_str(&crate::config::redact_subscription_url(&tail[..end]));
+        rest = &tail[end..];
+    }
+    out
 }
 
 type FetchResult<T> = std::result::Result<T, FetchError>;
@@ -598,7 +637,9 @@ async fn fetch_body(client: &Client, url: &str, max_bytes: usize) -> FetchResult
 }
 
 async fn fetch_http_body(client: &Client, url: &str, max_bytes: usize) -> FetchResult<FetchedBody> {
-    debug!(url, "HTTP subscription request prepared");
+    // Never log the raw URL: it can carry userinfo and a private token.
+    let safe_url = redact_subscription_url(url);
+    debug!(url = %safe_url, "HTTP subscription request prepared");
 
     let request_bytes = estimated_request_bytes(url);
 
@@ -608,7 +649,7 @@ async fn fetch_http_body(client: &Client, url: &str, max_bytes: usize) -> FetchR
         .await
         .map_err(|err| FetchError::new(err.into(), request_bytes))?;
     debug!(
-        url,
+        url = %safe_url,
         status = response.status().as_u16(),
         content_length = response.content_length(),
         "HTTP subscription response received"
@@ -739,6 +780,46 @@ mod tests {
         assert!(!message.contains("secret"), "token leaked: {message}");
         assert!(!message.contains("user:pass"), "userinfo leaked: {message}");
         assert!(!message.contains("#frag"), "fragment leaked: {message}");
+    }
+
+    /// The failing URL inside a reqwest error is the *rendered* one, which
+    /// drops the userinfo but keeps the query and the fragment. It therefore
+    /// never matches the configured URL byte for byte, and a redactor that
+    /// replaces the configured URL misses it and leaks the token.
+    #[test]
+    fn fetch_error_message_redacts_the_rendered_url() {
+        let configured = "https://user:pass@example.com/sub?token=secret#frag";
+        let rendered = "https://example.com/sub?token=secret#frag";
+        let error = anyhow!("operation timed out")
+            .context(format!("error sending request for url ({rendered})"))
+            .context("failed to fetch subscription 'demo'");
+        let message = fetch_error_message("demo", &error, configured);
+
+        assert!(!message.contains("secret"), "token leaked: {message}");
+        assert!(!message.contains("user:pass"), "userinfo leaked: {message}");
+        assert!(!message.contains("#frag"), "fragment leaked: {message}");
+        assert!(
+            message.contains("https://example.com/sub"),
+            "host should survive: {message}"
+        );
+    }
+
+    #[test]
+    fn redact_urls_in_covers_every_url_in_the_text() {
+        let text = "first https://a.example.com/x?token=one then \
+                    http://b.example.com/y?token=two end";
+        let redacted = redact_urls_in(text);
+
+        assert!(!redacted.contains("token=one"), "leaked: {redacted}");
+        assert!(!redacted.contains("token=two"), "leaked: {redacted}");
+        assert!(redacted.contains("https://a.example.com/x"), "{redacted}");
+        assert!(redacted.contains("http://b.example.com/y"), "{redacted}");
+    }
+
+    #[test]
+    fn redact_urls_in_leaves_plain_text_untouched() {
+        let text = "unable to read local subscription file /tmp/sub.txt";
+        assert_eq!(redact_urls_in(text), text);
     }
 
     #[test]

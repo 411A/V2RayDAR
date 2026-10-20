@@ -8,6 +8,9 @@ on:
       - "src/web.rs"
       - "src/server.rs"
       - "src/tui/util.rs"
+      # The PLAN section 5 gates read these two: the table cap and the
+      # feed heartbeat / client cap.
+      - "src/constants.rs"
       - ".github/workflows/frontend.yml"
   pull_request:
     paths:
@@ -15,6 +18,7 @@ on:
       - "src/web.rs"
       - "src/server.rs"
       - "src/tui/util.rs"
+      - "src/constants.rs"
       - ".github/workflows/frontend.yml"
   workflow_dispatch:
 

@@ -61,8 +61,9 @@ ensure_curl() {
         # Termux: pkg wraps apt; a full upgrade here would be slow and is not
         # needed to install two small packages, so update + install only.
         info "curl not found, installing it via pkg..."
-        pkg update -y && pkg install -y curl tar \
-            || err "failed to install curl via pkg (run: pkg install -y curl tar)"
+        if ! pkg update -y || ! pkg install -y curl tar; then
+            err "failed to install curl via pkg (run: pkg install -y curl tar)"
+        fi
     elif command -v apt-get >/dev/null 2>&1; then
         # Debian/Ubuntu (and Termux fallback): script-safe apt frontend.
         _apt="apt-get"
@@ -73,8 +74,9 @@ ensure_curl() {
         fi
         info "curl not found, installing it via ${_apt}..."
         # shellcheck disable=SC2086
-        $_apt update && $_apt full-upgrade -y && $_apt install -y curl tar \
-            || err "failed to install curl via ${_apt}"
+        if ! $_apt update || ! $_apt full-upgrade -y || ! $_apt install -y curl tar; then
+            err "failed to install curl via ${_apt}"
+        fi
     else
         err "required command not found: curl"
     fi
@@ -612,11 +614,12 @@ extract_archive() {
             _app_binary="$(find_named "$_tmpdir" "v2raydar-bin")"
             [ -n "$_app_binary" ] || _app_binary="$(find_named "$_tmpdir" "$APP_NAME")"
             [ -n "$_app_binary" ] || err "could not find $APP_NAME binary inside archive"
-            cp "$_app_binary" "$_dest/$APP_NAME"
-            chmod +x "$_dest/$APP_NAME" 2>/dev/null || true
+            replace_binary "$_app_binary" "$_dest/$APP_NAME"
             # Copy sing-box if present
             _sing_box="$(find_named "$_tmpdir" "sing-box")"
-            [ -n "$_sing_box" ] && cp "$_sing_box" "$_dest/sing-box" 2>/dev/null || true
+            if [ -n "$_sing_box" ]; then
+                replace_binary "$_sing_box" "$_dest/sing-box" || true
+            fi
             rm -rf "$_tmpdir"
             ;;
     esac
@@ -656,6 +659,75 @@ heal_flipped_database() {
     fi
 }
 
+# ─── Binary replacement ─────────────────────────────────────────────────────────
+
+# Replace a binary without disturbing a copy that is still running.
+#
+# cp writes into the target file, and the kernel refuses that with
+# "Text file busy" while the target is executing - exactly what a
+# sing-box left over from an earlier session does. Writing a fresh file
+# next to the target and renaming it over the old one swaps the directory
+# entry instead of the inode, so the update lands even while the old copy
+# runs; the running process keeps its own inode until it exits.
+replace_binary() {
+    _src="$1"
+    _dst="$2"
+    _staged="${_dst}.new.$$"
+
+    cp "$_src" "$_staged" || return 1
+    chmod +x "$_staged" 2>/dev/null || true
+    if ! mv -f "$_staged" "$_dst"; then
+        rm -f "$_staged" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+
+# True when the bundled sing-box was not installed together with the app
+# binary.
+#
+# An update that fails halfway - the app binary lands, the sing-box does
+# not - leaves the two out of step, and the version check only reads the
+# app binary, so the installer would report "already installed" and never
+# repair the sing-box. The sing-box is installed after the app binary, so
+# a file that is not newer than the app binary is not from the same
+# install. A portable install without any bundled sing-box is left alone:
+# the app then falls back to the sing-box on PATH.
+bundled_sing_box_is_stale() {
+    _dir="$1"
+    [ -f "$_dir/$APP_NAME" ] || return 1
+    [ -f "$_dir/sing-box" ] || return 1
+    [ -n "$(find "$_dir/sing-box" -newer "$_dir/$APP_NAME" 2>/dev/null)" ] && return 1
+    return 0
+}
+
+# Download the release asset and swap the binaries into an install dir.
+# The second argument decides whether the bundled sing-box is installed
+# next to the app binary; a user install must not get one, because that
+# would flip the layout the app auto-detects.
+refresh_binaries() {
+    _target="$1"
+    _with_sing_box="$2"
+    _tmpdir="$(mktemp_d)"
+    _archive="$_tmpdir/$ASSET"
+
+    info "downloading ${ASSET}..."
+    download_file "${GITHUB_DOWNLOAD}/${TAG}/${ASSET}" "$_archive"
+    verify_checksum "$_archive"
+
+    info "updating..."
+    extract_archive "$_archive" "$_tmpdir"
+
+    # Replace only binaries - user data (configs, db, v2raydar_data) stays untouched
+    replace_binary "$_tmpdir/$APP_NAME" "$_target/$APP_NAME" \
+        || err "could not update $_target/$APP_NAME"
+    if [ "$_with_sing_box" = "yes" ] && [ -f "$_tmpdir/sing-box" ]; then
+        replace_binary "$_tmpdir/sing-box" "$_target/sing-box" \
+            || warn "could not replace the bundled sing-box - the app will use the sing-box on PATH"
+    fi
+    rm -rf "$_tmpdir"
+}
+
 do_portable_install() {
     _target="$1"
 
@@ -664,24 +736,7 @@ do_portable_install() {
         info "existing V2RayDAR installation found at $_target"
         if confirm "update to latest version?"; then
             heal_flipped_database "$_target"
-            _tmpdir="$(mktemp_d)"
-            _archive="$_tmpdir/$ASSET"
-
-            info "downloading ${ASSET}..."
-            download_file "${GITHUB_DOWNLOAD}/${TAG}/${ASSET}" "$_archive"
-            verify_checksum "$_archive"
-
-            info "updating..."
-            extract_archive "$_archive" "$_tmpdir"
-
-            # Replace only binaries — user data (configs, db, v2raydar_data) stays untouched
-            cp "$_tmpdir/$APP_NAME" "$_target/$APP_NAME"
-            chmod +x "$_target/$APP_NAME" 2>/dev/null || true
-            if [ -f "$_tmpdir/sing-box" ]; then
-                cp "$_tmpdir/sing-box" "$_target/sing-box"
-                chmod +x "$_target/sing-box" 2>/dev/null || true
-            fi
-            rm -rf "$_tmpdir"
+            refresh_binaries "$_target" "yes"
 
             info "updated to ${DISPLAY_VERSION}"
         else
@@ -717,20 +772,7 @@ do_user_install() {
     if [ -f "$_bin_dir/$APP_NAME" ]; then
         info "existing V2RayDAR binary found at $_bin_dir/$APP_NAME"
         if confirm "update to latest version?"; then
-            _tmpdir="$(mktemp_d)"
-            _archive="$_tmpdir/$ASSET"
-
-            info "downloading ${ASSET}..."
-            download_file "${GITHUB_DOWNLOAD}/${TAG}/${ASSET}" "$_archive"
-            verify_checksum "$_archive"
-
-            _extract_dir="$_tmpdir/extract"
-            mkdir -p "$_extract_dir"
-            extract_archive "$_archive" "$_extract_dir"
-
-            info "updating binary..."
-            cp "$_extract_dir/$APP_NAME" "$_bin_dir/$APP_NAME"
-            rm -rf "$_tmpdir"
+            refresh_binaries "$_bin_dir" "no"
 
             info "updated to ${DISPLAY_VERSION}"
         else
@@ -752,7 +794,8 @@ do_user_install() {
         mkdir -p "$_extract_dir"
         extract_archive "$_archive" "$_extract_dir"
 
-        cp "$_extract_dir/$APP_NAME" "$_bin_dir/$APP_NAME"
+        replace_binary "$_extract_dir/$APP_NAME" "$_bin_dir/$APP_NAME" \
+            || err "could not install $_bin_dir/$APP_NAME"
         rm -rf "$_tmpdir"
 
         info "installed binary"
@@ -967,6 +1010,16 @@ main() {
                 # database and refresh country data, then stop.
                 heal_flipped_database "$FOUND_PATH"
                 cleanup_legacy_mmdb
+                # An earlier update can fail halfway - the app binary lands
+                # but the sing-box does not - and the version check only
+                # reads the app binary. Repair that here, or the install
+                # stays broken while the installer keeps calling it up to
+                # date.
+                if bundled_sing_box_is_stale "$FOUND_PATH"; then
+                    info "the bundled sing-box is out of step with the app - reinstalling the binaries"
+                    refresh_binaries "$FOUND_PATH" "yes"
+                    info "repaired to ${DISPLAY_VERSION}"
+                fi
                 ( refresh_geoip_mmdb "$(geoip_data_dir_for_found)" ) \
                     || warn "GeoIP database update failed, keeping existing data"
                 ( refresh_geoip_data "$(geoip_data_dir_for_found)" ) \

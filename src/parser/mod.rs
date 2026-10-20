@@ -41,9 +41,13 @@ pub fn parse_subscription_document(source: &str, priority: u32, body: &[u8]) -> 
 
     // Try Clash/Mihomo structured parsing before generic YAML extraction.
     // If the body contains a `proxies:` list, this yields better results.
-    if candidates.is_empty()
-        && let Some(clash_candidates) = try_parse_clash_subscription(source, priority, body)
-    {
+    //
+    // The structured fallbacks are not gated on "nothing found yet". A feed
+    // can hold more than one thing at once -- a share link next to a
+    // `proxies:` list, or a link next to a base64 <textarea> -- and the gate
+    // then dropped the second one. Each parser validates its own shape and
+    // the shared seen set removes duplicates.
+    if let Some(clash_candidates) = try_parse_clash_subscription(source, priority, body) {
         for candidate in clash_candidates {
             if seen_entries.insert(candidate.uri.clone()) {
                 candidates.push(candidate);
@@ -62,9 +66,7 @@ pub fn parse_subscription_document(source: &str, priority: u32, body: &[u8]) -> 
     // HTML panel extraction fallback (Marzban/Xray-style subscription panels).
     // Extracts URIs from HTML attributes, base64 blocks in <textarea>/<code>/<pre>,
     // and <script> content.
-    if candidates.is_empty()
-        && let Some(html_candidates) = html::try_extract_from_html(source, priority, body)
-    {
+    if let Some(html_candidates) = html::try_extract_from_html(source, priority, body) {
         for candidate in html_candidates {
             if seen_entries.insert(candidate.uri.clone()) {
                 candidates.push(candidate);
@@ -75,9 +77,7 @@ pub fn parse_subscription_document(source: &str, priority: u32, body: &[u8]) -> 
     // Full Xray/V2Ray JSON config conversion fallback.
     // Handles JSON arrays of complete Xray client configs with outbounds[],
     // converting them to share-link URIs.
-    if candidates.is_empty()
-        && let Some(xray_candidates) = xray::try_parse_xray_configs(source, priority, body)
-    {
+    if let Some(xray_candidates) = xray::try_parse_xray_configs(source, priority, body) {
         for candidate in xray_candidates {
             if seen_entries.insert(candidate.uri.clone()) {
                 candidates.push(candidate);
@@ -477,6 +477,60 @@ mod tests {
         assert_eq!(parsed[0].protocol, "vmess");
         assert_eq!(parsed[0].endpoint.host, "example.com");
         assert_eq!(parsed[0].endpoint.port, 443);
+    }
+
+    /// A feed can hold more than one thing at once. The structured
+    /// fallbacks used to be skipped as soon as anything had been found, so a
+    /// panel with a plain link next to a base64 &lt;textarea&gt; lost the
+    /// textarea.
+    #[test]
+    fn a_mixed_html_feed_keeps_both_the_link_and_the_textarea() {
+        let inner = STANDARD.encode("vless://uuid2@example.org:8443?security=tls#Second");
+        let html = format!(
+            r#"<!DOCTYPE html>
+<html><body>
+<input type="text" value="vless://uuid1@example.com:443?security=tls#First">
+<textarea>{inner}</textarea>
+</body></html>"#
+        );
+
+        let parsed = parse_subscription_document("test", 1, html.as_bytes());
+        let names: Vec<&str> = parsed.iter().map(|c| c.name.as_str()).collect();
+
+        assert!(
+            names.contains(&"First"),
+            "the plain link must survive: {names:?}"
+        );
+        assert!(
+            names.contains(&"Second"),
+            "the base64 textarea must survive: {names:?}"
+        );
+    }
+
+    /// A Clash feed that also carries a plain share link must keep both.
+    #[test]
+    fn a_mixed_clash_feed_keeps_both_the_link_and_the_proxies() {
+        let body = r#"proxies:
+  - name: "Clash Node"
+    type: vless
+    server: clash.example.com
+    port: 443
+    uuid: abc-123
+    tls: true
+link: "vless://uuid1@plain.example.com:443?security=tls#Plain"
+"#;
+
+        let parsed = parse_subscription_document("test", 1, body.as_bytes());
+        let names: Vec<&str> = parsed.iter().map(|c| c.name.as_str()).collect();
+
+        assert!(
+            names.contains(&"Plain"),
+            "the plain link must survive: {names:?}"
+        );
+        assert!(
+            names.contains(&"Clash Node"),
+            "the proxies entry must survive: {names:?}"
+        );
     }
 
     #[test]

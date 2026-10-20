@@ -20,6 +20,12 @@ concurrency:
 jobs:
   gates:
     name: fmt + strict clippy + tests
+    # The audit action publishes its result as a commit check. The Checks
+    # API refuses that without `checks: write`, and the action rethrows the
+    # refusal, so the step failed even with zero advisories.
+    permissions:
+      contents: read
+      checks: write
     # Mirror the release targets (Windows, Ubuntu, macOS): platform-only
     # faults must fail here, not after release.
     strategy:

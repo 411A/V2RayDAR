@@ -18,15 +18,10 @@ use serde_json::{Map, Value};
 
 use crate::{
     config::AppConfig,
-    constants::{CONFIG_FILE_NAME, CONFIG_MIGRATION_NOTE},
+    constants::{CONFIG_FILE_NAME, CONFIG_MIGRATION_NOTE, DEFAULT_CONFIG_TEMPLATE},
     db::Database,
     paths::AppPaths,
 };
-
-/// Shipped defaults (settings + pre-selected subscriptions) seeding a fresh
-/// database on first run. Kept as the documented example file so the seed
-/// stays in sync with what users read.
-const DEFAULT_CONFIG_TEMPLATE: &str = include_str!("../configs.example.yaml");
 
 /// What [`load_or_migrate`] did, for startup logging.
 #[derive(Debug)]
@@ -227,21 +222,9 @@ pub fn reconcile_with_defaults(db: &Database, config: &mut AppConfig) -> Result<
     let user_map = flatten_config(config)?;
     let old_map = flatten_config(&old)?;
     let new_map = flatten_config(&embedded)?;
-    let mut merged = user_map;
-    for (key, new_value) in &new_map {
-        match (merged.get(key), old_map.get(key)) {
-            (None, _) => {
-                merged.insert(key.clone(), new_value.clone());
-                report.settings_added += 1;
-            }
-            (Some(current), old) => {
-                if old == Some(current) && current != new_value {
-                    merged.insert(key.clone(), new_value.clone());
-                    report.settings_updated += 1;
-                }
-            }
-        }
-    }
+    let (merged, added, updated) = merge_default_values(user_map, &old_map, &new_map);
+    report.settings_added = added;
+    report.settings_updated = updated;
     report.subs_added = append_missing_subscriptions(
         &mut config.subscriptions,
         &embedded.subscriptions,
@@ -286,12 +269,22 @@ fn legacy_reconcile(
 /// Append embedded subscriptions whose URL the user never had. A URL present
 /// in the baseline but missing from the user's list was deleted on purpose
 /// and is not resurrected. Returns the number appended.
+///
+/// New defaults land at the **end** of the user's list. The vec order is the
+/// priority order, so carrying the embedded priority over would splice the
+/// source between the user's rows instead of appending it.
 fn append_missing_subscriptions(
     user: &mut Vec<crate::config::SubscriptionSource>,
     embedded: &[crate::config::SubscriptionSource],
     baseline: &[crate::config::SubscriptionSource],
 ) -> usize {
     let mut added = 0;
+    let mut next_priority = user
+        .iter()
+        .map(|source| source.priority)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1);
     for source in embedded {
         if user.iter().any(|own| own.url == source.url) {
             continue;
@@ -299,7 +292,10 @@ fn append_missing_subscriptions(
         if baseline.iter().any(|old| old.url == source.url) {
             continue;
         }
-        user.push(source.clone());
+        let mut appended = source.clone();
+        appended.priority = next_priority;
+        next_priority = next_priority.saturating_add(1);
+        user.push(appended);
         added += 1;
     }
     added
@@ -331,6 +327,45 @@ pub fn reset_to_embedded_defaults(db: &Database, config: &mut AppConfig) -> Resu
     restored.subscriptions = subscriptions;
     *config = crate::config::validate_config(restored)?;
     store_defaults_snapshot(db)
+}
+
+/// Three-way merge of the live settings against the old and new defaults.
+///
+/// A key counts as **untouched** when the live value still equals the value
+/// the old defaults shipped; such a key follows the new default. A key the
+/// user changed is left alone.
+///
+/// A setting that a newer release introduced has no entry in the old
+/// defaults. It still works out, because the old baseline is deserialized
+/// into the *current* struct before it is flattened: the missing key
+/// materializes with its serde default, which is exactly the value the live
+/// config carries for a key that was never stored. The pair therefore
+/// compares equal and the key follows the embedded default.
+///
+/// Returns the merged map plus the number of added and updated keys.
+fn merge_default_values(
+    user_map: HashMap<String, String>,
+    old_map: &HashMap<String, String>,
+    new_map: &HashMap<String, String>,
+) -> (HashMap<String, String>, usize, usize) {
+    let mut merged = user_map;
+    let mut added = 0;
+    let mut updated = 0;
+    for (key, new_value) in new_map {
+        match (merged.get(key), old_map.get(key)) {
+            (None, _) => {
+                merged.insert(key.clone(), new_value.clone());
+                added += 1;
+            }
+            (Some(current), old) => {
+                if old == Some(current) && current != new_value {
+                    merged.insert(key.clone(), new_value.clone());
+                    updated += 1;
+                }
+            }
+        }
+    }
+    (merged, added, updated)
 }
 
 fn flatten_config(config: &AppConfig) -> Result<HashMap<String, String>> {
@@ -729,6 +764,152 @@ mod tests {
         let json = serde_json::to_string(old).expect("old serializes");
         db.save_defaults_snapshot("0.0.1", "old-fingerprint", &json)
             .expect("snapshot stores");
+    }
+
+    /// Store a baseline whose JSON omits `key`, mimicking a release that did
+    /// not have that setting yet. The baseline is deserialized into the
+    /// current struct when it is loaded, so the missing key materializes with
+    /// its serde default.
+    fn store_old_snapshot_without(db: &Database, old: &AppConfig, key: &str) {
+        let mut value = serde_json::to_value(old).expect("old serializes");
+        value
+            .as_object_mut()
+            .expect("config is an object")
+            .remove(key);
+        let json = serde_json::to_string(&value).expect("old stringifies");
+        db.save_defaults_snapshot("0.0.1", "old-fingerprint", &json)
+            .expect("snapshot stores");
+    }
+
+    /// The defaults template and the serde `default_*` functions are two
+    /// sources of truth for the same values. When they drift, a fresh install
+    /// (which seeds from the template) and an upgraded install (whose missing
+    /// keys materialize from the serde defaults) end up with different
+    /// settings for the same key. Keep them provably equal.
+    #[test]
+    fn embedded_template_matches_the_serde_defaults() {
+        let serde_defaults: AppConfig =
+            serde_json::from_str("{}").expect("an empty object yields the serde defaults");
+        let embedded = embedded_defaults();
+
+        let serde_map = flatten_config(&serde_defaults).expect("flattens the serde defaults");
+        let embedded_map = flatten_config(&embedded).expect("flattens the embedded defaults");
+
+        let mut serde_keys: Vec<&String> = serde_map.keys().collect();
+        serde_keys.sort();
+        let mut embedded_keys: Vec<&String> = embedded_map.keys().collect();
+        embedded_keys.sort();
+        assert_eq!(
+            serde_keys, embedded_keys,
+            "the defaults template and the serde defaults cover different settings"
+        );
+
+        for (key, embedded_value) in &embedded_map {
+            assert_eq!(
+                serde_map.get(key),
+                Some(embedded_value),
+                "setting {key} differs between the defaults template and the serde default"
+            );
+        }
+    }
+
+    /// A setting the previous release did not have yet must follow the
+    /// embedded default on an existing install, and a value the user set
+    /// must survive.
+    #[test]
+    fn setting_absent_from_the_old_baseline_follows_the_embedded_default() {
+        let (db, _db_guard) = open_temp_db("newkey");
+        let embedded = embedded_defaults();
+        let mut user = embedded.clone();
+        // The user never set top_n: it still carries the serde default.
+        store_old_snapshot_without(&db, &embedded, "top_n");
+
+        let report = reconcile_with_defaults(&db, &mut user).expect("reconciles");
+        assert_eq!(
+            user.top_n, embedded.top_n,
+            "a setting the old baseline did not have follows the embedded default"
+        );
+        assert_eq!(report.settings_updated, 0, "nothing changed");
+    }
+
+    #[test]
+    fn setting_absent_from_the_old_baseline_keeps_a_user_value() {
+        let (db, _db_guard) = open_temp_db("newkey-user");
+        let embedded = embedded_defaults();
+        let mut user = embedded.clone();
+        user.top_n = 42;
+        save_app_config(&db, &user).expect("saves");
+        store_old_snapshot_without(&db, &embedded, "top_n");
+
+        reconcile_with_defaults(&db, &mut user).expect("reconciles");
+        assert_eq!(user.top_n, 42, "a user-set value is left alone");
+    }
+
+    /// The old baseline is deserialized into the current struct, so a setting
+    /// a newer release introduced materializes with its serde default on both
+    /// sides. The pair therefore compares equal and the key follows the
+    /// embedded default.
+    #[test]
+    fn merge_treats_a_key_the_old_baseline_lacked_as_untouched() {
+        let user = HashMap::from([("foo".to_string(), "\"10\"".to_string())]);
+        // Materialized by deserializing the old baseline into the current
+        // struct: the key was missing, so it took its serde default.
+        let old = HashMap::from([("foo".to_string(), "\"10\"".to_string())]);
+        let new = HashMap::from([("foo".to_string(), "\"20\"".to_string())]);
+
+        let (merged, added, updated) = merge_default_values(user, &old, &new);
+        assert_eq!(
+            merged.get("foo"),
+            Some(&"\"20\"".to_string()),
+            "an untouched key follows the new default"
+        );
+        assert_eq!(updated, 1);
+        assert_eq!(added, 0);
+    }
+
+    #[test]
+    fn merge_keeps_a_value_the_user_changed() {
+        let user = HashMap::from([("foo".to_string(), "\"42\"".to_string())]);
+        let old = HashMap::from([("foo".to_string(), "\"10\"".to_string())]);
+        let new = HashMap::from([("foo".to_string(), "\"20\"".to_string())]);
+
+        let (merged, _added, updated) = merge_default_values(user, &old, &new);
+        assert_eq!(
+            merged.get("foo"),
+            Some(&"\"42\"".to_string()),
+            "a customized key is left alone"
+        );
+        assert_eq!(updated, 0);
+    }
+
+    /// A default source the user never had must land at the END of their
+    /// list. The vec order is the priority order, so the embedded priority
+    /// must not splice it between the user's rows.
+    #[test]
+    fn appended_default_subscriptions_land_at_the_end() {
+        let embedded = embedded_defaults();
+        let embedded_first = embedded.subscriptions[0].clone();
+        let mut user = vec![test_source("mine", "https://test.invalid/mine.txt")];
+        user[0].priority = 1;
+
+        let added = append_missing_subscriptions(&mut user, &embedded.subscriptions, &[]);
+        assert!(added > 0, "the embedded sources are appended");
+        assert_eq!(user[0].name, "mine", "the user's own source stays first");
+        assert_eq!(
+            user[1].url, embedded_first.url,
+            "the first embedded source follows the user's list"
+        );
+        assert!(
+            user[1].priority > user[0].priority,
+            "an appended source must not outrank the user's rows: {:?}",
+            user.iter()
+                .map(|s| (s.name.clone(), s.priority))
+                .collect::<Vec<_>>()
+        );
+
+        // The order survives the canonicalization the loader performs.
+        crate::config::canonicalize_subscriptions(&mut user);
+        assert_eq!(user[0].name, "mine", "still first after canonicalization");
     }
 
     #[test]

@@ -27,7 +27,7 @@
 </p>
 
 <p align="center">
-  <strong>只需在任何常开设备上运行一次——旧手机、电脑、树莓派或家庭服务器皆可——V2RayDAR 便会持续查找、验证最佳可用配置，并将其提供给局域网中的每台设备。它还提供标准的 SOCKS5/HTTP 代理，因此局域网中的每台设备都能使用可用的 V2Ray 连接——无需安装 V2Ray 客户端。</strong>
+  <strong>只需在任何常开设备上运行一次——旧手机、电脑、树莓派或家庭服务器皆可——V2RayDAR 便会持续查找、验证最佳可用配置，并将其提供给局域网中的每台设备。它还提供标准的 SOCKS5/HTTP 代理，因此局域网中的每台设备都能使用可用的 V2Ray 连接——无需安装 V2Ray 客户端（如需客户端，推荐 <a href="https://github.com/clash-verge-rev/clash-verge-rev">Clash Verge Rev</a>）。</strong>
 </p>
 
 <p align="center">

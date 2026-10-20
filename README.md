@@ -27,7 +27,7 @@
 </p>
 
 <p align="center">
-  <strong>Run it once on any always-on device — an old phone, PC, Raspberry Pi, or home server — and V2RayDAR continuously finds, verifies, and serves the best working configs to every device on your LAN. It also exposes a standard SOCKS5/HTTP proxy, so every device on your LAN gets a working V2Ray connection — no V2Ray client needed.</strong>
+  <strong>Run it once on any always-on device — an old phone, PC, Raspberry Pi, or home server — and V2RayDAR continuously finds, verifies, and serves the best working configs to every device on your LAN. It also exposes a standard SOCKS5/HTTP proxy, so every device on your LAN gets a working V2Ray connection — no V2Ray client needed (if you need one, <a href="https://github.com/clash-verge-rev/clash-verge-rev">Clash Verge Rev</a> is recommended).</strong>
 </p>
 
 <p align="center">

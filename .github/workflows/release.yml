@@ -494,7 +494,7 @@ jobs:
 
           cd "$(dirname "$0")"
 
-          SING_BOX_VERSION="1.13.13"
+          SING_BOX_VERSION="__SING_BOX_VERSION__"
           SING_BOX_GITHUB="https://github.com/SagerNet/sing-box/releases/download/v${SING_BOX_VERSION}"
 
           info() { printf '\033[1;34m>\033[0m %s\n' "$*"; }
@@ -577,6 +577,11 @@ jobs:
               ./install-termux.sh
               v2raydar
           EOF
+
+          # The heredoc above is quoted (literal), so the pinned version is
+          # templated in afterwards. Bumping the workflow env then updates the
+          # generated installer too, instead of leaving it on an old version.
+          sed -i "s/__SING_BOX_VERSION__/${SING_BOX_VERSION}/g" "$package/install-termux.sh"
 
           tar -C dist -czf "dist/$asset" "${{ matrix.package_dir }}"
 

@@ -200,6 +200,12 @@ function Get-Arch {
 
 function Select-Asset {
     param([string]$Arch)
+    # The release pipeline builds Windows for x86_64 only. Naming an asset
+    # for any other architecture produced a 404 after five retries; fail
+    # early with a clear message instead.
+    if ($Arch -ne "x86_64") {
+        Write-Err "no Windows build for $Arch - the current release ships x86_64 only"
+    }
     return "v2raydar-windows-${Arch}_with_singbox.zip"
 }
 

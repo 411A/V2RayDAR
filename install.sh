@@ -44,6 +44,13 @@ need() {
     command -v "$1" >/dev/null 2>&1 || err "required command not found: $1"
 }
 
+# Print the path of the first file with the given name under a directory.
+# Kept free of `-perm` so it behaves identically on GNU and BSD find, and
+# so it does not depend on the archive preserving the executable bit.
+find_named() {
+    find "$1" -type f -name "$2" 2>/dev/null | head -1
+}
+
 # Ensure a download tool exists. When the script arrives without curl (local
 # copy, wget pipe), bootstrap it automatically via the system package manager
 # instead of failing: update indexes, then install curl (and tar, needed to
@@ -220,7 +227,13 @@ select_asset() {
 
     case "$OS" in
         linux)
-            ASSET="v2raydar-linux-${ARCH}_with_singbox.tar.gz"
+            # The release pipeline builds Linux for x86_64 only. Naming an
+            # asset for any other architecture produced a 404 after five
+            # retries; fail early with a clear message instead.
+            case "$ARCH" in
+                x86_64) ASSET="v2raydar-linux-x86_64_with_singbox.tar.gz" ;;
+                *)      err "no Linux build for $ARCH — the current release ships x86_64 only" ;;
+            esac
             ARCHIVE_TYPE="tar.gz"
             ;;
         macos)
@@ -587,12 +600,22 @@ extract_archive() {
         zip)
             _tmpdir="$(mktemp_d)"
             unzip -qo "$_file" -d "$_tmpdir"
-            # Find the v2raydar binary inside the .app bundle
-            _app_binary="$(find "$_tmpdir" -name "$APP_NAME" -type f \( -perm /111 -o -perm +111 \) 2>/dev/null | head -1)"
+            # The macOS release is an .app bundle. Its real binary is
+            # Contents/MacOS/v2raydar-bin, while Contents/MacOS/V2RayDAR is a
+            # shell wrapper that opens Terminal.app. Look for the binary
+            # first and fall back to the plain name.
+            #
+            # The executable bit is not used as a filter: `unzip` does not
+            # reliably preserve it, and the previous `-perm /111` test was
+            # GNU-only syntax that made BSD find abort before it could match
+            # anything (so the name mismatch below went unnoticed).
+            _app_binary="$(find_named "$_tmpdir" "v2raydar-bin")"
+            [ -n "$_app_binary" ] || _app_binary="$(find_named "$_tmpdir" "$APP_NAME")"
             [ -n "$_app_binary" ] || err "could not find $APP_NAME binary inside archive"
             cp "$_app_binary" "$_dest/$APP_NAME"
+            chmod +x "$_dest/$APP_NAME" 2>/dev/null || true
             # Copy sing-box if present
-            _sing_box="$(find "$_tmpdir" -name "sing-box" -type f 2>/dev/null | head -1)"
+            _sing_box="$(find_named "$_tmpdir" "sing-box")"
             [ -n "$_sing_box" ] && cp "$_sing_box" "$_dest/sing-box" 2>/dev/null || true
             rm -rf "$_tmpdir"
             ;;

@@ -668,6 +668,71 @@ describe("live ranked events refresh overview top-configs too", () => {
   });
 });
 
+describe("live config-changed announcements", () => {
+  // A fake EventSource that records the handlers, so the feed's
+  // config-changed handler can be driven directly.
+  function feedSandbox() {
+    const handlers = new Map();
+    class FakeEventSource {
+      constructor(url) {
+        this.url = url;
+        this.onerror = null;
+      }
+      addEventListener(type, fn) {
+        if (!handlers.has(type)) handlers.set(type, []);
+        handlers.get(type).push(fn);
+      }
+      close() {}
+    }
+    const sb = makeSandbox();
+    sb.EventSource = FakeEventSource;
+    sb.window.EventSource = FakeEventSource;
+    const loaded = loadApp(sb);
+    loaded.api.connectFeed();
+    return {
+      ...loaded,
+      fire(type, data = "{}") {
+        for (const fn of handlers.get(type) || []) fn({ data });
+      },
+    };
+  }
+
+  it("announces a config change made outside this tab", () => {
+    const { api, sandbox, fire } = feedSandbox();
+    api.state.selfConfigChangeAt = 0;
+
+    fire("config-changed");
+
+    const toasts = sandbox.__elements.get("toasts");
+    assert.equal(toasts.children.length, 1, "an external change is announced");
+    assert.match(toasts.children[0].textContent, /changed on the server/i);
+  });
+
+  it("does not announce the echo of this tab's own change", () => {
+    const { api, sandbox, fire } = feedSandbox();
+
+    // A mutating request from this tab stamps the moment; the broadcast
+    // that follows is our own echo and must stay silent.
+    api.state.selfConfigChangeAt = Date.now();
+
+    fire("config-changed");
+
+    const toasts = sandbox.__elements.get("toasts");
+    assert.equal(toasts.children.length, 0, "our own echo is not announced");
+  });
+
+  it("announces again once the echo window has passed", () => {
+    const { api, sandbox, fire } = feedSandbox();
+
+    api.state.selfConfigChangeAt = Date.now() - 60_000;
+
+    fire("config-changed");
+
+    const toasts = sandbox.__elements.get("toasts");
+    assert.equal(toasts.children.length, 1, "a later change is announced");
+  });
+});
+
 describe("refresh badge second line: ping countdown under fetch", () => {
   it("counts down when cadences differ, hides only when they match", () => {
     api.state.hasSummaryApi = true;

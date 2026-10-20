@@ -195,6 +195,7 @@ const EXPORT_HOOK = `;globalThis.__v2 = {
   el, cell, preserveViewport,
   dropIndex, subReorder, subsExportText, parseSubsImport, partitionSubsImport, submitSubsImport, openSubsImport, openSubsExport, pasteIntoImport, shutdownServer, showStopped,
   refreshBusy, pingBusy, updateCycleButtons, triggerCycle, wire, startPolling,
+  connectFeed,
   openSubDialog, submitSubDialog, selectProxy, subToggle, subDelete, subEdit,
   flagFor, apiPath, subMessage, nextCycleMessage, maskedHost, currentTab, showTab, goTab,
   saveNow, fetchJson, toast, setStatus, setDirty, renderStats, loadResults,

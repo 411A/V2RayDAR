@@ -19,3 +19,25 @@ assets/* linguist-generated
 frontend/assets/* linguist-generated
 docs/* linguist-generated
 .github/* linguist-generated
+
+# Line endings: the shipped frontend assets are embedded into the binary
+# (include_str!) and served over HTTP. With core.autocrlf=true a Windows
+# checkout baked CRLF into the payload, so the Windows build shipped a
+# ~9 KiB larger dashboard than the Linux one and the two were not
+# byte-identical. Pin them to LF so every platform serves the same bytes.
+frontend/**/*.js   text eol=lf
+frontend/**/*.mjs  text eol=lf
+frontend/**/*.css  text eol=lf
+frontend/**/*.html text eol=lf
+frontend/**/*.json text eol=lf
+frontend/**/*.svg  text eol=lf
+
+# A shell script with a CRLF shebang does not run: the kernel reads
+# "/bin/sh\r". install.sh has to stay LF on every checkout.
+*.sh text eol=lf
+
+# Workflows and YAML are read by tools that expect LF.
+.github/**/*.yml text eol=lf
+.github/**/*.yaml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf

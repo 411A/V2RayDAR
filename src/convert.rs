@@ -383,10 +383,10 @@ fn clash_vmess_to_uri(proxy: &YamlValue, server: &str, port: u16, name: &str) ->
             }
         }
         "httpupgrade" => {
-            if let Some(path) = yaml_string(proxy, &["httpupgrade-opts", "path"]) {
+            if let Some(path) = yaml_nested_string(proxy, "httpupgrade-opts.path") {
                 vmess_json.insert("path".to_string(), json!(path));
             }
-            if let Some(host) = yaml_string(proxy, &["httpupgrade-opts", "host"]) {
+            if let Some(host) = yaml_nested_string(proxy, "httpupgrade-opts.host") {
                 vmess_json.insert("host".to_string(), json!(host));
             }
         }
@@ -414,7 +414,7 @@ fn clash_vless_to_uri(proxy: &YamlValue, server: &str, port: u16, name: &str) ->
     if let Some(fp) = yaml_string(proxy, &["client-fingerprint"]) {
         params.insert("fp".to_string(), fp);
     }
-    if let Some(alpn) = yaml_string(proxy, &["alpn"]) {
+    if let Some(alpn) = yaml_alpn(proxy) {
         params.insert("alpn".to_string(), alpn);
     }
     if let Some(flow) = yaml_string(proxy, &["flow"]) {
@@ -468,7 +468,7 @@ fn clash_vless_to_uri(proxy: &YamlValue, server: &str, port: u16, name: &str) ->
             if let Some(path) = yaml_nested_string(proxy, "httpupgrade-opts.path") {
                 params.insert("path".to_string(), path);
             }
-            if let Some(host) = yaml_string(proxy, &["httpupgrade-opts", "host"]) {
+            if let Some(host) = yaml_nested_string(proxy, "httpupgrade-opts.host") {
                 params.insert("host".to_string(), host);
             }
         }
@@ -506,7 +506,7 @@ fn clash_trojan_to_uri(proxy: &YamlValue, server: &str, port: u16, name: &str) -
     }
     match network.as_str() {
         "ws" => {
-            if let Some(path) = yaml_string(proxy, &["ws-opts", "path"]) {
+            if let Some(path) = yaml_nested_string(proxy, "ws-opts.path") {
                 params.insert("path".to_string(), path);
             }
             if let Some(host) = yaml_ws_host(proxy) {
@@ -514,12 +514,12 @@ fn clash_trojan_to_uri(proxy: &YamlValue, server: &str, port: u16, name: &str) -
             }
         }
         "grpc" => {
-            if let Some(sn) = yaml_string(proxy, &["grpc-opts", "grpc-service-name"]) {
+            if let Some(sn) = yaml_nested_string(proxy, "grpc-opts.grpc-service-name") {
                 params.insert("serviceName".to_string(), sn);
             }
         }
         "h2" | "http" => {
-            if let Some(path) = yaml_string(proxy, &["h2-opts", "path"]) {
+            if let Some(path) = yaml_nested_string(proxy, "h2-opts.path") {
                 params.insert("path".to_string(), path);
             }
             if let Some(host) = yaml_h2_host(proxy) {
@@ -527,10 +527,10 @@ fn clash_trojan_to_uri(proxy: &YamlValue, server: &str, port: u16, name: &str) -
             }
         }
         "httpupgrade" => {
-            if let Some(path) = yaml_string(proxy, &["httpupgrade-opts", "path"]) {
+            if let Some(path) = yaml_nested_string(proxy, "httpupgrade-opts.path") {
                 params.insert("path".to_string(), path);
             }
-            if let Some(host) = yaml_string(proxy, &["httpupgrade-opts", "host"]) {
+            if let Some(host) = yaml_nested_string(proxy, "httpupgrade-opts.host") {
                 params.insert("host".to_string(), host);
             }
         }
@@ -560,7 +560,7 @@ fn clash_ss_to_uri(proxy: &YamlValue, server: &str, port: u16, name: &str) -> Re
 
     let mut query_parts = Vec::new();
     if let Some(plugin) = yaml_string(proxy, &["plugin"]) {
-        let opts = yaml_string(proxy, &["plugin-opts"])
+        let opts = yaml_plugin_opts(proxy)
             .map(|o| format!(";{o}"))
             .unwrap_or_default();
         let plugin_value =
@@ -1251,6 +1251,36 @@ fn yaml_string(value: &YamlValue, keys: &[&str]) -> Option<String> {
     None
 }
 
+/// Read a Clash `plugin-opts` entry as the flat `key=value;key=value` form a
+/// share link carries.
+///
+/// Mihomo stores the options as a **mapping**, so reading them as a plain
+/// string always failed and the options were dropped. A flat string is still
+/// accepted for feeds that use it.
+fn yaml_plugin_opts(value: &YamlValue) -> Option<String> {
+    let map = value.as_mapping()?;
+    let opts = map.get(YamlValue::String("plugin-opts".into()))?;
+    match opts {
+        YamlValue::String(s) if !s.is_empty() => Some(s.clone()),
+        YamlValue::Mapping(opts) => {
+            let mut parts: Vec<String> = Vec::new();
+            for (key, val) in opts {
+                let (Some(key), Some(val)) = (key.as_str(), val.as_str()) else {
+                    continue;
+                };
+                parts.push(format!("{key}={val}"));
+            }
+            if parts.is_empty() {
+                None
+            } else {
+                parts.sort();
+                Some(parts.join(";"))
+            }
+        }
+        _ => None,
+    }
+}
+
 fn yaml_u16(value: &YamlValue, keys: &[&str]) -> Option<u16> {
     if let YamlValue::Mapping(map) = value {
         for key in keys {
@@ -1935,6 +1965,87 @@ password: mypassword
             .unwrap();
         let creds = String::from_utf8(decoded).unwrap();
         assert_eq!(creds, "aes-256-gcm:mypassword");
+    }
+
+    /// `ws-opts.path` and friends live one level down. Reading them with the
+    /// flat top-level lookup always failed, so the transport path was
+    /// dropped from the share link.
+    #[test]
+    fn clash_transport_options_survive_the_conversion() {
+        let yaml_str = r#"
+name: "Test Trojan"
+type: trojan
+server: example.com
+port: 443
+password: mypassword
+tls: true
+network: ws
+ws-opts:
+  path: /ray
+  headers:
+    Host: example.com
+"#;
+        let proxy: YamlValue = serde_yaml::from_str(yaml_str).unwrap();
+        let uri = clash_proxy_to_uri(&proxy).unwrap();
+
+        assert!(uri.contains("path=/ray"), "the ws path must survive: {uri}");
+        assert!(
+            uri.contains("host=example.com"),
+            "the host must survive: {uri}"
+        );
+    }
+
+    /// Mihomo stores `alpn` as a sequence; reading it as a flat string
+    /// dropped it.
+    #[test]
+    fn clash_alpn_sequence_survives_the_conversion() {
+        let yaml_str = r#"
+name: "Test VLESS"
+type: vless
+server: example.com
+port: 443
+uuid: abc-123
+tls: true
+alpn:
+  - h2
+  - http/1.1
+"#;
+        let proxy: YamlValue = serde_yaml::from_str(yaml_str).unwrap();
+        let uri = clash_proxy_to_uri(&proxy).unwrap();
+
+        assert!(
+            uri.contains("alpn=h2%2Chttp/1.1"),
+            "the alpn list must survive: {uri}"
+        );
+    }
+
+    /// Mihomo stores `plugin-opts` as a mapping; reading it as a flat string
+    /// dropped the options.
+    #[test]
+    fn clash_plugin_options_survive_the_conversion() {
+        let yaml_str = r#"
+name: "Test SS"
+type: ss
+server: example.com
+port: 8388
+cipher: aes-256-gcm
+password: mypassword
+plugin: v2ray-plugin
+plugin-opts:
+  mode: websocket
+  host: example.com
+"#;
+        let proxy: YamlValue = serde_yaml::from_str(yaml_str).unwrap();
+        let uri = clash_proxy_to_uri(&proxy).unwrap();
+
+        assert!(
+            uri.contains("plugin=v2ray-plugin"),
+            "the plugin must survive: {uri}"
+        );
+        assert!(
+            uri.contains("mode%3Dwebsocket"),
+            "the plugin options must survive: {uri}"
+        );
     }
 
     #[test]

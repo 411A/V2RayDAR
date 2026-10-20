@@ -20,7 +20,7 @@ pub fn try_extract_from_html(source: &str, priority: u32, body: &[u8]) -> Option
     let mut seen = HashSet::new();
 
     // 1. Extract URIs from HTML attributes (value="", onclick="", data-link="", etc.)
-    extract_uris_from_attributes(&text, &mut candidates, &mut seen);
+    extract_uris_from_attributes(source, priority, &text, &mut candidates, &mut seen);
 
     // 2. Extract base64-encoded URI lists from <textarea>/<code>/<pre> tags
     extract_base64_from_tags(source, priority, &text, &mut candidates, &mut seen);
@@ -58,6 +58,8 @@ fn is_likely_html(body: &[u8]) -> bool {
 /// - `onclick="copyLink('vmess://...')"`
 /// - `data-link="trojan://..."`
 fn extract_uris_from_attributes(
+    source: &str,
+    priority: u32,
     text: &str,
     candidates: &mut Vec<Candidate>,
     seen: &mut HashSet<String>,
@@ -71,6 +73,14 @@ fn extract_uris_from_attributes(
                 break;
             };
             let abs_pos = offset + pos;
+
+            // The scheme must start a token. Without this, the substring
+            // "ss://" inside "vless://" matched too, and every vless link
+            // also produced a bogus ss:// candidate.
+            if !starts_token(&text[..abs_pos]) {
+                offset = abs_pos + scheme.len();
+                continue;
+            }
 
             // Scan backward for opening delimiter
             let open_delim = text[..abs_pos]
@@ -96,7 +106,7 @@ fn extract_uris_from_attributes(
 
             if !candidate.is_empty()
                 && seen.insert(candidate.to_string())
-                && let Ok(parsed) = parse_share_link("", 0, candidate)
+                && let Ok(parsed) = parse_share_link(source, priority, candidate)
             {
                 candidates.push(parsed);
             }
@@ -104,6 +114,15 @@ fn extract_uris_from_attributes(
             offset = search_from + close_offset + 1;
         }
     }
+}
+
+/// Whether the text before a match ends in a character that can precede a
+/// scheme. A scheme continues the surrounding token otherwise, which is how
+/// "ss://" was found inside "vless://".
+fn starts_token(before: &str) -> bool {
+    before.chars().next_back().is_none_or(|ch| {
+        !ch.is_alphanumeric() && !matches!(ch, '+' | '-' | '.' | ':' | '/' | '%' | '_')
+    })
 }
 
 /// Extract base64-encoded URI lists from `<textarea>`, `<code>`, `<pre>` tags.
@@ -318,6 +337,36 @@ mod tests {
         let candidates = result.unwrap();
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].protocol, "trojan");
+    }
+
+    /// "ss://" is a substring of "vless://". A plain substring search
+    /// therefore produced a second, bogus ss:// candidate for every vless
+    /// link, wasting a probe slot on a config that cannot work.
+    #[test]
+    fn a_vless_link_does_not_also_produce_an_ss_candidate() {
+        let html = r#"<html><body>
+<input type="text" value="vless://abc123@example.com:443?security=tls#TestNode">
+</body></html>"#;
+
+        let result = try_extract_from_html("test", 100, html.as_bytes());
+        let candidates = result.expect("candidates extracted");
+        assert_eq!(candidates.len(), 1, "one link, one candidate");
+        assert_eq!(candidates[0].protocol, "vless");
+    }
+
+    /// A candidate found in an attribute belongs to the source it came from
+    /// and carries that source's priority, like every other candidate.
+    #[test]
+    fn attribute_candidates_keep_the_source_and_priority() {
+        let html = r#"<html><body>
+<input type="text" value="vless://abc123@example.com:443?security=tls#TestNode">
+</body></html>"#;
+
+        let result = try_extract_from_html("my-source", 77, html.as_bytes());
+        let candidates = result.expect("candidates extracted");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].source, "my-source");
+        assert_eq!(candidates[0].priority, 77);
     }
 
     #[test]

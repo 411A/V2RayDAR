@@ -4293,7 +4293,7 @@ mod tests {
         .await;
         assert_eq!(response.status(), StatusCode::OK);
         let stored = stored_config(&state);
-        assert!(!stored.sharing.token.trim().is_empty());
+        assert_ne!(stored.sharing.token.trim(), "");
     }
 
     #[test]

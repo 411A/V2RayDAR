@@ -877,7 +877,7 @@ mod tests {
     fn plan_includes_both_cards_when_everything_ready() {
         let planned = plan(&test_config(), &lan_hosts(), None, &|_| true);
 
-        assert!(planned.skipped.is_empty());
+        assert_eq!(planned.skipped, Vec::<String>::new());
         assert_eq!(planned.cards.len(), 2);
         assert_eq!(planned.cards[0].title, "LAN SUBSCRIPTION");
         assert_eq!(
@@ -1209,12 +1209,12 @@ mod tests {
     #[test]
     fn save_planned_reports_no_skips_when_everything_ready() {
         let planned = plan(&test_config(), &lan_hosts(), None, &|_| true);
-        assert!(planned.skipped.is_empty());
+        assert_eq!(planned.skipped, Vec::<String>::new());
         let dir = unique_temp_dir("no-skip");
 
         let outcome = save_planned(&planned, &dir).expect("renders");
 
-        assert!(outcome.skipped.is_empty());
+        assert_eq!(outcome.skipped, Vec::<String>::new());
         assert!(outcome.path.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }

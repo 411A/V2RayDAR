@@ -921,7 +921,7 @@ mod tests {
     fn token_true_generates_token() {
         let config = parse_inline("sharing:\n    token: true\n");
 
-        assert!(!config.sharing.token.is_empty());
+        assert_ne!(config.sharing.token, "");
         assert!(
             config
                 .subscription_url("127.0.0.1", false)
@@ -1157,7 +1157,7 @@ mod tests {
         config.sharing.require_token = false;
         config.sharing.token.clear();
         let config = super::validate_config(config).expect("disabled protection validates");
-        assert!(config.sharing.token.is_empty());
+        assert_eq!(config.sharing.token, "");
     }
 
     #[test]

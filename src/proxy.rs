@@ -1737,7 +1737,10 @@ mod tests {
             vec!["dead-key".to_string()]
         );
         proxy.update(&disabled, &[], true).await;
-        assert!(proxy.state.read().await.failed_config_keys.is_empty());
+        assert_eq!(
+            proxy.state.read().await.failed_config_keys,
+            Vec::<String>::new()
+        );
     }
 
     fn minimal_outbound() -> Value {

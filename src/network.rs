@@ -659,7 +659,7 @@ mod tests {
         let hosts = discoverable_hosts(&config);
 
         let status = sharing_status_from_hosts(&config, &hosts);
-        assert!(hosts.is_empty());
+        assert_eq!(hosts, Vec::<String>::new());
         assert_eq!(status.discoverable, "no");
         assert_eq!(status.firewall, "not required for local-only bind");
     }

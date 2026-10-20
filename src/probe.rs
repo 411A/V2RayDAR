@@ -2944,7 +2944,7 @@ mod tests {
             &[ranked("ok", "vless://uuid@example.com:443", true, Some(5))],
             3,
         );
-        assert!(clean.is_empty());
+        assert_eq!(clean, Vec::<(String, usize)>::new());
     }
 
     fn ranked(name: &str, uri: &str, reachable: bool, latency_ms: Option<u128>) -> RankedConfig {

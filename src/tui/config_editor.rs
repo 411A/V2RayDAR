@@ -323,7 +323,7 @@ mod tests {
 
         // Clearing the token while protection is on re-mints.
         apply(&mut config, ConfigKey::Token, "").expect("clears");
-        assert!(!config.sharing.token.trim().is_empty());
+        assert_ne!(config.sharing.token.trim(), "");
 
         // An explicit token is never overwritten.
         apply(&mut config, ConfigKey::Token, "user-token").expect("sets");

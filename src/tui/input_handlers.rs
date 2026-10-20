@@ -328,7 +328,19 @@ fn commit_reset(
     match crate::settings::reset_to_embedded_defaults(database, &mut state.editable) {
         Ok(()) => {
             state.reset_code = None;
-            state.dirty = true;
+            // Persist right away. The reset only touched the in-memory copy
+            // before, so it was silently lost on quit unless the user
+            // happened to press "s" afterwards.
+            //
+            // A reset is written straight through, not merged: the 3-way
+            // merge reads "unchanged since startup" as "keep the stored
+            // value", and after a reset the TUI copy holds the new default,
+            // not the startup value. The dashboard reset writes the same way.
+            if let Err(error) = crate::settings::save_app_config(database, &state.editable) {
+                state.status = format!("Reset failed: {error:#}");
+                return;
+            }
+            state.dirty = false;
             finish_edit(
                 state,
                 "Defaults restored; subscriptions and essentials kept",
@@ -379,7 +391,8 @@ mod tests {
     use crate::config::SubscriptionSource;
 
     use super::{
-        commit_new_enabled, commit_new_url, commit_priority, commit_url, start_new_subscription,
+        commit_new_enabled, commit_new_url, commit_priority, commit_reset, commit_url,
+        start_new_subscription,
     };
     use crate::tui::state::{InputMode, NewSubscriptionStep, TuiState};
 
@@ -448,6 +461,43 @@ mod tests {
                 .collect()
         };
         assert_eq!(broadcast, vec!["c", "a", "b"]);
+    }
+
+    /// A reset that only changed the in-memory copy was lost on quit unless
+    /// the user happened to press "s" afterwards. It has to reach the
+    /// database right away.
+    #[tokio::test]
+    async fn reset_to_defaults_is_persisted() {
+        let dir = std::env::temp_dir().join(format!(
+            "v2raydar-tui-reset-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir can be created");
+        let db = crate::db::Database::open(&dir.join("data.db")).expect("db opens");
+
+        let defaults = crate::config::AppConfig::default_for_first_run();
+        let mut state = TuiState::new(defaults.clone());
+        state.startup_editable = defaults.clone();
+        state.editable.top_n = 99;
+        crate::settings::save_app_config(&db, &state.editable).expect("saves");
+
+        let code = "1234".to_string();
+        state.reset_code = Some(code.clone());
+        state.input = code;
+        let live = broadcast_pair();
+        commit_reset(&mut state, &db, &live.0, &live.1);
+
+        let stored = crate::settings::load_app_config(&db).expect("loads");
+        assert_eq!(
+            stored.top_n, defaults.top_n,
+            "the reset must reach the database"
+        );
+        assert!(!state.dirty, "a persisted reset is not dirty");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

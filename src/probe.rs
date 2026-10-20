@@ -483,7 +483,14 @@ impl ActiveBatchSizer {
         let max = ACTIVE_PROBE_BATCH_MAX_SIZE;
         Self {
             current: initial.min(max).max(1),
-            min: concurrency.clamp(1, ACTIVE_PROBE_BATCH_MIN_SIZE),
+            // The floor must never sit above the starting size. Otherwise the
+            // very first observation raises a small configured batch back up
+            // to the concurrency-derived floor, and a batch size the user
+            // configured is silently ignored.
+            min: concurrency
+                .clamp(1, ACTIVE_PROBE_BATCH_MIN_SIZE)
+                .min(initial)
+                .max(1),
             max: max.max(1),
         }
     }
@@ -3123,6 +3130,29 @@ mod tests {
 
         assert!(sizer.current < 20);
         assert!(sizer.current >= sizer.min);
+    }
+
+    /// A configured batch size below the concurrency must not be pushed back
+    /// up to the concurrency-derived floor: the configured size is the
+    /// starting point the controller adapts from.
+    #[test]
+    fn active_batch_sizer_never_raises_a_configured_batch_size() {
+        let mut sizer = ActiveBatchSizer::new(16, Some(4));
+        assert_eq!(sizer.current, 4);
+        assert_eq!(sizer.min, 4);
+
+        sizer.observe(&BatchProbeStats {
+            splits: 1,
+            ..BatchProbeStats::default()
+        });
+        assert_eq!(sizer.current, 4, "a shrink must not raise the batch");
+
+        sizer.observe(&BatchProbeStats {
+            started_cleanly: true,
+            produced: 4,
+            ..BatchProbeStats::default()
+        });
+        assert_eq!(sizer.current, 8, "a clean batch still grows the size");
     }
 
     #[test]

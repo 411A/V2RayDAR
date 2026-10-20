@@ -46,8 +46,8 @@ use crate::{
     config::{AppConfig, ProbeMode},
     constants::{
         APP_DATA_DIR_NAME, APP_NAME, CACHE_DIR_NAME, CONFIG_FILE_NAME, DB_FILE_NAME,
-        DEFAULT_LOG_FILTER_PLAIN, DEFAULT_LOG_FILTER_TUI, DEFAULT_LOG_FILTER_VERBOSE,
-        FIREWALL_STATE_FILE_NAME, GEOIP_DIR_NAME, GEOIP_MMDB_FILE_NAME,
+        DB_SHM_FILE_NAME, DB_WAL_FILE_NAME, DEFAULT_LOG_FILTER_PLAIN, DEFAULT_LOG_FILTER_TUI,
+        DEFAULT_LOG_FILTER_VERBOSE, FIREWALL_STATE_FILE_NAME, GEOIP_DIR_NAME, GEOIP_MMDB_FILE_NAME,
         LEGACY_APP_MARKER_FILE_NAME, LEGACY_CACHE_MARKER_FILE_NAME, LOCALHOST_IP, MAX_TUI_LOGS,
         sing_box_download_url,
     },
@@ -611,6 +611,13 @@ async fn is_known_app_root_entry(entry: &fs::DirEntry) -> Result<bool> {
         .file_type()
         .await
         .with_context(|| format!("unable to inspect {}", entry.path().display()))?;
+
+    // SQLite keeps the write-ahead log next to the database. They belong to
+    // the app's own database, so an uninstall has to take them with it --
+    // otherwise the data folder is left behind with orphan WAL files.
+    if name == DB_WAL_FILE_NAME || name == DB_SHM_FILE_NAME {
+        return Ok(file_type.is_file());
+    }
 
     match name {
         CONFIG_FILE_NAME
@@ -3668,6 +3675,25 @@ mod tests {
             targets,
             vec![paths.config_path.clone(), paths.cache_dir.clone()]
         );
+        remove_test_root(&root);
+    }
+
+    /// SQLite keeps the write-ahead log next to the database. Those sidecars
+    /// belong to the app, so an uninstall has to take them with it.
+    #[tokio::test]
+    async fn uninstall_takes_the_sqlite_wal_sidecars_with_it() {
+        let root = temp_uninstall_root("wal-sidecars");
+        let paths = test_paths(root.clone());
+        write_file(&paths.config_path, "subscriptions: []\n");
+        write_file(&root.join(DB_FILE_NAME), "db");
+        write_file(&root.join(DB_WAL_FILE_NAME), "wal");
+        write_file(&root.join(DB_SHM_FILE_NAME), "shm");
+
+        let targets = uninstall_targets(&paths)
+            .await
+            .expect("the data root is removed wholesale");
+
+        assert_eq!(targets, vec![root.clone()], "the whole data root goes");
         remove_test_root(&root);
     }
 

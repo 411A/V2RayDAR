@@ -8,6 +8,11 @@ use crate::tui::state::{ConfigKey, MainItem, SubscriptionAction};
 pub const APP_NAME: &str = "V2RayDAR";
 pub const APP_DATA_DIR_NAME: &str = "v2raydar_data";
 pub const DB_FILE_NAME: &str = "data.db";
+/// SQLite write-ahead log sidecar, created next to the database while the
+/// database is open in WAL mode.
+pub const DB_WAL_FILE_NAME: &str = "data.db-wal";
+/// SQLite shared-memory sidecar for the write-ahead log.
+pub const DB_SHM_FILE_NAME: &str = "data.db-shm";
 pub const CACHE_DIR_NAME: &str = "cache";
 pub const GEOIP_DIR_NAME: &str = "geoip";
 pub const GEOIP_MMDB_FILE_NAME: &str = "GeoLite2-Country.mmdb";

@@ -430,10 +430,19 @@ impl Database {
         Ok(count > 0)
     }
 
-    /// Replace every setting in one transaction: a killed process can never
-    /// leave a half-written preference set behind.
+    /// Replace the settings **and** the subscription list in one transaction.
+    ///
+    /// The two used to be written separately, so a crash between them left a
+    /// torn state: the settings half was committed while the subscription
+    /// list kept its old rows. The first-run sentinel only counts the
+    /// settings rows, so the next boot then saw no settings, treated the
+    /// database as fresh and re-seeded it -- overwriting the list.
     #[allow(clippy::significant_drop_tightening)]
-    pub fn save_settings(&self, entries: &[(String, String)]) -> Result<()> {
+    pub fn save_settings_and_subscriptions(
+        &self,
+        entries: &[(String, String)],
+        sources: &[crate::config::SubscriptionSource],
+    ) -> Result<()> {
         let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM settings", [])
@@ -445,6 +454,25 @@ impl Database {
             for (key, value) in entries {
                 stmt.execute(params![key, value])
                     .with_context(|| format!("failed to save setting {key}"))?;
+            }
+        }
+        tx.execute("DELETE FROM subscriptions", [])
+            .context("failed to clear subscriptions")?;
+        {
+            let mut stmt = tx
+                .prepare(
+                    "INSERT INTO subscriptions (name, url, enabled, priority)
+                     VALUES (?1, ?2, ?3, ?4)",
+                )
+                .context("failed to prepare subscriptions insert")?;
+            for source in sources {
+                stmt.execute(params![
+                    source.name,
+                    source.url,
+                    i64::from(source.enabled),
+                    i64::from(source.priority),
+                ])
+                .with_context(|| format!("failed to save subscription {}", source.name))?;
             }
         }
         tx.commit()?;
@@ -512,35 +540,6 @@ impl Database {
         )
         .optional()
         .context("failed to read defaults snapshot")
-    }
-
-    /// Replace every subscription in one transaction: a killed process can
-    /// never leave a half-written source list behind.
-    #[allow(clippy::significant_drop_tightening)]
-    pub fn save_subscriptions(&self, sources: &[crate::config::SubscriptionSource]) -> Result<()> {
-        let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
-        let tx = conn.transaction()?;
-        tx.execute("DELETE FROM subscriptions", [])
-            .context("failed to clear subscriptions")?;
-        {
-            let mut stmt = tx
-                .prepare(
-                    "INSERT INTO subscriptions (name, url, enabled, priority)
-                     VALUES (?1, ?2, ?3, ?4)",
-                )
-                .context("failed to prepare subscriptions insert")?;
-            for source in sources {
-                stmt.execute(params![
-                    source.name,
-                    source.url,
-                    i64::from(source.enabled),
-                    i64::from(source.priority),
-                ])
-                .with_context(|| format!("failed to save subscription {}", source.name))?;
-            }
-        }
-        tx.commit()?;
-        Ok(())
     }
 
     #[allow(clippy::significant_drop_tightening)]
@@ -808,16 +807,22 @@ mod tests {
     #[test]
     fn subscription_urls_stay_unique_and_legacy_twins_converge() {
         let db = open_temp_db("sub-unique");
-        db.save_subscriptions(&[
-            subscription_row("a", "https://example.com/a.txt", 1),
-            subscription_row("b", "https://example.com/b.txt", 2),
-        ])
+        db.save_settings_and_subscriptions(
+            &[],
+            &[
+                subscription_row("a", "https://example.com/a.txt", 1),
+                subscription_row("b", "https://example.com/b.txt", 2),
+            ],
+        )
         .expect("seed persists");
         // A twin URL (even padded) is refused by the unique index.
-        let twin = db.save_subscriptions(&[
-            subscription_row("a", "https://example.com/a.txt", 1),
-            subscription_row("twin", "  https://example.com/a.txt ", 2),
-        ]);
+        let twin = db.save_settings_and_subscriptions(
+            &[],
+            &[
+                subscription_row("a", "https://example.com/a.txt", 1),
+                subscription_row("twin", "  https://example.com/a.txt ", 2),
+            ],
+        );
         assert!(twin.is_err(), "duplicate URL must not persist");
 
         // Legacy databases that already hold twins converge on open: the

@@ -96,6 +96,8 @@ pub enum InputMode {
     ConfigValue(ConfigKey),
     ResetConfirm,
     CleanCacheConfirm,
+    /// Confirm leaving with unsaved changes.
+    QuitConfirm,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

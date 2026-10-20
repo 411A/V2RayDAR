@@ -3822,7 +3822,7 @@ mod tests {
             .database
             .as_ref()
             .expect("test db present")
-            .save_subscriptions(&sources)
+            .save_settings_and_subscriptions(&[], &sources)
             .expect("seed subscriptions save");
     }
 

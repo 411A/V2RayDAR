@@ -441,9 +441,9 @@ async fn main() -> Result<()> {
         }
     } else {
         // Non-TUI modes stay up until the web panel stop button (POST
-        // /api/shutdown) or Ctrl+C. Ctrl+C is caught explicitly so the user
-        // gets a farewell line and the proxy shuts down instead of the
-        // process dying mid-write with no word.
+        // /api/shutdown) or a shutdown signal. The signal is caught explicitly
+        // so the user gets a farewell line and the proxy shuts down instead
+        // of the process dying mid-write with no word.
         tokio::select! {
             result = serve(
                 config.bind,
@@ -456,8 +456,8 @@ async fn main() -> Result<()> {
                 Some(ping_trigger_tx),
                 Some(database.clone()),
             ) => result,
-            signal = tokio::signal::ctrl_c() => {
-                signal.with_context(|| "failed to listen for Ctrl+C")?;
+            signal = shutdown_signal() => {
+                signal.with_context(|| "failed to listen for the shutdown signal")?;
                 stopped_by_user = true;
                 println!("  🚨  Stopping…");
                 Ok(())
@@ -472,6 +472,29 @@ async fn main() -> Result<()> {
     }
 
     result
+}
+
+/// The signal that asks the service to stop.
+///
+/// SIGINT everywhere, plus SIGTERM on Unix. A container stop sends SIGTERM,
+/// and without it the process died without running the shutdown path, which
+/// left the generated sing-box config in the temp directory - and that file
+/// holds the selected node's server, UUID and password.
+#[cfg(unix)]
+async fn shutdown_signal() -> std::io::Result<()> {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut terminate = signal(SignalKind::terminate())?;
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => result,
+        _ = terminate.recv() => Ok(()),
+    }
+}
+
+/// The signal that asks the service to stop.
+#[cfg(not(unix))]
+async fn shutdown_signal() -> std::io::Result<()> {
+    tokio::signal::ctrl_c().await
 }
 
 async fn uninstall(paths: &AppPaths, assume_yes: bool) -> Result<()> {

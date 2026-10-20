@@ -102,8 +102,7 @@ pub fn save_app_config(db: &Database, config: &AppConfig) -> Result<()> {
     let config = persistable_config(config);
     let value =
         serde_json::to_value(&config).context("unable to serialize config to settings rows")?;
-    db.save_settings(&flatten_settings(&value))?;
-    db.save_subscriptions(&config.subscriptions)?;
+    db.save_settings_and_subscriptions(&flatten_settings(&value), &config.subscriptions)?;
     Ok(())
 }
 
@@ -112,7 +111,7 @@ pub fn save_app_config(db: &Database, config: &AppConfig) -> Result<()> {
 /// running the same validation the file loader ran.
 pub fn load_app_config(db: &Database) -> Result<AppConfig> {
     let rows = db.load_settings()?;
-    let value = unflatten_settings(&rows)?;
+    let value = unflatten_settings(&rows);
     let mut config: AppConfig =
         serde_json::from_value(value).context("stored settings failed to parse")?;
     config.subscriptions = db.load_subscriptions()?;
@@ -232,7 +231,7 @@ pub fn reconcile_with_defaults(db: &Database, config: &mut AppConfig) -> Result<
     );
 
     if report.changed() {
-        let value = unflatten_settings(&merged)?;
+        let value = unflatten_settings(&merged);
         let mut reconciled: AppConfig =
             serde_json::from_value(value).context("merged settings parse")?;
         reconciled.subscriptions = std::mem::take(&mut config.subscriptions);
@@ -322,7 +321,7 @@ pub fn reset_to_embedded_defaults(db: &Database, config: &mut AppConfig) -> Resu
             merged.insert(key.clone(), user_value.clone());
         }
     }
-    let value = unflatten_settings(&merged)?;
+    let value = unflatten_settings(&merged);
     let mut restored: AppConfig = serde_json::from_value(value).context("merged defaults parse")?;
     restored.subscriptions = subscriptions;
     *config = crate::config::validate_config(restored)?;
@@ -434,27 +433,44 @@ fn flatten_value(prefix: &str, value: &Value, rows: &mut Vec<(String, String)>) 
 /// Rebuild the nested config JSON from `settings` rows. Unknown keys survive
 /// the round trip untouched and are ignored by deserialization, so a newer
 /// database never breaks an older binary.
-fn unflatten_settings(rows: &HashMap<String, String>) -> Result<Value> {
+fn unflatten_settings(rows: &HashMap<String, String>) -> Value {
     let mut root = Map::new();
     let mut keys: Vec<&String> = rows.keys().collect();
     keys.sort();
     for key in keys {
-        let leaf: Value = serde_json::from_str(&rows[key])
-            .with_context(|| format!("stored setting {key} failed to parse"))?;
+        // A single unreadable row must not take the whole boot down with it.
+        let leaf: Value = match serde_json::from_str(&rows[key]) {
+            Ok(leaf) => leaf,
+            Err(error) => {
+                tracing::warn!(
+                    key,
+                    error = %error,
+                    "stored setting does not parse; skipping it"
+                );
+                continue;
+            }
+        };
         let mut node = &mut root;
         let parts: Vec<&str> = key.split('.').collect();
         for part in &parts[..parts.len() - 1] {
-            node = node
+            let entry = node
                 .entry((*part).to_string())
-                .or_insert_with(|| Value::Object(Map::new()))
+                .or_insert_with(|| Value::Object(Map::new()));
+            // A stored leaf that sits where a section belongs -- a leftover
+            // from an older schema -- must not break the boot. The section
+            // wins: the leaf has no place in the current schema anyway.
+            if !entry.is_object() {
+                *entry = Value::Object(Map::new());
+            }
+            node = entry
                 .as_object_mut()
-                .with_context(|| format!("stored setting {key} collides with a section"))?;
+                .expect("the entry was just made an object");
         }
         if let Some(last) = parts.last() {
             node.insert((*last).to_string(), leaf);
         }
     }
-    Ok(Value::Object(root))
+    Value::Object(root)
 }
 
 #[cfg(test)]
@@ -786,6 +802,40 @@ mod tests {
     /// (which seeds from the template) and an upgraded install (whose missing
     /// keys materialize from the serde defaults) end up with different
     /// settings for the same key. Keep them provably equal.
+    /// A stored leaf that sits where a section belongs used to abort the
+    /// whole boot, with no way back other than deleting the database.
+    #[test]
+    fn a_stored_key_that_collides_with_a_section_does_not_break_the_boot() {
+        let rows = HashMap::from([
+            ("probe".to_string(), "\"legacy\"".to_string()),
+            ("probe.mode".to_string(), "\"active\"".to_string()),
+            ("top_n".to_string(), "7".to_string()),
+        ]);
+
+        let value = unflatten_settings(&rows);
+        let root = value.as_object().expect("an object");
+        assert_eq!(root["top_n"], Value::from(7));
+        assert_eq!(
+            root["probe"]["mode"],
+            Value::from("active"),
+            "the section survives the collision"
+        );
+    }
+
+    /// One unreadable row must not take the boot down with it.
+    #[test]
+    fn an_unreadable_stored_value_is_skipped() {
+        let rows = HashMap::from([
+            ("top_n".to_string(), "not json".to_string()),
+            ("ping_seconds".to_string(), "300".to_string()),
+        ]);
+
+        let value = unflatten_settings(&rows);
+        let root = value.as_object().expect("an object");
+        assert_eq!(root["ping_seconds"], Value::from(300));
+        assert!(!root.contains_key("top_n"), "the bad row is skipped");
+    }
+
     #[test]
     fn embedded_template_matches_the_serde_defaults() {
         let serde_defaults: AppConfig =

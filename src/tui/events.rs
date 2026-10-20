@@ -23,6 +23,7 @@ use super::{
     },
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventResult {
     Continue,
     Quit,
@@ -78,6 +79,7 @@ pub fn handle_key(
             runtime_config,
         )),
         InputMode::CleanCacheConfirm => handle_clean_cache_key(state, key, database),
+        InputMode::QuitConfirm => Ok(handle_quit_confirm_key(state, key)),
         InputMode::None => {
             handle_normal_key(state, key, paths, runtime_config, database, config_tx)
         }
@@ -93,7 +95,7 @@ fn handle_normal_key(
     config_tx: &watch::Sender<AppConfig>,
 ) -> Result<EventResult> {
     match key.code {
-        KeyCode::Char('q') => return Ok(EventResult::Quit),
+        KeyCode::Char('q') => return Ok(request_quit(state)),
         KeyCode::Esc => go_back(state),
         KeyCode::Tab => cycle_focus(state),
         KeyCode::Enter => activate(state, paths, runtime_config, database, config_tx)?,
@@ -109,6 +111,33 @@ fn handle_normal_key(
     }
 
     Ok(EventResult::Continue)
+}
+
+/// Leave the TUI, asking first when there are unsaved changes.
+///
+/// The TUI saves explicitly with `s`, so a subscription edit that was never
+/// saved used to vanish on quit without a word. The first quit request opens
+/// the confirmation, the next one leaves. The save model is unchanged.
+fn request_quit(state: &mut TuiState) -> EventResult {
+    if !state.dirty {
+        return EventResult::Quit;
+    }
+    state.input_mode = InputMode::QuitConfirm;
+    state.status = "Unsaved changes - press q to quit without saving, Esc to cancel".to_string();
+    EventResult::Continue
+}
+
+/// The confirmation that leaves with unsaved changes. Anything but `q` (or
+/// Enter) cancels and returns to the menu.
+fn handle_quit_confirm_key(state: &mut TuiState, key: KeyEvent) -> EventResult {
+    match key.code {
+        KeyCode::Char('q' | 'Q') | KeyCode::Enter => EventResult::Quit,
+        _ => {
+            state.input_mode = InputMode::None;
+            state.status = "Quit cancelled".to_string();
+            EventResult::Continue
+        }
+    }
 }
 
 const fn is_back_shortcut(key: KeyEvent) -> bool {
@@ -157,7 +186,7 @@ fn run_command(
     state.input_mode = InputMode::None;
 
     match command.as_str() {
-        "q" | "quit" => return Ok(EventResult::Quit),
+        "q" | "quit" => return Ok(request_quit(state)),
         "a" | "add" => run_action(state, Action::Add, database, config_tx, runtime_config)?,
         "n" | "name" => run_action(state, Action::EditName, database, config_tx, runtime_config)?,
         "u" | "url" => run_action(state, Action::EditUrl, database, config_tx, runtime_config)?,
@@ -765,8 +794,9 @@ mod tests {
 
     use crate::{config::AppConfig, model::RuntimeConfig};
 
-    use super::set_found_as_proxy;
-    use crate::tui::state::TuiState;
+    use super::{EventResult, handle_quit_confirm_key, request_quit, set_found_as_proxy};
+    use crate::tui::state::{InputMode, TuiState};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     const PROXY_URI: &str = "vless://uuid@example.com:443?security=tls#Node";
 
@@ -783,6 +813,52 @@ mod tests {
         let (tx, _rx) = watch::channel(config.clone());
         let runtime = Arc::new(RwLock::new(RuntimeConfig::from(&config)));
         (state, tx, runtime)
+    }
+
+    /// The TUI saves explicitly with `s`, so an unsaved subscription edit
+    /// used to vanish on quit without a word.
+    #[test]
+    fn quitting_with_unsaved_changes_asks_first() {
+        let mut state = TuiState::new(AppConfig::default_for_first_run());
+        state.dirty = true;
+
+        assert_eq!(request_quit(&mut state), EventResult::Continue);
+        assert_eq!(state.input_mode, InputMode::QuitConfirm);
+        assert!(
+            state.status.contains("Unsaved changes"),
+            "the user is told: {}",
+            state.status
+        );
+    }
+
+    /// A clean state quits straight away.
+    #[test]
+    fn quitting_without_unsaved_changes_leaves_at_once() {
+        let mut state = TuiState::new(AppConfig::default_for_first_run());
+        assert_eq!(request_quit(&mut state), EventResult::Quit);
+    }
+
+    /// The confirmation leaves on `q` and cancels on anything else.
+    #[test]
+    fn the_quit_confirmation_leaves_on_q_and_cancels_otherwise() {
+        let mut state = TuiState::new(AppConfig::default_for_first_run());
+        state.dirty = true;
+        assert_eq!(request_quit(&mut state), EventResult::Continue);
+
+        assert_eq!(
+            handle_quit_confirm_key(
+                &mut state,
+                KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)
+            ),
+            EventResult::Quit
+        );
+
+        assert_eq!(request_quit(&mut state), EventResult::Continue);
+        assert_eq!(
+            handle_quit_confirm_key(&mut state, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            EventResult::Continue
+        );
+        assert_eq!(state.input_mode, InputMode::None);
     }
 
     #[test]

@@ -60,18 +60,32 @@ fn sing_box_cache() -> &'static Mutex<Option<CachedSingBox>> {
 }
 
 /// Parse sing-box version string like "1.13.14" into (major, minor, patch).
+///
+/// The banner is looked for in any line, not only the first, and each
+/// component may carry a pre-release suffix ("1.13.13-beta.1" still reports
+/// patch 13). A version that reads as unknown makes the probe pick the
+/// legacy DNS schema, which sing-box 1.12 removed, so this must not be
+/// brittle.
 fn parse_sing_box_version(output: &str) -> Option<(u32, u32, u32)> {
-    let first_line = output.lines().next()?;
-    let version_str = first_line.strip_prefix("sing-box version ")?;
-    let parts: Vec<u32> = version_str
-        .split('.')
-        .filter_map(|p| p.parse().ok())
-        .collect();
-    if parts.len() >= 3 {
+    let version_str = output
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("sing-box version "))?;
+    let parts: Vec<u32> = version_str.split('.').map(leading_number).take(3).collect();
+    if parts.len() == 3 {
         Some((parts[0], parts[1], parts[2]))
     } else {
         None
     }
+}
+
+/// The leading digits of a version component: "13-beta" reads as 13.
+fn leading_number(component: &str) -> u32 {
+    component
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .unwrap_or(0)
 }
 
 /// Major version of a sing-box binary (`None` when it cannot run).
@@ -83,14 +97,19 @@ pub async fn sing_box_major_version(path: &str) -> Option<u32> {
         .arg("version")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .output()
         .await
         .ok()?;
     if !output.status.success() {
         return None;
     }
-    parse_sing_box_version(&String::from_utf8_lossy(&output.stdout)).map(|(major, _, _)| major)
+    let reported = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    parse_sing_box_version(&reported).map(|(major, _, _)| major)
 }
 
 /// Check if the detected sing-box version is >= (major, minor, patch).
@@ -135,15 +154,23 @@ async fn sing_box_available(path: &str) -> bool {
         .ok();
     let available = output.as_ref().is_some_and(|o| o.status.success());
     let mut version = None;
-    if let Some(ref out) = output
-        && let Some(detected) = parse_sing_box_version(&String::from_utf8_lossy(&out.stdout))
-    {
-        version = Some(detected);
-        info!(
-            sing_box_path = %path,
-            version = ?detected,
-            "sing-box version detected"
+    if let Some(ref out) = output {
+        // Read both streams: sing-box may print its banner on either one, and
+        // a version that reads as unknown makes the probe write the legacy
+        // DNS schema that sing-box 1.12 removed.
+        let reported = format!(
+            "{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
         );
+        if let Some(detected) = parse_sing_box_version(&reported) {
+            version = Some(detected);
+            info!(
+                sing_box_path = %path,
+                version = ?detected,
+                "sing-box version detected"
+            );
+        }
     }
     info!(
         sing_box_path = %path,
@@ -2808,6 +2835,42 @@ mod tests {
         let mut item = ranked("node", "vless://uuid@example.com:443", false, None);
         item.error = Some(error.to_string());
         item
+    }
+
+    /// A version that reads as unknown makes the probe write the legacy DNS
+    /// schema, which sing-box 1.12 removed -- every batch would fail. The
+    /// banner therefore has to be found wherever the binary prints it.
+    #[test]
+    fn sing_box_version_is_found_in_any_line_of_either_stream() {
+        assert_eq!(
+            parse_sing_box_version("sing-box version 1.13.14\n\nEnvironment: go1.26"),
+            Some((1, 13, 14))
+        );
+        assert_eq!(
+            parse_sing_box_version("some warning\nsing-box version 1.13.14"),
+            Some((1, 13, 14)),
+            "the banner is not always the first line"
+        );
+        assert_eq!(
+            parse_sing_box_version("  sing-box version 1.13.14  "),
+            Some((1, 13, 14)),
+            "the banner may be indented or padded"
+        );
+        assert_eq!(parse_sing_box_version("no version here"), None);
+    }
+
+    /// A pre-release must still report its real patch number: reading
+    /// "1.13.13-beta.1" as patch 1 would compare wrong against a minimum.
+    #[test]
+    fn sing_box_version_keeps_the_patch_number_of_a_prerelease() {
+        assert_eq!(
+            parse_sing_box_version("sing-box version 1.13.13-beta.1"),
+            Some((1, 13, 13))
+        );
+        assert_eq!(
+            parse_sing_box_version("sing-box version 1.13.14-rc2"),
+            Some((1, 13, 14))
+        );
     }
 
     #[tokio::test]

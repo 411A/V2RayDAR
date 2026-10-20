@@ -90,7 +90,10 @@ fn commit_input(
     runtime_config: &Arc<RwLock<RuntimeConfig>>,
 ) {
     match state.input_mode {
-        InputMode::None | InputMode::Command | InputMode::CleanCacheConfirm => {}
+        InputMode::None
+        | InputMode::Command
+        | InputMode::CleanCacheConfirm
+        | InputMode::QuitConfirm => {}
         InputMode::NewSubscription(step) => {
             commit_new_subscription_step(state, step, config_tx, runtime_config);
         }

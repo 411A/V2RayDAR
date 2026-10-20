@@ -38,6 +38,21 @@ pub struct FetchFailure {
     pub proxy_retry: bool,
 }
 
+/// The sources a proxy retry can actually help with.
+///
+/// Only the failures classified as egress-scoped qualify. A 404 or a sick
+/// origin fails identically through a tunnel, and retrying it spins up a
+/// sing-box instance for nothing. Local files are not fetched over HTTP
+/// either.
+fn proxy_retry_sources(failures: &[FetchFailure]) -> Vec<SubscriptionSource> {
+    failures
+        .iter()
+        .filter(|failure| failure.proxy_retry)
+        .map(|failure| failure.source.clone())
+        .filter(|source| is_http_url(&source.url))
+        .collect()
+}
+
 pub async fn load_candidates_with_cache<F, Fut>(
     config: &AppConfig,
     mut report_bytes: F,
@@ -108,11 +123,7 @@ where
     F: FnMut(u64) -> Fut,
     Fut: Future<Output = ()>,
 {
-    let sources = failures
-        .iter()
-        .map(|failure| failure.source.clone())
-        .filter(|source| is_http_url(&source.url))
-        .collect::<Vec<_>>();
+    let sources = proxy_retry_sources(failures);
 
     if sources.is_empty() {
         return Ok(FetchOutcome {
@@ -1018,6 +1029,31 @@ mod tests {
             .find(|failure| failure.source.name == "gone")
             .expect("gone fails");
         assert!(!gone.proxy_retry);
+    }
+
+    /// A proxy retry spins up a sing-box instance, so it must only cover the
+    /// failures a tunnel can actually fix.
+    #[test]
+    fn proxy_retry_only_covers_failures_a_tunnel_can_fix() {
+        let failure = |name: &str, url: &str, proxy_retry: bool| FetchFailure {
+            source: SubscriptionSource {
+                name: name.to_string(),
+                url: url.to_string(),
+                enabled: true,
+                priority: 1,
+            },
+            error: "boom".to_string(),
+            proxy_retry,
+        };
+        let failures = vec![
+            failure("blocked", "http://127.0.0.1:9/sub", true),
+            failure("gone", "http://127.0.0.1:9/other", false),
+            failure("local", "/tmp/sub.txt", true),
+        ];
+
+        let sources = proxy_retry_sources(&failures);
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].name, "blocked");
     }
 
     #[tokio::test]

@@ -46,6 +46,11 @@ impl Database {
                 updated_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_configs_last_online ON configs(last_online);
+            -- The ranking query (reachable = 1 ORDER BY stability_count DESC,
+            -- latency_ms ASC) ran a full scan and a sort of the whole table on
+            -- every cache-only refresh and every database fallback.
+            CREATE INDEX IF NOT EXISTS idx_configs_ranking
+                ON configs(reachable, stability_count DESC, latency_ms ASC);
 
             CREATE TABLE IF NOT EXISTS stable_top (
                 id INTEGER PRIMARY KEY CHECK (id = 1),

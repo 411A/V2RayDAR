@@ -546,12 +546,35 @@ fn normalize_optional_string(value: Option<&str>) -> Option<String> {
     }
 }
 
+/// A fresh URL-safe token for the LAN subscription link.
+///
+/// The bytes come from the operating system CSPRNG. `getrandom` uses the
+/// getrandom(2) syscall on Linux, which a hardened container can block, so
+/// the raw device is tried as well -- the same generator, reached a
+/// different way. Only when neither works does the token fall back to a
+/// value that is not unpredictable, and that case is reported.
 fn generate_token() -> String {
     let mut bytes = [0_u8; 32];
     if getrandom::fill(&mut bytes).is_ok() {
         return URL_SAFE_NO_PAD.encode(bytes);
     }
 
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+
+        // Exactly 32 bytes: the device never ends, so a plain read would
+        // never return.
+        if let Ok(mut device) = std::fs::File::open("/dev/urandom")
+            && device.read_exact(&mut bytes).is_ok()
+        {
+            return URL_SAFE_NO_PAD.encode(bytes);
+        }
+    }
+
+    // No secure random source. The token still works, but it is not
+    // unpredictable, so the condition is worth reporting.
+    tracing::warn!("no secure random source available; the LAN token is not unpredictable");
     let fallback = format!(
         "{}-{}",
         std::process::id(),
@@ -791,7 +814,7 @@ const fn default_proxy_health_check_interval() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppConfig, SubscriptionSource, validate_config};
+    use super::{AppConfig, SubscriptionSource, generate_token, validate_config};
 
     fn valid_config() -> AppConfig {
         AppConfig::default_for_first_run()
@@ -904,6 +927,22 @@ mod tests {
                 .subscription_url("127.0.0.1", false)
                 .contains("?token=")
         );
+    }
+
+    /// A generated token has to be long, URL-safe and different every time.
+    #[test]
+    fn generated_tokens_are_long_url_safe_and_unique() {
+        let first = generate_token();
+        let second = generate_token();
+
+        assert!(first.len() >= 32, "too short: {first}");
+        assert!(
+            first
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_'),
+            "not URL-safe: {first}"
+        );
+        assert_ne!(first, second, "two tokens must differ");
     }
 
     #[test]

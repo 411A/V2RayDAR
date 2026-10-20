@@ -450,7 +450,7 @@ impl PersistentProxy {
 
         // Wait for port — if this fails, the Drop impl on ManagedProcess
         // cleans up the config file, and kill_on_drop kills the process.
-        wait_for_port(current_config.port, PROXY_STARTUP_TIMEOUT)
+        wait_for_port(current_config.port, PROXY_STARTUP_TIMEOUT, &mut child)
             .await
             .map_err(|err| {
                 let stderr_msg = child.block_on_stderr();
@@ -1411,11 +1411,32 @@ impl ReadChildStderr for tokio::process::Child {
     }
 }
 
-async fn wait_for_port(port: u16, timeout: Duration) -> Result<()> {
+/// Wait until the proxy port accepts connections.
+///
+/// The process is checked on every round as well: sing-box exits when it
+/// cannot bind the port, and if another program already owns it the port
+/// answers anyway. Checking the port alone would then report success and
+/// the proxy would run while the traffic went to the foreign listener.
+async fn wait_for_port(
+    port: u16,
+    timeout: Duration,
+    child: &mut tokio::process::Child,
+) -> Result<()> {
     let deadline = Instant::now() + timeout;
     let addr = format!("{LOCALHOST_IP}:{port}");
 
     while Instant::now() < deadline {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return Err(anyhow!(
+                    "sing-box exited with {status} before the proxy port was ready"
+                ));
+            }
+            Ok(None) => {}
+            Err(err) => {
+                return Err(anyhow!("failed to check the sing-box process: {err}"));
+            }
+        }
         if TcpStream::connect(&addr).await.is_ok() {
             return Ok(());
         }

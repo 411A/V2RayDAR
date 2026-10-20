@@ -1828,7 +1828,7 @@ mod tests {
     fn connection_starved_matches_only_trying_without_data() {
         // Idle: no upload, never starved.
         assert!(!connection_starved(
-            PROXY_STARVATION_MIN_AGE + Duration::from_secs(60),
+            PROXY_STARVATION_MIN_AGE + Duration::from_mins(1),
             0,
             0
         ));
@@ -1840,13 +1840,13 @@ mod tests {
         ));
         // Light upload: below the trying threshold.
         assert!(!connection_starved(
-            PROXY_STARVATION_MIN_AGE + Duration::from_secs(60),
+            PROXY_STARVATION_MIN_AGE + Duration::from_mins(1),
             PROXY_STARVATION_MIN_UPLOAD_BYTES - 1,
             0
         ));
         // Anything downloaded proves data flows.
         assert!(!connection_starved(
-            PROXY_STARVATION_MIN_AGE + Duration::from_secs(3600),
+            PROXY_STARVATION_MIN_AGE + Duration::from_hours(1),
             10 * 1024 * 1024,
             1
         ));
@@ -1857,7 +1857,7 @@ mod tests {
             0
         ));
         assert!(connection_starved(
-            PROXY_STARVATION_MIN_AGE + Duration::from_secs(3600),
+            PROXY_STARVATION_MIN_AGE + Duration::from_hours(1),
             10 * 1024 * 1024,
             0
         ));
@@ -2001,7 +2001,7 @@ mod tests {
         assert_eq!(connections[0].upload, 70000);
         assert_eq!(connections[0].download, 0);
         assert!(connection_starved(
-            Duration::from_secs(3600),
+            Duration::from_hours(1),
             connections[0].upload.max(0).cast_unsigned(),
             connections[0].download.max(0).cast_unsigned(),
         ));

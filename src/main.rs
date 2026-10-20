@@ -3701,7 +3701,7 @@ mod tests {
         remove_test_root(&root);
     }
 
-    /// SQLite keeps the write-ahead log next to the database. Those sidecars
+    /// `SQLite` keeps the write-ahead log next to the database. Those sidecars
     /// belong to the app, so an uninstall has to take them with it.
     #[tokio::test]
     async fn uninstall_takes_the_sqlite_wal_sidecars_with_it() {
@@ -4424,7 +4424,7 @@ mod tests {
         })
         .await;
         let old_deadline = std::time::Instant::now()
-            .checked_sub(std::time::Duration::from_secs(60))
+            .checked_sub(std::time::Duration::from_mins(1))
             .unwrap_or_else(std::time::Instant::now);
         state.write().await.next_ping_instant = Some(old_deadline);
 
@@ -4590,7 +4590,7 @@ mod tests {
         let port = listener.local_addr().expect("listener addr").port();
         std::thread::spawn(move || {
             let _ = listener.set_nonblocking(true);
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_mins(2);
             let mut served = 0;
             while std::time::Instant::now() < deadline && served < 20 {
                 match listener.accept() {

@@ -92,7 +92,7 @@ Required for active validation:
 
 Optional for building from source:
 
-- Rust toolchain with Cargo.
+- Rust toolchain with Cargo, 1.91 or newer (the `rust-version` in `Cargo.toml`).
 
 ## Release Artifacts
 

@@ -389,7 +389,7 @@ mod tests {
         let now = Instant::now();
         let runtime = RuntimeView {
             refreshing: false,
-            next_refresh_instant: Some(now + Duration::from_secs(300)),
+            next_refresh_instant: Some(now + Duration::from_mins(5)),
             refresh_finished_instant: Some(now),
             ..RuntimeView::default()
         };
@@ -401,7 +401,7 @@ mod tests {
         let now = Instant::now();
         // `checked_sub`: bare `Instant - Duration` panics when the machine
         // uptime is shorter than the span (fresh CI runners, Windows sleep).
-        let finished = now.checked_sub(Duration::from_secs(60)).unwrap_or(now);
+        let finished = now.checked_sub(Duration::from_mins(1)).unwrap_or(now);
         let runtime = RuntimeView {
             refreshing: false,
             next_refresh_instant: None,
@@ -424,7 +424,7 @@ mod tests {
         let runtime = RuntimeView {
             refreshing: false,
             next_refresh_instant: Some(now + Duration::from_mins(15)),
-            next_ping_instant: Some(now + Duration::from_secs(300)),
+            next_ping_instant: Some(now + Duration::from_mins(5)),
             ..RuntimeView::default()
         };
         assert_eq!(refresh_status(&runtime, 900, now), "fetch 15:00");
@@ -444,7 +444,7 @@ mod tests {
             pinging: true,
             last_ping_instant: Some(started),
             next_refresh_instant: Some(now + Duration::from_mins(15)),
-            next_ping_instant: Some(now + Duration::from_secs(300)),
+            next_ping_instant: Some(now + Duration::from_mins(5)),
             ..RuntimeView::default()
         };
         // The fetch countdown stays on the first line while ping runs.
@@ -461,7 +461,7 @@ mod tests {
         let now = Instant::now();
         let runtime = RuntimeView {
             refreshing: false,
-            next_ping_instant: Some(now + Duration::from_secs(300)),
+            next_ping_instant: Some(now + Duration::from_mins(5)),
             ..RuntimeView::default()
         };
         assert_eq!(refresh_status(&runtime, 0, now), "manual".to_string());
@@ -484,8 +484,8 @@ mod tests {
         let now = Instant::now();
         let idle = RuntimeView {
             refreshing: false,
-            next_refresh_instant: Some(now + Duration::from_secs(300)),
-            next_ping_instant: Some(now + Duration::from_secs(300)),
+            next_refresh_instant: Some(now + Duration::from_mins(5)),
+            next_ping_instant: Some(now + Duration::from_mins(5)),
             ..RuntimeView::default()
         };
         assert_eq!(ping_status(&idle, 300, 300, now), None);
@@ -505,8 +505,8 @@ mod tests {
             refreshing: false,
             pinging: true,
             last_ping_instant: Some(started),
-            next_refresh_instant: Some(now + Duration::from_secs(300)),
-            next_ping_instant: Some(now + Duration::from_secs(300)),
+            next_refresh_instant: Some(now + Duration::from_mins(5)),
+            next_ping_instant: Some(now + Duration::from_mins(5)),
             ..RuntimeView::default()
         };
         assert_eq!(refresh_status(&runtime, 300, now), "fetch 05:00");
@@ -522,7 +522,7 @@ mod tests {
         let refreshing = RuntimeView {
             refreshing: true,
             refresh_started_instant: Some(now),
-            next_ping_instant: Some(now + Duration::from_secs(300)),
+            next_ping_instant: Some(now + Duration::from_mins(5)),
             ..RuntimeView::default()
         };
         assert_eq!(refresh_status(&refreshing, 900, now), "running 00:00");
@@ -561,7 +561,7 @@ mod tests {
         let runtime = RuntimeView {
             refreshing: false,
             next_refresh_instant: Some(now + Duration::from_mins(15)),
-            next_ping_instant: Some(now + Duration::from_secs(300)),
+            next_ping_instant: Some(now + Duration::from_mins(5)),
             ..RuntimeView::default()
         };
         let app_config = crate::config::AppConfig::default_for_first_run();

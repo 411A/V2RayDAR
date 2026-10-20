@@ -654,7 +654,7 @@ fn map_ranked_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RankedConfig> {
     })
 }
 
-/// Restrict the SQLite file to owner-only (0600 on Unix).
+/// Restrict the `SQLite` file to owner-only (0600 on Unix).
 /// Best-effort, no-op on Windows; single syscall, no query delay.
 #[allow(clippy::missing_const_for_fn)]
 fn restrict_file_permissions(path: &Path) {

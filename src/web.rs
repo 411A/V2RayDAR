@@ -3856,9 +3856,14 @@ mod tests {
             .map(|source| source.priority)
             .collect();
         assert_eq!(priorities, [1, 2, 3], "priorities renumber in visual order");
-        let live = state.subscriptions.read().await;
-        assert_eq!(live[0].name, "c", "shared snapshot updates immediately");
-        assert_eq!(live[0].priority, 1);
+        {
+            let live = state.subscriptions.read().await;
+            assert_eq!(live[0].name, "c", "shared snapshot updates immediately");
+            assert_eq!(live[0].priority, 1);
+            // Release the read lock before the broadcast is awaited: the
+            // writer on the other side may need it.
+            drop(live);
+        }
         config_rx.changed().await.expect("live broadcast fires");
     }
 
@@ -3896,8 +3901,13 @@ mod tests {
             .map(|source| source.priority)
             .collect();
         assert_eq!(priorities, [1, 2, 3], "ranks stay dense after the move");
-        let live = state.subscriptions.read().await;
-        assert_eq!(live[0].name, "c", "shared snapshot updates immediately");
+        {
+            let live = state.subscriptions.read().await;
+            assert_eq!(live[0].name, "c", "shared snapshot updates immediately");
+            // Release the read lock before the broadcast is awaited: the
+            // writer on the other side may need it.
+            drop(live);
+        }
         config_rx.changed().await.expect("live broadcast fires");
     }
 

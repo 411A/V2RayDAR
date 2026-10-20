@@ -2446,7 +2446,13 @@ async fn events_response(
             .into_response();
     }
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    tokio::spawn(feed_task(runtime, tx));
+    // Subscribe to the config broadcast so the feed can announce changes
+    // made anywhere (dashboard or TUI) and let the UI resync.
+    let config_rx = state
+        .config_tx
+        .as_ref()
+        .map(tokio::sync::watch::Sender::subscribe);
+    tokio::spawn(feed_task(runtime, config_rx, tx));
     Sse::new(FeedStream { rx: Box::pin(rx) })
         .keep_alive(
             KeepAlive::new()
@@ -2521,7 +2527,11 @@ fn log_event(line: &str) -> Event {
         .data(line.replace(['\n', '\r'], " "))
 }
 
-async fn feed_task(runtime: SharedState, tx: UnboundedSender<Result<Event, Infallible>>) {
+async fn feed_task(
+    runtime: SharedState,
+    mut config_rx: Option<tokio::sync::watch::Receiver<crate::config::AppConfig>>,
+    tx: UnboundedSender<Result<Event, Infallible>>,
+) {
     let _guard = FeedGuard;
     let snapshot = runtime.read().await.clone();
     let mut fingerprint = FeedFingerprint::of(&snapshot);
@@ -2532,6 +2542,21 @@ async fn feed_task(runtime: SharedState, tx: UnboundedSender<Result<Event, Infal
     }
     loop {
         tokio::time::sleep(FEED_TICK).await;
+        // Config changes are broadcast on the watch channel by every writer
+        // (the dashboard's own mutations AND the TUI). The dashboard listens
+        // for `config-changed` to resync its cached settings view, which
+        // otherwise goes stale when the TUI edits a value.
+        if let Some(rx) = &mut config_rx
+            && matches!(rx.has_changed(), Ok(true))
+        {
+            // Mark the new value seen so the next tick does not re-announce
+            // the same change.
+            drop(rx.borrow_and_update());
+            let event = Event::default().event("config-changed").data("{}");
+            if tx.send(Ok(event)).is_err() {
+                return;
+            }
+        }
         let snapshot = runtime.read().await.clone();
         let current = FeedFingerprint::of(&snapshot);
         let bytes_delta = snapshot.fetch_bytes.saturating_sub(last_bytes);
@@ -2610,12 +2635,14 @@ mod tests {
             Arc,
             atomic::{AtomicUsize, Ordering},
         },
+        time::Duration,
     };
 
     use axum::{
         body::to_bytes,
         http::{HeaderValue, StatusCode, header},
     };
+    use futures_util::StreamExt;
     use tokio::sync::RwLock;
 
     use super::{
@@ -3148,6 +3175,36 @@ mod tests {
         let response = summary_response(&state, lan(), None).await;
 
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// The dashboard listens for `config-changed` to resync its cached
+    /// settings view, which otherwise goes stale when the TUI edits a value.
+    /// The feed must announce every config broadcast it observes.
+    #[tokio::test]
+    async fn events_stream_announces_config_changes() {
+        let mut state = http_state(RuntimeState::default(), false);
+        let (config_tx, _rx) =
+            tokio::sync::watch::channel(crate::config::AppConfig::default_for_first_run());
+        state.config_tx = Some(config_tx.clone());
+        let response = events_response(state.runtime.clone(), &state, loopback(), None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        config_tx.send_modify(|config| config.top_n += 1);
+
+        let mut stream = response.into_body().into_data_stream();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        let mut announced = false;
+        while tokio::time::Instant::now() < deadline {
+            let Ok(Some(Ok(frame))) = tokio::time::timeout_at(deadline, stream.next()).await else {
+                break;
+            };
+            if String::from_utf8_lossy(&frame).contains("event: config-changed") {
+                announced = true;
+                break;
+            }
+        }
+
+        assert!(announced, "the feed must announce config changes");
     }
 
     #[tokio::test]

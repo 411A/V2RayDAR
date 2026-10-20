@@ -23,6 +23,11 @@ const MAX_TOASTS = 4;
 const TOAST_MS = 4500;
 const THEME_KEY = "v2raydar-theme";
 const TAB_KEY = "v2raydar-tab";
+// Grace window after this tab issues its own mutating request, during which
+// the server's `config-changed` broadcast is treated as our own echo and is
+// not announced with a toast. The window covers the request round trip plus
+// one server feed tick (FEED_TICK = 2 s), so the echo never leaks through.
+const SELF_CONFIG_ECHO_MS = 5000;
 
 const TABS = ["overview", "configs", "subscriptions", "settings", "proxy", "logs", "share"];
 
@@ -58,6 +63,10 @@ const state = {
   logLevel: "INFO",
   follow: true,
   wired: false, // wire() runs once; boot() may re-enter via Retry
+  // Timestamp of the last mutating request this tab issued. The server
+  // broadcasts every config change; a broadcast inside the grace window is
+  // our own echo and must not raise a "changed on the server" toast.
+  selfConfigChangeAt: 0,
   cycleInflight: { refresh: false, ping: false }, // POST in flight (buttons locked)
   proxyPendingUri: undefined, // proxy switch requested but not yet confirmed (undefined = none; null = unpin in flight)
   proxyModeInflight: false, // mode POST in flight (segmented buttons locked)
@@ -164,6 +173,11 @@ async function fetchJson(path, options) {
     init.headers["Content-Type"] = "application/json";
     if (options.body !== undefined) {
       init.body = JSON.stringify(options.body);
+    }
+    // Any mutating request may end in a config broadcast; remember when we
+    // asked so the echo can be told apart from an external change.
+    if (options.method.toUpperCase() !== "GET") {
+      state.selfConfigChangeAt = Date.now();
     }
   }
   let res;
@@ -933,7 +947,11 @@ function connectFeed() {
   sse.addEventListener("probe-delta", (ev) => applyProbeDelta(ev.data));
   sse.addEventListener("ranked", (ev) => applyRanked(ev.data));
   sse.addEventListener("config-changed", () => {
-    toast(t("configChanged"), "good");
+    // A change this tab made is already reflected locally; only an external
+    // change (the TUI, another browser) is worth announcing.
+    if (Date.now() - state.selfConfigChangeAt > SELF_CONFIG_ECHO_MS) {
+      toast(t("configChanged"), "good");
+    }
     void loadResults();
     void loadOvConfig();
   });

@@ -98,8 +98,17 @@ describe("PLAN §5 hard gates", () => {
 
     // A dashboard tab farm must never stall the probe loops: the cap exists
     // and the extra client is turned away instead of being served.
-    assert.match(src, /const FEED_MAX_CONNECTIONS: usize = \d+;/);
-    assert.match(src, /ACTIVE_FEEDS\.fetch_add\(1, Ordering::Relaxed\) >= FEED_MAX_CONNECTIONS/);
+    const cap = src.match(/const FEED_MAX_CONNECTIONS: usize = (\d+);/);
+    assert.ok(cap, "FEED_MAX_CONNECTIONS must be defined");
+    assert.ok(
+      Number(cap[1]) > 0 && Number(cap[1]) <= 32,
+      `the SSE client cap is ${cap[1]}, which does not protect the probe loops`,
+    );
+    assert.match(
+      src,
+      /ACTIVE_FEEDS\.fetch_add\([^)]*\)[^;]*>=\s*FEED_MAX_CONNECTIONS/,
+      "the cap has to be enforced before a client is served",
+    );
   });
 
   it("long tables use content-visibility so weak CPUs stay smooth", () => {

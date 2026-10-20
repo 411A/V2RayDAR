@@ -1836,7 +1836,7 @@ mod tests {
     }
 
     #[test]
-    fn clash_vmess_to_uri() {
+    fn clash_vmess_proxy_converts_to_share_link() {
         let yaml_str = r#"
 name: "Test VMess"
 type: vmess
@@ -1866,7 +1866,7 @@ client-fingerprint: chrome
     }
 
     #[test]
-    fn clash_vless_to_uri() {
+    fn clash_vless_proxy_converts_to_share_link() {
         let yaml_str = r#"
 name: "Test VLESS"
 type: vless
@@ -1893,7 +1893,7 @@ flow: xtls-rprx-vision
     }
 
     #[test]
-    fn clash_trojan_to_uri() {
+    fn clash_trojan_proxy_converts_to_share_link() {
         let yaml_str = r#"
 name: "Test Trojan"
 type: trojan
@@ -1911,7 +1911,7 @@ servername: example.com
     }
 
     #[test]
-    fn clash_ss_to_uri() {
+    fn clash_ss_proxy_converts_to_share_link() {
         let yaml_str = r#"
 name: "Test SS"
 type: ss

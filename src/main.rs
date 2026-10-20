@@ -5045,6 +5045,51 @@ mod tests {
         assert!(!loaded[1].reachable);
     }
 
+    /// A config the source still offers must not be pruned by the offline
+    /// cleanup just because it never validated. The sighting is what says
+    /// "the source still serves it", so it has to refresh the stamp.
+    #[tokio::test]
+    async fn a_sighting_refreshes_the_last_seen_stamp() {
+        let database = manual_trigger_test_database();
+        let mut working = ranked(
+            "working",
+            "vless://00000000-0000-0000-0000-000000000081@127.0.0.1#working",
+            true,
+            Some(100),
+        );
+        working.stability_count = 1;
+        persist_ranked_configs(&database, std::slice::from_ref(&working), 1, 0, false)
+            .await
+            .expect("known persists");
+
+        // Age the row past the cleanup window.
+        let aged = database
+            .age_last_online_for_test(-30)
+            .expect("ages the stamp");
+        assert_eq!(aged, 1, "the row was aged");
+
+        let sighting = crate::model::Candidate {
+            id: "sighting".to_string(),
+            dedup_key: working.dedup_key.clone(),
+            source: "test".to_string(),
+            priority: 1,
+            protocol: "vless".to_string(),
+            name: "working".to_string(),
+            endpoint: crate::model::Endpoint {
+                host: "127.0.0.1".to_string(),
+                port: 9,
+            },
+            uri: working.uri.clone(),
+        };
+        database
+            .insert_new_candidates(std::slice::from_ref(&sighting))
+            .expect("sighting inserts");
+
+        // The cleanup must not take a config the source still offers.
+        let removed = database.clean_offline_configs(7).expect("cleanup runs");
+        assert_eq!(removed, 0, "a re-sighted config must survive");
+    }
+
     #[tokio::test]
     async fn ping_skips_backfill_when_top_n_met() {
         // Cache already verifies top_n: the database must stay untouched.

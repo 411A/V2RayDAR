@@ -527,6 +527,33 @@ mod tests {
         assert_eq!(expected.subscriptions, actual.subscriptions);
     }
 
+    /// An older binary that saves over a newer database must not wipe the
+    /// settings the newer release added. The read path already keeps unknown
+    /// keys; the write path has to as well.
+    #[test]
+    fn saving_keeps_the_settings_of_a_newer_release() {
+        let (db, _guard) = open_temp_db("forward-compat");
+        let mut config = AppConfig::default_for_first_run();
+        config.top_n = 25;
+        save_app_config(&db, &config).expect("saves");
+
+        // A setting a newer release added, with a value only it knows.
+        db.save_extra_setting_for_test("probe.future_knob", "7")
+            .expect("the newer setting stores");
+
+        // The older binary saves again.
+        config.top_n = 26;
+        save_app_config(&db, &config).expect("saves again");
+
+        let rows = db.load_settings().expect("rows load");
+        assert_eq!(
+            rows.get("probe.future_knob").map(String::as_str),
+            Some("7"),
+            "the newer setting must survive an older save"
+        );
+        assert_eq!(rows.get("top_n").map(String::as_str), Some("26"));
+    }
+
     #[test]
     fn round_trip_preserves_every_setting_and_subscription() {
         let (db, _guard) = open_temp_db("roundtrip");

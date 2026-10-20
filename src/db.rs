@@ -377,7 +377,15 @@ impl Database {
                     NULL, NULL, NULL, NULL,
                     NULL, 0, ?9, ?9, ?9
                 )
-                ON CONFLICT(dedup_key) DO NOTHING",
+                ON CONFLICT(dedup_key) DO UPDATE SET
+                    -- A sighting means the source still offers this config, so
+                    -- the last-seen-online stamp has to move. Only the stamp
+                    -- does: the probe results of a known row stay untouched.
+                    -- Without this the stamp stayed at the first sighting and
+                    -- the offline cleanup pruned a config the source was
+                    -- still serving.
+                    last_online = excluded.last_online,
+                    updated_at = excluded.updated_at",
             )
             .context("failed to prepare sighting insert statement")?;
 
@@ -419,6 +427,37 @@ impl Database {
         Ok(())
     }
 
+    /// Store a setting the current schema does not know.
+    ///
+    /// Test helper: it stands in for a setting a newer release added, so a
+    /// test can check that an older save leaves it alone.
+    #[cfg(test)]
+    #[allow(clippy::significant_drop_tightening)]
+    pub fn save_extra_setting_for_test(&self, key: &str, value: &str) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    /// Age every stored "last seen" stamp by whole days.
+    ///
+    /// Test helper: the stamps are written with the current time, so a test
+    /// has to be able to move them into the past to exercise the cleanup.
+    #[cfg(test)]
+    #[allow(clippy::significant_drop_tightening)]
+    pub fn age_last_online_for_test(&self, days: i64) -> Result<usize> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let changed = conn.execute(
+            "UPDATE configs SET last_online = datetime(last_online, ?1)",
+            params![format!("{days} days")],
+        )?;
+        Ok(changed)
+    }
+
     /// True once user preferences live here (seeded or migrated).
     /// An empty table means first run: seed defaults instead of loading.
     #[allow(clippy::significant_drop_tightening)]
@@ -445,8 +484,21 @@ impl Database {
     ) -> Result<()> {
         let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
         let tx = conn.transaction()?;
-        tx.execute("DELETE FROM settings", [])
-            .context("failed to clear settings")?;
+        // Delete only the settings this config owns. A row for a setting a
+        // newer release added must survive: the read path keeps unknown keys
+        // ("a newer database never breaks an older binary"), so the write
+        // path has to as well. Clearing the whole table instead meant an
+        // older binary that saved wiped the newer settings, and the newer
+        // release lost the user's values.
+        {
+            let mut stmt = tx
+                .prepare("DELETE FROM settings WHERE key = ?1")
+                .context("failed to prepare settings delete")?;
+            for (key, _) in entries {
+                stmt.execute(params![key])
+                    .with_context(|| format!("failed to clear setting {key}"))?;
+            }
+        }
         {
             let mut stmt = tx
                 .prepare("INSERT INTO settings (key, value) VALUES (?1, ?2)")

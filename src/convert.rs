@@ -104,6 +104,21 @@ pub fn json_u16(value: &JsonValue, keys: &[&str]) -> Option<u16> {
     json_u64(value, keys).and_then(|v| u16::try_from(v).ok())
 }
 
+/// Read a boolean-ish field that may be a JSON bool or a string ("1",
+/// "true", "yes"). v2rayN writes `allowInsecure` as the string "1", other
+/// clients write a real bool.
+pub fn json_bool(value: &JsonValue, keys: &[&str]) -> Option<bool> {
+    keys.iter().find_map(|key| {
+        let raw = value.get(*key)?;
+        match raw {
+            JsonValue::Bool(flag) => Some(*flag),
+            JsonValue::String(text) => Some(truthy(text)),
+            JsonValue::Number(number) => Some(number.as_u64().is_some_and(|n| n != 0)),
+            _ => None,
+        }
+    })
+}
+
 pub fn query_pairs(query: &str) -> BTreeMap<String, String> {
     url::form_urlencoded::parse(query.as_bytes())
         .map(|(key, value)| (key.to_string(), value.to_string()))
@@ -139,6 +154,8 @@ pub struct VmessFields {
     pub path: Option<String>,
     pub alpn: Option<String>,
     pub fp: Option<String>,
+    /// `allowInsecure` — the certificate check may be skipped.
+    pub allow_insecure: bool,
 }
 
 #[allow(dead_code)]
@@ -175,6 +192,8 @@ pub fn vmess_fields(uri: &str) -> Result<VmessFields> {
         path: json_string(&json, &["path"]),
         alpn: json_string(&json, &["alpn"]),
         fp: json_string(&json, &["fp"]),
+        allow_insecure: json_bool(&json, &["allowInsecure", "insecure", "skip-cert-verify"])
+            .is_some_and(|flag| flag),
     })
 }
 
@@ -633,6 +652,12 @@ fn vmess_uri_to_clash(uri: &str) -> Result<YamlValue> {
                 .map(|s| YamlValue::String(s.trim().to_string()))
                 .collect();
             proxy.insert(yaml_key("alpn"), YamlValue::Sequence(alpn_vals));
+        }
+        // The certificate check may be skipped. Without this the flag was
+        // written into the payload but never read back, so a config with
+        // skip-cert-verify could not validate and was never served.
+        if f.allow_insecure {
+            proxy.insert(yaml_key("skip-cert-verify"), YamlValue::Bool(true));
         }
     }
 
@@ -1797,6 +1822,36 @@ mod tests {
     fn sample_ss_uri() -> String {
         let auth = STANDARD.encode("aes-256-gcm:mypassword");
         format!("ss://{auth}@example.com:8388#Test%20SS")
+    }
+
+    /// The certificate check may be skipped. The flag was written into the
+    /// vmess payload but never read back, so a config with
+    /// skip-cert-verify could not validate and was never served.
+    #[test]
+    fn vmess_skip_cert_verify_survives_the_round_trip() {
+        let yaml_str = r#"
+name: "Test VMess"
+type: vmess
+server: example.com
+port: 443
+uuid: abc-123
+alterId: 0
+cipher: auto
+tls: true
+skip-cert-verify: true
+"#;
+        let proxy: YamlValue = serde_yaml::from_str(yaml_str).unwrap();
+        let uri = clash_proxy_to_uri(&proxy).unwrap();
+
+        let fields = vmess_fields(&uri).expect("the payload is readable");
+        assert!(fields.allow_insecure, "the flag must be read back");
+
+        // And on to the Clash entry again.
+        let back = uri_to_clash_proxy(&uri).unwrap();
+        assert!(
+            yaml_bool(&back, &["skip-cert-verify"]),
+            "the flag must survive the round trip"
+        );
     }
 
     #[test]

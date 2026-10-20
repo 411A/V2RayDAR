@@ -424,7 +424,7 @@ String-like null values such as `null`, `"null"`, empty strings, `"none"`, and `
 | `refresh_seconds` | Integer seconds | `900` | Automatic refresh interval. `0` disables timer refreshes but config changes can still trigger refreshes. |
 | `ping_seconds` | Integer seconds | `300` | Re-ping interval for cached configs without re-fetching subscriptions. `0` disables. When the cache verifies fewer than `top_n`, the ping also probes previously-seen database configs to refill. Fetch and ping traffic both count toward Sub Usage. |
 | `encoded_subscription` | Boolean | `true` | Makes `/subscription` return base64 text. `/subscription.txt` is always raw text. |
-| `prioritize_stability` | Boolean | `true` | Re-pings the previous run's saved top-N first and keeps them ahead of newly discovered low-ping configs. When `false`, the ranking simply prefers any working low-ping config. The saved top-N is held in the cache folder and wiped on every fresh run and on quit. |
+| `prioritize_stability` | Boolean | `true` | Re-pings the previous run's saved top-N first and keeps them ahead of newly discovered low-ping configs. When `false`, the ranking simply prefers any working low-ping config. The saved top-N lives in the `stable_top` table of `data.db`, so it survives a restart. |
 | `return_configs_asap` | Boolean | `false` | When `true`, publishes each working config to `/subscription`, `/subscription.txt`, `/results`, and the TUI `Current Found Configs` box as soon as it is found, until `top_n` working configs are available. Early configs may not have the lowest ping or best stability. |
 | `scan_all_configs` | Boolean | `false` | When `false`, active probing can stop early after enough working configs are found. |
 | `fetch_timeout_ms` | Integer milliseconds | `30000` | Per-source HTTP fetch timeout. |
@@ -1063,7 +1063,9 @@ Important modules:
 | `src/constants.rs` | Default values, UI lists, artifact names, supported URI schemes. |
 | `src/paths.rs` | Installed, portable (auto-detected), and custom-config path resolution. |
 | `src/subscription.rs` | Fetching subscription sources, cache snapshots, cache fallback, proxied retry. |
-| `src/parser.rs` | Share-link extraction and endpoint parsing. |
+| `src/parser/mod.rs` | Subscription document parsing: raw, base64, JSON, YAML, and the Clash/Mihomo dispatch. |
+| `src/parser/html.rs` | HTML panel extraction (Marzban-style attributes, base64 blocks, scripts). |
+| `src/parser/xray.rs` | Full Xray/V2Ray client config conversion to share links. |
 | `src/clash.rs` | Clash/Mihomo YAML subscription parsing. |
 | `src/convert.rs` | Bidirectional V2Ray share-link ↔ Clash/Mihomo YAML conversion, shared field extraction, full Clash config generation. |
 | `src/probe.rs` | TCP probing, active `sing-box` probing, outbound conversion, speed testing. |

@@ -377,6 +377,15 @@ impl PersistentProxy {
             Ok(None) => true,
             Err(err) => {
                 warn!(error = %err, "proxy: failed to check process status");
+                // Clean up like the exited branch: the child handle and the
+                // temp config (which holds the outbound credentials) must not
+                // be orphaned. Dropping the handle also stops sing-box,
+                // which was spawned with kill_on_drop.
+                let _ = fs::remove_file(&managed.config_path).await;
+                *process = None;
+                drop(process);
+                let mut state = self.state.write().await;
+                state.running = false;
                 false
             }
         }

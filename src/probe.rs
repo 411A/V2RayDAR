@@ -38,8 +38,8 @@ use crate::{
         SING_BOX_INBOUND_TAG_PREFIX, SING_BOX_OUTBOUND_TAG_PREFIX,
     },
     convert::{
-        decode_base64_bytes, decode_base64_to_string, first_param, json_string, json_u16, json_u64,
-        parse_host_port, percent_decode, query_pairs, split_once, truthy,
+        decode_base64_bytes, decode_base64_to_string, first_param, json_bool, json_string,
+        json_u16, json_u64, parse_host_port, percent_decode, query_pairs, split_once, truthy,
     },
     model::{Candidate, ProbeStopPolicy, ProgressEvent, RankedConfig},
 };
@@ -2506,7 +2506,11 @@ fn vmess_outbound(uri: &str) -> Result<Value> {
             json_string(&json, &["fp"]),
             None,
             None,
-            false,
+            // The certificate check may be skipped. Without this the flag
+            // never reached sing-box, so a config with skip-cert-verify could
+            // not validate.
+            json_bool(&json, &["allowInsecure", "insecure", "skip-cert-verify"])
+                .is_some_and(|flag| flag),
         );
         outbound.insert("tls".to_string(), tls);
     }

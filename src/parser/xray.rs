@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
 
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use serde_json::Value as JsonValue;
@@ -6,6 +7,17 @@ use serde_json::Value as JsonValue;
 use crate::{convert::decode_base64_to_string, model::Candidate};
 
 use super::parse_share_link;
+
+/// The default transport settings: tcp, no TLS.
+///
+/// A missing `streamSettings` means the default transport. It does **not**
+/// make the outbound unusable, so it must not drop it: a plain
+/// vless/vmess/trojan outbound without a `streamSettings` block is
+/// perfectly valid.
+fn default_stream_settings() -> &'static JsonValue {
+    static DEFAULT: OnceLock<JsonValue> = OnceLock::new();
+    DEFAULT.get_or_init(|| JsonValue::Object(serde_json::Map::new()))
+}
 
 /// Try to parse subscription body as a JSON array of full Xray/V2Ray client
 /// configs (with `outbounds` arrays). Converts each outbound to a share-link URI.
@@ -117,7 +129,8 @@ fn xray_vless_to_uri(
         .unwrap_or("none");
     let flow = user.get("flow").and_then(JsonValue::as_str).unwrap_or("");
 
-    let stream = stream?;
+    let default_stream = default_stream_settings();
+    let stream = stream.unwrap_or(default_stream);
     let network = stream
         .get("network")
         .and_then(JsonValue::as_str)
@@ -245,7 +258,8 @@ fn xray_vmess_to_uri(
         .and_then(JsonValue::as_str)
         .unwrap_or("auto");
 
-    let stream = stream?;
+    let default_stream = default_stream_settings();
+    let stream = stream.unwrap_or(default_stream);
     let network = stream
         .get("network")
         .and_then(JsonValue::as_str)
@@ -345,7 +359,8 @@ fn xray_trojan_to_uri(
     let address = server.get("address")?.as_str()?;
     let port = server.get("port")?.as_u64()?;
 
-    let stream = stream?;
+    let default_stream = default_stream_settings();
+    let stream = stream.unwrap_or(default_stream);
     let network = stream
         .get("network")
         .and_then(JsonValue::as_str)
@@ -612,6 +627,36 @@ mod tests {
         assert!(candidates[0].uri.contains("example.com"));
         assert!(candidates[0].uri.contains("security=tls"));
         assert!(candidates[0].uri.contains("type=ws"));
+    }
+
+    /// An outbound without a `streamSettings` block is perfectly valid: it
+    /// means the default transport (tcp, no TLS). It used to be dropped.
+    #[test]
+    fn converts_an_outbound_without_stream_settings() {
+        let config = r#"[
+  {
+    "remarks": "Plain VLESS",
+    "outbounds": [
+      {
+        "protocol": "vless",
+        "settings": {
+          "vnext": [
+            {
+              "address": "plain.example.com",
+              "port": 443,
+              "users": [{ "id": "uuid-1", "encryption": "none" }]
+            }
+          ]
+        }
+      }
+    ]
+  }
+]"#;
+        let result = try_parse_xray_configs("test", 100, config.as_bytes());
+        let candidates = result.expect("the config parses");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].protocol, "vless");
+        assert!(candidates[0].uri.contains("plain.example.com"));
     }
 
     #[test]

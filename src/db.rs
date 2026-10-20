@@ -287,17 +287,28 @@ impl Database {
         Ok(configs)
     }
 
-    /// Pool for ping backfill: previously-seen configs the current cycle
-    /// did not test, veterans first (working, then stable, then fast),
-    /// then never-tested rows, then failed rows. Never-tested outranks
-    /// failed because the refresh early-stops: the fetch sights thousands
-    /// of configs insert-only but only probes until `top_n`, so the
-    /// unprobed sightings are the same fresh pool a fetch would check next —
-    /// grinding stale failures first is why ping alone found worse configs
-    /// than a fetch. The ping only dips into this when it verifies fewer
-    /// than `top_n` working configs.
+    /// Pool of previously-seen configs the current cycle did not test.
+    ///
+    /// Order (what makes a config worth re-testing):
+    /// - configs that previously connected successfully come first (they are
+    ///   proven on this network), the most stable and fastest of them first;
+    /// - then the never-tested rows: the configs a feed served but no cycle
+    ///   ever probed, because the refresh early-stops after `top_n`. They
+    ///   are the same fresh pool a fetch would check next, so they outrank
+    ///   the known failures;
+    /// - then the failed rows, last: they were probed and did not work.
+    ///
+    /// Within a group the most recently seen config comes first (the
+    /// `last_online` / `updated_at` stamps), so a fresh sighting beats a
+    /// stale failure and a config a feed still serves beats one it dropped.
+    ///
+    /// The refresh uses this when it cannot fill `top_n` working configs on
+    /// its own: every source failed to fetch, or too many probes failed.
+    /// The ping uses it to backfill a cycle that verified too little. The
+    /// pool is consumed in batches until the target is met, so the first
+    /// batch has to hold the likeliest configs.
     #[allow(clippy::significant_drop_tightening)]
-    pub fn load_backfill_candidates(
+    pub fn load_fallback_candidates(
         &self,
         exclude: &HashSet<String>,
         limit: usize,
@@ -318,14 +329,16 @@ impl Database {
         // Veterans (reachable) first; among the rest, never-tested
         // (`validation = ''`, sighted insert-only but never probed) before
         // failed (`validation != ''`, probed and failed, even with history).
+        // The recency stamps break the ties inside each group.
         sql.push_str(
-            " ORDER BY reachable DESC, (validation = '') DESC, stability_count DESC, latency_ms ASC NULLS LAST LIMIT ?",
+            " ORDER BY reachable DESC, (validation = '') DESC, stability_count DESC,
+                     latency_ms ASC NULLS LAST, last_online DESC, updated_at DESC LIMIT ?",
         );
 
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
         let mut stmt = conn
             .prepare(&sql)
-            .context("failed to prepare backfill candidates query")?;
+            .context("failed to prepare fallback candidates query")?;
 
         let limit_param = i64::try_from(limit).unwrap_or(i64::MAX);
         let mut values: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(exclude.len() + 1);
@@ -335,11 +348,11 @@ impl Database {
         values.push(&limit_param);
         let rows = stmt
             .query_map(values.as_slice(), map_ranked_row)
-            .context("failed to query backfill candidates")?;
+            .context("failed to query fallback candidates")?;
 
         let mut configs = Vec::new();
         for (index, row) in rows.enumerate() {
-            let mut config = row.context("failed to read backfill candidate row")?;
+            let mut config = row.context("failed to read fallback candidate row")?;
             config.rank = index + 1;
             configs.push(config);
         }
@@ -701,18 +714,10 @@ mod tests {
     }
 
     #[test]
-    fn backfill_orders_never_tested_before_failed() {
+    fn fallback_pool_orders_never_tested_before_failed() {
         // Veterans first, then never-tested sightings (validation ''), then
         // failed rows — even when a failed row carries stability history.
-        let dir = std::env::temp_dir().join(format!(
-            "v2raydar-backfill-order-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_nanos())
-        ));
-        std::fs::create_dir_all(&dir).expect("temp dir can be created");
-        let db = Database::open(&dir.join("data.db")).expect("db opens");
+        let db = open_temp_db("backfill-order");
         db.upsert_configs(&[
             ranked_row("failed-history", false, "active_http", 5),
             ranked_row("veteran", true, "active_http", 1),
@@ -733,8 +738,8 @@ mod tests {
         }])
         .expect("seeded sighting");
         let order: Vec<String> = db
-            .load_backfill_candidates(&HashSet::new(), 10)
-            .expect("backfill loads")
+            .load_fallback_candidates(&HashSet::new(), 10)
+            .expect("fallback pool loads")
             .into_iter()
             .map(|item| item.dedup_key)
             .collect();
@@ -742,15 +747,174 @@ mod tests {
     }
 
     fn open_temp_db(name: &str) -> Database {
+        // Unique per call, not per process: the clock only ticks every few
+        // milliseconds, so two tests that ask for a database in the same
+        // tick used to share one file (and one lock).
+        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
             "v2raydar-upsert-batch-{name}-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_nanos())
+            COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
         ));
         std::fs::create_dir_all(&dir).expect("temp dir can be created");
         Database::open(&dir.join("data.db")).expect("db opens")
+    }
+
+    /// Seed one config row with exact ordering keys. The upsert helpers
+    /// stamp `last_online` / `updated_at` with "now", so the ordering test
+    /// needs to write the timestamps itself.
+    #[allow(clippy::too_many_arguments)]
+    fn seed_ordered_row(
+        db: &Database,
+        key: &str,
+        reachable: bool,
+        validation: &str,
+        stability: u32,
+        latency_ms: Option<i64>,
+        last_online: &str,
+        updated_at: &str,
+    ) {
+        {
+            let conn = db.conn.lock().expect("db lock");
+            conn.execute(
+                "INSERT INTO configs (
+                    dedup_key, uri, source, priority, protocol, name,
+                    endpoint_host, endpoint_port, reachable, validation,
+                    latency_ms, http_status, download_mbps, download_bytes,
+                    country_code, stability_count, last_online, created_at, updated_at
+                 ) VALUES (?1, ?2, 'test', 1, 'vless', ?1,
+                    'example.com', 443, ?3, ?4,
+                    ?5, NULL, NULL, NULL,
+                    NULL, ?6, ?7, ?7, ?8)",
+                params![
+                    key,
+                    format!("vless://{key}@example.com:443"),
+                    i64::from(reachable),
+                    validation,
+                    latency_ms,
+                    i64::from(stability),
+                    last_online,
+                    updated_at,
+                ],
+            )
+            .expect("row inserts");
+            // Release the lock right after its last use.
+            drop(conn);
+        }
+    }
+
+    #[test]
+    fn fallback_pool_prefers_proven_working_then_the_most_recently_seen() {
+        // The pool is consumed in batches until `top_n` is met, so the first
+        // batch has to hold the likeliest configs: the ones that previously
+        // connected successfully (most stable, then fastest), then the
+        // never-tested sightings (the fresh pool a fetch would check next),
+        // and only then the known failures. Inside a group the most
+        // recently seen config comes first.
+        let db = open_temp_db("fallback-order");
+        seed_ordered_row(
+            &db,
+            "proven-slow",
+            true,
+            "active_http",
+            1,
+            Some(500),
+            "2026-10-20T10:00:00+00:00",
+            "2026-10-20T10:00:00+00:00",
+        );
+        seed_ordered_row(
+            &db,
+            "proven-fast",
+            true,
+            "active_http",
+            1,
+            Some(30),
+            "2026-10-01T10:00:00+00:00",
+            "2026-10-01T10:00:00+00:00",
+        );
+        seed_ordered_row(
+            &db,
+            "proven-stable",
+            true,
+            "active_http",
+            5,
+            Some(900),
+            "2026-01-01T10:00:00+00:00",
+            "2026-01-01T10:00:00+00:00",
+        );
+        seed_ordered_row(
+            &db,
+            "stale-sighting",
+            false,
+            "",
+            0,
+            None,
+            "2026-01-01T10:00:00+00:00",
+            "2026-01-01T10:00:00+00:00",
+        );
+        seed_ordered_row(
+            &db,
+            "fresh-sighting",
+            false,
+            "",
+            0,
+            None,
+            "2026-10-20T09:00:00+00:00",
+            "2026-10-20T09:00:00+00:00",
+        );
+        seed_ordered_row(
+            &db,
+            "failed-recent",
+            false,
+            "active_http",
+            0,
+            None,
+            "2026-10-20T09:00:00+00:00",
+            "2026-10-20T09:00:00+00:00",
+        );
+
+        let order: Vec<String> = db
+            .load_fallback_candidates(&HashSet::new(), 10)
+            .expect("fallback pool loads")
+            .into_iter()
+            .map(|item| item.dedup_key)
+            .collect();
+
+        assert_eq!(
+            order,
+            vec![
+                "proven-stable",
+                "proven-fast",
+                "proven-slow",
+                "fresh-sighting",
+                "stale-sighting",
+                "failed-recent",
+            ]
+        );
+    }
+
+    #[test]
+    fn fallback_pool_skips_the_configs_the_cycle_already_tested() {
+        let db = open_temp_db("fallback-exclude");
+        for key in ["kept", "skipped"] {
+            seed_ordered_row(
+                &db,
+                key,
+                true,
+                "active_http",
+                1,
+                Some(30),
+                "2026-10-20T10:00:00+00:00",
+                "2026-10-20T10:00:00+00:00",
+            );
+        }
+        let order: Vec<String> = db
+            .load_fallback_candidates(&HashSet::from(["skipped".to_string()]), 10)
+            .expect("fallback pool loads")
+            .into_iter()
+            .map(|item| item.dedup_key)
+            .collect();
+        assert_eq!(order, vec!["kept"]);
     }
 
     fn stability_and_last_online(db: &Database, key: &str) -> (u32, String) {

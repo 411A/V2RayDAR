@@ -828,6 +828,7 @@ async fn probe_refresh_candidates(
     label: &str,
     carry: Option<&PingCarry>,
     cancel: Option<Arc<AtomicBool>>,
+    preverified_working: usize,
 ) -> Vec<RankedConfig> {
     let candidate_count = candidates.len();
     if candidates.is_empty() {
@@ -873,7 +874,13 @@ async fn probe_refresh_candidates(
     )
     .await;
 
-    let stop_policy = probe_stop_policy(config, previous_top_n, &candidates, carry);
+    let stop_policy = probe_stop_policy(
+        config,
+        previous_top_n,
+        &candidates,
+        carry,
+        preverified_working,
+    );
     probe_candidates(
         candidates,
         &config.probe,
@@ -1286,6 +1293,7 @@ async fn refresh_once(
         "Probe",
         carry.as_ref(),
         None,
+        0,
     )
     .await;
 
@@ -1366,6 +1374,7 @@ async fn refresh_once(
                             "Retry probe",
                             carry.as_ref(),
                             None,
+                            0,
                         )
                         .await;
                         ranked.append(&mut retry_ranked);
@@ -1397,74 +1406,71 @@ async fn refresh_once(
             .await;
         }
     }
-    if !cache_only && fresh_success_count == 0 {
-        let cache_started = std::time::Instant::now();
-        let db = database.clone();
-        let top_n = config.top_n;
-        match tokio::task::spawn_blocking(move || db.load_ranked_configs(top_n))
-            .await
-            .map_err(|e| anyhow!("{e}"))
-        {
-            Ok(Ok(db_configs)) if !db_configs.is_empty() => {
-                let candidates: Vec<Candidate> = db_configs
-                    .into_iter()
-                    .filter(|rc| seen_candidate_keys.insert(rc.dedup_key.clone()))
-                    .map(|rc| Candidate {
-                        id: rc.id,
-                        dedup_key: rc.dedup_key,
-                        source: rc.source,
-                        priority: rc.priority,
-                        protocol: rc.protocol,
-                        name: rc.name,
-                        endpoint: rc.endpoint,
-                        uri: rc.uri,
-                    })
-                    .collect();
-                let cache_count = candidates.len();
-                fetched_count = fetched_count.saturating_add(cache_count);
-                info!(
-                    unique = cache_count,
-                    duration_ms = cache_started.elapsed().as_millis(),
-                    "database fallback finished"
-                );
-                if print_compact_progress {
-                    print_log(format!(
-                        "Database fallback finished: {} configs in {}.",
-                        cache_count,
-                        format_duration_short(cache_started.elapsed().as_millis())
-                    ));
-                }
-                {
-                    let mut runtime = state.write().await;
-                    runtime.total_candidates = fetched_count;
-                    runtime.fetch_errors.clone_from(&fetch_errors);
-                    applog::push(
-                        &mut runtime,
-                        applog::LogLevel::Info,
-                        &format!(
-                            "Database fallback finished: {cache_count} configs from previously-probed entries"
-                        ),
-                    );
-                }
-                if cache_count > 0 {
-                    // Already database rows: nothing new to remember.
-                    let mut cached_ranked = probe_refresh_candidates(
-                        candidates,
-                        config,
-                        &previous_top_n,
-                        &state,
-                        &progress_tx,
-                        print_compact_progress,
-                        "Cache probe",
-                        carry.as_ref(),
-                        None,
-                    )
-                    .await;
-                    ranked.append(&mut cached_ranked);
-                }
+    // Database fallback: the cycle can end below `top_n` working configs
+    // for two reasons - every subscription source failed, so the fetch
+    // brought nothing, or the fetch worked but too many probes failed to
+    // reach the target. The cached configs are the only material left in
+    // both cases, so probe them until the target is met or the pool runs
+    // out.
+    //
+    // Only what this cycle actually tested stays out of the pool: the
+    // configs the fresh probe verified and the ones the preempted ping
+    // verified. The fetched candidates the fresh probe never got to (the
+    // early stop cut its queue short) are NOT excluded - the database
+    // holds them as untested sightings, and re-testing them is exactly
+    // what the fallback is for.
+    let mut fallback_excluded: HashSet<String> =
+        ranked.iter().map(|item| item.dedup_key.clone()).collect();
+    fallback_excluded.extend(carried_keys.iter().cloned());
+    let working_after_probe = ranked.iter().filter(|item| item.reachable).count();
+    if config.top_n > 0 && working_after_probe < config.top_n {
+        let fallback_started = std::time::Instant::now();
+        let fallback_tested = probe_database_fallback(
+            config,
+            &database,
+            &state,
+            &previous_top_n,
+            &fallback_excluded,
+            &mut ranked,
+            print_compact_progress,
+            carry.as_ref(),
+        )
+        .await;
+        if fallback_tested > 0 {
+            // The fallback candidates are tested like any other probe
+            // result, so they have to be counted in the fetched total too:
+            // otherwise Failed would outgrow Fetched.
+            fetched_count = fetched_count.saturating_add(fallback_tested);
+            let working_now = ranked.iter().filter(|item| item.reachable).count();
+            info!(
+                tested = fallback_tested,
+                working = working_now,
+                target = config.top_n,
+                sources_ok = fresh_success_count,
+                duration_ms = fallback_started.elapsed().as_millis(),
+                "database fallback finished"
+            );
+            if print_compact_progress {
+                print_log(format!(
+                    "Database fallback finished: {} cached configs tested, {} working of {} needed in {}.",
+                    fallback_tested,
+                    working_now,
+                    config.top_n,
+                    format_duration_short(fallback_started.elapsed().as_millis())
+                ));
             }
-            Ok(Ok(_) | Err(_)) | Err(_) => {
-                // Database fallback returned no configs or failed
+            {
+                let mut runtime = state.write().await;
+                runtime.total_candidates = fetched_count;
+                runtime.fetch_errors.clone_from(&fetch_errors);
+                applog::push(
+                    &mut runtime,
+                    applog::LogLevel::Info,
+                    &format!(
+                        "Database fallback finished: {fallback_tested} cached configs tested, {working_now} working of {} needed",
+                        config.top_n
+                    ),
+                );
             }
         }
     }
@@ -1658,6 +1664,7 @@ fn probe_stop_policy(
     previous_top_n: &HashSet<String>,
     candidates: &[crate::model::Candidate],
     carry: Option<&PingCarry>,
+    preverified_working: usize,
 ) -> ProbeStopPolicy {
     let current_keys = candidates
         .iter()
@@ -1670,17 +1677,21 @@ fn probe_stop_policy(
         .cloned()
         .collect();
     // Carried-over ping results count toward the target (and the stability
-    // quorum) so the interrupting refresh only gathers the shortfall.
-    let (prefound_working, prefound_previous_working) = carry.map_or((0, 0), |carry| {
-        (
-            carry.reachable,
-            carry
-                .working
-                .iter()
-                .filter(|item| previous_working_keys.contains(&item.dedup_key))
-                .count(),
-        )
-    });
+    // quorum) so the interrupting refresh only gathers the shortfall. The
+    // configs this cycle's own earlier probe verified count too: the
+    // database fallback that runs afterwards must fill what is missing,
+    // not re-verify a target that is already met.
+    let (prefound_working, prefound_previous_working) =
+        carry.map_or((preverified_working, 0), |carry| {
+            (
+                carry.reachable.saturating_add(preverified_working),
+                carry
+                    .working
+                    .iter()
+                    .filter(|item| previous_working_keys.contains(&item.dedup_key))
+                    .count(),
+            )
+        });
 
     ProbeStopPolicy {
         scan_all_configs: config.scan_all_configs,
@@ -1823,7 +1834,7 @@ async fn probe_ping_backfill(
         let db = database.clone();
         let exclude = tested.clone();
         let extras = tokio::task::spawn_blocking(move || {
-            db.load_backfill_candidates(&exclude, PING_BACKFILL_MAX_CANDIDATES)
+            db.load_fallback_candidates(&exclude, PING_BACKFILL_MAX_CANDIDATES)
         })
         .await;
         let extras = match extras {
@@ -1862,6 +1873,7 @@ async fn probe_ping_backfill(
             "Ping backfill",
             None,
             Some(ping_cancel.clone()),
+            0,
         )
         .await;
         drop(backfill_tx);
@@ -1871,6 +1883,126 @@ async fn probe_ping_backfill(
         if ping_cancel.load(AtomicOrdering::SeqCst) {
             break;
         }
+    }
+    total_tested
+}
+
+/// Cap for one database-fallback round: bounds the extra probing when a
+/// refresh verifies fewer than `top_n` working configs.
+const DATABASE_FALLBACK_MAX_CANDIDATES: usize = 64;
+
+/// Cap for the whole database fallback: a refresh may not spend the entire
+/// database on a network that is down. The pool is ordered so the proven
+/// configs come first, so this budget only bites when nothing works at all.
+const DATABASE_FALLBACK_TOTAL_CANDIDATES: usize = 1024;
+
+/// Probe what the database already knows when the cycle could not fill
+/// `top_n` working configs.
+///
+/// Two situations reach this:
+/// - every subscription source failed, so the fetch brought nothing;
+/// - the fetch worked, but too many probes failed to reach `top_n`.
+///
+/// The pool is the whole database, ordered by what makes a config worth
+/// re-testing: configs that previously connected successfully come first
+/// (proven on this network), then the most recently seen ones (a fresh
+/// sighting beats a stale failure). Batches are pulled until `top_n`
+/// working configs are verified or the pool runs out - one batch is
+/// rarely enough when the pool is large and mostly dead.
+///
+/// Probe bytes never touch Sub Usage: this is cached material, not a
+/// subscription download.
+///
+/// Returns how many fallback candidates were tested.
+#[allow(clippy::too_many_arguments)]
+async fn probe_database_fallback(
+    config: &AppConfig,
+    database: &Arc<Database>,
+    state: &Arc<RwLock<RuntimeState>>,
+    previous_top_n: &HashSet<String>,
+    tested_keys: &HashSet<String>,
+    ranked: &mut Vec<RankedConfig>,
+    print_compact_progress: bool,
+    carry: Option<&PingCarry>,
+) -> usize {
+    if config.top_n == 0 {
+        return 0;
+    }
+    // The configs a preempted ping verified count toward the target too:
+    // they are merged into the published list later, so without them the
+    // fallback would probe for a target that is already (partly) met.
+    let carry_working = carry.map_or(0, |carry| carry.reachable);
+    let mut tested = tested_keys.clone();
+    let mut total_tested = 0_usize;
+    loop {
+        let working = ranked.iter().filter(|item| item.reachable).count();
+        if working.saturating_add(carry_working) >= config.top_n {
+            break;
+        }
+        if total_tested >= DATABASE_FALLBACK_TOTAL_CANDIDATES {
+            warn!(
+                tested = total_tested,
+                working,
+                target = config.top_n,
+                "database fallback stopped: candidate budget spent"
+            );
+            break;
+        }
+        let budget = DATABASE_FALLBACK_TOTAL_CANDIDATES.saturating_sub(total_tested);
+        let batch_limit = budget.min(DATABASE_FALLBACK_MAX_CANDIDATES);
+        let db = database.clone();
+        let exclude = tested.clone();
+        let extras =
+            tokio::task::spawn_blocking(move || db.load_fallback_candidates(&exclude, batch_limit))
+                .await;
+        let extras = match extras {
+            Ok(Ok(rows)) => rows,
+            Ok(Err(error)) => {
+                warn!(error = %error, "database fallback skipped: database unreadable");
+                break;
+            }
+            Err(error) => {
+                warn!(error = %error, "database fallback skipped: database task failed");
+                break;
+            }
+        };
+        if extras.is_empty() {
+            break;
+        }
+        for item in &extras {
+            tested.insert(item.dedup_key.clone());
+        }
+        let extra_candidates: Vec<Candidate> = extras.iter().map(candidate_from_ranked).collect();
+        total_tested += extra_candidates.len();
+        // The fallback has its own progress channel: the probe bytes of
+        // cached configs are not subscription usage, so they must not land
+        // in the fetch byte counter the dashboard shows.
+        let (fallback_tx, fallback_task) = spawn_tui_progress_forwarder(
+            state.clone(),
+            previous_top_n.clone(),
+            print_compact_progress,
+            false,
+        );
+        let mut fallback_ranked = probe_refresh_candidates(
+            extra_candidates,
+            config,
+            previous_top_n,
+            state,
+            &fallback_tx,
+            print_compact_progress,
+            "Fallback probe",
+            carry,
+            None,
+            // The working configs this cycle already verified count toward
+            // the target: the fallback fills the shortfall, it does not
+            // re-verify a target that is already met.
+            working,
+        )
+        .await;
+        drop(fallback_tx);
+        let _ = fallback_task.await;
+        ranked.append(&mut fallback_ranked);
+        deduplicate_ranked_configs(ranked);
     }
     total_tested
 }
@@ -2006,6 +2138,7 @@ async fn ping_once(
         "Ping",
         None,
         Some(ping_cancel.clone()),
+        0,
     )
     .await;
     drop(progress_tx);
@@ -3245,19 +3378,20 @@ impl From<&AppConfig> for RuntimeConfig {
 
 #[cfg(test)]
 mod tests {
-    use std::time::SystemTime;
+    use std::sync::atomic::AtomicUsize;
 
     use super::*;
     use crate::model::Endpoint;
 
     fn temp_uninstall_root(name: &str) -> PathBuf {
+        // Unique per call: the wall clock only ticks every few
+        // milliseconds, so two tests that ask for a directory in the same
+        // tick used to share one.
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let unique = format!(
             "v2raydar-{name}-{}-{}",
             std::process::id(),
-            SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .expect("system time is after unix epoch")
-                .as_nanos()
+            COUNTER.fetch_add(1, AtomicOrdering::SeqCst),
         );
         std::env::temp_dir().join(unique)
     }
@@ -4171,13 +4305,14 @@ mod tests {
     }
 
     fn manual_trigger_test_database() -> Arc<crate::db::Database> {
+        // The name has to be unique per call, not per process: the clock
+        // only ticks every few milliseconds, so two tests that ask for a
+        // database in the same tick used to share one file (and one lock).
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
             "v2raydar-trigger-test-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock after epoch")
-                .as_nanos()
+            COUNTER.fetch_add(1, AtomicOrdering::SeqCst),
         ));
         std::fs::create_dir_all(&dir).expect("temp dir can be created");
         Arc::new(crate::db::Database::open(&dir.join("data.db")).expect("db opens"))
@@ -4192,6 +4327,32 @@ mod tests {
             String::new(),
             None,
         )))
+    }
+
+    /// Store one config in the database, the way a previous cycle did.
+    fn seed_cached_row(database: &Arc<crate::db::Database>, uri: &str, reachable: bool) {
+        let candidate = crate::parser::parse_share_link("cached", 1, uri).expect("uri parses");
+        let row = RankedConfig {
+            rank: 0,
+            stability_count: u32::from(reachable),
+            id: candidate.id.clone(),
+            dedup_key: candidate.dedup_key.clone(),
+            source: candidate.source.clone(),
+            priority: candidate.priority,
+            protocol: candidate.protocol.clone(),
+            name: candidate.name.clone(),
+            endpoint: candidate.endpoint.clone(),
+            uri: candidate.uri,
+            reachable,
+            validation: "active_http".to_string(),
+            latency_ms: Some(42),
+            http_status: Some(204),
+            download_mbps: None,
+            download_bytes: None,
+            error: None,
+            country_code: None,
+        };
+        database.upsert_configs(&[row]).expect("row persists");
     }
 
     async fn wait_for_condition(message: &str, mut done: impl FnMut() -> bool) {
@@ -4646,6 +4807,146 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn refresh_falls_back_to_the_cached_configs_when_top_n_is_not_met() {
+        // The fetch works, but its only config fails, so the cycle cannot
+        // fill `top_n`. The cached configs are then the only material left:
+        // the database fallback has to probe them and publish what works.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("test listener binds");
+        let port = listener.local_addr().expect("listener addr").port();
+        std::thread::spawn(move || {
+            let _ = listener.set_nonblocking(true);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_mins(2);
+            let mut served = 0;
+            while std::time::Instant::now() < deadline && served < 20 {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        drop(stream);
+                        served += 1;
+                    }
+                    Err(_) => std::thread::sleep(std::time::Duration::from_millis(20)),
+                }
+            }
+        });
+        let mut config = manual_trigger_test_config();
+        config.top_n = 2;
+        let database = manual_trigger_test_database();
+        // A config a previous cycle stored and verified.
+        let cached_uri =
+            format!("vless://22222222-2222-2222-2222-222222222222@127.0.0.1:{port}#cached");
+        seed_cached_row(&database, &cached_uri, true);
+        let state = Arc::new(tokio::sync::RwLock::new(RuntimeState::default()));
+        let runtime_config = Arc::new(tokio::sync::RwLock::new(RuntimeConfig::from(&config)));
+        let cycle = Arc::new(tokio::sync::Mutex::new(()));
+
+        refresh_once(
+            &config,
+            database,
+            state.clone(),
+            runtime_config,
+            cycle,
+            false,
+            false,
+            None,
+            false,
+        )
+        .await
+        .expect("refresh succeeds");
+
+        let runtime = state.read().await;
+        let cached = runtime
+            .ranked
+            .iter()
+            .find(|item| item.name == "cached")
+            .expect("the cached config was probed and published");
+        assert!(cached.reachable, "the cached config verifies");
+        // Re-probed, not copied out of the database: the stored row says
+        // `active_http`, a fresh TCP check says `tcp_connect`.
+        assert_eq!(
+            cached.validation, "tcp_connect",
+            "the cached config was re-probed, not replayed from the database"
+        );
+        assert!(runtime.reachable_candidates >= 1);
+        // The failed fetched config is not tested a second time by the
+        // fallback: it is already in the database as an untested sighting.
+        assert_eq!(
+            runtime
+                .ranked
+                .iter()
+                .filter(|item| item.name == "e2e")
+                .count(),
+            1,
+            "the fetched config is tested exactly once"
+        );
+        drop(runtime);
+    }
+
+    #[tokio::test]
+    async fn refresh_serves_the_cached_configs_when_every_source_fails() {
+        // Every subscription link is broken, so the fetch brings nothing.
+        // The cached configs are all that is left, and they have to be
+        // probed instead of publishing an empty list.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("test listener binds");
+        let port = listener.local_addr().expect("listener addr").port();
+        std::thread::spawn(move || {
+            let _ = listener.set_nonblocking(true);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_mins(2);
+            let mut served = 0;
+            while std::time::Instant::now() < deadline && served < 20 {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        drop(stream);
+                        served += 1;
+                    }
+                    Err(_) => std::thread::sleep(std::time::Duration::from_millis(20)),
+                }
+            }
+        });
+        let mut config = manual_trigger_test_config();
+        config.top_n = 2;
+        // Nothing listens on port 1: the fetch fails.
+        config.subscriptions = vec![crate::config::SubscriptionSource {
+            name: "broken".to_string(),
+            url: "http://127.0.0.1:1/feed".to_string(),
+            enabled: true,
+            priority: 1,
+        }];
+        let database = manual_trigger_test_database();
+        let cached_uri =
+            format!("vless://33333333-3333-3333-3333-333333333333@127.0.0.1:{port}#cached");
+        seed_cached_row(&database, &cached_uri, true);
+        let state = Arc::new(tokio::sync::RwLock::new(RuntimeState::default()));
+        let runtime_config = Arc::new(tokio::sync::RwLock::new(RuntimeConfig::from(&config)));
+        let cycle = Arc::new(tokio::sync::Mutex::new(()));
+
+        refresh_once(
+            &config,
+            database,
+            state.clone(),
+            runtime_config,
+            cycle,
+            false,
+            false,
+            None,
+            false,
+        )
+        .await
+        .expect("refresh succeeds");
+
+        let runtime = state.read().await;
+        let cached = runtime
+            .ranked
+            .iter()
+            .find(|item| item.name == "cached")
+            .expect("the cached config was probed and published");
+        assert!(cached.reachable, "the cached config verifies");
+        assert!(
+            !runtime.fetch_errors.is_empty(),
+            "the fetch errors are kept"
+        );
+        drop(runtime);
+    }
+
+    #[tokio::test]
     async fn probe_deltas_attribute_bytes_only_for_fetch_cycles() {
         // Ping re-tests without fetching: its probe bytes must not leak
         // into Sub Usage, while counters still accumulate in both modes.
@@ -5034,7 +5335,7 @@ mod tests {
             .expect("sightings insert");
 
         let loaded = database
-            .load_backfill_candidates(&HashSet::new(), 10)
+            .load_fallback_candidates(&HashSet::new(), 10)
             .expect("loads");
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].name, "known");
@@ -5200,19 +5501,19 @@ mod tests {
 
         let exclude = HashSet::from([steady.dedup_key.clone()]);
         let loaded = database
-            .load_backfill_candidates(&exclude, 2)
+            .load_fallback_candidates(&exclude, 2)
             .expect("loads");
         let names: Vec<&str> = loaded.iter().map(|item| item.name.as_str()).collect();
         assert_eq!(names, vec!["quick", "stale"]);
 
         let capped = database
-            .load_backfill_candidates(&HashSet::new(), 1)
+            .load_fallback_candidates(&HashSet::new(), 1)
             .expect("loads capped");
         assert_eq!(capped.len(), 1);
         assert_eq!(capped[0].name, "steady");
 
         let all = database
-            .load_backfill_candidates(&HashSet::new(), 10)
+            .load_fallback_candidates(&HashSet::new(), 10)
             .expect("loads all");
         let names: Vec<&str> = all.iter().map(|item| item.name.as_str()).collect();
         assert_eq!(names, vec!["steady", "quick", "stale", "buried"]);

@@ -121,9 +121,11 @@ pub struct ProbeStopPolicy {
     pub prioritize_stability: bool,
     pub return_configs_asap: bool,
     pub previous_working_keys: HashSet<String>,
-    /// Working configs verified by a preempted ping cycle just before this
-    /// probe started. They count toward `top_n` so a refresh that interrupts
-    /// a ping only gathers the shortfall instead of re-probing everything.
+    /// Working configs verified before this probe started: the ones a
+    /// preempted ping cycle confirmed, plus whatever this cycle's own
+    /// earlier probe already verified. They count toward `top_n` so a
+    /// follow-up probe (the database fallback) only gathers the shortfall
+    /// instead of re-verifying the same target.
     pub prefound_working: usize,
     /// Of those, the ones that were also in `previous_working_keys`: they
     /// count toward the stability quorum like freshly verified ones.

@@ -691,6 +691,8 @@ The database contains:
 
 When a refresh completes, all probed configs are upserted into the database. Configs that are reachable get their `last_online` timestamp updated. Configs that are unreachable keep their existing `last_online` value. Fetched candidates are also cached insert-only before probing, so the database holds the whole pool — including configs no cycle has tested yet — while known rows are never reset by a re-fetch. After each refresh, configs not seen online for `clean_offlines_after_days` (default: 7) are removed.
 
+The database is also the fallback source: a cycle that cannot fill `top_n` working configs probes the cached pool instead of publishing an empty result (see [Restricted-Network Behavior](#restricted-network-behavior)).
+
 ## Restricted-Network Behavior
 
 On very restricted networks, set `use_cache_only: true` to load previously-probed configs from the database instead of fetching fresh subscriptions. The app can test these previously-probed configs when fresh HTTP subscription URLs are unreachable.
@@ -700,8 +702,10 @@ Refresh behavior is:
 1. Fetch enabled subscriptions directly.
 2. Parse and probe the configs that were fetched.
 3. If some HTTP subscription sources failed and active probing has at least one bridge config, retry failed HTTP sources through that bridge.
-4. If no fresh subscription source was fetched successfully, fall back to cached HTTP snapshots.
-5. Probe fallback candidates and publish any reachable results.
+4. If the cycle still verifies fewer than `top_n` working configs — because every source failed, or because too many probes failed — probe the cached configs from the database until the target is met or the pool runs out.
+5. Publish the reachable results.
+
+The cached pool is ordered by what makes a config worth re-testing: the ones that previously connected successfully come first (they are proven on this network), then the never-tested sightings a feed served but no cycle probed, then the known failures. Inside a group the most recently seen config comes first, so a fresh sighting beats a stale failure. The pool is consumed in batches of 64, up to 1024 configs per cycle, and no config is tested twice in the same cycle.
 
 The bridge config is selected in this order:
 
@@ -1086,7 +1090,7 @@ The refresh pipeline in `src/main.rs` is roughly:
 3. Parse fetched subscription bodies into candidates — **including Clash/Mihomo YAML configs** which are detected by their `proxies:` structure and converted to share links — and cache the sightings insert-only into the database (known rows untouched) so later pings can backfill from the whole pool.
 4. Probe candidates with `probe_candidates`. When `prioritize_stability: true`, the scheduler re-pings the previous run's saved top-N first.
 5. If direct fetches failed, retry failed HTTP sources through `emergency_config` or a working config when active mode is available, then probe newly loaded retry candidates.
-6. If no fresh subscription source was fetched successfully, load previously-probed configs from the database and probe them.
+6. If the cycle verified fewer than `top_n` working configs — every source failed, or too many probes failed — probe the cached configs from the database until the target is met or the pool runs out. The pool is ordered by what makes a config worth re-testing: the configs that previously connected successfully first (most stable, then fastest), then the never-tested sightings, then the known failures; inside a group the most recently seen config comes first. The configs this cycle already tested are never re-tested.
 7. Apply stability ranking (carry the previous run's saved top-N to the front when enabled, otherwise rank purely by low ping).
 8. Publish ranked state to `/subscription`, `/subscription.txt`, and `/results`.
 9. Persist all probed configs to the database and save the new top-N stable keys (when stability ranking is on) so the next refresh re-pings it first.

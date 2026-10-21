@@ -891,27 +891,139 @@ async fn probe_refresh_candidates(
     .await
 }
 
-fn subscription_retry_proxy_uri(
-    config: &AppConfig,
-    ranked: &[RankedConfig],
-    previous: &RuntimeState,
-) -> Option<String> {
-    if config.probe.mode != ProbeMode::Active || config.probe.sing_box_path.trim().is_empty() {
-        return None;
-    }
+/// The bridge needs sing-box: a proxy retry spins up a sing-box instance
+/// with the bridge config, and only the active mode can do that.
+fn bridge_possible(config: &AppConfig) -> bool {
+    config.probe.mode == ProbeMode::Active && !config.probe.sing_box_path.trim().is_empty()
+}
+/// How many bridge configs to try in total. Each attempt costs a
+/// sing-box start and a fetch, so the list is short: the best candidates
+/// first.
+const BRIDGE_CANDIDATES: usize = 5;
+/// How many of them come from the configs the previous refresh verified.
+/// The rest of the budget is left for the database, so one dead group
+/// cannot take the whole list.
+const BRIDGE_FROM_PUBLISHED: usize = 2;
 
+/// The bridge configs to try, best first.
+///
+/// The emergency config is the user's own choice, the configs the previous
+/// refresh verified are the freshest ones that worked, and the database
+/// still holds the ones that verified on earlier runs - the only ones
+/// left on a cold start. Any of them can reach the subscription URLs, so
+/// the caller tries them until one delivers.
+async fn bridge_candidates(
+    config: &AppConfig,
+    previous: &RuntimeState,
+    database: &Arc<Database>,
+) -> Vec<String> {
+    let mut candidates: Vec<String> = Vec::new();
     if let Some(uri) = config.emergency_config.as_deref() {
         let uri = uri.trim();
         if !uri.is_empty() {
-            return Some(uri.to_string());
+            push_bridge_candidate(&mut candidates, uri.to_string());
         }
     }
-
-    ranked
+    for item in previous
+        .ranked
         .iter()
-        .chain(previous.ranked.iter())
-        .find(|item| item.reachable)
-        .map(|item| item.uri.clone())
+        .filter(|item| item.reachable)
+        .take(BRIDGE_FROM_PUBLISHED)
+    {
+        push_bridge_candidate(&mut candidates, item.uri.clone());
+    }
+    let db = database.clone();
+    if let Ok(Ok(rows)) =
+        tokio::task::spawn_blocking(move || db.load_ranked_configs(BRIDGE_CANDIDATES)).await
+    {
+        for row in rows {
+            push_bridge_candidate(&mut candidates, row.uri);
+        }
+    }
+    candidates
+}
+
+/// Add one bridge candidate, keeping the order and dropping the repeats:
+/// the same config can be both the published one and the stored one. The
+/// list is capped - every candidate costs a sing-box start and a fetch,
+/// and a cycle that spends minutes on dead bridges is worse than one that
+/// falls back to the cached configs.
+fn push_bridge_candidate(candidates: &mut Vec<String>, uri: String) {
+    if candidates.len() < BRIDGE_CANDIDATES && !candidates.contains(&uri) {
+        candidates.push(uri);
+    }
+}
+
+/// Fetch the sources that failed again, through a config that works.
+///
+/// The candidates are tried in order and the first one that delivers
+/// wins: a bridge that died since it last worked would otherwise end
+/// the attempt while a working one was still available. The configs it
+/// brings join the seen-set, so the probe that follows never tests them
+/// twice.
+async fn fetch_through_bridge(
+    config: &AppConfig,
+    failures: &[FetchFailure],
+    bridges: &[String],
+    database: &Arc<Database>,
+    state: &Arc<RwLock<RuntimeState>>,
+    progress_tx: &mpsc::UnboundedSender<ProgressEvent>,
+    seen_candidate_keys: &mut HashSet<String>,
+) -> Option<FetchOutcome> {
+    for (index, proxy_uri) in bridges.iter().enumerate() {
+        let started = std::time::Instant::now();
+        let result = retry_failed_sources_with_proxy(
+            config,
+            failures,
+            proxy_uri,
+            |bytes| {
+                let state = state.clone();
+                async move {
+                    add_fetch_bytes(&state, bytes).await;
+                }
+            },
+            Some(progress_tx.clone()),
+        )
+        .await;
+        match result {
+            Ok(mut retry) => {
+                let parsed = retry.candidates.len();
+                retry
+                    .candidates
+                    .retain(|candidate| seen_candidate_keys.insert(candidate.dedup_key.clone()));
+                let delivered = !retry.candidates.is_empty() || !retry.successes.is_empty();
+                info!(
+                    bridge = index + 1,
+                    parsed,
+                    unique = retry.candidates.len(),
+                    sources = retry.successes.len(),
+                    duration_ms = started.elapsed().as_millis(),
+                    "proxied subscription retry finished"
+                );
+                if delivered {
+                    if !retry.candidates.is_empty() {
+                        // The bridged configs are fresh sightings too: cache
+                        // them, then probe them together with the direct
+                        // ones in the single probe run.
+                        cache_fetched_candidates(database, &retry.candidates).await;
+                    }
+                    return Some(retry);
+                }
+                warn!(
+                    bridge = index + 1,
+                    "bridge fetched nothing; trying the next one"
+                );
+            }
+            Err(err) => {
+                warn!(
+                    bridge = index + 1,
+                    error = %err,
+                    "proxied subscription retry failed; trying the next bridge"
+                );
+            }
+        }
+    }
+    None
 }
 
 fn merged_fetch_errors(
@@ -1146,6 +1258,7 @@ async fn refresh_once(
         // published until fresh results replace it.
         runtime.tested_candidates = 0;
         runtime.reachable_candidates = carry.as_ref().map_or(0, |carry| carry.reachable);
+        runtime.cached_candidates = 0;
         runtime.fetch_errors.clear();
         runtime.live_logs.clear();
         if config.return_configs_asap && carry.is_none() {
@@ -1223,6 +1336,15 @@ async fn refresh_once(
     };
     let mut fresh_success_count = fetched.successes.len();
     let mut fetched_count = fetched.candidates.len();
+    // Cache-only mode takes its "fetch" from the database, so nothing came
+    // from the network: the configs are cached material and are counted
+    // apart, so the dashboard can say so instead of reporting a fetch that
+    // never happened.
+    let mut cached_count = 0_usize;
+    if cache_only {
+        cached_count = fetched_count;
+        fetched_count = 0;
+    }
     let mut seen_candidate_keys = fetched
         .candidates
         .iter()
@@ -1246,6 +1368,7 @@ async fn refresh_once(
     {
         let mut runtime = state.write().await;
         runtime.total_candidates = fetched_count;
+        runtime.cached_candidates = cached_count;
         runtime.fetch_errors.clone_from(&fetch_errors);
         applog::push(
             &mut runtime,
@@ -1282,6 +1405,103 @@ async fn refresh_once(
     // list: untested leftovers stay available for ping backfill.
     cache_fetched_candidates(&database, &fetched.candidates).await;
 
+    // Bridge fetch, before the probe: a source that failed because the
+    // network is blocked can often be reached through a config that worked
+    // before. Doing it here means the "Fetched" count is final when the
+    // probe starts, and one probe covers the direct and the bridged
+    // configs together.
+    //
+    // The bridge comes from the database: the in-memory lists only hold
+    // what the last cycle published, which is empty on a cold start -
+    // exactly when a fetch failure leaves the app with nothing to work
+    // with. The database is the fallback for the top_n later on, so it is
+    // also where the bridge has to come from.
+    //
+    // The proxy path is for restricted networks only: spinning sing-box
+    // up pays off solely when a failure looks egress-scoped (blocked
+    // connect/DNS, timeouts, 403/429). Deterministic failures (404, sick
+    // origins, bad content) would fail identically through a proxy, so a
+    // batch of only those skips the proxy run entirely.
+    if !cache_only && !fetched.failures.is_empty() {
+        if fetched.failures.iter().any(|failure| failure.proxy_retry) {
+            // The bridge needs sing-box: only the active mode can spin one
+            // up with the bridge config. Without it there is no tunnel, so
+            // the cycle goes straight to the cached configs.
+            if bridge_possible(config) {
+                let bridge_started = std::time::Instant::now();
+                // Any working config can be the bridge. The candidates are
+                // tried in order and the first one that delivers wins: a
+                // bridge that died since it last worked would otherwise end
+                // the attempt while a working one was still available.
+                let bridges = bridge_candidates(config, &previous_before_refresh, &database).await;
+                if bridges.is_empty() {
+                    push_tui_progress(
+                        &state,
+                        ProgressEvent::LiveLog(applog::warn_line(
+                            "Subscription retry skipped: no working config is available",
+                        )),
+                        &HashSet::new(),
+                        true,
+                    )
+                    .await;
+                } else if let Some(mut retry) = fetch_through_bridge(
+                    config,
+                    &fetched.failures,
+                    &bridges,
+                    &database,
+                    &state,
+                    &progress_tx,
+                    &mut seen_candidate_keys,
+                )
+                .await
+                {
+                    let retry_count = retry.candidates.len();
+                    fetched_count = fetched_count.saturating_add(retry_count);
+                    fresh_success_count = fresh_success_count.saturating_add(retry.successes.len());
+                    fetch_errors = merged_fetch_errors(&fetched.failures, Some(&retry));
+                    info!(
+                        unique = retry_count,
+                        sources = retry.successes.len(),
+                        remaining_fetch_errors = fetch_errors.len(),
+                        "proxied subscription retry finished"
+                    );
+                    if print_compact_progress {
+                        print_log(format!(
+                            "Subscription retry finished: {} new configs, {} source errors in {}.",
+                            retry_count,
+                            fetch_errors.len(),
+                            format_duration_short(bridge_started.elapsed().as_millis())
+                        ));
+                    }
+                    {
+                        let mut runtime = state.write().await;
+                        runtime.total_candidates = fetched_count;
+                        runtime.fetch_errors.clone_from(&fetch_errors);
+                        applog::push(
+                            &mut runtime,
+                            applog::LogLevel::Info,
+                            &format!(
+                                "Subscription retry finished: {} new configs through a working config; {} source errors remain",
+                                retry_count,
+                                fetch_errors.len()
+                            ),
+                        );
+                    }
+                    if retry_count > 0 {
+                        // The bridged configs are fresh sightings too: they
+                        // are probed together with the direct ones in the
+                        // single probe run below.
+                        fetched.candidates.append(&mut retry.candidates);
+                    }
+                }
+            } else {
+                debug!("proxy retry skipped: active mode with a sing-box path is required");
+            }
+        } else {
+            debug!("proxy retry skipped: failures look origin-side, not restricted");
+        }
+    }
+
     let probe_started = std::time::Instant::now();
     let mut ranked = probe_refresh_candidates(
         std::mem::take(&mut fetched.candidates),
@@ -1296,116 +1516,6 @@ async fn refresh_once(
         0,
     )
     .await;
-
-    // The proxy path is for restricted networks only: spinning sing-box
-    // up pays off solely when a failure looks egress-scoped (blocked
-    // connect/DNS, timeouts, 403/429). Deterministic failures (404, sick
-    // origins, bad content) would fail identically through a proxy, so a
-    // batch of only those skips the proxy run entirely.
-    if !cache_only && !fetched.failures.is_empty() {
-        if !fetched.failures.iter().any(|failure| failure.proxy_retry) {
-            debug!("proxy retry skipped: failures look origin-side, not restricted");
-        } else if let Some(proxy_uri) =
-            subscription_retry_proxy_uri(config, &ranked, &previous_before_refresh)
-        {
-            let retry_started = std::time::Instant::now();
-            match retry_failed_sources_with_proxy(
-                config,
-                &fetched.failures,
-                &proxy_uri,
-                |bytes| {
-                    let state = state.clone();
-                    async move {
-                        add_fetch_bytes(&state, bytes).await;
-                    }
-                },
-                Some(progress_tx.clone()),
-            )
-            .await
-            {
-                Ok(mut retry) => {
-                    let retry_before_dedup = retry.candidates.len();
-                    retry.candidates.retain(|candidate| {
-                        seen_candidate_keys.insert(candidate.dedup_key.clone())
-                    });
-                    let retry_count = retry.candidates.len();
-                    fetched_count = fetched_count.saturating_add(retry_count);
-                    fresh_success_count = fresh_success_count.saturating_add(retry.successes.len());
-                    fetch_errors = merged_fetch_errors(&fetched.failures, Some(&retry));
-                    info!(
-                        parsed = retry_before_dedup,
-                        unique = retry_count,
-                        remaining_fetch_errors = fetch_errors.len(),
-                        duration_ms = retry_started.elapsed().as_millis(),
-                        "proxied subscription retry finished"
-                    );
-                    if print_compact_progress {
-                        print_log(format!(
-                            "Subscription retry finished: {} new configs, {} source errors in {}.",
-                            retry_count,
-                            fetch_errors.len(),
-                            format_duration_short(retry_started.elapsed().as_millis())
-                        ));
-                    }
-                    {
-                        let mut runtime = state.write().await;
-                        runtime.total_candidates = fetched_count;
-                        runtime.fetch_errors.clone_from(&fetch_errors);
-                        applog::push(
-                            &mut runtime,
-                            applog::LogLevel::Info,
-                            &format!(
-                                "Subscription retry finished: {} new configs from {} entries; {} source errors remain",
-                                retry_count,
-                                retry_before_dedup,
-                                fetch_errors.len()
-                            ),
-                        );
-                    }
-                    if retry_count > 0 {
-                        cache_fetched_candidates(&database, &retry.candidates).await;
-                        let mut retry_ranked = probe_refresh_candidates(
-                            std::mem::take(&mut retry.candidates),
-                            config,
-                            &previous_top_n,
-                            &state,
-                            &progress_tx,
-                            print_compact_progress,
-                            "Retry probe",
-                            carry.as_ref(),
-                            None,
-                            0,
-                        )
-                        .await;
-                        ranked.append(&mut retry_ranked);
-                    }
-                }
-                Err(err) => {
-                    let error = err.to_string();
-                    warn!(error = %error, "proxied subscription retry failed");
-                    push_tui_progress(
-                        &state,
-                        ProgressEvent::LiveLog(applog::warn_line(&format!(
-                            "Subscription retry through first working config failed: {error}"
-                        ))),
-                        &HashSet::new(),
-                        true,
-                    )
-                    .await;
-                }
-            }
-        } else {
-            push_tui_progress(
-                &state,
-                ProgressEvent::LiveLog(applog::warn_line(
-                    "Subscription retry skipped: no emergency or active working config is available",
-                )),
-                &HashSet::new(),
-                true,
-            )
-            .await;
-        }
-    }
     // Database fallback: the cycle can end below `top_n` working configs
     // for two reasons - every subscription source failed, so the fetch
     // brought nothing, or the fetch worked but too many probes failed to
@@ -1437,10 +1547,10 @@ async fn refresh_once(
         )
         .await;
         if fallback_tested > 0 {
-            // The fallback candidates are tested like any other probe
-            // result, so they have to be counted in the fetched total too:
-            // otherwise Failed would outgrow Fetched.
-            fetched_count = fetched_count.saturating_add(fallback_tested);
+            // The fallback configs are cached material, not a fetch: they
+            // are counted apart (cached_candidates) so the dashboard can
+            // say "checked from the cache" instead of pretending the
+            // network delivered them.
             let working_now = ranked.iter().filter(|item| item.reachable).count();
             info!(
                 tested = fallback_tested,
@@ -1461,7 +1571,7 @@ async fn refresh_once(
             }
             {
                 let mut runtime = state.write().await;
-                runtime.total_candidates = fetched_count;
+                runtime.cached_candidates = cached_count + fallback_tested;
                 runtime.fetch_errors.clone_from(&fetch_errors);
                 applog::push(
                     &mut runtime,
@@ -1595,6 +1705,7 @@ async fn refresh_once(
         } else {
             progress_state.reachable_candidates
         },
+        cached_candidates: progress_state.cached_candidates,
         fetch_bytes,
         speedtest_bytes,
         fetch_errors,
@@ -1624,13 +1735,22 @@ async fn refresh_once(
             format!(" (+{} carried)", carry.tested)
         }
     });
+    // Name the cached pool when the cycle fell back to the database, so
+    // "0 fetched, 408 failed" reads as "it checked the cache" instead of
+    // looking like a broken counter.
+    let cached_note = if runtime.cached_candidates > 0 {
+        format!(" +{} cached", runtime.cached_candidates)
+    } else {
+        String::new()
+    };
     let summary = format!(
-        "{} {} → {} ({}) · {} fetched, {} failed, {} working ({} used){}",
+        "{} {} → {} ({}) · {} fetched{}, {} failed, {} working ({} used){}",
         cycle_actor(manual),
         started_at.with_timezone(&Local).format("%H:%M:%S"),
         finished_at.with_timezone(&Local).format("%H:%M:%S"),
         format_duration_short(runtime.refresh_duration_ms.unwrap_or_default()),
         runtime.total_candidates,
+        cached_note,
         failed_count,
         runtime.reachable_candidates,
         applog::format_bytes(refresh_fetch_bytes),
@@ -2122,6 +2242,7 @@ async fn ping_once(
         runtime.last_ping_instant = Some(started_instant);
         runtime.tested_candidates = 0;
         runtime.reachable_candidates = 0;
+        runtime.cached_candidates = 0;
         // `total_candidates` (Fetched) belongs to the last fetch: a ping
         // re-tests the cached configs, so only Failed/Working move.
         // (The "Ping started" line stays live-only; Recent Logs keeps just
@@ -2398,6 +2519,9 @@ async fn ping_once(
         runtime.stable_working_counts = stable_working_counts;
         runtime.tested_candidates = progress_state.tested_candidates;
         runtime.reachable_candidates = working;
+        // The backfill probed the database, not a fetch: say so, so the
+        // dashboard can show that the numbers came from the cache.
+        runtime.cached_candidates = backfill_tested;
         runtime.pinging = false;
         runtime.last_error = None;
     }
@@ -4330,8 +4454,10 @@ mod tests {
     }
 
     /// Store one config in the database, the way a previous cycle did.
-    fn seed_cached_row(database: &Arc<crate::db::Database>, uri: &str, reachable: bool) {
+    /// Returns the stored URI (the parser may normalize it).
+    fn seed_cached_row(database: &Arc<crate::db::Database>, uri: &str, reachable: bool) -> String {
         let candidate = crate::parser::parse_share_link("cached", 1, uri).expect("uri parses");
+        let stored = candidate.uri.clone();
         let row = RankedConfig {
             rank: 0,
             stability_count: u32::from(reachable),
@@ -4353,6 +4479,7 @@ mod tests {
             country_code: None,
         };
         database.upsert_configs(&[row]).expect("row persists");
+        stored
     }
 
     async fn wait_for_condition(message: &str, mut done: impl FnMut() -> bool) {
@@ -4881,6 +5008,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_bridge_candidates_come_from_the_database_when_nothing_was_published() {
+        // A cold start: the app has no published working set at all, but
+        // the database still holds the configs that verified before. One
+        // of them is the bridge that can reach the subscription URLs, so
+        // the cycle can fetch the real configs instead of going straight
+        // to the cached ones.
+        let database = manual_trigger_test_database();
+        let uri = "vless://44444444-4444-4444-4444-444444444444@example.com:443";
+        let stored = seed_cached_row(&database, uri, true);
+        let config = manual_trigger_test_config();
+        let candidates = bridge_candidates(&config, &RuntimeState::default(), &database).await;
+        assert_eq!(candidates, vec![stored], "the database holds the bridge");
+    }
+
+    #[tokio::test]
+    async fn a_dead_cached_config_is_not_offered_as_a_bridge() {
+        // The bridge has to be a config that actually worked: a row that
+        // never verified would only waste a sing-box start.
+        let database = manual_trigger_test_database();
+        seed_cached_row(
+            &database,
+            "vless://55555555-5555-5555-5555-555555555555@example.com:443",
+            false,
+        );
+        let config = manual_trigger_test_config();
+        let candidates = bridge_candidates(&config, &RuntimeState::default(), &database).await;
+        assert!(candidates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_bridge_candidates_start_with_the_emergency_config() {
+        // The user's own choice comes first, then the configs the
+        // previous refresh verified, then the ones the database holds.
+        let database = manual_trigger_test_database();
+        let stored = seed_cached_row(
+            &database,
+            "vless://66666666-6666-6666-6666-666666666666@example.com:443",
+            true,
+        );
+        let mut config = manual_trigger_test_config();
+        config.emergency_config =
+            Some("vless://77777777-7777-7777-7777-777777777777@example.com:443".to_string());
+        let previous = RuntimeState {
+            ranked: vec![ranked(
+                "published",
+                "vless://88888888-8888-8888-8888-888888888888@example.com:443",
+                true,
+                Some(10),
+            )],
+            ..Default::default()
+        };
+        let candidates = bridge_candidates(&config, &previous, &database).await;
+        assert_eq!(
+            candidates.first().map(String::as_str),
+            Some("vless://77777777-7777-7777-7777-777777777777@example.com:443"),
+            "the emergency config comes first"
+        );
+        assert_eq!(candidates.len(), 3, "emergency, published and stored");
+        assert!(
+            candidates.contains(&stored),
+            "the stored config is a candidate too"
+        );
+    }
+    #[tokio::test]
     async fn refresh_serves_the_cached_configs_when_every_source_fails() {
         // Every subscription link is broken, so the fetch brings nothing.
         // The cached configs are all that is left, and they have to be
@@ -4943,6 +5134,15 @@ mod tests {
             !runtime.fetch_errors.is_empty(),
             "the fetch errors are kept"
         );
+        // The counters tell the two apart: the network delivered nothing,
+        // the cache supplied the config that was tested. Without the
+        // split the dashboard could only say "1 failed of 0 fetched".
+        assert_eq!(runtime.total_candidates, 0, "nothing came from the network");
+        assert_eq!(
+            runtime.cached_candidates, 1,
+            "the config came from the cache"
+        );
+        assert_eq!(runtime.tested_candidates, 1);
         drop(runtime);
     }
 

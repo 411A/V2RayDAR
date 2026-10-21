@@ -1853,4 +1853,38 @@ describe("stat cards: deltas refresh numbers, clocks stay ticker-owned", () => {
     const text = cards[2].children.map((c) => c.textContent).join("|");
     assert.equal(text, "Last scan|—");
   });
+
+  it("the failed badge names the cache when the cycle fell back to it", () => {
+    // Everything failed and the app checked the database instead: the
+    // failures belong to the cached configs, not to a fetch that delivered
+    // nothing. "408 failed of 0 fetched" reads like a broken counter, so
+    // the subtitle has to say where the configs came from.
+    seed();
+    api.state.snapshot.total_candidates = 0;
+    api.state.snapshot.tested_candidates = 408;
+    api.state.snapshot.reachable_candidates = 0;
+    api.state.snapshot.cached_candidates = 408;
+    // Twice: the first render may rebuild the skeleton (the stub's
+    // id-addressed nodes are only written by the update path, the same
+    // quirk the badge test above documents).
+    api.renderStats();
+    api.renderStats();
+    assert.equal(sandbox.document.getElementById("stat-failed-val").textContent, "408");
+    assert.equal(sandbox.document.getElementById("stat-fetched-val").textContent, "0");
+    const sub = (sandbox.document.getElementById("stat-failed-sub").textContent || "")
+      .replace(/[⁦-⁩]/g, "");
+    assert.match(sub, /0/);
+    assert.match(sub, /408/);
+    assert.match(sub, /cache/i);
+
+    // A normal cycle keeps the plain wording.
+    seed();
+    api.renderStats();
+    api.renderStats();
+    // The placeholders carry bidi isolate marks, so compare the plain text.
+    const plain = (sandbox.document.getElementById("stat-failed-sub").textContent || "")
+      .replace(/[⁦-⁩]/g, "");
+    assert.match(plain, /100/);
+    assert.doesNotMatch(plain, /cache/i);
+  });
 });

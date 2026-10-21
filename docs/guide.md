@@ -700,20 +700,24 @@ On very restricted networks, set `use_cache_only: true` to load previously-probe
 Refresh behavior is:
 
 1. Fetch enabled subscriptions directly.
-2. Parse and probe the configs that were fetched.
-3. If some HTTP subscription sources failed and active probing has at least one bridge config, retry failed HTTP sources through that bridge.
-4. If the cycle still verifies fewer than `top_n` working configs — because every source failed, or because too many probes failed — probe the cached configs from the database until the target is met or the pool runs out.
+2. If some HTTP subscription sources failed, and active probing has a bridge config, fetch those failed sources again through that bridge - so the "Fetched" count is the real, up-to-date one.
+3. Probe the configs that were fetched (the direct ones and the bridged ones together).
+4. If the cycle still verifies fewer than `top_n` working configs - because every source failed, or because too many probes failed - probe the cached configs from the database until the target is met or the pool runs out.
 5. Publish the reachable results.
 
 The cached pool is ordered by what makes a config worth re-testing: the ones that previously connected successfully come first (they are proven on this network), then the never-tested sightings a feed served but no cycle probed, then the known failures. Inside a group the most recently seen config comes first, so a fresh sighting beats a stale failure. The pool is consumed in batches of 64, up to 1024 configs per cycle, and no config is tested twice in the same cycle.
 
-The bridge config is selected in this order:
+The bridge config is taken from this list, in order:
 
 1. `emergency_config`, when set.
-2. A reachable config from the current refresh.
-3. A reachable config from the previous refresh.
+2. A reachable config from the previous refresh.
+3. A reachable config from the database - the configs that verified on an earlier run and are still stored. This is what makes a cold start work: nothing has been published yet, but the database still knows a config that can reach the subscription URLs.
 
-This means that if some HTTP subscription URLs do not connect on your network but one config is reachable, V2RayDAR can use that reachable config through `sing-box` to retry failed HTTP subscription fetches. If none of your configured subscriptions are reachable but you already have one working config, put it in `emergency_config`.
+Any working config can be the bridge, so the candidates are tried in order and the first one that fetches wins: a bridge that died since it last worked does not end the attempt while a working one is still available. The list holds at most five candidates - at most two of them from the previous refresh, so one dead group cannot take the whole budget - because each attempt costs a `sing-box` start and a fetch, and a cycle that spends minutes on dead bridges is worse than one that falls back to the cached configs.
+
+This means that if some HTTP subscription URLs do not connect on your network but one config is reachable, V2RayDAR can use that reachable config through `sing-box` to fetch the real, up-to-date configs. If none of your configured subscriptions are reachable but you already have one working config, put it in `emergency_config`.
+
+The dashboard tells the two apart: "Fetched" counts what the network delivered, and the Failed badge names the cache when the cycle checked the database ("of 0 fetched + 408 cached") instead of showing a failure count against nothing.
 
 Example:
 
@@ -1088,8 +1092,8 @@ The refresh pipeline in `src/main.rs` is roughly:
 1. Load runtime config into shared state.
 2. Fetch enabled subscriptions directly unless `use_cache_only` is true.
 3. Parse fetched subscription bodies into candidates — **including Clash/Mihomo YAML configs** which are detected by their `proxies:` structure and converted to share links — and cache the sightings insert-only into the database (known rows untouched) so later pings can backfill from the whole pool.
-4. Probe candidates with `probe_candidates`. When `prioritize_stability: true`, the scheduler re-pings the previous run's saved top-N first.
-5. If direct fetches failed, retry failed HTTP sources through `emergency_config` or a working config when active mode is available, then probe newly loaded retry candidates.
+4. If direct fetches failed and active mode has a bridge config, fetch the failed sources again through that bridge - `emergency_config`, a config the previous refresh published, or a config the database still holds from an earlier run - and merge the result into the pool. The bridge fetch runs before the probe, so the "Fetched" count is final when the probe starts.
+5. Probe the whole pool with `probe_candidates` (the direct and the bridged candidates together). When `prioritize_stability: true`, the scheduler re-pings the previous run's saved top-N first.
 6. If the cycle verified fewer than `top_n` working configs — every source failed, or too many probes failed — probe the cached configs from the database until the target is met or the pool runs out. The pool is ordered by what makes a config worth re-testing: the configs that previously connected successfully first (most stable, then fastest), then the never-tested sightings, then the known failures; inside a group the most recently seen config comes first. The configs this cycle already tested are never re-tested.
 7. Apply stability ranking (carry the previous run's saved top-N to the front when enabled, otherwise rank purely by low ping).
 8. Publish ranked state to `/subscription`, `/subscription.txt`, and `/results`.

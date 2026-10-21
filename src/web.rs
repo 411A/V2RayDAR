@@ -290,6 +290,10 @@ struct StateSummary {
     total_candidates: usize,
     tested_candidates: usize,
     reachable_candidates: usize,
+    /// How many of the tested configs came from the database cache instead
+    /// of a live fetch. The dashboard shows it so a cache check reads as
+    /// "checked from the cache", not as "N failed of 0 fetched".
+    cached_candidates: usize,
     fetch_bytes: u64,
     speedtest_bytes: u64,
     last_error: Option<String>,
@@ -329,6 +333,7 @@ impl StateSummary {
             total_candidates: runtime.total_candidates,
             tested_candidates: runtime.tested_candidates,
             reachable_candidates: runtime.reachable_candidates,
+            cached_candidates: runtime.cached_candidates,
             fetch_bytes: runtime.fetch_bytes,
             speedtest_bytes: runtime.speedtest_bytes,
             last_error: runtime.last_error.clone(),

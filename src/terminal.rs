@@ -17,12 +17,22 @@ pub fn print_log(message: impl AsRef<str>) {
 }
 
 pub fn print_summary(state: &RuntimeState, top_n: usize) {
-    println!(
-        "Checked {} configs; {} reachable; {} fetch errors.",
-        state.total_candidates,
-        state.reachable_candidates,
-        state.fetch_errors.len()
-    );
+    if state.cached_candidates > 0 {
+        println!(
+            "Checked {} configs ({} from the cache); {} reachable; {} fetch errors.",
+            state.total_candidates + state.cached_candidates,
+            state.cached_candidates,
+            state.reachable_candidates,
+            state.fetch_errors.len()
+        );
+    } else {
+        println!(
+            "Checked {} configs; {} reachable; {} fetch errors.",
+            state.total_candidates,
+            state.reachable_candidates,
+            state.fetch_errors.len()
+        );
+    }
 
     if !state.fetch_errors.is_empty() {
         for error in &state.fetch_errors {

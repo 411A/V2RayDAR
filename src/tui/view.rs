@@ -19,6 +19,8 @@ pub struct RuntimeView {
     pub total_candidates: usize,
     pub tested_candidates: usize,
     pub reachable_candidates: usize,
+    /// Configs this cycle took from the database cache instead of a fetch.
+    pub cached_candidates: usize,
     pub fetch_bytes: u64,
     pub speedtest_bytes: u64,
     pub logs: Vec<String>,
@@ -72,6 +74,7 @@ impl RuntimeView {
             total_candidates: runtime.total_candidates,
             tested_candidates: runtime.tested_candidates,
             reachable_candidates: runtime.reachable_candidates,
+            cached_candidates: runtime.cached_candidates,
             fetch_bytes: runtime.fetch_bytes,
             speedtest_bytes: runtime.speedtest_bytes,
             logs: runtime.logs.clone(),

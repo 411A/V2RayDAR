@@ -1334,7 +1334,7 @@ function updateStatNumbers(s) {
   setText($("stat-fetched-val"), String(s.total_candidates || 0));
   const failed = Math.max(0, (s.tested_candidates || 0) - (s.reachable_candidates || 0));
   setText($("stat-failed-val"), String(failed));
-  setText($("stat-failed-sub"), t("failedOfFetched", { fetched: s.total_candidates || 0 }));
+  setText($("stat-failed-sub"), failedSubtitle(s));
   setText($("stat-working-val"), String(s.reachable_candidates || 0));
   setText($("stat-working-sub"), t("workingOfTested", { tested: s.tested_candidates || 0 }));
   setText($("stat-subusage-val"), fmtBytes(s.fetch_bytes));
@@ -1347,6 +1347,19 @@ function updateStatNumbers(s) {
       setText(tookNode, took);
     }
   }
+}
+
+/// The failures belong to everything the cycle tested. When part of that
+/// came from the database cache, the subtitle has to say so: "408 failed
+/// of 0 fetched" reads like a broken counter, while "0 fetched + 408
+/// cached" says the app is checking the cache because the sources are down.
+function failedSubtitle(s) {
+  const fetched = s.total_candidates || 0;
+  const cached = s.cached_candidates || 0;
+  if (cached > 0) {
+    return t("failedOfFetchedAndCached", { fetched, cached });
+  }
+  return t("failedOfFetched", { fetched });
 }
 
 /// Full card skeleton (first paint, language switch, refresh start/stop,
@@ -1401,7 +1414,7 @@ function buildStatCards(box, s) {
   const fetched = statCard(t("cardFetched"), String(s.total_candidates || 0), null, null, "stat-fetched-val");
   fetched.id = "stat-fetched";
   box.appendChild(fetched);
-  box.appendChild(statCard(t("cardFailed"), String(failed), t("failedOfFetched", { fetched: s.total_candidates || 0 }), null, "stat-failed-val", "stat-failed-sub"));
+  box.appendChild(statCard(t("cardFailed"), String(failed), failedSubtitle(s), null, "stat-failed-val", "stat-failed-sub"));
   box.appendChild(statCard(t("cardWorking"), String(s.reachable_candidates || 0), t("workingOfTested", { tested }), null, "stat-working-val", "stat-working-sub"));
   box.appendChild(statCard(t("cardSubUsage"), fmtBytes(s.fetch_bytes), null, null, "stat-subusage-val"));
   renderUpdated();

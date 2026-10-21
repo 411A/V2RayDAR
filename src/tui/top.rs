@@ -67,6 +67,15 @@ pub fn draw(
     let scan_time = runtime
         .refresh_duration_ms
         .map_or_else(|| "-".to_string(), format_duration);
+    // The Fetched cell shows what the network delivered. When the cycle
+    // fell back to the cache instead, that is the number the user needs:
+    // "Fetched 0" next to "Failed 408" reads like a bug, while
+    // "Cached 408" says what is actually happening.
+    let (fetched_label, fetched_value) = if runtime.cached_candidates > 0 {
+        ("Cached", runtime.cached_candidates)
+    } else {
+        ("Fetched", runtime.total_candidates)
+    };
     let cells = [
         (
             "Running For",
@@ -78,13 +87,7 @@ pub fn draw(
         ),
         ("Refresh", format!("{refresh:<W_REFRESH$}")),
         ("Last Scan", format!("{scan_time:<W_LAST_SCAN$}")),
-        (
-            "Fetched",
-            format!(
-                "{runtime_fetched:<W_FETCHED$}",
-                runtime_fetched = runtime.total_candidates
-            ),
-        ),
+        (fetched_label, format!("{fetched_value:<W_FETCHED$}")),
         ("Failed", format!("{failed:<W_FAILED$}")),
         (
             "Working",

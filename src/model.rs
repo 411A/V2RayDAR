@@ -85,6 +85,15 @@ pub struct RuntimeState {
     pub total_candidates: usize,
     pub tested_candidates: usize,
     pub reachable_candidates: usize,
+    /// How many of the configs tested in this cycle came from the database
+    /// cache instead of a live fetch.
+    ///
+    /// The two counters answer different questions: `total_candidates` is
+    /// what the network delivered, `cached_candidates` is what the app fell
+    /// back to. Without the split the dashboard could only say "408 failed
+    /// of 0 fetched", which reads like a bug instead of "it is checking the
+    /// cache because the sources are down".
+    pub cached_candidates: usize,
     pub fetch_bytes: u64,
     pub speedtest_bytes: u64,
     pub fetch_errors: Vec<String>,

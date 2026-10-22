@@ -5034,7 +5034,7 @@ mod tests {
         );
         let config = manual_trigger_test_config();
         let candidates = bridge_candidates(&config, &RuntimeState::default(), &database).await;
-        assert!(candidates.is_empty());
+        assert_eq!(candidates, Vec::<String>::new());
     }
 
     #[tokio::test]

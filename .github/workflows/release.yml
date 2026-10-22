@@ -152,9 +152,11 @@ jobs:
           New-Item -ItemType Directory -Force $packageRoot | Out-Null
           Copy-Item -LiteralPath (Join-Path "dist" "${{ matrix.asset }}") -Destination (Join-Path $packageRoot "${{ matrix.embedded_binary }}")
           Copy-Item -LiteralPath $singBox.FullName -Destination (Join-Path $packageRoot "${{ matrix.sing_box_binary }}")
-          # The release notes travel with the package: a user who unpacks the
-          # archive offline can still read what changed.
-          Copy-Item -LiteralPath "changes.md" -Destination (Join-Path $packageRoot "changes.md")
+          # The release notes travel with the package: a user who unpacks
+          # the archive offline can still read what changed. They come from
+          # the tagged commit, so the changelog itself never has to be
+          # tracked in the repository.
+          git log -1 --format=%b | Out-File -FilePath (Join-Path $packageRoot "changes.md") -Encoding utf8NoBOM
           if ("${{ runner.os }}" -ne "Windows") {
             chmod +x (Join-Path $packageRoot "${{ matrix.embedded_binary }}")
             chmod +x (Join-Path $packageRoot "${{ matrix.sing_box_binary }}")
@@ -219,8 +221,9 @@ jobs:
 
           mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
           # The release notes travel inside the bundle, so they are readable
-          # offline after the app is unpacked.
-          cp changes.md "$app/Contents/Resources/changes.md"
+          # offline after the app is unpacked. They come from the tagged
+          # commit, so the changelog itself never has to be tracked.
+          git log -1 --format=%b > "$app/Contents/Resources/changes.md"
           lipo -create \
             -output "$app/Contents/MacOS/v2raydar-bin" \
             "target/x86_64-apple-darwin/release/v2raydar" \
@@ -606,8 +609,9 @@ jobs:
               v2raydar
           EOF
 
-          # The release notes travel with the package.
-          cp changes.md "$package/changes.md"
+          # The release notes travel with the package; they come from the
+          # tagged commit, so the changelog itself never has to be tracked.
+          git log -1 --format=%b > "$package/changes.md"
 
           # The heredoc above is quoted (literal), so the pinned version is
           # templated in afterwards. Bumping the workflow env then updates the

@@ -746,17 +746,30 @@ mod tests {
         assert_eq!(order, vec!["veteran", "fresh", "failed-history"]);
     }
 
-    fn open_temp_db(name: &str) -> Database {
-        // Unique per call, not per process: the clock only ticks every few
-        // milliseconds, so two tests that ask for a database in the same
-        // tick used to share one file (and one lock).
+    /// A temp directory that no other test can share.
+    ///
+    /// The wall clock is not enough: it only ticks every few milliseconds,
+    /// so two tests - or two test processes - that ask for a directory in
+    /// the same tick used to get the same one, and then the same database
+    /// file, and then a "UNIQUE constraint failed" on the second insert.
+    /// The process id separates the processes, the counter the tests.
+    fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
         static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "v2raydar-upsert-batch-{name}-{}-{}",
+            "v2raydar-{prefix}-{}-{}-{}",
             std::process::id(),
             COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos(),
         ));
         std::fs::create_dir_all(&dir).expect("temp dir can be created");
+        dir
+    }
+
+    fn open_temp_db(name: &str) -> Database {
+        let dir = unique_temp_dir(&format!("upsert-batch-{name}"));
         Database::open(&dir.join("data.db")).expect("db opens")
     }
 
@@ -1043,14 +1056,7 @@ mod tests {
 
         // Legacy databases that already hold twins converge on open: the
         // first row survives, later twins drop out, and the index lands.
-        let dir = std::env::temp_dir().join(format!(
-            "v2raydar-sub-twins-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_nanos())
-        ));
-        std::fs::create_dir_all(&dir).expect("temp dir can be created");
+        let dir = unique_temp_dir("sub-twins");
         let path = dir.join("data.db");
         {
             let raw = rusqlite::Connection::open(&path).expect("raw db opens");

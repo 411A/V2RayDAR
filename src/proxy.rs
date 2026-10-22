@@ -1449,13 +1449,14 @@ async fn wait_for_port(
 }
 
 async fn write_proxy_config(config: &Value) -> Result<PathBuf> {
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
+    // The counter, not the clock: the wall clock only ticks every few
+    // milliseconds, so two starts in the same tick shared one file and the
+    // second clobbered the first one's config.
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let path = std::env::temp_dir().join(format!(
-        "{SING_BOX_CONFIG_FILE_PREFIX}-proxy-{}-{timestamp}.json",
-        std::process::id()
+        "{SING_BOX_CONFIG_FILE_PREFIX}-proxy-{}-{}.json",
+        std::process::id(),
+        COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
     ));
     fs::write(&path, serde_json::to_vec_pretty(config)?).await?;
     restrict_file_permissions(&path);

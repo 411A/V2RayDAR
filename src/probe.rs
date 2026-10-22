@@ -3572,13 +3572,14 @@ mod tests {
     }
 
     fn compile_fake_sing_box() -> std::path::PathBuf {
+        // The counter, not the clock: two tests compile the stub in
+        // parallel, and the wall clock only ticks every few milliseconds,
+        // so their directories - and the binary inside them - collided.
+        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
             "v2raydar-fake-singbox-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock after epoch")
-                .as_nanos()
+            COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
         ));
         std::fs::create_dir_all(&dir).expect("temp dir can be created");
         let source = dir.join("fake_singbox.rs");

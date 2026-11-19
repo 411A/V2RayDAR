@@ -44,18 +44,18 @@
 ## 📖 Table des matières
 
 - [✨ Fonctionnalités](#-fonctionnalités)
-- [🖥️ Interfaces](#-interfaces)
+- [🖥️ Interfaces](#️-interfaces)
 - [📦 Installation](#-installation)
   - [<img src="https://cdn.svglogos.dev/logos/linux-tux.svg" alt="" width="16" height="16"> Linux / macOS](#-linux--macos)
   - [<img src="https://cdn.svglogos.dev/logos/microsoft-windows-icon.svg" alt="" width="16" height="16"> Windows](#-windows-powershell)
   - [<img src="https://cdn.svglogos.dev/logos/android-icon.svg" alt="" width="16" height="16"> Android / Termux](#-android--termux)
 - [🚀 Démarrage rapide](#-démarrage-rapide)
-- [⚙️ Configuration](#-configuration)
+- [⚙️ Configuration](#️-configuration)
 - [📡 Configuration des clients](#-configuration-des-clients)
 - [🌐 Proxy persistant](#-proxy-persistant)
 - [🔒 Réseaux restreints](#-réseaux-restreints)
 - [🤝 Contribuer](#-contribuer)
-- [⚠️ Garantie & Sécurité](#-garantie--sécurité)
+- [⚠️ Garantie & Sécurité](#️-garantie--sécurité)
 - [☕ Support](#-support)
 - [📄 Licence](#-licence)
 

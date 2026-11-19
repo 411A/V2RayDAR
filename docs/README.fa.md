@@ -43,27 +43,27 @@
 <p align="center">
   &#x200F;📘 <a href="guide.md">راهنمای جامع</a>
   • 🧠 <a href="https://deepwiki.com/411A/V2RayDAR">Ask DeepWiki</a>
-  • &#x200F;📡 <a href="#x200f-اندپوینتهای-اشتراک">اندپوینت‌ها</a>
-  • &#x200F;🌐 <a href="#x200f-پروکسی-پایدار">پروکسی</a>
+  • &#x200F;📡 <a href="#-اندپوینت‌های-اشتراک">اندپوینت‌ها</a>
+  • &#x200F;🌐 <a href="#-پروکسی-پایدار-1">پروکسی</a>
 </p>
 
 ## &#x200F;📖 فهرست
 
-- &#x200F;[✨ قابلیت‌ها](#x200f-قابلیتها)
-- &#x200F;[🖥️ رابط‌ها](#x200f-رابطها)
-- &#x200F;[📦 نصب](#x200f-نصب)
-  - &#x200F;[<img src="https://cdn.svglogos.dev/logos/linux-tux.svg" alt="" width="16" height="16"> Linux / macOS](#linux--macos)
-  - &#x200F;[<img src="https://cdn.svglogos.dev/logos/microsoft-windows-icon.svg" alt="" width="16" height="16"> Windows](#windows-powershell)
-  - &#x200F;[<img src="https://cdn.svglogos.dev/logos/android-icon.svg" alt="" width="16" height="16"> Android / Termux](#android--termux)
-- &#x200F;[🔰 شروع سریع](#x200f-شروع-سریع)
-- &#x200F;[⚙️ تنظیمات](#x200f-تنظیمات)
-- &#x200F;[📡 اتصال کلاینت‌ها](#x200f-اتصال-کلاینثا)
-- &#x200F;[🌐 پروکسی پایدار](#x200f-پروکسی-پایدار)
-- &#x200F;[🔒 شبکه‌های محدود](#x200f-شبکههای-محدود)
-- &#x200F;[🤝 مشارکت](#x200f-مشارکت)
-- &#x200F;[⚠️ سلب مسئولیت و امنیت](#x200f-سلب-مسئولیت-و-امنیت)
-- &#x200F;[☕ حمایت](#x200f-حمایت)
-- &#x200F;[📄 مجوز](#x200f-مجوز)
+- &#x200F;[✨ قابلیت‌ها](#-قابلیت‌ها)
+- &#x200F;[🖥️ رابط‌ها](#️-رابط‌ها)
+- &#x200F;[📦 نصب](#-نصب)
+  - &#x200F;[<img src="https://cdn.svglogos.dev/logos/linux-tux.svg" alt="" width="16" height="16"> Linux / macOS](#linux--macos-)
+  - &#x200F;[<img src="https://cdn.svglogos.dev/logos/microsoft-windows-icon.svg" alt="" width="16" height="16"> Windows](#windows-powershell-)
+  - &#x200F;[<img src="https://cdn.svglogos.dev/logos/android-icon.svg" alt="" width="16" height="16"> Android / Termux](#android--termux-)
+- &#x200F;[🔰 شروع سریع](#-شروع-سریع)
+- &#x200F;[⚙️ تنظیمات](#️-تنظیمات)
+- &#x200F;[📡 اتصال کلاینت‌ها](#-اتصال-کلاینت‌ها)
+- &#x200F;[🌐 پروکسی پایدار](#-پروکسی-پایدار)
+- &#x200F;[🔒 شبکه‌های محدود](#-شبکه‌های-محدود)
+- &#x200F;[🤝 مشارکت](#-مشارکت)
+- &#x200F;[⚠️ سلب مسئولیت و امنیت](#️-سلب-مسئولیت-و-امنیت)
+- &#x200F;[☕ حمایت](#-حمایت)
+- &#x200F;[📄 مجوز](#-مجوز)
 
 ## &#x200F;✨ قابلیت‌ها
 

@@ -44,18 +44,18 @@
 ## 📖 目录
 
 - [✨ 功能](#-功能)
-- [🖥️ 界面](#-界面)
+- [🖥️ 界面](#️-界面)
 - [📦 安装](#-安装)
   - [<img src="https://cdn.svglogos.dev/logos/linux-tux.svg" alt="" width="16" height="16"> Linux / macOS](#-linux--macos)
   - [<img src="https://cdn.svglogos.dev/logos/microsoft-windows-icon.svg" alt="" width="16" height="16"> Windows](#-windows-powershell)
   - [<img src="https://cdn.svglogos.dev/logos/android-icon.svg" alt="" width="16" height="16"> Android / Termux](#-android--termux)
 - [🚀 快速开始](#-快速开始)
-- [⚙️ 配置](#-配置)
+- [⚙️ 配置](#️-配置)
 - [📡 客户端配置](#-客户端配置)
 - [🌐 持久代理](#-持久代理)
 - [🔒 受限网络](#-受限网络)
 - [🤝 贡献](#-贡献)
-- [⚠️ 免责与安全](#-免责与安全)
+- [⚠️ 免责与安全](#️-免责与安全)
 - [☕ 支持](#-支持)
 - [📄 许可证](#-许可证)
 

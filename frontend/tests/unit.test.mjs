@@ -1847,6 +1847,28 @@ describe("resume feed snapshot", () => {
   });
 });
 
+describe("long-run log batching", () => {
+  it("a burst of log lines schedules one bounded repaint", () => {
+    const frames = [];
+    sandbox.window.requestAnimationFrame = (fn) => {
+      frames.push(fn);
+      return frames.length;
+    };
+    api.state.logLines.length = 0;
+    for (let i = 0; i < 2000; i++) {
+      api.pushLogLine(`2026/10/25 13:20:59.324 [INFO] line ${i}`);
+    }
+    assert.equal(frames.length, 1, "all events collapse into one frame");
+    assert.equal(api.state.logLines.length, api.MAX_LOGS, "client ring stays bounded");
+    api.flushRenders();
+    assert.equal(
+      sandbox.__elements.get("log-list").children.length,
+      api.MAX_LOGS,
+      "one repaint renders the bounded tail",
+    );
+  });
+});
+
 describe("stat cards: deltas refresh numbers, clocks stay ticker-owned", () => {
   const seed = () => {
     api.state.hasSummaryApi = true;

@@ -34,6 +34,36 @@ const TABS = ["overview", "configs", "subscriptions", "settings", "proxy", "logs
 const LOG_LEVELS = ["DEBUG", "INFO", "WARN", "ERROR"];
 const LOG_LEVEL_ORDER = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 };
 
+// Coalesced live rendering. A refresh can emit several log lines and probe
+// deltas inside one frame; without this each event rebuilt the stats cards or
+// the 300-row log list. Jobs are keyed so the last state wins, and one frame
+// performs each dirty surface once. Over a 1000-hour run this keeps steady
+// state and bounded work: at most one repaint per frame, never per event.
+const pendingRenders = new Map();
+let renderFrame = 0;
+
+function scheduleRender(key, fn) {
+  pendingRenders.set(key, fn);
+  if (renderFrame) {
+    return;
+  }
+  // Tests and very old browsers have no rAF: paint immediately.
+  if (typeof window.requestAnimationFrame !== "function") {
+    flushRenders();
+    return;
+  }
+  renderFrame = window.requestAnimationFrame(flushRenders);
+}
+
+function flushRenders() {
+  renderFrame = 0;
+  const jobs = [...pendingRenders.values()];
+  pendingRenders.clear();
+  for (const job of jobs) {
+    job();
+  }
+}
+
 const state = {
   snapshot: null,
   feed: "boot", // boot | live | polling | offline | locked
@@ -1278,13 +1308,15 @@ function applyProbeDelta(text) {
   if (document.hidden === true) {
     return;
   }
-  if (proxyChanged || (wasPending !== undefined && state.proxyPendingUri === undefined)) {
-    renderOvConfigs();
-    renderConfigs();
-    renderProxyTab();
-  }
-  renderStats();
-  renderFetchErrors();
+  scheduleRender("probe", () => {
+    if (proxyChanged || (wasPending !== undefined && state.proxyPendingUri === undefined)) {
+      renderOvConfigs();
+      renderConfigs();
+      renderProxyTab();
+    }
+    renderStats();
+    renderFetchErrors();
+  });
 }
 
 function applyRanked(text) {
@@ -1296,9 +1328,11 @@ function applyRanked(text) {
   if (document.hidden === true) {
     return;
   }
-  renderOvConfigs();
-  renderConfigs();
-  void renderShare();
+  scheduleRender("ranked", () => {
+    renderOvConfigs();
+    renderConfigs();
+    void renderShare();
+  });
 }
 
 function pushLogLine(text) {
@@ -1314,7 +1348,7 @@ function pushLogLine(text) {
   if (document.hidden === true) {
     return;
   }
-  renderLogs();
+  scheduleRender("logs", renderLogs);
 }
 
 function ingestLogs(snap) {

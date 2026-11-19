@@ -2614,6 +2614,18 @@ fn log_event(line: &str) -> Event {
         .data(line.replace(['\n', '\r'], " "))
 }
 
+/// Newest `delta` entries of the live-log ring, capped by the per-tick feed
+/// budget. When more lines arrived than the budget (or than the ring still
+/// holds), the oldest are dropped on purpose: the client wants the latest
+/// changes, not a replay.
+fn newest_log_lines(lines: &[String], delta: u64) -> &[String] {
+    let take = usize::try_from(delta)
+        .unwrap_or(usize::MAX)
+        .min(FEED_MAX_LOG_FANOUT)
+        .min(lines.len());
+    &lines[lines.len() - take..]
+}
+
 async fn feed_task(
     runtime: SharedState,
     mut config_rx: Option<tokio::sync::watch::Receiver<crate::config::AppConfig>>,
@@ -2623,7 +2635,7 @@ async fn feed_task(
     let snapshot = runtime.read().await.clone();
     let mut fingerprint = FeedFingerprint::of(&snapshot);
     let mut last_bytes = snapshot.fetch_bytes;
-    let mut log_len = snapshot.live_logs.len();
+    let mut log_seq = snapshot.log_seq;
     if tx.send(Ok(hello_event(&snapshot))).is_err() {
         return;
     }
@@ -2684,18 +2696,18 @@ async fn feed_task(
                 return;
             }
         }
-        let live_len = snapshot.live_logs.len();
-        if live_len < log_len {
-            log_len = live_len;
-        } else if live_len > log_len {
-            let fresh = &snapshot.live_logs[log_len..];
-            let start = fresh.len().saturating_sub(FEED_MAX_LOG_FANOUT);
-            for line in &fresh[start..] {
+        // The ring stops growing at its cap, so length alone cannot tell new
+        // lines from a full buffer. `log_seq` counts every push; fan out only
+        // the newest delta (capped, so a long backlog cannot flood a slow
+        // client) and skip the rest instead of replaying it.
+        if snapshot.log_seq != log_seq {
+            let delta = snapshot.log_seq.saturating_sub(log_seq);
+            for line in newest_log_lines(&snapshot.live_logs, delta) {
                 if tx.send(Ok(log_event(line))).is_err() {
                     return;
                 }
             }
-            log_len = live_len;
+            log_seq = snapshot.log_seq;
         }
     }
 }
@@ -2735,9 +2747,9 @@ mod tests {
 
     use super::{
         DASHBOARD_CSS, DASHBOARD_HTML, DASHBOARD_I18N, DASHBOARD_JS, DASHBOARD_QR, FAVICON_SVG,
-        FLAG_CN, FLAG_FR, FLAG_GB, FLAG_IR, FLAG_RU, FeedFingerprint, config_response,
-        events_response, favicon, qr_generate_response, qr_image_response, static_response,
-        subscriptions_response, summary_response,
+        FEED_MAX_LOG_FANOUT, FLAG_CN, FLAG_FR, FLAG_GB, FLAG_IR, FLAG_RU, FeedFingerprint,
+        config_response, events_response, favicon, newest_log_lines, qr_generate_response,
+        qr_image_response, static_response, subscriptions_response, summary_response,
     };
     use crate::{
         constants::{DEFAULT_BIND, LOCALHOST_IP},
@@ -2875,6 +2887,28 @@ mod tests {
             FeedFingerprint::of(&switched),
             FeedFingerprint::of(&unpinned)
         );
+    }
+
+    #[test]
+    fn newest_log_lines_keeps_streaming_after_the_ring_is_full() {
+        let lines: Vec<String> = (0..FEED_MAX_LOG_FANOUT * 3)
+            .map(|i| format!("line {i}"))
+            .collect();
+        // One new line: exactly the newest one travels.
+        assert_eq!(newest_log_lines(&lines, 1), &lines[lines.len() - 1..]);
+        // More than the budget: the newest budget-sized tail travels, never
+        // a replay of the whole backlog.
+        assert_eq!(
+            newest_log_lines(&lines, u64::MAX).len(),
+            FEED_MAX_LOG_FANOUT
+        );
+        assert_eq!(
+            newest_log_lines(&lines, u64::MAX),
+            &lines[lines.len() - FEED_MAX_LOG_FANOUT..]
+        );
+        // An empty ring or zero delta never panics or slices backwards.
+        assert_eq!(newest_log_lines(&[], 3).len(), 0);
+        assert_eq!(newest_log_lines(&lines, 0).len(), 0);
     }
 
     #[test]

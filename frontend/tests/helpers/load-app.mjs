@@ -193,6 +193,7 @@ const EXPORT_HOOK = `;globalThis.__v2 = {
   settingKind, settingName, settingGuide, settingGroupTitle, patchSetting,
   normalizeSettingInput, resetSettings, shareUrlLabel,
   el, cell, preserveViewport,
+  scheduleRender, flushRenders, pushLogLine, MAX_LOGS,
   dropIndex, subReorder, subsExportText, parseSubsImport, partitionSubsImport, submitSubsImport, openSubsImport, openSubsExport, pasteIntoImport, shutdownServer, showStopped,
   refreshBusy, pingBusy, updateCycleButtons, triggerCycle, wire, startPolling,
   connectFeed, applyHello, resumeFeed,

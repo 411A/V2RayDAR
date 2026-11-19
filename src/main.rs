@@ -1744,6 +1744,7 @@ async fn refresh_once(
         last_error: None,
         logs: progress_state.logs,
         live_logs: progress_state.live_logs,
+        log_seq: progress_state.log_seq,
         refresh_started_at: Some(started_at.to_rfc3339()),
         refresh_finished_at: Some(finished_at.to_rfc3339()),
         refresh_started_instant: Some(started_instant),
@@ -3480,6 +3481,7 @@ fn push_runtime_log(state: &mut RuntimeState, message: &str) {
 }
 
 fn push_live_log(state: &mut RuntimeState, message: String) {
+    state.log_seq = state.log_seq.wrapping_add(1);
     state.live_logs.push(message);
     if state.live_logs.len() > MAX_TUI_LOGS {
         let extra = state.live_logs.len() - MAX_TUI_LOGS;

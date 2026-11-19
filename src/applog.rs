@@ -7,6 +7,12 @@
 //! entries). No file writes, no background tasks, no per-line heap beyond
 //! the line itself — worst case ~256 KiB of RAM. Nothing here allocates
 //! unless a line is actually emitted.
+//!
+//! Long-run guarantee: the ring is capped and only the oldest lines are
+//! dropped, so a 1000-hour session keeps the same memory footprint as the
+//! first minute. [`RuntimeState::log_seq`] is a monotonic `u64` (no realistic
+//! overflow) and lets the live feed tell fresh lines apart even when the ring
+//! length is pinned at the cap.
 
 use std::borrow::Cow;
 use std::time::Duration;
@@ -95,6 +101,7 @@ pub fn stamped(level: LogLevel, message: &str) -> String {
 /// Push one line to the bounded ring, dropping the oldest first.
 /// Same cap as the funnel path, so direct pushes can't grow memory either.
 pub fn push(state: &mut RuntimeState, level: LogLevel, message: &str) {
+    state.log_seq = state.log_seq.wrapping_add(1);
     state.live_logs.push(stamped(level, message));
     if state.live_logs.len() > MAX_TUI_LOGS {
         let extra = state.live_logs.len() - MAX_TUI_LOGS;
@@ -191,6 +198,27 @@ mod tests {
         assert_eq!(&ts[13..14], ":");
         assert_eq!(&ts[16..17], ":");
         assert_eq!(&ts[19..20], ".");
+    }
+
+    #[test]
+    fn push_advances_the_sequence_even_when_the_ring_is_full() {
+        let mut state = RuntimeState::default();
+        for i in 0..(MAX_TUI_LOGS + 5) {
+            push(&mut state, LogLevel::Info, &format!("line {i}"));
+        }
+        assert_eq!(state.log_seq, (MAX_TUI_LOGS + 5) as u64);
+        assert_eq!(state.live_logs.len(), MAX_TUI_LOGS);
+        assert!(
+            state
+                .live_logs
+                .last()
+                .is_some_and(|line| line.contains("line 516")),
+            "the newest line survives the cap"
+        );
+        assert!(
+            !state.live_logs.iter().any(|line| line.contains("line 0")),
+            "the oldest lines are dropped"
+        );
     }
 
     #[test]

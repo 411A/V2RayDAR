@@ -114,6 +114,11 @@ pub struct RuntimeState {
     pub last_error: Option<String>,
     pub logs: Vec<String>,
     pub live_logs: Vec<String>,
+    /// Monotonic count of lines ever pushed to `live_logs`. The bounded ring
+    /// stops growing at its cap, so a length comparison alone would make the
+    /// SSE feed stall forever once the ring is full; this counter always
+    /// advances and tells the feed how many newest lines are fresh.
+    pub log_seq: u64,
     pub refresh_started_at: Option<String>,
     pub refresh_finished_at: Option<String>,
     #[serde(skip)]

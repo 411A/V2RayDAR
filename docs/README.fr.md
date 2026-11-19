@@ -66,7 +66,7 @@
 - **Récupération parallèle** — récupère les abonnements en parallèle depuis autant de sources que vous voulez.
 - **Prise en charge multi-format** — formats brut, base64, JSON et YAML, ainsi que les liens de partage `vmess`, `vless`, `trojan`, `ss`, `ssr`, `hysteria2`, `hy2`, `tuic`.
 - **Validation réelle** — valide chaque candidat via votre réseau réel avec `sing-box` (charge réellement une URL de test à travers le proxy).
-- **Classement intelligent** — classe les configurations qui fonctionnent vraiment, en tête les plus fiables.
+- **Classement par débit réel** — télécharge 4 Mio, note la fin du transfert, place un corps tronqué en dernier et préfère un nœud qui transporte vraiment un flux à une poignée de main rapide.
 
 ### 🔄 Formats & sortie
 
@@ -90,13 +90,23 @@
 
 - **Base de configs testées** — survit aux réseaux restreints via les configs précédemment testées, une config passerelle ou `emergency_config`, avec chargement depuis la base via `use_cache_only`.
 
+### 🔐 Sécurité & données
+
+- **Mot de passe du tableau de bord** — verrouille le tableau de bord et toutes les modifications ; hachage Argon2id, phrase de récupération exacte, cookie de session HttpOnly et délai de 5 s doublé après chaque mauvais mot de passe. Recommandé sur les réseaux publics ou un VPS.
+- **Journaux de toute la session** — flux en direct, date et heure complètes, historique compressé avec **Charger plus ancien** et **Télécharger le journal** ; une session de 1000 heures tient dans le budget de 16 Mio compressés.
+- **Moins de données** — les 2 meilleures configs sont testées et réutilisées pendant 15 minutes, soit environ 8 Mio par rafraîchissement ; le test profond de 10 Mio ne s'exécute qu'après un trafic réellement lent.
+- **Require TLS (optionnel)** — écarte les transports sans TLS et les faux Reality avant le test, sans limiter les autres réseaux.
+- **Bascule sur lien lent** — surveille le trafic réel, vérifie avec 10 Mio et change de config quand le proxy est en cause ; un épinglage qui échoue ou rame est suspendu.
+
 ## 🖥️ Interfaces
 
 ### 🌐 Tableau de bord web (par défaut)
 
-Le tableau de bord web est l'interface par défaut et couvre l'usage quotidien de bout en bout depuis une seule page : statistiques en direct dans Overview, configs classées dans Configs avec QR codes par ligne, gestion des abonnements dans Subscriptions (ajout, modification, activation/désactivation, suppression, réorganisation par glisser-déposer), tous les réglages dans l'onglet Settings, l'onglet Proxy, le partage LAN, les logs en direct et une feuille de QR codes pour connecter les téléphones.
+Le tableau de bord web est l'interface par défaut et couvre l'usage quotidien de bout en bout depuis une seule page : statistiques en direct dans Overview, configs classées dans Configs avec QR codes par ligne, gestion des abonnements dans Subscriptions (ajout, modification, activation/désactivation, suppression, réorganisation par glisser-déposer), tous les réglages dans l'onglet Settings, l'onglet Proxy, le partage LAN, les logs en direct avec l'historique complet de la session et une feuille de QR codes pour connecter les téléphones.
 
 Après avoir démarré l'application, ouvrez http://127.0.0.1:27141 dans votre navigateur.
+
+Un mot de passe facultatif (**Settings → Dashboard password**) verrouille le tableau de bord et toutes les demandes de modification. Il est stocké uniquement sous forme de hachage Argon2id, utilise une phrase de récupération personnelle et un cookie de session ; un redémarrage déconnecte les navigateurs. Les endpoints en lecture et les abonnements restent ouverts. Il est recommandé sur les réseaux publics ou un VPS ; sur un réseau local de confiance, laissez-le désactivé. Si le mot de passe et la phrase sont perdus, exécutez `v2raydar --reset-dashboard-password` localement.
 
 <p align="center">
   <img src="../assets/WebUI_v0.9.0.png" alt="Tableau de bord web V2RayDAR" width="100%">
@@ -108,7 +118,7 @@ Après avoir démarré l'application, ouvrez http://127.0.0.1:27141 dans votre n
 
 ### 🖥️ TUI optionnel (`--tui`)
 
-Lancez avec `v2raydar --tui` pour l'interface terminal classique, en plus du tableau de bord et de l'endpoint. Il offre en plus le nettoyage du cache et la réinitialisation aux valeurs par défaut — tout le reste est aussi dans le tableau de bord.
+Lancez avec `v2raydar --tui` pour l'interface terminal classique, en plus du tableau de bord et de l'endpoint. Il offre en plus le nettoyage du cache, la réinitialisation aux valeurs par défaut et l'écran local **Dashboard Password** — tout le reste est aussi dans le tableau de bord.
 
 <p align="center">
   <img src="../assets/Windows_TUI_v0.9.0.png" alt="TUI V2RayDAR sous Windows" width="100%">
@@ -187,6 +197,7 @@ v2raydar --no-tui       # sans interface, avec détails et logs, pas de TUI
 v2raydar --tui          # TUI + endpoint d'abonnement local
 v2raydar --once         # un rafraîchissement, afficher les résultats, quitter
 v2raydar --portable     # données à côté de l'exécutable (détecté automatiquement dans les dossiers portables)
+v2raydar --reset-dashboard-password  # effacer localement le mot de passe et la phrase, puis quitter
 v2raydar --uninstall    # supprimer les données et les règles de pare-feu gérées
 ```
 
@@ -219,9 +230,9 @@ Les utilisateurs Windows remplacent `v2raydar` par `v2raydar.exe`. Sous macOS, o
 | `bind` | `127.0.0.1:27141` | Adresse HTTP locale pour `/subscription`, `/subscription.txt`, `/results` et `/health`. |
 | `top_n` | `10` | Nombre de configs fonctionnelles publiées aux clients. |
 | `refresh_seconds` | `900` | Intervalle de rafraîchissement automatique (secondes) ; `0` désactive le timer. |
-| `ping_seconds` | `300` | Intervalle de re-test des configs en cache sans re-téléchargement (secondes) ; `0` désactive. Quand le cache vérifie moins de `top_n`, le ping sonde aussi les configs déjà vues en base pour compléter. Les deux comptent dans traffic usage. |
+| `ping_seconds` | `300` | Intervalle de re-test des configs en cache sans re-téléchargement (secondes) ; `0` désactive. Quand le cache vérifie moins de `top_n`, le ping sonde aussi les configs déjà vues en base pour compléter. Les deux comptent dans le trafic utilisé. |
 | `encoded_subscription` | `true` | `/subscription` renvoie du base64 (compatible v2rayN / v2rayNG). |
-| `prioritize_stability` | `true` | Re-vérifie le Top-N sauvegardé de la session précédente et les garde en tête, même si de nouvelles configs avec latence plus basse apparaissent. Avec `false`, préfère toute config fonctionnelle à faible latence. |
+| `prioritize_stability` | `true` | Re-vérifie le Top-N sauvegardé de la session précédente et garde les gagnants répétés en tête dans la même classe de débit. Un nœud prouvé pour un vrai transfert passe toujours devant une poignée de main rapide qui meurt en cours de corps. |
 | `return_configs_asap` | `false` | Avec `true`, publie les configs fonctionnelles dès leur découverte (max `top_n`) ; les premières configs peuvent ne pas avoir la meilleure latence ou stabilité. |
 | `scan_all_configs` | `false` | Avec `true`, vérifie toutes les configs chargées au lieu de s'arrêter après un nombre suffisant. |
 | `fetch_timeout_ms` | `30000` | Délai de récupération par source. |
@@ -236,11 +247,13 @@ Les utilisateurs Windows remplacent `v2raydar` par `v2raydar.exe`. Sous macOS, o
 | `proxy.enabled` | `false` | Démarre un processus SOCKS5/HTTP persistant via `sing-box`. |
 | `proxy.port` | `27910` | Port du proxy mixte SOCKS5/HTTP. |
 | `proxy.discoverable` | `false` | Lie sur `0.0.0.0` et ajoute une règle de pare-feu pour l'accès LAN. |
-| `proxy.rotating_proxy` | `true` | `true` fait basculer le proxy vers la config au ping le plus bas à chaque cycle ; `false` conserve la config actuelle tant qu'elle reste joignable. |
+| `proxy.rotating_proxy` | `true` | `true` fait basculer le proxy vers la meilleure config à chaque cycle ; `false` conserve la config actuelle tant qu'elle reste joignable. Le trafic réel maintient le lien actuel malgré les variations du classement ; un lien mesuré lent ou bloqué bascule rapidement. |
 | `proxy.health_check_url` | `https://cp.cloudflare.com` | URL testée via le proxy pour vérifier son état. |
-| `proxy.health_check_interval_seconds` | `60` | Secondes entre les vérifications de santé. Bascul automatique en cas d'échec. |
+| `proxy.health_check_interval_seconds` | `60` | Secondes entre les vérifications de santé. Bascule automatique en cas d'échec ; un lien qui s'affame ou reste sous 64 Ko/s déclenche une vérification profonde de 10 Mio et un changement si le proxy est en cause. Un épinglage manuel est suspendu après échec et la sélection automatique reprend. |
+| `proxy.slow_traffic_kbps` | `64` | Seuil de lien lent ; `0` désactive la bascule sur trafic lent. |
+| `proxy.bulk_check_interval_seconds` | `300` | Écart minimal entre deux vérifications profondes de 10 Mio ; `0` les désactive. |
 | `probe.mode` | `active` | `active` utilise `sing-box` ; `tcp` est uniquement diagnostique. |
-| `probe.sing_box_path` | `null` | Chemin optionnel vers `sing-box`. Laissez `null` pour les builds `_with_singbox` de bureau ou Termux avec `sing-box` intégré. |
+| `probe.sing_box_path` | `null` | Chemin optionnel vers `sing-box`. Définissez-le depuis l'onglet Settings du tableau de bord ou le TUI Configurations (vérifié à l'enregistrement). Laissez `null` pour les builds `_with_singbox` de bureau ou Termux avec `sing-box` intégré. |
 | `probe.connect_timeout_ms` | `5000` | Délai de connexion TCP en mode diagnostique. |
 | `probe.active_timeout_ms` | `30000` | Délai du test HTTP en mode actif. |
 | `probe.startup_timeout_ms` | `5000` | Temps d'attente du démarrage du proxy temporaire. |
@@ -249,8 +262,11 @@ Les utilisateurs Windows remplacent `v2raydar` par `v2raydar.exe`. Sous macOS, o
 | `probe.process_concurrency` | `null` | Nombre de processus `sing-box` simultanés ; auto-ajusté si vide. |
 | `probe.test_url` | `https://www.gstatic.com/generate_204` | URL de test chargée via chaque candidat. |
 | `probe.accepted_statuses` | `[204, 200]` | Codes HTTP considérés comme succès. |
-| `probe.download_url` | `null` | Cible optionnelle de test de débit. |
-| `probe.download_bytes_limit` | `1048576` | Nombre maximal d'octets lus par test de vitesse. |
+| `probe.download_url` | `https://download.thinkbroadband.com/10MB.zip` | Cible de débit sur corps réel ; `null` désactive le classement par vitesse. |
+| `probe.download_bytes_limit` | `4194304` | Octets lus par test de vitesse ; les deux dernières secondes décident du débit. |
+| `probe.speedtest_top_n` | `2` | Configs testées en débit par cycle ; `0` désactive les tests de vitesse. |
+| `probe.speedtest_interval_seconds` | `900` | Réutilise un test de vitesse pendant cette durée ; `0` reteste à chaque cycle. |
+| `probe.require_transport_security` | `false` | Écarte les configs sans TLS et les faux Reality avant le test. |
 | `geoip_db_path` | `null` | Chemin optionnel vers un fichier `GeoLite2-Country.mmdb` ou un répertoire de zones pays (`zones.txt`, ou fichiers `<cc>.zone` historiques). Si `null`, utilise `<data-root>/geoip` (base MaxMind d'abord, zones en repli ; les deux mis à jour par l'installateur). Country data: GeoLite2 by MaxMind (CC BY-SA 4.0); fallback zones by ipdeny. |
 | `subscriptions` | _(sources pré-sélectionnées)_ | Liste de sources `{ name, url, enabled, priority }`. Ajoutez les vôtres pour une meilleure couverture. |
 
@@ -363,7 +379,7 @@ V2RayDAR ne crée ni ne distribue lui-même de configs compatibles V2Ray. Il sca
 
 ### Avertissement de sécurité
 
-Le propriétaire du serveur V2Ray auquel vous vous connectez peut intercepter votre trafic et lire vos données non chiffrées. Préférez `127.0.0.1:27141` pour un usage local, activez `sharing.require_token: true` sur les LAN partagés ou peu fiables, et n'exposez jamais l'endpoint HTTP de V2RayDAR sur l'internet public. Traitez les URLs d'abonnement et les liens de partage comme des données sensibles.
+Le propriétaire du serveur V2Ray auquel vous vous connectez peut intercepter votre trafic et lire vos données non chiffrées. Préférez `127.0.0.1:27141` pour un usage local, activez `sharing.require_token: true` sur les LAN partagés ou peu fiables, et n'exposez jamais l'endpoint HTTP de V2RayDAR brut sur l'internet public. Sur un réseau public ou un VPS, activez le mot de passe du tableau de bord et placez l'endpoint derrière un VPN ou un tunnel HTTPS. Traitez les URLs d'abonnement et les liens de partage comme des données sensibles.
 
 ## ☕ Support
 

@@ -66,7 +66,7 @@
 - **并行获取** — 并行获取任意数量的订阅源。
 - **多格式解析** — 解析原始文本、base64、JSON 和 YAML 格式，支持 `vmess`、`vless`、`trojan`、`ss`、`ssr`、`hysteria2`、`hy2`、`tuic` 分享链接。
 - **真实验证** — 通过 `sing-box` 在当前网络中验证每个候选配置（实际加载测试 URL 通过代理）。
-- **智能排名** — 对真正可用的配置进行排名，最可靠的排在最前。
+- **按真实吞吐排名** — 下载 4 MiB 并对末段计速，提前截断的响应排在最后；真正能承载流的节点优先于握手快但传不动数据的配置。
 
 ### 🔄 格式转换与输出
 
@@ -90,13 +90,23 @@
 
 - **已探测配置库** — 通过数据库中先前探测过的配置、网络内桥接配置或 `emergency_config` 在受限网络中存活，可用 `use_cache_only` 从库中加载。
 
+### 🔐 安全与数据
+
+- **仪表盘密码** — 保护仪表盘和所有修改；Argon2id 哈希、精确恢复短语、HttpOnly 会话 Cookie，错误密码后等待 5 秒并逐次翻倍。建议在公共网络或 VPS 上开启。
+- **完整会话日志** — 实时日志、完整日期时间、压缩历史，支持 **加载更早** 和 **下载日志**；1000 小时可在 16 MiB 压缩预算内保存。
+- **更少流量** — 每轮只测前 2 个配置并复用 15 分钟，每次刷新约 8 MiB；只有真实流量变慢后才做 10 MiB 深度检查。
+- **Require TLS（可选）** — 探测前丢弃无 TLS 和伪造 Reality 配置，不影响其他网络。
+- **慢链路切换** — 监控真实流量，必要时用 10 MiB 检查并切换；失败或变慢的手动固定会被暂停。
+
 ## 🖥️ 界面
 
 ### 🌐 Web 仪表盘（默认）
 
-Web 仪表盘是默认界面，在单个浏览器页面覆盖日常使用的完整流程：实时 Overview 统计、带逐行二维码的排名 Configs、Subscriptions 管理（添加、编辑、启用/禁用、删除、拖拽排序）、Settings 标签页中的全部设置、Proxy 标签页、局域网共享、实时 Logs，以及方便手机接入的二维码页面。
+Web 仪表盘是默认界面，在单个浏览器页面覆盖日常使用的完整流程：实时 Overview 统计、带逐行二维码的排名 Configs、Subscriptions 管理（添加、编辑、启用/禁用、删除、拖拽排序）、Settings 标签页中的全部设置、Proxy 标签页、局域网共享、带完整会话历史的实时 Logs，以及方便手机接入的二维码页面。
 
 启动应用后，在浏览器中打开 http://127.0.0.1:27141。
+
+可选密码（**Settings → Dashboard password**）会锁定仪表盘和所有修改请求。它只以 Argon2id 哈希保存，使用个人恢复短语和会话 Cookie；重启应用会让浏览器退出登录。只读端点和订阅源保持开放。建议在公共网络或 VPS 上开启；在可信局域网中可以保持默认关闭。如果密码和短语都丢失，请在本机运行 `v2raydar --reset-dashboard-password`。
 
 <p align="center">
   <img src="../assets/WebUI_v0.9.0.png" alt="V2RayDAR Web 仪表盘" width="100%">
@@ -108,7 +118,7 @@ Web 仪表盘是默认界面，在单个浏览器页面覆盖日常使用的完�
 
 ### 🖥️ 可选 TUI（`--tui`）
 
-使用 `v2raydar --tui` 可在仪表盘和端点之外同时启动经典终端界面。它额外提供缓存清理、恢复默认设置等操作——其余功能仪表盘中同样具备。
+使用 `v2raydar --tui` 可在仪表盘和端点之外同时启动经典终端界面。它额外提供缓存清理、恢复默认设置和本地 **Dashboard Password** 管理界面——其余功能仪表盘中同样具备。
 
 <p align="center">
   <img src="../assets/Windows_TUI_v0.9.0.png" alt="Windows 上的 V2RayDAR TUI" width="100%">
@@ -187,6 +197,7 @@ v2raydar --no-tui       # 无头模式 — 详细信息和日志，无 TUI
 v2raydar --tui          # TUI + 本地订阅端点
 v2raydar --once         # 刷新一次，打印结果后退出
 v2raydar --portable     # 所有数据保存在可执行文件旁边（便携目录自动检测）
+v2raydar --reset-dashboard-password  # 在本机清除仪表盘密码和短语后退出
 v2raydar --uninstall    # 删除应用数据和已创建的防火墙规则
 ```
 
@@ -219,9 +230,9 @@ Windows 用户将 `v2raydar` 替换为 `v2raydar.exe`。macOS 上首次打开捆
 | `bind` | `127.0.0.1:27141` | 本地 HTTP 绑定地址，用于 `/subscription`、`/subscription.txt`、`/results` 和 `/health`。 |
 | `top_n` | `10` | 发布给客户端的可用配置数量。 |
 | `refresh_seconds` | `900` | 自动刷新间隔（秒）；`0` 禁用定时刷新。 |
-| `ping_seconds` | `300` | 已缓存配置的重测间隔（秒），不重新获取订阅；`0` 禁用。当缓存验证通过的数量少于 `top_n` 时，ping 还会检测数据库中此前见过的配置以补足。两者均计入 traffic usage。 |
+| `ping_seconds` | `300` | 已缓存配置的重测间隔（秒），不重新获取订阅；`0` 禁用。当缓存验证通过的数量少于 `top_n` 时，ping 还会检测数据库中此前见过的配置以补足。两者均计入流量使用。 |
 | `encoded_subscription` | `true` | `/subscription` 返回 base64 编码（兼容 v2rayN / v2rayNG）。 |
-| `prioritize_stability` | `true` | 优先重新探测上一轮保存的 Top-N，即使新发现的配置延迟更低也保持其靠前。设为 `false` 则优先选择低延迟的可用配置。 |
+| `prioritize_stability` | `true` | 重新检查上一轮保存的 Top-N，并在同一吞吐等级内让重复胜出的配置保持靠前。真正能传输数据的节点始终优先于握手很快但传输中断的配置。 |
 | `return_configs_asap` | `false` | 设为 `true` 时，找到可用配置后立即发布到端点，最多 `top_n` 个；早期配置可能不是延迟最低或最稳定的。 |
 | `scan_all_configs` | `false` | 设为 `true` 时验证所有加载的配置，而非找到足够可用配置后停止。 |
 | `fetch_timeout_ms` | `30000` | 每个源的获取超时。 |
@@ -236,11 +247,13 @@ Windows 用户将 `v2raydar` 替换为 `v2raydar.exe`。macOS 上首次打开捆
 | `proxy.enabled` | `false` | 启动持久的 `sing-box` 进程，对外提供混合 SOCKS5/HTTP 代理。 |
 | `proxy.port` | `27910` | 混合 SOCKS5/HTTP 代理端口。 |
 | `proxy.discoverable` | `false` | 绑定到 `0.0.0.0` 并添加防火墙规则以允许局域网访问。 |
-| `proxy.rotating_proxy` | `true` | `true` 表示每个周期将代理切换到延迟最低的配置；`false` 表示当前配置可用时保持不变。 |
+| `proxy.rotating_proxy` | `true` | `true` 表示每个周期切换到最佳配置；`false` 表示当前配置可用时保持不变。真实流量会保持当前链路，即使排名波动；实测变慢或卡住的链路会快速切换。 |
 | `proxy.health_check_url` | `https://cp.cloudflare.com` | 通过代理测试的健康检查 URL。 |
-| `proxy.health_check_interval_seconds` | `60` | 代理健康检查间隔（秒）。故障时自动切换。 |
+| `proxy.health_check_interval_seconds` | `60` | 代理健康检查间隔（秒）。故障时自动切换；链路饥饿或持续低于 64 KB/s 时触发 10 MiB 深度检查，确认是代理问题后切换。手动固定失败或变慢后会被暂停，自动选择恢复。 |
+| `proxy.slow_traffic_kbps` | `64` | 慢链路阈值；`0` 关闭慢流量切换。 |
+| `proxy.bulk_check_interval_seconds` | `300` | 两次 10 MiB 深度检查的最小间隔；`0` 关闭。 |
 | `probe.mode` | `active` | `active` 使用 `sing-box`；`tcp` 仅用于诊断。 |
-| `probe.sing_box_path` | `null` | 可选的 `sing-box` 路径。桌面 `_with_singbox` 构建或内置 `sing-box` 的 Termux 构建可设为 `null`。 |
+| `probe.sing_box_path` | `null` | 可选的 `sing-box` 路径。可在仪表盘 Settings 或 TUI Configurations 中设置（保存时验证）。桌面 `_with_singbox` 构建或内置 `sing-box` 的 Termux 构建可设为 `null`。 |
 | `probe.connect_timeout_ms` | `5000` | 诊断探测的 TCP 连接超时。 |
 | `probe.active_timeout_ms` | `30000` | 活跃模式下的 HTTP 测试超时。 |
 | `probe.startup_timeout_ms` | `5000` | 等待临时代理启动的时间。 |
@@ -249,8 +262,11 @@ Windows 用户将 `v2raydar` 替换为 `v2raydar.exe`。macOS 上首次打开捆
 | `probe.process_concurrency` | `null` | 允许同时运行的 `sing-box` 批处理进程数；为空时自动缩放。 |
 | `probe.test_url` | `https://www.gstatic.com/generate_204` | 通过每个候选配置加载的测试 URL。 |
 | `probe.accepted_statuses` | `[204, 200]` | 视为成功的 HTTP 状态码。 |
-| `probe.download_url` | `null` | 可选的吞吐量测试目标。 |
-| `probe.download_bytes_limit` | `1048576` | 每次速度测试的读取上限。 |
+| `probe.download_url` | `https://download.thinkbroadband.com/10MB.zip` | 真实响应体吞吐测试目标；`null` 关闭速度排名。 |
+| `probe.download_bytes_limit` | `4194304` | 每次速度测试读取的字节数；最后两秒决定速率。 |
+| `probe.speedtest_top_n` | `2` | 每轮测速的前几个配置；`0` 关闭测速。 |
+| `probe.speedtest_interval_seconds` | `900` | 复用测速结果的秒数；`0` 每轮重新测速。 |
+| `probe.require_transport_security` | `false` | 探测前丢弃无 TLS 和伪造 Reality 配置。 |
 | `geoip_db_path` | `null` | 可选的 `GeoLite2-Country.mmdb` 文件或国家 IP 区目录（`zones.txt`，或旧式 `<cc>.zone` 文件）路径。为 `null` 时使用 `<data-root>/geoip`（优先 MaxMind 数据库，zone 兜底；两者均由安装程序更新）。Country data: GeoLite2 by MaxMind (CC BY-SA 4.0); fallback zones by ipdeny. |
 | `subscriptions` | _（预选源）_ | `{ name, url, enabled, priority }` 源列表。建议添加自己的源以获得更好的覆盖。 |
 
@@ -363,7 +379,7 @@ V2RayDAR 本身不会创建或分发 V2Ray 兼容配置。它只扫描你配置�
 
 ### 安全警告
 
-你连接的 V2Ray 服务器所有者可能能够截获你的流量并读取未加密数据。同机使用请用 `127.0.0.1:27141`，在共享或不可信局域网请开启 `sharing.require_token: true`，切勿将 V2RayDAR 的 HTTP 端点暴露到公网。请将订阅 URL 与分享链接视为敏感信息。
+你连接的 V2Ray 服务器所有者可能能够截获你的流量并读取未加密数据。同机使用请用 `127.0.0.1:27141`，在共享或不可信局域网请开启 `sharing.require_token: true`，切勿将 V2RayDAR 的 HTTP 端点裸露到公网。在公共网络或 VPS 上，请开启仪表盘密码，并把端点放在 VPN 或 HTTPS 隧道之后。请将订阅 URL 与分享链接视为敏感信息。
 
 ## ☕ 支持
 

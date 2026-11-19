@@ -67,7 +67,7 @@
 - **Multi-format parsing** — reads raw, base64, JSON, and YAML feeds.
 - **Share-link protocols** — extracts `vmess`, `vless`, `trojan`, `ss`, `ssr`, `hysteria2`, `hy2`, and `tuic` links.
 - **Real-network validation** — tests each candidate through your current network with `sing-box` by loading a test URL through the proxy.
-- **Smart ranking** — ranks the configs that actually work by priority, latency, stability, and speed.
+- **Throughput-first ranking** — real 4 MB downloads are tail-scored, a body that cuts short is ranked last, and a proven bulk node outranks a low-latency handshake that cannot carry a stream.
 
 ### 🔄 Format Conversion & Output
 
@@ -80,7 +80,7 @@
 
 - **Always-on proxy** — keeps a `sing-box` process running with the best config, exposing a local mixed SOCKS5/HTTP proxy any app can use — no V2Ray client needed.
 - **Automatic failover** — switches to the next best config when the current one fails, and to a better config on each refresh cycle.
-- **Rotation control** — `proxy.rotating_proxy` selects lowest-ping switching or sticky-config behavior.
+- **Rotation control** — `proxy.rotating_proxy` selects best-ranked switching or sticky-config behavior; live traffic holds the current link through ranking jitter, and a measured slow link switches fast.
 
 ### 📱 LAN Sharing & QR Onboarding
 
@@ -264,7 +264,6 @@ Windows users replace `v2raydar` with `v2raydar.exe`. On macOS open the bundled 
 | `probe.speedtest_top_n` | `2` | Top configs speedtested per run; `0` turns speed tests off. |
 | `probe.speedtest_interval_seconds` | `900` | Reuse a speedtest for this long; `0` retests every cycle. |
 | `probe.require_transport_security` | `false` | Drop no-TLS and fake-Reality configs before probing. |
-| `probe.download_bytes_limit` | `1048576` | Upper bound for the optional download test. |
 | `geoip_db_path` | `null` | Optional path to a `GeoLite2-Country.mmdb` file or a country-zone directory (`zones.txt`, or legacy `<cc>.zone` files). If `null`, uses `<data-root>/geoip` (MaxMind database first, zone fallback; both refreshed by the installer). Country data: GeoLite2 by MaxMind (CC BY-SA 4.0); fallback zones by ipdeny. |
 | `subscriptions` | _(pre-selected sources)_ | List of `{ name, url, enabled, priority }` sources. Add your own for better results. |
 
@@ -379,7 +378,7 @@ V2RayDAR does not create or distribute V2Ray-compatible configs. It only scans s
 
 ### Security warning
 
-The owner of the V2Ray server you connect to may be able to intercept your traffic and read your unencrypted data. Prefer `127.0.0.1:27141` for same-machine use, use `sharing.require_token: true` on shared or less trusted LANs, and never expose V2RayDAR's HTTP endpoint to the public internet. Treat subscription URLs and share links as sensitive.
+The owner of the V2Ray server you connect to may be able to intercept your traffic and read your unencrypted data. Prefer `127.0.0.1:27141` for same-machine use, use `sharing.require_token: true` on shared or less trusted LANs, and never expose V2RayDAR's HTTP endpoint raw to the public internet. On a public network or VPS, enable the dashboard password and put the endpoint behind a VPN or an HTTPS tunnel. Treat subscription URLs and share links as sensitive.
 
 ## ☕ Support
 

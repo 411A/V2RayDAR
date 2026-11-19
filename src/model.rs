@@ -2,6 +2,7 @@ use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet},
     net::SocketAddr,
+    sync::{Arc, Mutex},
     time::Instant,
 };
 
@@ -9,6 +10,7 @@ use serde::Serialize;
 
 use crate::config::should_include_token_in_url;
 use crate::constants::{BULK_MIN_BYTES, BULK_MIN_MBPS};
+use crate::logarchive::LogArchive;
 
 #[derive(Debug, Clone, Serialize, Eq, PartialEq, Hash)]
 pub struct Endpoint {
@@ -119,6 +121,11 @@ pub struct RuntimeState {
     /// SSE feed stall forever once the ring is full; this counter always
     /// advances and tells the feed how many newest lines are fresh.
     pub log_seq: u64,
+    /// Complete session history in compressed chunks (the live ring above is
+    /// duplicated there). Skipped by serialization and cheap to clone: every
+    /// `RuntimeState` snapshot shares the same archive.
+    #[serde(skip)]
+    pub log_archive: Arc<Mutex<LogArchive>>,
     pub refresh_started_at: Option<String>,
     pub refresh_finished_at: Option<String>,
     #[serde(skip)]

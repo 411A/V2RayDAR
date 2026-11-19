@@ -113,6 +113,8 @@ fn router(state: HttpState) -> Router {
         .route("/qr.js", get(crate::web::dashboard_qr))
         .route("/favicon.ico", get(crate::web::favicon))
         .route("/api/summary", get(crate::web::api_summary))
+        .route("/api/logs", get(crate::web::api_logs))
+        .route("/api/logs/download", get(crate::web::api_logs_download))
         .route(
             "/api/subscriptions",
             get(crate::web::api_subscriptions).post(crate::web::api_subscriptions_add),

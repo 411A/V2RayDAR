@@ -8,11 +8,13 @@
 //! the line itself — worst case ~256 KiB of RAM. Nothing here allocates
 //! unless a line is actually emitted.
 //!
-//! Long-run guarantee: the ring is capped and only the oldest lines are
-//! dropped, so a 1000-hour session keeps the same memory footprint as the
-//! first minute. [`RuntimeState::log_seq`] is a monotonic `u64` (no realistic
-//! overflow) and lets the live feed tell fresh lines apart even when the ring
-//! length is pinned at the cap.
+//! Long-run guarantee: the live ring is capped and only the oldest lines are
+//! dropped, while [`RuntimeState.log_archive`] keeps the complete session in
+//! compressed chunks. A 1000-hour session therefore has a bounded live tail
+//! plus a compressed history budget, never an unbounded raw `Vec`.
+//! [`RuntimeState.log_seq`] is a monotonic `u64` (no realistic overflow) and
+//! lets the live feed tell fresh lines apart even when the ring length is
+//! pinned at the cap.
 
 use std::borrow::Cow;
 use std::time::Duration;
@@ -102,7 +104,13 @@ pub fn stamped(level: LogLevel, message: &str) -> String {
 /// Same cap as the funnel path, so direct pushes can't grow memory either.
 pub fn push(state: &mut RuntimeState, level: LogLevel, message: &str) {
     state.log_seq = state.log_seq.wrapping_add(1);
-    state.live_logs.push(stamped(level, message));
+    let line = stamped(level, message);
+    state
+        .log_archive
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(state.log_seq, &line);
+    state.live_logs.push(line);
     if state.live_logs.len() > MAX_TUI_LOGS {
         let extra = state.live_logs.len() - MAX_TUI_LOGS;
         state.live_logs.drain(..extra);

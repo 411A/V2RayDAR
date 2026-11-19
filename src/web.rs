@@ -361,6 +361,86 @@ impl StateSummary {
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct LogsQuery {
+    pub token: Option<String>,
+    /// Exclusive cursor for "load older": return lines with seq < before.
+    pub before: Option<u64>,
+    /// Inclusive starting seq for an "oldest" jump.
+    pub from: Option<u64>,
+    pub limit: Option<usize>,
+}
+
+/// `GET /api/logs` — page through the compressed session archive.
+///
+/// The live tail arrives over `/results`/SSE unchanged; this endpoint only
+/// serves lines older than the client's current view. Only the decompressed
+/// page is materialized, so a 1000-hour archive never turns into a giant
+/// response unless the caller explicitly downloads it.
+pub async fn api_logs(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(query): Query<LogsQuery>,
+    ConnectInfo(remote_addr): ConnectInfo<std::net::SocketAddr>,
+) -> Response {
+    let token = query.token.as_deref().or_else(|| bearer_token(&headers));
+    if let Err(response) = authorize(&state, remote_addr, token).await {
+        return response;
+    }
+    let limit = query
+        .limit
+        .unwrap_or(crate::logarchive::LOG_PAGE_DEFAULT)
+        .clamp(1, crate::logarchive::LOG_PAGE_MAX);
+    let archive = state.runtime.read().await.log_archive.clone();
+    let page = {
+        let guard = archive
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(from) = query.from {
+            guard.page_from(from, limit)
+        } else {
+            guard.page_before(query.before.unwrap_or(u64::MAX), limit)
+        }
+    };
+    Json(page).into_response()
+}
+
+/// `GET /api/logs/download` — the whole retained session log as plain text.
+/// User-initiated only: the response materializes the decompressed archive
+/// once, which is acceptable for a manual export and never happens on the
+/// live dashboard path.
+pub async fn api_logs_download(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    ConnectInfo(remote_addr): ConnectInfo<std::net::SocketAddr>,
+) -> Response {
+    let token = query.token.as_deref().or_else(|| bearer_token(&headers));
+    if let Err(response) = authorize(&state, remote_addr, token).await {
+        return response;
+    }
+    let archive = state.runtime.read().await.log_archive.clone();
+    let mut text = String::new();
+    {
+        let guard = archive
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.append_all(&mut text);
+    }
+    (
+        [
+            (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"v2raydar-session.log\"",
+            ),
+            (header::CACHE_CONTROL, "no-store, no-cache, max-age=0"),
+        ],
+        text,
+    )
+        .into_response()
+}
+
 /// `GET /api/summary` — polling fallback for browsers without `EventSource`.
 pub async fn api_summary(
     State(state): State<HttpState>,
@@ -2608,8 +2688,11 @@ fn hello_event(runtime: &crate::model::RuntimeState) -> Event {
 }
 
 /// SSE framing breaks on raw newlines, so log lines travel single-line.
-fn log_event(line: &str) -> Event {
+/// The id is the global sequence number: the dashboard uses it to page older
+/// history and to keep dropped live lines contiguous with the archive.
+fn log_event(seq: u64, line: &str) -> Event {
     Event::default()
+        .id(seq.to_string())
         .event("log")
         .data(line.replace(['\n', '\r'], " "))
 }
@@ -2697,13 +2780,20 @@ async fn feed_task(
             }
         }
         // The ring stops growing at its cap, so length alone cannot tell new
-        // lines from a full buffer. `log_seq` counts every push; fan out only
-        // the newest delta (capped, so a long backlog cannot flood a slow
-        // client) and skip the rest instead of replaying it.
+        // lines from a full buffer. `log_seq` counts every push; fan out the
+        // newest delta (capped, so a long backlog cannot flood a slow client)
+        // and skip the rest instead of replaying it. The event id carries the
+        // global sequence of the first line, so the client can page history.
         if snapshot.log_seq != log_seq {
             let delta = snapshot.log_seq.saturating_sub(log_seq);
-            for line in newest_log_lines(&snapshot.live_logs, delta) {
-                if tx.send(Ok(log_event(line))).is_err() {
+            let fresh = newest_log_lines(&snapshot.live_logs, delta);
+            let first_seq = snapshot
+                .log_seq
+                .saturating_sub(fresh.len() as u64)
+                .saturating_add(1);
+            for (offset, line) in fresh.iter().enumerate() {
+                let seq = first_seq.saturating_add(offset as u64);
+                if tx.send(Ok(log_event(seq, line))).is_err() {
                     return;
                 }
             }
@@ -3178,6 +3268,78 @@ mod tests {
         .await;
 
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn logs_api_pages_the_compressed_archive_and_downloads_all() {
+        let mut runtime = RuntimeState::default();
+        for i in 1..=600 {
+            crate::applog::push(
+                &mut runtime,
+                crate::applog::LogLevel::Info,
+                &format!("archived line {i}"),
+            );
+        }
+        let state = http_state(runtime, false);
+        let newest = super::api_logs(
+            axum::extract::State(state.clone()),
+            axum::http::HeaderMap::new(),
+            axum::extract::Query(super::LogsQuery {
+                token: None,
+                before: None,
+                from: None,
+                limit: Some(50),
+            }),
+            axum::extract::ConnectInfo(loopback()),
+        )
+        .await;
+        assert_eq!(newest.status(), StatusCode::OK);
+        let body = to_bytes(newest.into_body(), usize::MAX)
+            .await
+            .expect("page reads");
+        let page: serde_json::Value = serde_json::from_slice(&body).expect("page json");
+        assert_eq!(page["lines"].as_array().map(Vec::len), Some(50));
+        assert_eq!(page["lines"][0]["seq"], serde_json::Value::from(551));
+        assert_eq!(page["lines"][49]["seq"], serde_json::Value::from(600));
+        assert_eq!(page["first_seq"], serde_json::Value::from(1));
+        assert_eq!(page["has_more"], serde_json::Value::Bool(true));
+
+        let oldest = super::api_logs(
+            axum::extract::State(state.clone()),
+            axum::http::HeaderMap::new(),
+            axum::extract::Query(super::LogsQuery {
+                token: None,
+                before: Some(551),
+                from: None,
+                limit: Some(50),
+            }),
+            axum::extract::ConnectInfo(loopback()),
+        )
+        .await;
+        let body = to_bytes(oldest.into_body(), usize::MAX)
+            .await
+            .expect("older page reads");
+        let page: serde_json::Value = serde_json::from_slice(&body).expect("older page json");
+        assert_eq!(page["lines"][0]["seq"], serde_json::Value::from(501));
+        assert_eq!(page["lines"][49]["seq"], serde_json::Value::from(550));
+
+        let (headers, query, connect) = no_auth();
+        let download =
+            super::api_logs_download(axum::extract::State(state), headers, query, connect).await;
+        assert_eq!(download.status(), StatusCode::OK);
+        assert_eq!(
+            download
+                .headers()
+                .get(header::CONTENT_DISPOSITION)
+                .map(|v| v.to_str().unwrap_or("")),
+            Some("attachment; filename=\"v2raydar-session.log\"")
+        );
+        let body = to_bytes(download.into_body(), usize::MAX)
+            .await
+            .expect("download reads");
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("archived line 1\n"), "oldest line is kept");
+        assert!(text.contains("archived line 600"), "newest line is kept");
     }
 
     #[tokio::test]

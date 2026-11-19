@@ -1196,7 +1196,7 @@ function applyProbeDelta(text) {
   // and refresh the proxy surfaces only when something actually moved.
   let proxyChanged = false;
   for (const k of ["proxy_running", "proxy_active_config", "proxy_active_uri",
-    "proxy_port", "proxy_discoverable"]) {
+    "proxy_pin_suspended", "proxy_port", "proxy_discoverable"]) {
     if (typeof d[k] !== "undefined" && state.snapshot[k] !== d[k]) {
       state.snapshot[k] = d[k];
       proxyChanged = true;
@@ -2442,7 +2442,9 @@ function paintProxyTab() {
     [t("kvLan"), s.proxy_discoverable ? t("yes") : t("no")],
     [t("kvPool"), String(s.reachable_candidates || 0)],
   ]);
-  $("proxy-manual").textContent = s.proxy_active_uri ? t("proxyManualHeld") : t("proxyNonePinned");
+  $("proxy-manual").textContent = s.proxy_pin_suspended
+    ? t("proxyPinSuspended")
+    : s.proxy_active_uri ? t("proxyManualHeld") : t("proxyNonePinned");
   // Locked while an unpin is in flight (snapshot still shows the old pin
   // until the server confirms), so rapid clicks cannot stack duplicate
   // unpin POSTs; a pin in flight keeps it clickable to cancel the pin.
@@ -2483,6 +2485,13 @@ async function paintShare() {
   const r = await fetchJson("/api/share-urls");
   if (r.status === 200 && r.data && Array.isArray(r.data.urls) && r.data.urls.length > 0) {
     items = r.data.urls.map((u) => [shareUrlLabel(u.key), u.url]);
+  }
+  // Two renders can overlap (a proxy delta plus the tab paint). The first
+  // clear happens before the await; clearing again here makes the last
+  // completed render the only one that appends, instead of both appending
+  // and doubling the list.
+  while (list.firstChild) {
+    list.removeChild(list.firstChild);
   }
   for (const [label, url] of items || endpointItems().slice(0, 3)) {
     const li = document.createElement("li");

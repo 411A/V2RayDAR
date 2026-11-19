@@ -62,7 +62,33 @@ pub const DEFAULT_PROBE_BATCH_SIZE: Option<usize> = Some(20);
 pub const DEFAULT_PROBE_PROCESS_CONCURRENCY: Option<usize> = None;
 pub const DEFAULT_TEST_URL: &str = "https://www.gstatic.com/generate_204";
 pub const DEFAULT_ACCEPTED_STATUSES: &[u16] = &[204, 200];
-pub const DEFAULT_DOWNLOAD_BYTES_LIMIT: usize = 1_048_576;
+/// Speed-test object large enough to get past a shaper's burst allowance.
+/// A 1 MiB probe lands exactly on the boundary where many ISPs turn a fast
+/// link into a 2 KB/s crawl, so configs were certified by a body they could
+/// never finish. The default target carries 10 MiB; we read this much.
+pub const DEFAULT_DOWNLOAD_BYTES_LIMIT: usize = 4 * 1024 * 1024;
+/// Public static objects (not a speed-test API) used when the user has not
+/// chosen a speed-test URL. Both support HTTP Range and return a real body.
+pub const DEFAULT_DOWNLOAD_URL: &str = "https://download.thinkbroadband.com/10MB.zip";
+pub const BULK_CHECK_FALLBACK_URL: &str = "https://proof.ovh.net/files/10Mb.dat";
+/// Throughput classes use the same bar in the prober, the database and the
+/// live proxy: a config only counts as bulk-capable when it carried this
+/// much without dying and its tail was at least this fast (Mbit/s).
+pub const BULK_MIN_BYTES: usize = 4 * 1024 * 1024;
+pub const BULK_MIN_MBPS: f64 = 2.0;
+/// Speed is scored over the end of the transfer, not the whole-body average:
+/// a burst-then-crawl link has a great average and a useless tail.
+pub const DOWNLOAD_TAIL_WINDOW: Duration = Duration::from_secs(2);
+/// One speed-test attempt, body included. Without this a stalled download
+/// could hang a cycle forever (the client itself had no timeout).
+pub const SPEEDTEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Active-proxy deep check: ten megabytes, the size that exposes a
+/// TLS-inspecting middlebox that truncates around 12 KB. The check passes as
+/// soon as it has carried the bulk minimum at the bulk rate; otherwise it
+/// keeps reading to the cap and judges the tail.
+pub const PROXY_BULK_CHECK_BYTES: usize = 10 * 1024 * 1024;
+pub const PROXY_BULK_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+pub const PROXY_BULK_CHECK_FALLBACK_TIMEOUT: Duration = Duration::from_secs(15);
 pub const DEFAULT_CLEAN_OFFLINES_AFTER_DAYS: u32 = 7;
 pub const DEFAULT_PROXY_ENABLED: bool = false;
 pub const DEFAULT_PROXY_PORT: u16 = 27910;
@@ -99,7 +125,7 @@ pub const PROXY_PORT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// A health check only passes when the response body actually transfers:
 /// complete, or at least this much received (short-circuits huge bodies).
 /// Headers alone never pass — false-positive configs handshake then stall.
-pub const PROXY_HEALTH_CHECK_BODY_BYTES: u64 = 262_144;
+pub const PROXY_HEALTH_CHECK_BODY_BYTES: u64 = 1_048_576;
 /// Timeout for one Clash API snapshot read (well under the poll interval).
 pub const PROXY_CLASH_API_TIMEOUT: Duration = Duration::from_secs(5);
 /// How often the starvation detector polls sing-box `/connections`.
@@ -107,10 +133,30 @@ pub const PROXY_STARVATION_POLL_INTERVAL: Duration = Duration::from_secs(5);
 /// A connection counts as starved only after trying this long with zero
 /// bytes back: long enough that slow-but-working links never trip it.
 pub const PROXY_STARVATION_MIN_AGE: Duration = Duration::from_secs(20);
-/// ... and after uploading at least this much (handshake retries add up).
-/// TCP acknowledgements alone put any working connection's download above
-/// zero, so `download == 0` at this volume is pathological, not slow.
-pub const PROXY_STARVATION_MIN_UPLOAD_BYTES: u64 = 32 * 1024;
+/// ... and after uploading at least this much (a real request's headers, not
+/// a bare connect). TCP acknowledgements alone put any working connection's
+/// download above zero, so `download == 0` at this volume after the age gate
+/// is pathological, not slow. The old 32 KB bar let a stuck 1 KB request sit
+/// forever because a browser uploads only headers before it waits.
+pub const PROXY_STARVATION_MIN_UPLOAD_BYTES: u64 = 256;
+/// Live-traffic window: connections that keep moving this little over a
+/// whole window are slow enough that a working alternative is worth a switch.
+/// A 2 KB/s crawl trips it; ordinary browsing (a page or two per window)
+/// mostly does not because it ends before the window closes.
+pub const PROXY_STREAM_WINDOW: Duration = Duration::from_secs(10);
+pub const PROXY_STREAM_MIN_AGE: Duration = Duration::from_secs(10);
+pub const PROXY_STREAM_MIN_WINDOW_BYTES: u64 = 8 * 1024;
+pub const PROXY_STREAM_SLOW_BPS: u64 = 64 * 1024;
+pub const PROXY_STREAM_SLOW_WINDOWS: u8 = 2;
+/// A candidate must be at least this much faster than live traffic before its
+/// measured speed alone justifies switching (avoids flapping on noise).
+pub const PROXY_STREAM_UPGRADE_FACTOR: f64 = 2.0;
+/// Deep bulk checks are expensive; one per active config per interval is
+/// enough to catch a middlebox that starts truncating later.
+pub const PROXY_BULK_CHECK_INTERVAL: Duration = Duration::from_mins(5);
+/// Minimum gap between performance-driven switches, independent of the
+/// ordinary ranking dwell and the failure cooldown.
+pub const PROXY_PERFORMANCE_SWITCH_COOLDOWN: Duration = Duration::from_secs(10);
 /// Controller ports probed above the proxy port for the Clash API listener.
 pub const PROXY_CLASH_CONTROLLER_PORT_ATTEMPTS: u16 = 32;
 /// Unreachable-controller polls to skip before retrying (same-port
@@ -170,6 +216,137 @@ pub const SUPPORTED_URI_SCHEMES: &[&str] = &[
     "hysteria2://",
     "hy2://",
     "tuic://",
+];
+
+/// Public suffixes that appear in real Reality cover hostnames. The ingest
+/// hardener rejects a Reality SNI whose last label is not here: a fantasy
+/// cover (`example.invalidtld`, a bare word, an IP) cannot survive a real
+/// TLS handshake and only fills the pool with configs that will never work.
+/// This is deliberately a static allow-list, not a full PSL: it is the
+/// escape hatch for a new TLD, not a correctness oracle.
+pub const KNOWN_PUBLIC_SUFFIXES: &[&str] = &[
+    "com",
+    "net",
+    "org",
+    "edu",
+    "gov",
+    "mil",
+    "int",
+    "io",
+    "dev",
+    "app",
+    "xyz",
+    "info",
+    "biz",
+    "me",
+    "tv",
+    "cc",
+    "co",
+    "site",
+    "online",
+    "store",
+    "tech",
+    "cloud",
+    "live",
+    "link",
+    "click",
+    "top",
+    "pro",
+    "vip",
+    "fun",
+    "space",
+    "world",
+    "today",
+    "life",
+    "news",
+    "blog",
+    "zone",
+    "network",
+    "agency",
+    "digital",
+    "media",
+    "services",
+    "solutions",
+    "systems",
+    "email",
+    "social",
+    "design",
+    "studio",
+    "software",
+    "host",
+    "website",
+    "shop",
+    "club",
+    "art",
+    "one",
+    "page",
+    "run",
+    "sh",
+    "ly",
+    "to",
+    "in",
+    "ir",
+    "de",
+    "nl",
+    "uk",
+    "fr",
+    "se",
+    "fi",
+    "no",
+    "dk",
+    "es",
+    "it",
+    "ch",
+    "at",
+    "be",
+    "pl",
+    "ru",
+    "ua",
+    "tr",
+    "ae",
+    "sa",
+    "qa",
+    "il",
+    "eg",
+    "iq",
+    "af",
+    "pk",
+    "bd",
+    "lk",
+    "np",
+    "az",
+    "am",
+    "ge",
+    "kz",
+    "uz",
+    "tm",
+    "tj",
+    "kg",
+    "cn",
+    "hk",
+    "tw",
+    "jp",
+    "kr",
+    "sg",
+    "my",
+    "id",
+    "th",
+    "vn",
+    "ph",
+    "au",
+    "nz",
+    "ca",
+    "us",
+    "mx",
+    "br",
+    "ar",
+    "cl",
+    "pe",
+    "za",
+    "ng",
+    "ke",
+    "ma",
+    "eu",
 ];
 
 /// Shadowsocks cipher methods supported by sing-box and Mihomo.
@@ -329,7 +506,7 @@ pub const SETTING_GUIDES: &[SettingGuide] = &[
     SettingGuide {
         key: "prioritize_stability",
         label: "Stable ranking",
-        help: "true keeps the previous run's top-N at the front (re-pinged first; held even if a new low-ping config appears). false simply prefers any working low-ping config.",
+        help: "true keeps the previous run's top-N ahead inside the same throughput class (re-pinged first). Measured bulk throughput always decides first; false drops the stability carry-over.",
     },
     SettingGuide {
         key: "return_configs_asap",

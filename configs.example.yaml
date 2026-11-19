@@ -8,7 +8,8 @@ refresh_seconds: 900
 ping_seconds: 300
 # true returns /subscription as base64 for v2rayN/v2rayNG compatibility.
 encoded_subscription: true
-# true re-pings the last saved top-N first and keeps stable configs ahead.
+# true re-pings the last saved top-N first and keeps stable configs ahead
+# inside the same throughput class; measured bulk speed still decides first.
 prioritize_stability: true
 # true publishes early working configs before final ranking; results may be less optimal & unstable.
 return_configs_asap: false
@@ -79,11 +80,13 @@ probe:
   test_url: https://www.gstatic.com/generate_204
   # HTTP status codes treated as successful active probes.
   accepted_statuses: [204, 200]
-  # Optional speed-test URL; enabling it consumes extra bandwidth
+  # Optional speed-test URL; null turns throughput ranking off.
+  # A real body is required: a URL that answers 204/HEAD measures nothing.
   # You can use this URL for example: https://archive.org/download/steamboat-willie_1928/steamboat-willie_1928.ia.mp4
-  download_url: null
+  download_url: https://download.thinkbroadband.com/10MB.zip
   # Maximum bytes read per speed test; high values use more data/time.
-  download_bytes_limit: 1048576
+  # Four MiB is the bulk-capability bar: below it a shaper's burst wins.
+  download_bytes_limit: 4194304
 
 #* Public subscription sources to fetch, parse, probe, and rank.
 subscriptions:

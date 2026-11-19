@@ -8,16 +8,16 @@ use serde_yaml::Value;
 use crate::constants::{
     DEFAULT_ACCEPTED_STATUSES, DEFAULT_ACTIVE_TIMEOUT_MS, DEFAULT_BIND,
     DEFAULT_CLEAN_OFFLINES_AFTER_DAYS, DEFAULT_CONFIG_TEMPLATE, DEFAULT_CONNECT_TIMEOUT_MS,
-    DEFAULT_DOWNLOAD_BYTES_LIMIT, DEFAULT_ENCODED_SUBSCRIPTION, DEFAULT_FETCH_CONCURRENCY,
-    DEFAULT_FETCH_TIMEOUT_MS, DEFAULT_MAX_SUBSCRIPTION_BYTES, DEFAULT_PING_SECONDS,
-    DEFAULT_PRIORITIZE_STABILITY, DEFAULT_PROBE_BATCH_SIZE, DEFAULT_PROBE_CONCURRENCY,
-    DEFAULT_PROBE_PROCESS_CONCURRENCY, DEFAULT_PROXY_DISCOVERABLE, DEFAULT_PROXY_ENABLED,
-    DEFAULT_PROXY_HEALTH_CHECK_INTERVAL, DEFAULT_PROXY_HEALTH_CHECK_URL, DEFAULT_PROXY_PORT,
-    DEFAULT_REFRESH_SECONDS, DEFAULT_REQUIRE_TOKEN, DEFAULT_RETURN_CONFIGS_ASAP,
-    DEFAULT_ROTATING_PROXY, DEFAULT_SCAN_ALL_CONFIGS, DEFAULT_SHARING_ENABLED,
-    DEFAULT_SHARING_TOKEN, DEFAULT_SING_BOX_PATH, DEFAULT_STARTUP_TIMEOUT_MS,
-    DEFAULT_SUBSCRIPTION_ENABLED, DEFAULT_SUBSCRIPTION_PRIORITY, DEFAULT_TEST_URL, DEFAULT_TOP_N,
-    DEFAULT_USE_CACHE_ONLY,
+    DEFAULT_DOWNLOAD_BYTES_LIMIT, DEFAULT_DOWNLOAD_URL, DEFAULT_ENCODED_SUBSCRIPTION,
+    DEFAULT_FETCH_CONCURRENCY, DEFAULT_FETCH_TIMEOUT_MS, DEFAULT_MAX_SUBSCRIPTION_BYTES,
+    DEFAULT_PING_SECONDS, DEFAULT_PRIORITIZE_STABILITY, DEFAULT_PROBE_BATCH_SIZE,
+    DEFAULT_PROBE_CONCURRENCY, DEFAULT_PROBE_PROCESS_CONCURRENCY, DEFAULT_PROXY_DISCOVERABLE,
+    DEFAULT_PROXY_ENABLED, DEFAULT_PROXY_HEALTH_CHECK_INTERVAL, DEFAULT_PROXY_HEALTH_CHECK_URL,
+    DEFAULT_PROXY_PORT, DEFAULT_REFRESH_SECONDS, DEFAULT_REQUIRE_TOKEN,
+    DEFAULT_RETURN_CONFIGS_ASAP, DEFAULT_ROTATING_PROXY, DEFAULT_SCAN_ALL_CONFIGS,
+    DEFAULT_SHARING_ENABLED, DEFAULT_SHARING_TOKEN, DEFAULT_SING_BOX_PATH,
+    DEFAULT_STARTUP_TIMEOUT_MS, DEFAULT_SUBSCRIPTION_ENABLED, DEFAULT_SUBSCRIPTION_PRIORITY,
+    DEFAULT_TEST_URL, DEFAULT_TOP_N, DEFAULT_USE_CACHE_ONLY,
 };
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -170,7 +170,10 @@ pub struct ProbeConfig {
     pub test_url: String,
     #[serde(default = "default_accepted_statuses")]
     pub accepted_statuses: Vec<u16>,
-    #[serde(default, deserialize_with = "deserialize_optional_string")]
+    #[serde(
+        default = "default_download_url",
+        deserialize_with = "deserialize_optional_string"
+    )]
     pub download_url: Option<String>,
     #[serde(default = "default_download_bytes_limit")]
     pub download_bytes_limit: usize,
@@ -229,7 +232,7 @@ impl Default for ProbeConfig {
             process_concurrency: default_probe_process_concurrency(),
             test_url: default_test_url(),
             accepted_statuses: default_accepted_statuses(),
-            download_url: None,
+            download_url: default_download_url(),
             download_bytes_limit: default_download_bytes_limit(),
             sing_box_path_auto: false,
         }
@@ -782,6 +785,11 @@ fn default_accepted_statuses() -> Vec<u16> {
 
 const fn default_download_bytes_limit() -> usize {
     DEFAULT_DOWNLOAD_BYTES_LIMIT
+}
+
+#[allow(clippy::unnecessary_wraps)]
+fn default_download_url() -> Option<String> {
+    Some(DEFAULT_DOWNLOAD_URL.to_string())
 }
 
 const fn default_clean_offlines_after_days() -> u32 {

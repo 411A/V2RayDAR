@@ -424,7 +424,7 @@ String-like null values such as `null`, `"null"`, empty strings, `"none"`, and `
 | `refresh_seconds` | Integer seconds | `900` | Automatic refresh interval. `0` disables timer refreshes but config changes can still trigger refreshes. |
 | `ping_seconds` | Integer seconds | `300` | Re-ping interval for cached configs without re-fetching subscriptions. `0` disables. When the cache verifies fewer than `top_n`, the ping also probes previously-seen database configs to refill. Fetch and ping traffic both count toward Sub Usage. |
 | `encoded_subscription` | Boolean | `true` | Makes `/subscription` return base64 text. `/subscription.txt` is always raw text. |
-| `prioritize_stability` | Boolean | `true` | Re-pings the previous run's saved top-N first and keeps them ahead of newly discovered low-ping configs. When `false`, the ranking simply prefers any working low-ping config. The saved top-N lives in the `stable_top` table of `data.db`, so it survives a restart. |
+| `prioritize_stability` | Boolean | `true` | Re-pings the previous run's saved top-N first and keeps repeat winners ahead **inside the same throughput class**. Throughput class and measured speed always come first; stability then beats latency among equally fast configs, so a low-latency handshake that cannot carry a body never outranks a proven bulk node. The saved top-N lives in the `stable_top` table of `data.db`, so it survives a restart. |
 | `return_configs_asap` | Boolean | `false` | When `true`, publishes each working config to `/subscription`, `/subscription.txt`, `/results`, and the TUI `Current Found Configs` box as soon as it is found, until `top_n` working configs are available. Early configs may not have the lowest ping or best stability. |
 | `scan_all_configs` | Boolean | `false` | When `false`, active probing can stop early after enough working configs are found. |
 | `fetch_timeout_ms` | Integer milliseconds | `30000` | Per-source HTTP fetch timeout. |
@@ -457,9 +457,9 @@ Token checks apply only to LAN requests. Local requests from `127.0.0.1` are all
 | `proxy.enabled` | Boolean | `false` | Starts a persistent `sing-box` process with the best-ranked config, exposing a mixed SOCKS5/HTTP proxy on `proxy.port`. |
 | `proxy.port` | Integer | `27910` | Port for the mixed SOCKS5/HTTP proxy. Must not equal `bind` port. |
 | `proxy.discoverable` | Boolean | `false` | Binds to `0.0.0.0` instead of `127.0.0.1` and adds a firewall rule for LAN access. |
-| `proxy.rotating_proxy` | Boolean | `true` | `true` switches the proxy to the lowest-ping config on each cycle; `false` keeps the current config while it stays reachable. |
+| `proxy.rotating_proxy` | Boolean | `true` | `true` switches the proxy to the best-ranked config on each cycle; `false` keeps the current config while it stays reachable. Either way, live traffic holds the current config through ranking jitter, and a measured slow/stalled link switches immediately. |
 | `proxy.health_check_url` | String | `https://cp.cloudflare.com` | URL tested through the proxy to verify it's alive. |
-| `proxy.health_check_interval_seconds` | Integer | `60` | Seconds between proxy health checks. On failure, auto-failovers to the next ranked config. |
+| `proxy.health_check_interval_seconds` | Integer | `60` | Seconds between proxy health checks. On failure, auto-failovers to the next ranked config. The detector also watches the live connection table: a connection that uploads with zero download, or traffic that stays below 64 KB/s for two 10-second windows, triggers a deep 10 MB check and a fast switch when the proxy is at fault. A manual pin is watched too; it is suspended after it fails, and auto-select takes over until you pin another config. |
 
 When `proxy.discoverable: true`, other devices on the same LAN can use the proxy. Replace `YOUR_LAN_IP` with the actual LAN IP shown in the TUI's **Current Configuration** panel under **Network**, and open the URL on your phone:
 
@@ -513,14 +513,14 @@ http://192.0.2.23:27141/subscription?token=GENERATED_TOKEN
 | `probe.process_concurrency` | Integer or null | `null` | Number of `sing-box` batch processes allowed at once. Auto mode is capped internally. |
 | `probe.test_url` | URL string | `https://www.gstatic.com/generate_204` | URL requested through each candidate proxy in active mode. |
 | `probe.accepted_statuses` | HTTP status array | `[204, 200]` | HTTP statuses treated as successful active validation. |
-| `probe.download_url` | URL string or null | `null` | Optional URL used for speed testing top working configs. |
-| `probe.download_bytes_limit` | Integer bytes | `1048576` | Maximum bytes read from `probe.download_url` per speed test. |
+| `probe.download_url` | URL string or null | `https://download.thinkbroadband.com/10MB.zip` | Static object used to measure real throughput for the top working configs. `null` turns throughput ranking off and falls back to stability + latency. A URL that answers `204` or only headers measures nothing. |
+| `probe.download_bytes_limit` | Integer bytes | `4194304` | Bytes read per speed test. Four MiB is the bulk bar: a config that lands below it is ranked behind configs that finished. The tail two seconds decide the rate, so a burst-then-crawl link cannot pass on its average. |
 
 ## Active Mode
 
 `probe.mode: active` is the normal mode. It uses `sing-box` to create temporary local proxy listeners, routes test HTTP requests through the candidate configs, and marks a config reachable only when the configured `probe.test_url` returns one of `probe.accepted_statuses`.
 
-Active mode can also use an optional `probe.download_url` to measure throughput for selected working configs. The result appears in `/results` as `download_mbps` and `download_bytes`.
+Active mode uses the optional `probe.download_url` (on by default) to measure real throughput for selected working configs. The result appears in `/results` as `download_mbps` and `download_bytes`. Speed is scored over the last two seconds, not the whole body; a transfer that ends early or stalls is kept as evidence but ranked below configs that carried the full bulk minimum.
 
 Active mode requires a working `sing-box` executable. If `sing-box` is unavailable, candidates are marked failed with an error explaining that `sing-box` could not be run.
 
@@ -733,7 +733,7 @@ use_cache_only: true
 
 ## Ranking
 
-The final ranked list always puts reachable configs before failed configs. When `prioritize_stability: true`, reachable configs that were in the previous run's saved top-N are promoted before the remaining tie-breakers, so a higher-ping config that already proved working last refresh stays ahead of a newly discovered low-ping config. When `prioritize_stability: false`, the ranking simply prefers any working low-ping config without any carry-over.
+The final ranked list always puts reachable configs before failed configs. Throughput comes next: a config that carried the bulk body at a usable rate outranks an unmeasured one, which outranks a config measured as truncated or slow. Among configs in the same class, measured speed, stability (when enabled), and then latency break the ties. This is why a 40 ms handshake that dies at 12 KB no longer sits above a node that actually carries a stream. When `prioritize_stability: true`, reachable configs from the previous run's saved top-N are promoted within their class, so a repeat winner stays ahead of a newly discovered equally fast config. When `false`, class and speed still decide; stability carry-over is simply not applied.
 
 The saved top-N is written to the `stable_top` table in the database at the end of each refresh, re-pinged at the start of the next refresh, and deleted on app startup and shutdown so each fresh run begins with no stability carry-over.
 
@@ -996,6 +996,18 @@ Use `sharing.require_token: true` on shared or less trusted LANs. The token is a
 Treat subscription URLs and share links as sensitive. Anyone with access to the local subscription endpoint can read the working configs V2RayDAR publishes.
 
 The `emergency_config` is also sensitive because it contains a working proxy config. Do not share logs or config files that include private links.
+
+### Hardened ingest (opt-in, for high-DPI networks)
+
+On networks where unencrypted or fake-cover transports are already burned, set `REQUIRE_TRANSPORT_SECURITY=1` before starting V2RayDAR. The parser then drops Shadowsocks/SSR (no TLS), VMess/VLESS with `security=none`, and Reality configs whose SNI is an IP, a bare word, or an unknown public suffix. TLS, Trojan, Hysteria2/TUIC, and Reality with a real public hostname stay in the pool.
+
+The flag is **off by default** and does not change behavior for other countries: a pool that works through plain Shadowsocks keeps working unless the operator chooses the stricter filter.
+
+```bash
+REQUIRE_TRANSPORT_SECURITY=1 v2raydar
+```
+
+This is ingest hygiene, not a substitute for a good subscription: it removes configs that cannot survive a real TLS handshake, but it cannot create bandwidth where the network shapes the node itself.
 
 ## Performance Notes
 
@@ -1400,7 +1412,7 @@ probe:
   process_concurrency: null
   test_url: https://www.gstatic.com/generate_204
   accepted_statuses: [204, 200]
-  download_url: null
+  download_url: https://download.thinkbroadband.com/10MB.zip
   download_bytes_limit: 1048576
 
 subscriptions:

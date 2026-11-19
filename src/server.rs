@@ -49,6 +49,10 @@ pub struct HttpState {
     /// Database handle for cache maintenance (`POST /api/cache/clean`).
     /// `None` in unit tests.
     pub database: Option<std::sync::Arc<crate::db::Database>>,
+    /// Graceful-stop signal: the dashboard shutdown button must go through
+    /// the same path as Ctrl+C so the proxy child (and its temp config) is
+    /// stopped instead of being orphaned by `process::exit`.
+    pub shutdown_tx: Option<tokio::sync::mpsc::UnboundedSender<()>>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -62,6 +66,7 @@ pub async fn serve(
     refresh_tx: Option<tokio::sync::mpsc::UnboundedSender<()>>,
     ping_tx: Option<tokio::sync::mpsc::UnboundedSender<()>>,
     database: Option<std::sync::Arc<crate::db::Database>>,
+    shutdown_tx: Option<tokio::sync::mpsc::UnboundedSender<()>>,
 ) -> Result<()> {
     let state = HttpState {
         runtime,
@@ -73,6 +78,7 @@ pub async fn serve(
         refresh_tx,
         ping_tx,
         database,
+        shutdown_tx,
     };
     let router = router(state.clone());
 
@@ -652,6 +658,7 @@ mod tests {
             refresh_tx: None,
             ping_tx: None,
             database: None,
+            shutdown_tx: None,
         };
         let _ = router(state);
     }
@@ -678,6 +685,7 @@ mod tests {
             refresh_tx: None,
             ping_tx: None,
             database: None,
+            shutdown_tx: None,
         };
 
         let response =

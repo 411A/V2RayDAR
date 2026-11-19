@@ -1,5 +1,4 @@
 use std::{
-    cmp::Ordering,
     collections::{HashMap, VecDeque},
     future::Future,
     path::{Path, PathBuf},
@@ -32,16 +31,17 @@ use crate::{
     constants::{
         ACTIVE_PROBE_BATCH_CONCURRENCY_MULTIPLIER, ACTIVE_PROBE_BATCH_MAX_SIZE,
         ACTIVE_PROBE_BATCH_MIN_SIZE, ACTIVE_PROBE_HTTP_MAX_CONCURRENCY,
-        ACTIVE_PROBE_PROCESS_MAX_CONCURRENCY, BITS_PER_BYTE, BITS_PER_MEGABIT,
-        HTTP_EXCHANGE_OVERHEAD_BYTES, LOCAL_PROXY_CONNECT_TIMEOUT, LOCAL_PROXY_WAIT_INTERVAL,
-        LOCALHOST_IP, SING_BOX_CLEANUP_TIMEOUT, SING_BOX_CONFIG_FILE_PREFIX,
-        SING_BOX_INBOUND_TAG_PREFIX, SING_BOX_OUTBOUND_TAG_PREFIX,
+        ACTIVE_PROBE_PROCESS_MAX_CONCURRENCY, BITS_PER_BYTE, BITS_PER_MEGABIT, BULK_MIN_BYTES,
+        BULK_MIN_MBPS, DOWNLOAD_TAIL_WINDOW, HTTP_EXCHANGE_OVERHEAD_BYTES,
+        LOCAL_PROXY_CONNECT_TIMEOUT, LOCAL_PROXY_WAIT_INTERVAL, LOCALHOST_IP,
+        SING_BOX_CLEANUP_TIMEOUT, SING_BOX_CONFIG_FILE_PREFIX, SING_BOX_INBOUND_TAG_PREFIX,
+        SING_BOX_OUTBOUND_TAG_PREFIX, SPEEDTEST_TIMEOUT,
     },
     convert::{
         decode_base64_bytes, decode_base64_to_string, first_param, json_bool, json_string,
         json_u16, json_u64, parse_host_port, percent_decode, query_pairs, split_once, truthy,
     },
-    model::{Candidate, ProbeStopPolicy, ProgressEvent, RankedConfig},
+    model::{Candidate, ProbeStopPolicy, ProgressEvent, RankedConfig, compare_ranked},
 };
 
 use std::sync::{Mutex, OnceLock};
@@ -1920,6 +1920,14 @@ async fn enrich_top_speedtests(
 
     while let Some((index, measurement)) = results.next().await {
         if let Some(measurement) = measurement {
+            if !measurement.complete {
+                debug!(
+                    name = %ranked[index].name,
+                    bytes = measurement.bytes,
+                    mbps = measurement.mbps,
+                    "speedtest body ended early or stalled; ranking it below measured bulk configs"
+                );
+            }
             ranked[index].download_mbps = Some(measurement.mbps);
             ranked[index].download_bytes = Some(measurement.bytes);
         }
@@ -1947,21 +1955,48 @@ async fn measure_download_with_sing_box(
 ) -> Result<DownloadMeasurement> {
     run_with_sing_box_proxy(sing_box_path, uri, startup_timeout, |port| async move {
         let proxy_url = format!("http://{LOCALHOST_IP}:{port}");
-        let mut builder = reqwest::Client::builder().proxy(Proxy::all(&proxy_url)?);
-        if cfg!(target_os = "android")
-            && let Some(tls) = crate::FALLBACK_TLS.get()
-        {
-            builder = builder.tls_backend_preconfigured(tls.clone());
-        }
-        let client = builder.build()?;
-        measure_download(&client, download_url, bytes_limit).await
+        measure_download_through_proxy(&proxy_url, download_url, bytes_limit, SPEEDTEST_TIMEOUT)
+            .await
     })
     .await
 }
 
-struct DownloadMeasurement {
-    mbps: f64,
-    bytes: usize,
+pub struct DownloadMeasurement {
+    /// Tail speed, not the whole-body average: the last two seconds decide
+    /// whether a link can carry a stream after the shaper's burst.
+    pub(crate) mbps: f64,
+    pub(crate) bytes: usize,
+    pub(crate) complete: bool,
+}
+
+impl DownloadMeasurement {
+    pub fn bulk_capable(&self) -> bool {
+        self.bytes >= BULK_MIN_BYTES && self.mbps >= BULK_MIN_MBPS
+    }
+}
+
+/// Measure one download through an explicit proxy URL. Shared by the probe
+/// speedtest and the live proxy's deep check so both apply the same rule.
+pub async fn measure_download_through_proxy(
+    proxy_url: &str,
+    download_url: &str,
+    bytes_limit: usize,
+    timeout: Duration,
+) -> Result<DownloadMeasurement> {
+    let mut builder = reqwest::Client::builder()
+        .timeout(timeout)
+        .proxy(Proxy::all(proxy_url)?);
+    if cfg!(target_os = "android")
+        && let Some(tls) = crate::FALLBACK_TLS.get()
+    {
+        builder = builder.tls_backend_preconfigured(tls.clone());
+    }
+    let client = builder.build()?;
+    tokio::time::timeout(timeout.saturating_add(Duration::from_secs(1)), async {
+        measure_download(&client, download_url, bytes_limit).await
+    })
+    .await
+    .map_err(|_| anyhow!("download probe timed out"))?
 }
 
 async fn measure_download(
@@ -1970,36 +2005,94 @@ async fn measure_download(
     bytes_limit: usize,
 ) -> Result<DownloadMeasurement> {
     let started = Instant::now();
-    let mut stream = client
+    let response = client
         .get(download_url)
         .header(reqwest::header::ACCEPT_ENCODING, "identity")
+        .header(
+            reqwest::header::USER_AGENT,
+            concat!("V2RayDAR/", env!("CARGO_PKG_VERSION")),
+        )
         .header(
             reqwest::header::RANGE,
             format!("bytes=0-{}", bytes_limit.saturating_sub(1)),
         )
         .send()
         .await?
-        .error_for_status()?
-        .bytes_stream();
+        .error_for_status()?;
+    let expected = response.content_length().map_or(bytes_limit, |length| {
+        usize::try_from(length)
+            .unwrap_or(usize::MAX)
+            .min(bytes_limit)
+    });
+    let mut stream = response.bytes_stream();
     let mut measured_bytes = 0_usize;
+    let mut complete = false;
+    // (instant, cumulative bytes) — keeping every chunk lets the tail rate
+    // be read from the last two seconds without a second pass.
+    let mut samples: VecDeque<(Instant, usize)> = VecDeque::new();
     while measured_bytes < bytes_limit {
-        let Some(chunk) = stream.next().await else {
-            break;
-        };
-        let chunk = chunk?;
-        let remaining = bytes_limit - measured_bytes;
-        measured_bytes = measured_bytes.saturating_add(chunk.len().min(remaining));
+        match stream.next().await {
+            Some(Ok(chunk)) => {
+                let remaining = bytes_limit - measured_bytes;
+                measured_bytes = measured_bytes.saturating_add(chunk.len().min(remaining));
+                let now = Instant::now();
+                samples.push_back((now, measured_bytes));
+                while samples
+                    .front()
+                    .is_some_and(|(at, _)| now.duration_since(*at) > DOWNLOAD_TAIL_WINDOW)
+                {
+                    samples.pop_front();
+                }
+            }
+            // A broken body (TLS truncation, reset, timeout) is still data:
+            // mark it incomplete and judge the tail instead of discarding the
+            // evidence. A 12 KB cut-off must rank as bad, not disappear.
+            Some(Err(_)) => break,
+            None => {
+                complete = measured_bytes >= expected;
+                break;
+            }
+        }
+    }
+    if measured_bytes >= bytes_limit {
+        complete = true;
     }
 
-    let elapsed = started.elapsed().as_secs_f64();
-    if elapsed == 0.0 || measured_bytes == 0 {
+    let elapsed = started.elapsed();
+    if measured_bytes == 0 || elapsed.is_zero() {
         return Err(anyhow!("download probe returned no measurable data"));
     }
 
+    let tail = tail_speed(&samples, elapsed, measured_bytes);
     Ok(DownloadMeasurement {
-        mbps: (usize_to_f64(measured_bytes) * BITS_PER_BYTE) / elapsed / BITS_PER_MEGABIT,
+        mbps: bytes_per_second_to_mbps(tail.0, tail.1),
         bytes: measured_bytes,
+        complete,
     })
+}
+
+/// Bytes moved in the tail window (or the whole transfer if shorter) and the
+/// time they took. Returns `(bytes, elapsed)`.
+fn tail_speed(
+    samples: &VecDeque<(Instant, usize)>,
+    elapsed: Duration,
+    total: usize,
+) -> (usize, f64) {
+    let (Some((first_at, first_bytes)), Some((last_at, last_bytes))) =
+        (samples.front(), samples.back())
+    else {
+        return (total, elapsed.as_secs_f64().max(0.001));
+    };
+    let bytes = last_bytes.saturating_sub(*first_bytes);
+    let seconds = last_at.saturating_duration_since(*first_at).as_secs_f64();
+    if bytes == 0 || seconds <= 0.0 {
+        return (total, elapsed.as_secs_f64().max(0.001));
+    }
+    (bytes, seconds)
+}
+
+fn bytes_per_second_to_mbps(bytes: usize, seconds: f64) -> f64 {
+    (usize_to_f64(bytes) * BITS_PER_BYTE) / seconds / BITS_PER_MEGABIT
 }
 
 #[allow(clippy::cast_precision_loss)]
@@ -2323,27 +2416,6 @@ fn failed_configs(
         .collect();
     configs.push(failed_config(entry.candidate, validation, err));
     configs
-}
-
-fn compare_ranked(left: &RankedConfig, right: &RankedConfig) -> Ordering {
-    right
-        .reachable
-        .cmp(&left.reachable)
-        .then_with(|| {
-            left.latency_ms
-                .unwrap_or(u128::MAX)
-                .cmp(&right.latency_ms.unwrap_or(u128::MAX))
-        })
-        .then_with(|| {
-            right
-                .download_mbps
-                .partial_cmp(&left.download_mbps)
-                .unwrap_or(Ordering::Equal)
-        })
-        .then_with(|| left.priority.cmp(&right.priority))
-        .then_with(|| left.protocol.cmp(&right.protocol))
-        .then_with(|| left.name.cmp(&right.name))
-        .then_with(|| left.uri.cmp(&right.uri))
 }
 
 pub fn sing_box_outbound_from_share_link(uri: &str) -> Result<Value> {
@@ -3874,5 +3946,102 @@ mod tests {
         assert!(eval_shared_stop(&shared, &policy, progress).is_some());
         assert!(matches!(rx.try_recv(), Ok(ProgressEvent::LiveLog(_))));
         assert!(rx.try_recv().is_err());
+    }
+
+    async fn spawn_body_server(body: Vec<u8>, declared: usize) -> std::net::SocketAddr {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("body server binds");
+        let addr = listener.local_addr().expect("body server addr");
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0_u8; 1024];
+                let _ = stream.read(&mut buf).await;
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {declared}\r\nConnection: close\r\n\r\n"
+                );
+                let _ = stream.write_all(header.as_bytes()).await;
+                let _ = stream.write_all(&body).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn measure_download_counts_a_complete_bulk_body() {
+        let body = vec![7_u8; BULK_MIN_BYTES];
+        let addr = spawn_body_server(body.clone(), body.len()).await;
+        let client = reqwest::Client::builder().build().expect("client builds");
+        let measurement =
+            measure_download(&client, &format!("http://{addr}/10MB.bin"), BULK_MIN_BYTES)
+                .await
+                .expect("complete body measures");
+
+        assert_eq!(measurement.bytes, BULK_MIN_BYTES);
+        assert!(measurement.complete);
+        assert!(measurement.mbps > 0.0);
+    }
+
+    #[tokio::test]
+    async fn measure_download_marks_a_truncated_body_incomplete() {
+        // A middlebox that accepts the request, sends ~12 KB, then closes.
+        // The old prober computed a burst-speed average from those bytes and
+        // certified the config. The measurement must keep the evidence but
+        // mark it incomplete, and it must not look bulk-capable.
+        let body = vec![7_u8; 12 * 1024];
+        let addr = spawn_body_server(body, 10 * 1024 * 1024).await;
+        let client = reqwest::Client::builder().build().expect("client builds");
+        let measurement =
+            measure_download(&client, &format!("http://{addr}/10MB.bin"), BULK_MIN_BYTES)
+                .await
+                .expect("partial body still returns evidence");
+
+        assert_eq!(measurement.bytes, 12 * 1024);
+        assert!(!measurement.complete);
+        assert!(!measurement.bulk_capable());
+    }
+
+    #[test]
+    fn tail_speed_ignores_the_initial_burst() {
+        let now = Instant::now();
+        let mut samples = VecDeque::new();
+        samples.push_back((now - Duration::from_secs(2), 1_020_000));
+        samples.push_back((now, 1_024_000));
+        let (bytes, seconds) = tail_speed(&samples, Duration::from_secs(12), 1_024_000);
+        assert_eq!(bytes, 4_000);
+        assert!((seconds - 2.0).abs() < 0.1);
+        // 4 KB over 2 s is ~16 kbit/s: far below the bulk floor, exactly the
+        // burst-then-crawl signal the whole-body average hides.
+        assert!(bytes_per_second_to_mbps(bytes, seconds) < BULK_MIN_MBPS);
+    }
+
+    /// Real-network proof, not a HEAD. Run manually with the app's own proxy
+    /// (127.0.0.1:27910 in the reference setup):
+    /// `cargo test live_bulk_download -- --ignored --nocapture`.
+    #[tokio::test]
+    #[ignore = "requires a running V2RayDAR proxy; set V2RAYDAR_LIVE_PROXY to override 127.0.0.1:27910"]
+    async fn live_bulk_download_through_running_proxy() {
+        let proxy = std::env::var("V2RAYDAR_LIVE_PROXY")
+            .unwrap_or_else(|_| "http://127.0.0.1:27910".to_string());
+        let measurement = measure_download_through_proxy(
+            &proxy,
+            crate::constants::DEFAULT_DOWNLOAD_URL,
+            crate::constants::PROXY_BULK_CHECK_BYTES,
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("live proxy must answer the bulk download");
+        println!(
+            "live bulk download: {} bytes, {:.2} Mbps, complete={}",
+            measurement.bytes, measurement.mbps, measurement.complete
+        );
+        assert!(
+            measurement.bytes >= BULK_MIN_BYTES,
+            "only {} bytes arrived; this link cannot carry bulk traffic",
+            measurement.bytes
+        );
+        assert!(measurement.complete, "body ended before the requested size");
     }
 }

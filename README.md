@@ -226,7 +226,7 @@ Windows users replace `v2raydar` with `v2raydar.exe`. On macOS open the bundled 
 | `refresh_seconds` | `900` | Auto-refresh interval in seconds; `0` disables the timer. |
 | `ping_seconds` | `300` | Re-ping interval in seconds for cached configs without re-fetching; `0` disables. When the cache verifies fewer than `top_n`, the ping also probes previously-seen database configs to refill. Both count toward Sub Usage. |
 | `encoded_subscription` | `true` | Returns `/subscription` as base64 (v2rayN / v2rayNG friendly). |
-| `prioritize_stability` | `true` | Re-pings the previous run's saved top-N first and keeps them at the front, even if new low-ping configs appear. When `false`, prefers any working low-ping config. |
+| `prioritize_stability` | `true` | Re-pings the previous run's saved top-N first and keeps repeat winners ahead within the same throughput class. A proven bulk node always outranks a low-latency handshake that dies mid-body. |
 | `return_configs_asap` | `false` | When `true`, publishes working configs to the endpoint and `Current Found Configs` as soon as they are found, up to `top_n`; early configs may not have the lowest ping or best stability. |
 | `scan_all_configs` | `false` | When `true`, validates every loaded config instead of stopping after enough have been confirmed. |
 | `fetch_timeout_ms` | `30000` | Per-source fetch timeout. |
@@ -241,9 +241,9 @@ Windows users replace `v2raydar` with `v2raydar.exe`. On macOS open the bundled 
 | `proxy.enabled` | `false` | Starts a persistent `sing-box` process exposing a mixed SOCKS5/HTTP proxy. |
 | `proxy.port` | `27910` | Port for the mixed SOCKS5/HTTP proxy. |
 | `proxy.discoverable` | `false` | Binds to `0.0.0.0` and adds a firewall rule for LAN access. |
-| `proxy.rotating_proxy` | `true` | `true` switches the proxy to the lowest-ping config on each cycle; `false` keeps the current config while it stays reachable. |
+| `proxy.rotating_proxy` | `true` | `true` switches the proxy to the best-ranked config on each cycle; `false` keeps the current config while it stays reachable. Live traffic holds the current link through ranking jitter; a measured slow/stalled link switches fast. |
 | `proxy.health_check_url` | `https://cp.cloudflare.com` | URL tested through the proxy to verify it's alive. |
-| `proxy.health_check_interval_seconds` | `60` | Seconds between proxy health checks. Auto-failover on failure. |
+| `proxy.health_check_interval_seconds` | `60` | Seconds between proxy health checks. Auto-failover on failure; live connections that starve or stay below 64 KB/s trigger a deep 10 MB check and a switch when the proxy is at fault. A manual pin is suspended after it fails, and auto-select resumes. |
 | `probe.mode` | `active` | `active` uses `sing-box`; `tcp` is diagnostic only. |
 | `probe.sing_box_path` | `null` | Optional path to `sing-box`. Leave `null` for desktop `_with_singbox` or Termux builds with bundled `sing-box`. |
 | `probe.connect_timeout_ms` | `5000` | TCP connect timeout for diagnostic probing. |
@@ -254,7 +254,8 @@ Windows users replace `v2raydar` with `v2raydar.exe`. On macOS open the bundled 
 | `probe.process_concurrency` | `null` | `sing-box` batch processes allowed at once; auto-scales when empty. |
 | `probe.test_url` | `https://www.gstatic.com/generate_204` | URL loaded through each candidate. |
 | `probe.accepted_statuses` | `[204, 200]` | HTTP statuses counted as success. |
-| `probe.download_url` | `null` | Optional throughput-test target. |
+| `probe.download_url` | `https://download.thinkbroadband.com/10MB.zip` | Real-body throughput target; `null` turns speed ranking off. |
+| `probe.download_bytes_limit` | `4194304` | Bytes read per speed test; the tail two seconds decide the rate. |
 | `probe.download_bytes_limit` | `1048576` | Upper bound for the optional download test. |
 | `geoip_db_path` | `null` | Optional path to a `GeoLite2-Country.mmdb` file or a country-zone directory (`zones.txt`, or legacy `<cc>.zone` files). If `null`, uses `<data-root>/geoip` (MaxMind database first, zone fallback; both refreshed by the installer). Country data: GeoLite2 by MaxMind (CC BY-SA 4.0); fallback zones by ipdeny. |
 | `subscriptions` | _(pre-selected sources)_ | List of `{ name, url, enabled, priority }` sources. Add your own for better results. |
@@ -347,6 +348,8 @@ Three fallback mechanisms, in order:
 1. **Previously-probed configs** — stored in the database and usable via `use_cache_only: true`.
 2. **In-network bridge** — if some subscription URLs don't connect but one config is reachable, the app uses that config to retry those failed fetches. By default this happens automatically; if there are no working configs on your network but you have one working config yourself, set it as `emergency_config` (dashboard Settings tab or TUI Configurations screen) so the app uses it to retry failed fetches.
 3. **Emergency config** — your own known-working share-link as an explicit fallback.
+
+On a high-DPI network where plain or fake-cover transports are already burned, start with `REQUIRE_TRANSPORT_SECURITY=1`. The ingest filter then drops Shadowsocks/SSR, no-TLS VMess/VLESS, and Reality configs with an impossible SNI, before they take a probe slot. Off by default, so other countries keep every transport that works for them.
 
 See [Restricted-Network Behavior](docs/guide.md#restricted-network-behavior) in the detailed guide for the full retry order and examples.
 

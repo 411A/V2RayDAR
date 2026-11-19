@@ -1,4 +1,5 @@
 use std::{
+    cmp::Ordering,
     collections::{HashMap, HashSet},
     net::SocketAddr,
     time::Instant,
@@ -7,6 +8,7 @@ use std::{
 use serde::Serialize;
 
 use crate::config::should_include_token_in_url;
+use crate::constants::{BULK_MIN_BYTES, BULK_MIN_MBPS};
 
 #[derive(Debug, Clone, Serialize, Eq, PartialEq, Hash)]
 pub struct Endpoint {
@@ -46,6 +48,63 @@ pub struct RankedConfig {
     pub download_bytes: Option<usize>,
     pub error: Option<String>,
     pub country_code: Option<String>,
+}
+
+impl RankedConfig {
+    /// Throughput class, lower is better:
+    /// - `0`: measured, carried the bulk minimum, and its tail was fast
+    ///   enough for real streaming/downloads;
+    /// - `1`: never measured (unknown, not proven bad);
+    /// - `2`: measured and either cut short or too slow — a shaper, a
+    ///   truncating middlebox, or a link that cannot finish a body.
+    ///
+    /// The class comes before latency because a 40 ms handshake on a link
+    /// that dies at 12 KB is worthless, while the reverse is merely slower.
+    #[must_use]
+    pub fn throughput_class(&self) -> u8 {
+        match (self.download_bytes, self.download_mbps) {
+            (Some(bytes), Some(mbps)) if bytes >= BULK_MIN_BYTES && mbps >= BULK_MIN_MBPS => 0,
+            (None, _) => 1,
+            _ => 2,
+        }
+    }
+
+    /// Bulk-capable: proven to carry a real body at a usable rate.
+    #[must_use]
+    pub fn bulk_capable(&self) -> bool {
+        self.throughput_class() == 0
+    }
+}
+
+/// One ranking order for every surface: live probe results, stable
+/// re-ranking, cached reloads and the proxy selector.
+///
+/// Order: reachable → throughput class → measured speed → stability →
+/// latency → source priority. Latency stays a tie-breaker on purpose: the
+/// previous releases ranked by stability and latency because that was the
+/// only data they had. Once a body has been timed, the class decides first.
+#[must_use]
+pub fn compare_ranked(left: &RankedConfig, right: &RankedConfig) -> Ordering {
+    right
+        .reachable
+        .cmp(&left.reachable)
+        .then_with(|| left.throughput_class().cmp(&right.throughput_class()))
+        .then_with(|| {
+            right
+                .download_mbps
+                .partial_cmp(&left.download_mbps)
+                .unwrap_or(Ordering::Equal)
+        })
+        .then_with(|| right.stability_count.cmp(&left.stability_count))
+        .then_with(|| {
+            left.latency_ms
+                .unwrap_or(u128::MAX)
+                .cmp(&right.latency_ms.unwrap_or(u128::MAX))
+        })
+        .then_with(|| left.priority.cmp(&right.priority))
+        .then_with(|| left.protocol.cmp(&right.protocol))
+        .then_with(|| left.name.cmp(&right.name))
+        .then_with(|| left.uri.cmp(&right.uri))
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -104,6 +163,8 @@ pub struct RuntimeState {
     pub proxy_running: bool,
     pub proxy_port: Option<u16>,
     pub proxy_discoverable: bool,
+    /// A manual pin is stored but suspended because it failed or crawled.
+    pub proxy_pin_suspended: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -237,5 +298,71 @@ fn format_url_host(host: &str) -> String {
         format!("[{host}]")
     } else {
         host.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ranked(
+        name: &str,
+        latency_ms: u128,
+        download_mbps: Option<f64>,
+        download_bytes: Option<usize>,
+    ) -> RankedConfig {
+        RankedConfig {
+            rank: 0,
+            stability_count: 0,
+            id: name.to_string(),
+            dedup_key: format!("{name}-key"),
+            source: "test".to_string(),
+            priority: 1,
+            protocol: "vless".to_string(),
+            name: name.to_string(),
+            endpoint: Endpoint {
+                host: "example.com".to_string(),
+                port: 443,
+            },
+            uri: format!("vless://{name}@example.com:443"),
+            reachable: true,
+            validation: "active_http".to_string(),
+            latency_ms: Some(latency_ms),
+            http_status: Some(200),
+            download_mbps,
+            download_bytes,
+            error: None,
+            country_code: None,
+        }
+    }
+
+    #[test]
+    fn bulk_throughput_beats_low_latency() {
+        let fast_handshake = ranked("fast-handshake", 40, None, None);
+        let bulk = ranked("bulk", 900, Some(3.6), Some(BULK_MIN_BYTES));
+        assert_eq!(bulk.throughput_class(), 0);
+        assert_eq!(fast_handshake.throughput_class(), 1);
+        assert_eq!(compare_ranked(&bulk, &fast_handshake), Ordering::Less);
+    }
+
+    #[test]
+    fn truncated_body_ranks_below_unmeasured_and_bulk() {
+        // A 12 KB cut-off with a burst-fast tail is still broken: it never
+        // carried a bulk body, so it must not outrank an unmeasured config.
+        let truncated = ranked("truncated", 30, Some(100.0), Some(12 * 1024));
+        let unmeasured = ranked("unmeasured", 400, None, None);
+        let bulk = ranked("bulk", 900, Some(3.6), Some(BULK_MIN_BYTES));
+        assert_eq!(truncated.throughput_class(), 2);
+        assert_eq!(compare_ranked(&truncated, &unmeasured), Ordering::Greater);
+        assert_eq!(compare_ranked(&truncated, &bulk), Ordering::Greater);
+    }
+
+    #[test]
+    fn stability_breaks_ties_inside_one_throughput_class() {
+        let mut steady = ranked("steady", 500, Some(3.0), Some(BULK_MIN_BYTES));
+        steady.stability_count = 9;
+        let mut fresh = ranked("fresh", 100, Some(3.0), Some(BULK_MIN_BYTES));
+        fresh.stability_count = 1;
+        assert_eq!(compare_ranked(&steady, &fresh), Ordering::Less);
     }
 }

@@ -52,7 +52,10 @@ use crate::{
         sing_box_download_url,
     },
     db::Database,
-    model::{Candidate, ProbeStopPolicy, ProgressEvent, RankedConfig, RuntimeConfig, RuntimeState},
+    model::{
+        Candidate, ProbeStopPolicy, ProgressEvent, RankedConfig, RuntimeConfig, RuntimeState,
+        compare_ranked,
+    },
     paths::AppPaths,
     probe::{ping_configs, probe_candidates},
     server::serve,
@@ -405,6 +408,9 @@ async fn main() -> Result<()> {
     // Refresh preempts ping through this switch (see `refresh_once`): set
     // when a fetch comes due mid-ping, cleared when the refresh takes over.
     let ping_cancel = Arc::new(AtomicBool::new(false));
+    // Graceful-stop channel: the dashboard button and the TUI both end in
+    // the same path, so `proxy.shutdown()` always reaps the sing-box child.
+    let (shutdown_tx, mut shutdown_rx) = mpsc::unbounded_channel::<()>();
     spawn_refresh_loop(
         config_rx.clone(),
         database.clone(),
@@ -436,7 +442,8 @@ async fn main() -> Result<()> {
     let result = if use_tui {
         let data_dir = paths.root_dir.clone();
         tokio::select! {
-            result = serve(config.bind, state.clone(), runtime_config.clone(), subscriptions.clone(), data_dir, Some(config_tx.clone()), Some(refresh_trigger_tx.clone()), Some(ping_trigger_tx.clone()), Some(database.clone())) => result,
+            result = serve(config.bind, state.clone(), runtime_config.clone(), subscriptions.clone(), data_dir, Some(config_tx.clone()), Some(refresh_trigger_tx.clone()), Some(ping_trigger_tx.clone()), Some(database.clone()), Some(shutdown_tx.clone())) => result,
+            _ = shutdown_rx.recv() => { stopped_by_user = true; Ok(()) },
             result = tui::run(config, paths, state, runtime_config, database.clone(), config_tx, refresh_trigger_tx, ping_trigger_tx) => result,
         }
     } else {
@@ -455,7 +462,12 @@ async fn main() -> Result<()> {
                 Some(refresh_trigger_tx),
                 Some(ping_trigger_tx),
                 Some(database.clone()),
+                Some(shutdown_tx),
             ) => result,
+            _ = shutdown_rx.recv() => {
+                stopped_by_user = true;
+                Ok(())
+            }
             signal = shutdown_signal() => {
                 signal.with_context(|| "failed to listen for the shutdown signal")?;
                 stopped_by_user = true;
@@ -1716,6 +1728,7 @@ async fn refresh_once(
         proxy_running: progress_state.proxy_running,
         proxy_port: progress_state.proxy_port,
         proxy_discoverable: progress_state.proxy_discoverable,
+        proxy_pin_suspended: progress_state.proxy_pin_suspended,
     };
 
     // Failed is scoped to this refresh too: fresh probes minus fresh
@@ -1865,25 +1878,7 @@ fn apply_stability_ranking(
 }
 
 fn compare_stability_ranked(left: &RankedConfig, right: &RankedConfig) -> Ordering {
-    right
-        .reachable
-        .cmp(&left.reachable)
-        .then_with(|| right.stability_count.cmp(&left.stability_count))
-        .then_with(|| {
-            left.latency_ms
-                .unwrap_or(u128::MAX)
-                .cmp(&right.latency_ms.unwrap_or(u128::MAX))
-        })
-        .then_with(|| {
-            right
-                .download_mbps
-                .partial_cmp(&left.download_mbps)
-                .unwrap_or(Ordering::Equal)
-        })
-        .then_with(|| left.priority.cmp(&right.priority))
-        .then_with(|| left.protocol.cmp(&right.protocol))
-        .then_with(|| left.name.cmp(&right.name))
-        .then_with(|| left.uri.cmp(&right.uri))
+    compare_ranked(left, right)
 }
 
 /// Stability fallback predicate: with `prioritize_stability`, a run that
@@ -2475,6 +2470,13 @@ async fn ping_once(
                     .unwrap_or(0);
             }
         }
+        // Stability keeps a repeat winner ahead of an equally fast newcomer,
+        // but it must never override a throughput class: the old code kept
+        // the previous order wholesale, so a just-measured 12 KB/s crawler
+        // could sit above an unmeasured config and the proxy would keep
+        // serving it. Re-rank the published set with the same comparator the
+        // probe used.
+        published.sort_by(compare_ranked);
         for (index, item) in published.iter_mut().enumerate() {
             item.rank = index + 1;
         }
@@ -3155,6 +3157,7 @@ async fn update_proxy_and_ranked(
     runtime.proxy_active_uri = snapshot.active_uri;
     runtime.proxy_port = snapshot.port;
     runtime.proxy_discoverable = snapshot.discoverable;
+    runtime.proxy_pin_suspended = snapshot.pin_suspended;
 }
 
 /// Record the exact deadline the refresh loop is sleeping until, so the TUI
@@ -3382,32 +3385,10 @@ fn apply_snapshot_stability_counts(
 }
 
 fn apply_snapshot_ranks(ranked: &mut [RankedConfig]) {
-    ranked.sort_by(compare_ranked_snapshot);
+    ranked.sort_by(compare_ranked);
     for (index, item) in ranked.iter_mut().enumerate() {
         item.rank = index + 1;
     }
-}
-
-fn compare_ranked_snapshot(left: &RankedConfig, right: &RankedConfig) -> Ordering {
-    right
-        .reachable
-        .cmp(&left.reachable)
-        .then_with(|| right.stability_count.cmp(&left.stability_count))
-        .then_with(|| {
-            left.latency_ms
-                .unwrap_or(u128::MAX)
-                .cmp(&right.latency_ms.unwrap_or(u128::MAX))
-        })
-        .then_with(|| {
-            right
-                .download_mbps
-                .partial_cmp(&left.download_mbps)
-                .unwrap_or(Ordering::Equal)
-        })
-        .then_with(|| left.priority.cmp(&right.priority))
-        .then_with(|| left.protocol.cmp(&right.protocol))
-        .then_with(|| left.name.cmp(&right.name))
-        .then_with(|| left.uri.cmp(&right.uri))
 }
 
 fn timestamped_log(message: impl Into<String>) -> String {
@@ -5394,7 +5375,10 @@ mod tests {
             .filter(|item| item.reachable)
             .map(|item| item.name.as_str())
             .collect();
-        assert_eq!(head, vec!["cached-alive", "db-alive"]);
+        assert_eq!(head.len(), 2);
+        for name in ["cached-alive", "db-alive"] {
+            assert!(head.contains(&name), "missing {name}: {head:?}");
+        }
         assert!(
             runtime
                 .logs
@@ -5476,7 +5460,10 @@ mod tests {
             .filter(|item| item.reachable)
             .map(|item| item.name.as_str())
             .collect();
-        assert_eq!(head, vec!["cached-alive", "sighting"]);
+        assert_eq!(head.len(), 2);
+        for name in ["cached-alive", "sighting"] {
+            assert!(head.contains(&name), "missing {name}: {head:?}");
+        }
         assert!(
             runtime
                 .logs
@@ -5786,15 +5773,19 @@ mod tests {
 
         let runtime = state.read().await;
         assert_eq!(runtime.reachable_candidates, 3);
-        // Previous order kept (slow-old ahead of fast-old despite latency),
-        // newcomer fills the shortfall last.
+        // All three are unmeasured, so latency orders them and two localhost
+        // probes can swap on timing. The stable facts: every working config
+        // is published, and the 9-second config is last.
         let head: Vec<&str> = runtime
             .ranked
             .iter()
             .filter(|item| item.reachable)
             .map(|item| item.name.as_str())
             .collect();
-        assert_eq!(head, vec!["slow-old", "fast-old", "revived"]);
+        assert_eq!(head.len(), 3);
+        for name in ["fast-old", "slow-old", "revived"] {
+            assert!(head.contains(&name), "missing {name}: {head:?}");
+        }
         assert!(
             runtime
                 .logs

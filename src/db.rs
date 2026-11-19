@@ -1,10 +1,13 @@
-use std::{collections::HashSet, path::Path, sync::Mutex};
+use std::{collections::HashSet, fmt::Write as _, path::Path, sync::Mutex};
 
 use anyhow::{Context, Result};
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::model::{Candidate, RankedConfig};
+use crate::{
+    constants::{BULK_MIN_BYTES, BULK_MIN_MBPS},
+    model::{Candidate, RankedConfig},
+};
 
 pub struct Database {
     conn: Mutex<Connection>,
@@ -268,13 +271,30 @@ impl Database {
                         country_code, stability_count
                  FROM configs
                  WHERE reachable = 1
-                 ORDER BY stability_count DESC, latency_ms ASC NULLS LAST
-                 LIMIT ?1",
+                 ORDER BY
+                     CASE
+                         WHEN download_mbps IS NOT NULL
+                              AND download_bytes >= ?1
+                              AND download_mbps >= ?2 THEN 0
+                         WHEN download_mbps IS NULL THEN 1
+                         ELSE 2
+                     END,
+                     download_mbps DESC NULLS LAST,
+                     stability_count DESC,
+                     latency_ms ASC NULLS LAST
+                 LIMIT ?3",
             )
             .context("failed to prepare ranked configs query")?;
 
         let rows = stmt
-            .query_map(params![limit as i64], map_ranked_row)
+            .query_map(
+                params![
+                    i64::try_from(BULK_MIN_BYTES).unwrap_or(i64::MAX),
+                    BULK_MIN_MBPS,
+                    limit as i64
+                ],
+                map_ranked_row,
+            )
             .context("failed to query ranked configs")?;
 
         let mut configs = Vec::new();
@@ -329,11 +349,25 @@ impl Database {
         // Veterans (reachable) first; among the rest, never-tested
         // (`validation = ''`, sighted insert-only but never probed) before
         // failed (`validation != ''`, probed and failed, even with history).
-        // The recency stamps break the ties inside each group.
-        sql.push_str(
-            " ORDER BY reachable DESC, (validation = '') DESC, stability_count DESC,
-                     latency_ms ASC NULLS LAST, last_online DESC, updated_at DESC LIMIT ?",
-        );
+        // Inside each group the throughput class wins over stability and
+        // latency, exactly like the live ranking: a veteran that carried a
+        // bulk body beats a low-ping one that could only handshake. The
+        // recency stamps break the ties inside each group.
+        write!(
+            sql,
+            " ORDER BY reachable DESC, (validation = '') DESC,
+                     CASE
+                         WHEN download_mbps IS NOT NULL
+                              AND download_bytes >= {BULK_MIN_BYTES}
+                              AND download_mbps >= {BULK_MIN_MBPS} THEN 0
+                         WHEN download_mbps IS NULL THEN 1
+                         ELSE 2
+                     END,
+                     download_mbps DESC NULLS LAST,
+                     stability_count DESC,
+                     latency_ms ASC NULLS LAST, last_online DESC, updated_at DESC LIMIT ?"
+        )
+        .expect("writing the fallback query into a String cannot fail");
 
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
         let mut stmt = conn

@@ -277,6 +277,7 @@ struct ProxySummary {
     active_uri: Option<String>,
     port: Option<u16>,
     discoverable: bool,
+    pin_suspended: bool,
 }
 
 /// Lightweight dashboard state: everything in `RuntimeState` except the two
@@ -349,6 +350,7 @@ impl StateSummary {
                 active_uri: runtime.proxy_active_uri.clone(),
                 port: runtime.proxy_port,
                 discoverable: runtime.proxy_discoverable,
+                pin_suspended: runtime.proxy_pin_suspended,
             },
             ranked: runtime.ranked.clone(),
             qr_available,
@@ -856,7 +858,7 @@ fn proxy_group(config: &RuntimeConfig) -> ConfigGroup {
             config_row_kind(
                 "proxy.rotating_proxy",
                 config.rotating_proxy.to_string(),
-                "true switches to the lowest ping; false keeps the current config",
+                "true switches to the best measured throughput; false keeps the current config",
                 "bool",
                 &[],
             ),
@@ -1186,10 +1188,14 @@ pub async fn api_shutdown(
     if let Err(response) = authorize(&state, remote_addr, token).await {
         return response;
     }
-    if !cfg!(test) {
-        tokio::spawn(async {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            std::process::exit(0);
+    if !cfg!(test)
+        && let Some(tx) = state.shutdown_tx.clone()
+    {
+        tokio::spawn(async move {
+            // Give the HTTP response a moment to reach the browser
+            // before the server future is cancelled.
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            let _ = tx.send(());
         });
     }
     log_user_act(&state, LogLevel::Warn, "Shutdown requested via dashboard").await;
@@ -2478,6 +2484,7 @@ impl Drop for FeedGuard {
 
 /// Change fingerprint driving `ranked` / `probe-delta` emission.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)]
 struct FeedFingerprint {
     tested: usize,
     working: usize,
@@ -2499,6 +2506,7 @@ struct FeedFingerprint {
     /// next full snapshot that may never come on a quiet feed.
     proxy_running: bool,
     proxy_active_uri: Option<String>,
+    proxy_pin_suspended: bool,
 }
 
 impl FeedFingerprint {
@@ -2514,6 +2522,7 @@ impl FeedFingerprint {
             ping_at: runtime.last_ping_at.clone(),
             proxy_running: runtime.proxy_running,
             proxy_active_uri: runtime.proxy_active_uri.clone(),
+            proxy_pin_suspended: runtime.proxy_pin_suspended,
         }
     }
 }
@@ -2587,6 +2596,7 @@ async fn feed_task(
                 "proxy_running": snapshot.proxy_running,
                 "proxy_active_config": snapshot.proxy_active_config,
                 "proxy_active_uri": snapshot.proxy_active_uri,
+                "proxy_pin_suspended": snapshot.proxy_pin_suspended,
                 "proxy_port": snapshot.proxy_port,
                 "proxy_discoverable": snapshot.proxy_discoverable,
             });
@@ -2761,6 +2771,7 @@ mod tests {
             refresh_tx: None,
             ping_tx: None,
             database: Some(test_db()),
+            shutdown_tx: None,
         }
     }
 

@@ -13,10 +13,10 @@ use url::Url;
 
 use crate::{
     clash::try_parse_clash_subscription,
-    constants::SUPPORTED_URI_SCHEMES,
+    constants::{KNOWN_PUBLIC_SUFFIXES, SUPPORTED_URI_SCHEMES},
     convert::{
-        decode_base64_to_string, parse_host_port as shared_parse_host_port, percent_decode,
-        query_pairs, split_once,
+        decode_base64_to_string, first_param, parse_host_port as shared_parse_host_port,
+        percent_decode, query_pairs, split_once,
     },
     model::{Candidate, Endpoint},
 };
@@ -174,6 +174,8 @@ pub fn parse_share_link(source: &str, priority: u32, uri: &str) -> Result<Candid
         parse_standard_uri(uri)
     }?;
 
+    validate_transport_security(uri, &parsed.protocol, require_transport_security())?;
+
     let id = hash_uri(uri);
     let dedup_key = config_dedup_key(&parsed.protocol, &parsed.endpoint, uri);
     Ok(Candidate {
@@ -186,6 +188,128 @@ pub fn parse_share_link(source: &str, priority: u32, uri: &str) -> Result<Candid
         endpoint: parsed.endpoint,
         uri: uri.to_string(),
     })
+}
+
+/// Opt-in ingest hardening for pools where DPI treats an unencrypted or
+/// fake-cover config as burned: no TLS transport and a Reality SNI that is
+/// not a real public hostname are rejected before they can take a probe slot.
+/// Off by default: other countries should not lose working Shadowsocks or
+/// no-TLS nodes because a restricted network wants a stricter pool.
+fn require_transport_security() -> bool {
+    std::env::var("REQUIRE_TRANSPORT_SECURITY").is_ok_and(|value| {
+        !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "" | "0" | "false" | "no" | "off"
+        )
+    })
+}
+
+fn validate_transport_security(uri: &str, protocol: &str, required: bool) -> Result<()> {
+    if !required {
+        return Ok(());
+    }
+    let lower = uri.to_ascii_lowercase();
+    match protocol {
+        "trojan" | "hysteria2" | "tuic" => Ok(()),
+        "ss" | "ssr" => Err(anyhow!(
+            "{protocol} has no TLS transport (REQUIRE_TRANSPORT_SECURITY=1)"
+        )),
+        "vmess" => validate_vmess_security(uri),
+        _ => validate_standard_security(uri, &lower),
+    }
+}
+
+fn validate_standard_security(uri: &str, lower: &str) -> Result<()> {
+    let url = Url::parse(uri).map_err(|err| anyhow!("invalid uri: {err}"))?;
+    let params = query_pairs(url.query().unwrap_or_default());
+    let security = first_param(&params, &["security", "tls"]).unwrap_or_default();
+    let reality_key = first_param(&params, &["pbk", "public_key", "reality_pbk"]);
+    let is_reality =
+        security.eq_ignore_ascii_case("reality") || (security.is_empty() && reality_key.is_some());
+    let is_tls =
+        is_reality || security.eq_ignore_ascii_case("tls") || security.eq_ignore_ascii_case("xtls");
+    if !is_tls {
+        return Err(anyhow!(
+            "{} has no TLS transport (REQUIRE_TRANSPORT_SECURITY=1)",
+            lower.split(':').next().unwrap_or("config")
+        ));
+    }
+    if is_reality {
+        let sni = first_param(&params, &["sni", "serverName", "peer"])
+            .ok_or_else(|| anyhow!("Reality config has no SNI"))?;
+        validate_reality_sni(&sni)?;
+    }
+    Ok(())
+}
+
+fn validate_vmess_security(uri: &str) -> Result<()> {
+    let payload = uri
+        .strip_prefix("vmess://")
+        .ok_or_else(|| anyhow!("invalid vmess link"))?;
+    let decoded = decode_base64_to_string(payload).unwrap_or_default();
+    let json = serde_json::from_str::<JsonValue>(&decoded).unwrap_or_default();
+    let tls = json.get("tls").map_or("", |value| {
+        value.as_str().map_or_else(
+            || {
+                if value.as_bool() == Some(true) {
+                    "tls"
+                } else {
+                    ""
+                }
+            },
+            |text| text,
+        )
+    });
+    let is_reality = tls.eq_ignore_ascii_case("reality");
+    if !(tls.eq_ignore_ascii_case("tls") || is_reality) {
+        // A plain-URI vmess fallback (no base64 JSON) carries its transport
+        // in query parameters, so validate it the same way as vless.
+        return validate_standard_security(uri, "vmess");
+    }
+    if is_reality {
+        let sni = json
+            .get("sni")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| anyhow!("Reality config has no SNI"))?;
+        validate_reality_sni(sni)?;
+    }
+    Ok(())
+}
+
+/// A Reality cover must look like a public hostname. An IP, a bare word, a
+/// fantasy suffix or a stray port cannot survive the handshake and only
+/// wastes a probe slot.
+fn validate_reality_sni(value: &str) -> Result<()> {
+    let host = value.trim().trim_end_matches('.');
+    if host.is_empty() || host.len() > 253 || host.parse::<std::net::IpAddr>().is_ok() {
+        return Err(anyhow!("Reality SNI '{value}' is not a valid hostname"));
+    }
+    let labels: Vec<&str> = host.split('.').collect();
+    if labels.len() < 2 {
+        return Err(anyhow!("Reality SNI '{value}' is not a public hostname"));
+    }
+    let labels_ok = labels.iter().all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+    });
+    if !labels_ok {
+        return Err(anyhow!("Reality SNI '{value}' has an invalid label"));
+    }
+    let suffix = labels
+        .last()
+        .map(|label| label.to_ascii_lowercase())
+        .unwrap_or_default();
+    if !KNOWN_PUBLIC_SUFFIXES.contains(&suffix.as_str()) && !suffix.starts_with("xn--") {
+        return Err(anyhow!(
+            "Reality SNI '{value}' uses an unknown public suffix"
+        ));
+    }
+    Ok(())
 }
 
 struct ParsedLink {
@@ -596,5 +720,50 @@ link: "vless://uuid1@plain.example.com:443?security=tls#Plain"
         assert_eq!(parsed[0].protocol, "ss");
         assert_eq!(parsed[0].endpoint.host, "example.net");
         assert_eq!(parsed[0].endpoint.port, 8388);
+    }
+
+    #[test]
+    fn hardening_is_off_by_default_for_no_tls_configs() {
+        let uri = "vless://uuid@example.com:443?security=none#NoTls";
+        assert!(validate_transport_security(uri, "vless", false).is_ok());
+    }
+
+    #[test]
+    fn hardening_rejects_no_tls_and_plain_shadowsocks() {
+        let no_tls = "vless://uuid@example.com:443?security=none#NoTls";
+        assert!(validate_transport_security(no_tls, "vless", true).is_err());
+
+        let ss = "ss://YWVzLTI1Ni1nY206cGFzcw@example.net:8388#SS";
+        assert!(validate_transport_security(ss, "ss", true).is_err());
+    }
+
+    #[test]
+    fn hardening_keeps_tls_and_real_reality_snis() {
+        let tls = "vless://uuid@example.com:443?security=tls#Tls";
+        assert!(validate_transport_security(tls, "vless", true).is_ok());
+
+        let reality =
+            "vless://uuid@example.com:443?security=reality&pbk=AAAA&sni=www.cloudflare.com#R";
+        assert!(validate_transport_security(reality, "vless", true).is_ok());
+
+        let trojan = "trojan://password@example.com:443#T";
+        assert!(validate_transport_security(trojan, "trojan", true).is_ok());
+    }
+
+    #[test]
+    fn hardening_rejects_fantasy_reality_snis() {
+        for sni in [
+            "localhost",
+            "127.0.0.1",
+            "example.invalidtld",
+            "a.b",
+            "-bad.com",
+        ] {
+            let uri = format!("vless://uuid@example.com:443?security=reality&pbk=AAAA&sni={sni}#R");
+            assert!(
+                validate_transport_security(&uri, "vless", true).is_err(),
+                "SNI {sni} must be rejected"
+            );
+        }
     }
 }

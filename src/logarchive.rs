@@ -340,6 +340,25 @@ mod tests {
     }
 
     #[test]
+    fn thousand_hour_volume_fits_the_default_budget() {
+        // 300k lines is a conservative 1000-hour volume for this app's log
+        // cadence (probe/proxy events, not per-request access logs). The
+        // default archive must keep every one, including the oldest.
+        let mut archive = LogArchive::default();
+        for seq in 1..=300_000_u64 {
+            archive.push(
+                seq,
+                &format!(
+                    "2026/10/25 13:20:59.324 [INFO] probe batch {seq:06} config example.com:443 latency {}ms",
+                    seq % 900
+                ),
+            );
+        }
+        assert_eq!(archive.first_seq(), 1, "the oldest line survives");
+        assert!(archive.compressed_bytes() <= LOG_ARCHIVE_MAX_BYTES);
+    }
+
+    #[test]
     fn active_lines_before_a_seal_are_pageable() {
         let mut archive = LogArchive::default();
         fill(&mut archive, 10);

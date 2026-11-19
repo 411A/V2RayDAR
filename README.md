@@ -27,7 +27,7 @@
 </p>
 
 <p align="center">
-  <strong>Tired of manually ping-testing V2Ray configs to see which one actually works for you? Does a config work for your friend but not on your network? Run V2RayDAR once on any always-on device — an old phone, PC, Raspberry Pi, or home server — and it continuously finds, verifies, and serves the best working configs to every device on your LAN. It also exposes a standard SOCKS5/HTTP proxy, so every device on your LAN gets a working V2Ray connection — no V2Ray client required (if you need one, <a href="https://github.com/clash-verge-rev/clash-verge-rev">Clash Verge Rev</a> is recommended).</strong>
+  <strong>Tired of manually ping-testing V2Ray configs to see which one actually works for you? Does a config work for your friend but not on your network? Run V2RayDAR once on any device — or better, on an always-on device such as an old phone, PC, Raspberry Pi, or home server — and it continuously finds, verifies, and serves the best working configs to every device on your LAN. It also exposes a standard SOCKS5/HTTP proxy, so every device on your LAN gets a working V2Ray connection — no V2Ray client required (if you need one, <a href="https://github.com/clash-verge-rev/clash-verge-rev">Clash Verge Rev</a> is recommended).</strong>
 </p>
 
 <p align="center">

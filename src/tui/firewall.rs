@@ -57,22 +57,21 @@ pub fn apply(state_dir: &Path, enabled: bool, port: u16, rule_name: &str) -> Res
 /// rule because `apply` fails closed there; on OSes without a manageable
 /// backend (macOS) there is nothing to verify, so this returns true.
 pub fn allows_port(state_dir: &Path, port: u16) -> bool {
-    if rule_recorded(state_dir, port) {
-        return true;
-    }
-
     #[cfg(target_os = "linux")]
     {
-        ufw_allows_port(port).unwrap_or(false) || firewalld_allows_port(port).unwrap_or(false)
+        rule_recorded(state_dir, port)
+            || ufw_allows_port(port).unwrap_or(false)
+            || firewalld_allows_port(port).unwrap_or(false)
     }
 
     #[cfg(target_os = "windows")]
     {
-        false
+        rule_recorded(state_dir, port)
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
+        let _ = (state_dir, port);
         true
     }
 }

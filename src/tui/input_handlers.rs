@@ -58,8 +58,9 @@ pub fn start_input(state: &mut TuiState, mode: InputMode, value: &str) {
 
 const fn dashboard_password_guide(step: DashboardPasswordStep) -> &'static str {
     match step {
+        DashboardPasswordStep::CurrentPassword => "current dashboard password; Enter verifies",
         DashboardPasswordStep::NewPassword => {
-            "dashboard password (12+ chars); Enter continues, empty disables, Esc cancels"
+            "dashboard password (12+ chars); Enter continues, empty disables after verification"
         }
         DashboardPasswordStep::ConfirmPassword => "re-enter the password; Enter continues",
         DashboardPasswordStep::Phrase => "recovery phrase (8+ chars, exact match)",
@@ -136,14 +137,49 @@ fn commit_dashboard_password(
 ) {
     let value = state.input.clone();
     match step {
+        DashboardPasswordStep::CurrentPassword => {
+            let Some(hash) = auth.password_hash() else {
+                state.status = "Dashboard password is not configured.".to_string();
+                return;
+            };
+            if !crate::dashboard_auth::verify_secret_blocking(&hash, &value) {
+                state.status = "Current dashboard password is not correct.".to_string();
+                state.input.clear();
+                return;
+            }
+            state.dashboard_authorized = true;
+            start_input(
+                state,
+                InputMode::DashboardPassword(DashboardPasswordStep::NewPassword),
+                "",
+            );
+            state.status =
+                "Current password verified. Enter the new password (12+ chars), or leave empty to disable."
+                    .to_string();
+        }
         DashboardPasswordStep::NewPassword => {
+            if auth.enabled() && !state.dashboard_authorized {
+                start_input(
+                    state,
+                    InputMode::DashboardPassword(DashboardPasswordStep::CurrentPassword),
+                    "",
+                );
+                state.status =
+                    "Enter the current dashboard password before changing it.".to_string();
+                return;
+            }
             if value.is_empty() {
+                if !auth.enabled() {
+                    state.status = "Enter a new password (12+ chars).".to_string();
+                    return;
+                }
                 match crate::dashboard_auth::clear_credentials(database) {
                     Ok(_) => {
                         auth.clear_hashes();
                         auth.revoke_all_sessions();
                         state.dashboard_password.clear();
                         state.dashboard_phrase.clear();
+                        state.dashboard_authorized = false;
                         state.input.clear();
                         state.input_mode = InputMode::None;
                         state.status = "Dashboard password disabled.".to_string();
@@ -246,6 +282,7 @@ fn commit_dashboard_password(
             auth.revoke_all_sessions();
             state.dashboard_password.clear();
             state.dashboard_phrase.clear();
+            state.dashboard_authorized = false;
             state.input.clear();
             state.input_mode = InputMode::None;
             state.status =
@@ -803,7 +840,42 @@ mod tests {
                 .is_some()
         );
 
+        // An empty new password alone must not disable protection.
+        state.dashboard_authorized = false;
         state.input_mode = InputMode::DashboardPassword(DashboardPasswordStep::NewPassword);
+        state.input.clear();
+        commit_dashboard_password(&mut state, DashboardPasswordStep::NewPassword, &db, &auth);
+        assert!(
+            auth.enabled(),
+            "empty change without the current password is refused"
+        );
+        assert!(state.status.contains("before changing"));
+
+        // Wrong current password still refuses.
+        state.input_mode = InputMode::DashboardPassword(DashboardPasswordStep::CurrentPassword);
+        state.input = "wrong password".to_string();
+        commit_dashboard_password(
+            &mut state,
+            DashboardPasswordStep::CurrentPassword,
+            &db,
+            &auth,
+        );
+        assert!(auth.enabled());
+        assert!(state.status.contains("not correct"));
+
+        // Correct current password unlocks the change, then empty disables.
+        state.input = "correct horse battery staple".to_string();
+        commit_dashboard_password(
+            &mut state,
+            DashboardPasswordStep::CurrentPassword,
+            &db,
+            &auth,
+        );
+        assert!(state.dashboard_authorized);
+        assert_eq!(
+            state.input_mode,
+            InputMode::DashboardPassword(DashboardPasswordStep::NewPassword)
+        );
         state.input.clear();
         commit_dashboard_password(&mut state, DashboardPasswordStep::NewPassword, &db, &auth);
         assert!(!auth.enabled());

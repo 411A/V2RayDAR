@@ -320,11 +320,13 @@ The Logs tab streams new lines in real time. The server keeps the complete sessi
 
 Password protection is **off by default**. Enable it from the dashboard's **Settings → Dashboard password** card or the TUI's **Dashboard Password** menu. The password must be at least 12 characters; the recovery phrase at least 8 and is matched **exactly**, including spaces and case.
 
+It is recommended **only on public networks or a VPS**; on a trusted local network the default off setting is fine.
+
 - The password and phrase are stored only as **Argon2id hashes** in `data.db`; they never appear in the config payload, logs, or the browser.
 - The browser keeps only a random `HttpOnly` / `SameSite=Strict` session cookie (30 days). Reloading the page keeps you signed in; stopping and restarting V2RayDAR signs every browser out.
 - **Read-only endpoints, `/results`, and the subscription feeds stay open** by design. The dashboard page itself and every mutating `/api` request require the password.
-- Five wrong password attempts from one address trigger a short cooldown (escalating from one minute), and a wrong recovery phrase pauses further reset attempts for **one hour**. Neither is a permanent lock.
-- **No lockout:** if you forget both the password and the phrase, stop the app and run `v2raydar --reset-dashboard-password` on the machine that hosts it, or use the TUI Dashboard Password menu and leave the new password empty. The local terminal is the recovery path.
+- A wrong password starts a **5-second wait**; every further wrong attempt from the same address doubles it (5 s, 10 s, 20 s… capped at one hour), so brute force cannot make progress. A wrong recovery phrase pauses further reset attempts for **one hour**.
+- **No lockout:** if you forget both the password and the phrase, stop the app and run `v2raydar --reset-dashboard-password` on the machine that hosts it. The TUI's Dashboard Password screen can change or disable protection only after the current password is entered, so it is not a bypass.
 - The dashboard is plain HTTP. Use the password for local/LAN access control; for access over an untrusted network, put it behind a VPN or an HTTPS tunnel.
 
 ## Client Setup

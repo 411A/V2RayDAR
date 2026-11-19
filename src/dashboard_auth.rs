@@ -31,7 +31,8 @@ pub const MIN_PASSWORD_CHARS: usize = 12;
 pub const MIN_PHRASE_CHARS: usize = 8;
 pub const SESSION_SECONDS: u64 = 30 * 24 * 60 * 60;
 pub const RESET_COOLDOWN: Duration = Duration::from_hours(1);
-const LOGIN_BASE_COOLDOWN: Duration = Duration::from_mins(1);
+const LOGIN_BASE_COOLDOWN: Duration = Duration::from_secs(5);
+const LOGIN_MAX_COOLDOWN: Duration = Duration::from_hours(1);
 const MAX_SESSIONS: usize = 64;
 const MAX_LOGIN_TRACKERS: usize = 512;
 const SESSION_BYTES: usize = 32;
@@ -226,14 +227,13 @@ impl DashboardAuth {
         }
         let failure = inner.login_failures.entry(ip).or_default();
         failure.count = failure.count.saturating_add(1);
-        if failure.count.is_multiple_of(5) {
-            let multiplier = match failure.count {
-                0..=5 => 1,
-                6..=10 => 5,
-                _ => 15,
-            };
-            failure.blocked_until = Some(now + base.saturating_mul(multiplier));
-        }
+        // 5 s, 10 s, 20 s, 40 s … capped at one hour. A fresh correct login
+        // clears the counter; an attacker cannot burn through guesses faster
+        // than the window grows.
+        let exponent = failure.count.saturating_sub(1).min(10);
+        let factor = 1_u32 << exponent;
+        let delay = base.saturating_mul(factor).min(LOGIN_MAX_COOLDOWN);
+        failure.blocked_until = Some(now + delay);
     }
 
     pub fn clear_login_failures(&self, ip: IpAddr) {
@@ -324,7 +324,7 @@ pub async fn verify_secret(hash: String, secret: String) -> bool {
         .unwrap_or(false)
 }
 
-fn verify_secret_blocking(hash: &str, secret: &str) -> bool {
+pub fn verify_secret_blocking(hash: &str, secret: &str) -> bool {
     let Ok(parsed) = PasswordHash::new(hash) else {
         return false;
     };
@@ -393,15 +393,19 @@ mod tests {
     }
 
     #[test]
-    fn repeated_login_failures_start_a_cooldown() {
-        let auth = DashboardAuth::with_cooldowns(Duration::from_hours(1), Duration::from_mins(1));
+    fn wrong_passwords_double_the_cooldown() {
+        let auth = DashboardAuth::with_cooldowns(Duration::from_hours(1), Duration::from_secs(5));
         let ip: IpAddr = "127.0.0.1".parse().expect("ip");
-        for _ in 0..4 {
-            auth.note_login_failure(ip);
-        }
         assert!(auth.login_retry_after(ip).is_none());
         auth.note_login_failure(ip);
-        assert!(auth.login_retry_after(ip).is_some());
+        let first = auth.login_retry_after(ip).expect("first cooldown");
+        assert!(first >= Duration::from_secs(4) && first <= Duration::from_secs(5));
+        auth.note_login_failure(ip);
+        let second = auth.login_retry_after(ip).expect("second cooldown");
+        assert!(
+            second >= Duration::from_secs(9),
+            "cooldown doubled: {second:?}"
+        );
         auth.clear_login_failures(ip);
         assert!(auth.login_retry_after(ip).is_none());
     }

@@ -277,9 +277,6 @@ pub async fn api_dashboard_login(
     };
     if !dashboard_auth::verify_secret(hash, body.password).await {
         state.auth.note_login_failure(ip);
-        if let Some(wait) = state.auth.login_retry_after(ip) {
-            return auth_rate_limited(wait.as_secs().saturating_add(1));
-        }
         return auth_error(
             StatusCode::UNAUTHORIZED,
             "invalid_password",
@@ -379,9 +376,6 @@ pub async fn api_dashboard_password(
         }
         if !dashboard_auth::verify_secret(current_hash, body.current_password).await {
             state.auth.note_login_failure(remote_addr.ip());
-            if let Some(wait) = state.auth.login_retry_after(remote_addr.ip()) {
-                return auth_rate_limited(wait.as_secs().saturating_add(1));
-            }
             return auth_error(
                 StatusCode::UNAUTHORIZED,
                 "invalid_password",
@@ -4380,12 +4374,12 @@ mod tests {
             super::api_summary(axum::extract::State(state.clone()), headers, query, connect).await;
         assert_eq!(summary.status(), StatusCode::OK);
 
-        let (headers, query, connect) = no_auth();
+        let (headers, query, _connect) = no_auth();
         let login = super::api_dashboard_login(
             axum::extract::State(state.clone()),
             headers,
             query,
-            connect,
+            axum::extract::ConnectInfo(addr("127.0.0.2:50000")),
             axum::Json(super::DashboardLoginBody {
                 password: "correct horse battery staple".to_string(),
             }),
@@ -4441,23 +4435,24 @@ mod tests {
         .await;
         assert_eq!(no_session.status(), StatusCode::UNAUTHORIZED);
 
-        let (headers, query, connect) = no_auth();
+        let (headers, query, _connect) = no_auth();
         let login = super::api_dashboard_login(
             axum::extract::State(state.clone()),
             headers,
             query,
-            connect,
+            axum::extract::ConnectInfo(addr("127.0.0.2:50000")),
             axum::Json(super::DashboardLoginBody {
                 password: "correct horse battery staple".to_string(),
             }),
         )
         .await;
+        assert_eq!(login.status(), StatusCode::OK);
         let cookie = cookie_from(&login);
         let change = super::api_dashboard_password(
             axum::extract::State(state),
             cookie_headers(&cookie),
             axum::extract::Query(crate::server::AuthQuery { token: None }),
-            axum::extract::ConnectInfo(loopback()),
+            axum::extract::ConnectInfo(addr("127.0.0.2:50000")),
             axum::Json(super::DashboardPasswordBody {
                 current_password: "correct horse battery staple".to_string(),
                 new_password: "a brand new password".to_string(),
@@ -4531,12 +4526,12 @@ mod tests {
         .await;
         assert_eq!(old.status(), StatusCode::UNAUTHORIZED);
 
-        let (headers, query, connect) = no_auth();
+        let (headers, query, _connect) = no_auth();
         let new = super::api_dashboard_login(
             axum::extract::State(state),
             headers,
             query,
-            connect,
+            axum::extract::ConnectInfo(addr("127.0.0.2:50000")),
             axum::Json(super::DashboardLoginBody {
                 password: "another good password".to_string(),
             }),

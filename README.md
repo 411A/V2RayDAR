@@ -102,7 +102,7 @@ The web dashboard is the default interface and covers daily use end to end from 
 
 After starting the app, open http://127.0.0.1:27141 in your browser.
 
-An optional dashboard password (Settings → Dashboard password) locks the dashboard and every change request. It is stored only as an Argon2id hash, uses a personal recovery phrase for resets, and keeps a session cookie so a reload does not ask again; restarting the app signs browsers out. Read-only endpoints and subscription feeds stay open. If both the password and phrase are lost, run `v2raydar --reset-dashboard-password` locally.
+An optional dashboard password (Settings → Dashboard password) locks the dashboard and every change request. It is stored only as an Argon2id hash, uses a personal recovery phrase for resets, and keeps a session cookie so a reload does not ask again; restarting the app signs browsers out. Read-only endpoints and subscription feeds stay open. It is recommended on public networks or a VPS; on a trusted local network the default off setting is fine. If both the password and phrase are lost, run `v2raydar --reset-dashboard-password` locally.
 
 <p align="center">
   <img src="assets/WebUI_v0.9.0.png" alt="V2RayDAR web dashboard" width="100%">

@@ -579,6 +579,7 @@ pub(super) fn push_editable(config_tx: &watch::Sender<AppConfig>, state: &TuiSta
     let _ = config_tx.send(state.editable.clone());
 }
 
+#[allow(clippy::too_many_lines)]
 fn activate_main(
     state: &mut TuiState,
     paths: &AppPaths,
@@ -658,16 +659,26 @@ fn activate_main(
         MainItem::DashboardPassword => {
             state.dashboard_password.clear();
             state.dashboard_phrase.clear();
-            start_input(
-                state,
-                InputMode::DashboardPassword(super::state::DashboardPasswordStep::NewPassword),
-                "",
-            );
-            state.status = if auth.enabled() {
-                "Dashboard password is ON. Enter a new password (12+ chars), or leave empty to disable.".to_string()
+            state.dashboard_authorized = false;
+            if auth.enabled() {
+                start_input(
+                    state,
+                    InputMode::DashboardPassword(
+                        super::state::DashboardPasswordStep::CurrentPassword,
+                    ),
+                    "",
+                );
+                state.status =
+                    "Enter the current dashboard password to change or disable it.".to_string();
             } else {
-                "Dashboard password is OFF. Enter a new password (12+ chars).".to_string()
-            };
+                start_input(
+                    state,
+                    InputMode::DashboardPassword(super::state::DashboardPasswordStep::NewPassword),
+                    "",
+                );
+                state.status =
+                    "Dashboard password is OFF. Enter a new password (12+ chars).".to_string();
+            }
         }
         MainItem::QrCodes => {
             let live_config = RuntimeConfig::from(&state.editable);

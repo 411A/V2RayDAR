@@ -109,6 +109,7 @@ pub enum InputMode {
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum DashboardPasswordStep {
+    CurrentPassword,
     NewPassword,
     ConfirmPassword,
     Phrase,
@@ -157,6 +158,7 @@ pub struct ScrollState {
 }
 
 #[derive(Debug, Clone)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct TuiState {
     pub started_at: Instant,
     pub editable: AppConfig,
@@ -191,6 +193,9 @@ pub struct TuiState {
     /// written to logs or the config; cleared on cancel/finish.
     pub dashboard_password: String,
     pub dashboard_phrase: String,
+    /// True only after the current password was verified for this wizard
+    /// session. An empty new password can disable protection only then.
+    pub dashboard_authorized: bool,
     pub status: String,
     pub dirty: bool,
     pub hits: HitMap,
@@ -225,6 +230,7 @@ impl TuiState {
             reset_code: None,
             dashboard_password: String::new(),
             dashboard_phrase: String::new(),
+            dashboard_authorized: false,
             status: "Ready".to_string(),
             dirty: false,
             hits: HitMap::default(),

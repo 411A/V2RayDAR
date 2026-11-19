@@ -42,9 +42,15 @@ impl LogLevel {
 /// timestamp + level tag ride on top.
 pub const MAX_LOG_LINE_LEN: usize = 480;
 
-/// Wall-clock stamp for a log line: `20:20:02.792`.
+/// Wall-clock stamp for a log line: `2026/10/25 13:20:59.324`.
+///
+/// The date rides along because Live logs now keep history across refresh
+/// cycles: a clock-only stamp on a line from last night is ambiguous the
+/// next morning.
 pub fn timestamp() -> String {
-    chrono::Local::now().format("%H:%M:%S%.3f").to_string()
+    chrono::Local::now()
+        .format("%Y/%m/%d %H:%M:%S%.3f")
+        .to_string()
 }
 
 /// Tag a payload with its level: `[INFO] message`.
@@ -175,12 +181,16 @@ mod tests {
     }
 
     #[test]
-    fn timestamp_keeps_hh_mm_ss_mmm_shape() {
+    fn timestamp_keeps_full_date_time_shape() {
         let ts = timestamp();
-        assert_eq!(ts.len(), 12);
-        assert_eq!(&ts[2..3], ":");
-        assert_eq!(&ts[5..6], ":");
-        assert_eq!(&ts[8..9], ".");
+        // `2026/10/25 13:20:59.324`
+        assert_eq!(ts.len(), 23);
+        assert_eq!(&ts[4..5], "/");
+        assert_eq!(&ts[7..8], "/");
+        assert_eq!(&ts[10..11], " ");
+        assert_eq!(&ts[13..14], ":");
+        assert_eq!(&ts[16..17], ":");
+        assert_eq!(&ts[19..20], ".");
     }
 
     #[test]

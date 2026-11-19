@@ -1844,7 +1844,7 @@ async fn probe_active_target_inner(port: u16, config: &ProbeConfig) -> Result<Ac
     })
 }
 
-/// Observed exchange size for Sub Usage accounting: request estimate plus
+/// Observed exchange size for traffic usage accounting: request estimate plus
 /// actual response header bytes. The body is never read for this, so no
 /// extra traffic or latency is added by counting.
 fn exchange_bytes(test_url: &str, response: &reqwest::Response) -> u64 {

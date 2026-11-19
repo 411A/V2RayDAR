@@ -1273,7 +1273,9 @@ async fn refresh_once(
         runtime.reachable_candidates = carry.as_ref().map_or(0, |carry| carry.reachable);
         runtime.cached_candidates = 0;
         runtime.fetch_errors.clear();
-        runtime.live_logs.clear();
+        // Live logs are a running history for the session: a refresh must
+        // not erase what happened before it. The ring keeps the newest
+        // MAX_TUI_LOGS lines and drops only the oldest.
         if config.return_configs_asap && carry.is_none() {
             runtime.ranked.clear();
         }
@@ -1780,7 +1782,7 @@ async fn refresh_once(
         );
     }
     applog::push(&mut runtime, applog::LogLevel::Info, &summary);
-    push_runtime_log(&mut runtime, applog::info_line(&summary));
+    push_runtime_log(&mut runtime, &applog::info_line(&summary));
 
     if print_terminal_summary {
         print_summary(&runtime, config.top_n);
@@ -1917,7 +1919,7 @@ fn candidate_from_ranked(item: &RankedConfig) -> Candidate {
 /// candidates were tested (0 when the pool is empty or unreadable — the
 /// ping still publishes its own results then).
 ///
-/// Probe bytes never touch Sub Usage, like the main ping probe.
+/// Probe bytes never touch traffic usage, like the main ping probe.
 #[allow(clippy::too_many_arguments)]
 async fn probe_ping_backfill(
     config: &AppConfig,
@@ -2026,7 +2028,7 @@ const DATABASE_FALLBACK_TOTAL_CANDIDATES: usize = 1024;
 /// working configs are verified or the pool runs out - one batch is
 /// rarely enough when the pool is large and mostly dead.
 ///
-/// Probe bytes never touch Sub Usage: this is cached material, not a
+/// Probe bytes never touch traffic usage: this is cached material, not a
 /// subscription download.
 ///
 /// Returns how many fallback candidates were tested.
@@ -2229,7 +2231,7 @@ async fn ping_once(
         previous_top_n.clone(),
         print_compact_progress,
         // A ping re-tests cached configs without fetching: probe byte
-        // counts must not leak into Sub Usage (see `push_tui_progress`).
+        // counts must not leak into traffic usage (see `push_tui_progress`).
         false,
     );
     *runtime_config.write().await = RuntimeConfig::from(config);
@@ -2375,7 +2377,7 @@ async fn ping_once(
         // follow it within the same minute.
         {
             let mut runtime = state.write().await;
-            push_runtime_log(&mut runtime, summary);
+            push_runtime_log(&mut runtime, &summary);
         }
         return Ok(true);
     }
@@ -2560,7 +2562,7 @@ async fn ping_once(
     .await;
     {
         let mut runtime = state.write().await;
-        push_runtime_log(&mut runtime, summary);
+        push_runtime_log(&mut runtime, &summary);
     }
     Ok(false)
 }
@@ -3245,7 +3247,7 @@ async fn record_refresh_error(state: &Arc<RwLock<RuntimeState>>, error: String) 
         applog::LogLevel::Error,
         &format!("Refresh failed: {error}"),
     );
-    push_runtime_log(&mut state, format!("refresh error: {error}"));
+    push_runtime_log(&mut state, &format!("refresh error: {error}"));
     drop(state);
 }
 
@@ -3259,7 +3261,7 @@ async fn add_fetch_bytes(state: &Arc<RwLock<RuntimeState>>, bytes: u64) {
 
 /// Progress events from one probe run into live TUI state.
 ///
-/// `account_bytes` attributes probe byte counts to Sub Usage: true for
+/// `account_bytes` attributes probe byte counts to traffic usage: true for
 /// fetch cycles (real downloads), false for ping cycles (re-testing cached
 /// configs must not look like fetching).
 #[allow(clippy::too_many_arguments)]
@@ -3394,11 +3396,19 @@ fn apply_snapshot_ranks(ranked: &mut [RankedConfig]) {
 }
 
 fn timestamped_log(message: impl Into<String>) -> String {
-    format!("{} {}", Local::now().format("%H:%M:%S%.3f"), message.into())
+    format!(
+        "{} {}",
+        Local::now().format("%Y/%m/%d %H:%M:%S%.3f"),
+        message.into()
+    )
 }
 
-fn push_runtime_log(state: &mut RuntimeState, message: String) {
-    state.logs.push(message);
+/// Summary lines in Recent Logs carry the same full date-time stamp as Live
+/// Logs, so a line read the next day is unambiguous.
+fn push_runtime_log(state: &mut RuntimeState, message: &str) {
+    state
+        .logs
+        .push(format!("{} {message}", applog::timestamp()));
     if state.logs.len() > MAX_TUI_LOGS {
         let extra = state.logs.len() - MAX_TUI_LOGS;
         state.logs.drain(0..extra);
@@ -4542,10 +4552,11 @@ mod tests {
         .await;
         // Double chord press while idle must coalesce into a single cycle.
         // NOTE: counted via persistent `logs` summaries, not `live_logs` —
-        // every refresh clears live logs at start, so live entries can't
-        // accumulate across cycles.
+        // live entries stay in the ring now, but the ring is bounded and this
+        // check needs every cycle's summary.
         let baseline = summary_count(&state).await;
         assert!(baseline >= 1);
+        let live_baseline = live_log_count(&state, "Refresh started").await;
         trigger_tx.send(()).expect("trigger sends");
         trigger_tx.send(()).expect("trigger sends");
         wait_for_condition("manual refresh", || {
@@ -4562,6 +4573,10 @@ mod tests {
         .await;
         tokio::time::sleep(std::time::Duration::from_secs(4)).await;
         assert_eq!(summary_count(&state).await, baseline + 1);
+        assert!(
+            live_log_count(&state, "Refresh started").await > live_baseline,
+            "a refresh must keep earlier live logs instead of clearing them"
+        );
         // Manual trigger: the Recent Logs summary carries 👤.
         assert!(
             state
@@ -5137,7 +5152,7 @@ mod tests {
     #[tokio::test]
     async fn probe_deltas_attribute_bytes_only_for_fetch_cycles() {
         // Ping re-tests without fetching: its probe bytes must not leak
-        // into Sub Usage, while counters still accumulate in both modes.
+        // into traffic usage, while counters still accumulate in both modes.
         let state = Arc::new(tokio::sync::RwLock::new(RuntimeState::default()));
         push_tui_progress(
             &state,
@@ -5176,7 +5191,7 @@ mod tests {
     #[tokio::test]
     async fn ping_leaves_fetched_total_and_sub_usage_alone() {
         // A ping re-tests cached configs without fetching: the Fetched total
-        // and Sub Usage from the last fetch must survive, while Failed and
+        // and traffic usage from the last fetch must survive, while Failed and
         // Working follow the ping results. Recent Logs gains just the
         // compact 👤 summary (started/preempted stay live-only).
         let config = manual_trigger_test_config();

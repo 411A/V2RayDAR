@@ -97,7 +97,7 @@ pub fn draw(
             ),
         ),
         (
-            "Sub Usage",
+            "Traffic",
             format!(
                 "{sub_usage:<W_SUB_USAGE$}",
                 sub_usage = human_bytes(runtime.fetch_bytes)
@@ -198,7 +198,7 @@ fn draw_minimal_line(frame: &mut Frame<'_>, area: Rect, cells: &[(&str, String);
         (3, "Fetch"),
         (4, "Fail"),
         (5, "Work"),
-        (6, "Sub"),
+        (6, "Traffic"),
         (7, "Speed"),
     ];
 

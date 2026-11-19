@@ -173,7 +173,7 @@ pub enum ProgressEvent {
     ProbeDelta {
         tested: usize,
         working: usize,
-        /// Observed HTTP exchange bytes (Sub Usage accounting).
+        /// Observed HTTP exchange bytes (traffic usage accounting).
         bytes: u64,
     },
     RankedSnapshot(Vec<RankedConfig>),

@@ -5,13 +5,17 @@ let stub;
 let server;
 let base;
 
-test.beforeAll(async () => {
+// Each test gets a fresh stub: these tests add rows, flip switches and read
+// absolute PATCH counters, so sharing one server across a reused worker made
+// the values depend on which tests happened to run in that worker.
+test.beforeEach(async () => {
   ({ stub, server } = createStub());
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   base = `http://127.0.0.1:${server.address().port}`;
 });
 
-test.afterAll(async () => {
+test.afterEach(async () => {
+  server.closeAllConnections();
   await new Promise((r) => server.close(r));
 });
 

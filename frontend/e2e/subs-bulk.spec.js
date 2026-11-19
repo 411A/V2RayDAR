@@ -5,13 +5,17 @@ let stub;
 let server;
 let base;
 
-test.beforeAll(async () => {
+// Each test gets its own stub and port: the tests mutate counters and the
+// subscription list, and Playwright may reuse one worker for several tests.
+// A shared beforeAll made absolute assertions race those mutations.
+test.beforeEach(async () => {
   ({ stub, server } = createStub());
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   base = `http://127.0.0.1:${server.address().port}`;
 });
 
-test.afterAll(async () => {
+test.afterEach(async () => {
+  server.closeAllConnections();
   await new Promise((r) => server.close(r));
 });
 

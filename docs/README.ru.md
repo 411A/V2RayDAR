@@ -1,10 +1,4 @@
 <p align="center">
-  <a href="https://deepwiki.com/411A/V2RayDAR">
-    <img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki About V2RayDAR">
-  </a>
-</p>
-
-<p align="center">
   <strong>🌐 Available in</strong><br>
   <strong><a href="../README.md">English</a></strong>
   • <strong><a href="README.fa.md">فارسی</a></strong>
@@ -17,6 +11,12 @@
   <img src="../assets/V2RayDAR_logo_v1.png" alt="V2RayDAR logo" width="200" height="200">
 </p>
 
+<p align="center">
+  <a href="https://deepwiki.com/411A/V2RayDAR">
+    <img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki About V2RayDAR">
+  </a>
+</p>
+
 <h1 align="center">V2RayDAR</h1>
 
 <p align="center">
@@ -27,7 +27,7 @@
 </p>
 
 <p align="center">
-  <strong>Запустите один раз на любом постоянно включённом устройстве — старый телефон, ПК, Raspberry Pi или домашний сервер — и V2RayDAR непрерывно находит, проверяет и раздаёт лучшие рабочие конфиги всем устройствам вашей LAN. Он также поднимает стандартный SOCKS5/HTTP-прокси, поэтому каждое устройство вашей LAN получает рабочее V2Ray-соединение — без V2Ray-клиента (если клиент всё же нужен, рекомендуем <a href="https://github.com/clash-verge-rev/clash-verge-rev">Clash Verge Rev</a>).</strong>
+  <strong>Устали вручную проверять конфиги V2Ray и выяснять, какой из них действительно работает у вас? Конфиг работает у друга, но не в вашей сети? Запустите V2RayDAR один раз на любом постоянно включённом устройстве — старом телефоне, ПК, Raspberry Pi или домашнем сервере — и он непрерывно находит, проверяет и раздаёт лучшие рабочие конфиги всем устройствам вашей LAN. Он также поднимает стандартный SOCKS5/HTTP-прокси, поэтому каждое устройство вашей LAN получает рабочее V2Ray-соединение — без V2Ray-клиента (если клиент всё же нужен, рекомендуем <a href="https://github.com/clash-verge-rev/clash-verge-rev">Clash Verge Rev</a>).</strong>
 </p>
 
 <p align="center">

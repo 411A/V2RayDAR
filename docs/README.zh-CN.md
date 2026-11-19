@@ -1,10 +1,4 @@
 <p align="center">
-  <a href="https://deepwiki.com/411A/V2RayDAR">
-    <img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki About V2RayDAR">
-  </a>
-</p>
-
-<p align="center">
   <strong>🌐 Available in</strong><br>
   <strong><a href="../README.md">English</a></strong>
   • <strong><a href="README.fa.md">فارسی</a></strong>
@@ -17,6 +11,12 @@
   <img src="../assets/V2RayDAR_logo_v1.png" alt="V2RayDAR logo" width="200" height="200">
 </p>
 
+<p align="center">
+  <a href="https://deepwiki.com/411A/V2RayDAR">
+    <img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki About V2RayDAR">
+  </a>
+</p>
+
 <h1 align="center">V2RayDAR</h1>
 
 <p align="center">
@@ -27,7 +27,7 @@
 </p>
 
 <p align="center">
-  <strong>只需在任何常开设备上运行一次——旧手机、电脑、树莓派或家庭服务器皆可——V2RayDAR 便会持续查找、验证最佳可用配置，并将其提供给局域网中的每台设备。它还提供标准的 SOCKS5/HTTP 代理，因此局域网中的每台设备都能使用可用的 V2Ray 连接——无需安装 V2Ray 客户端（如需客户端，推荐 <a href="https://github.com/clash-verge-rev/clash-verge-rev">Clash Verge Rev</a>）。</strong>
+  <strong>厌倦了手动逐个测试 V2Ray 配置，想知道哪个才真正适合你的网络？同一个配置在朋友那里能用，在你的网络却不行？只需在任何常开设备上运行一次 V2RayDAR——旧手机、电脑、树莓派或家庭服务器皆可——它就会持续查找、验证最佳可用配置，并将其提供给局域网中的每台设备。它还提供标准的 SOCKS5/HTTP 代理，因此局域网中的每台设备都能使用可用的 V2Ray 连接——无需安装 V2Ray 客户端（如需客户端，推荐 <a href="https://github.com/clash-verge-rev/clash-verge-rev">Clash Verge Rev</a>）。</strong>
 </p>
 
 <p align="center">

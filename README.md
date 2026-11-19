@@ -1,10 +1,4 @@
 <p align="center">
-  <a href="https://deepwiki.com/411A/V2RayDAR">
-    <img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki About V2RayDAR">
-  </a>
-</p>
-
-<p align="center">
   <strong>🌐 Available in</strong><br>
   <strong><a href="README.md">English</a></strong>
   • <strong><a href="docs/README.fa.md">فارسی</a></strong>
@@ -17,6 +11,12 @@
   <img src="assets/V2RayDAR_logo_v1.png" alt="V2RayDAR logo" width="200" height="200">
 </p>
 
+<p align="center">
+  <a href="https://deepwiki.com/411A/V2RayDAR">
+    <img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki About V2RayDAR">
+  </a>
+</p>
+
 <h1 align="center">V2RayDAR</h1>
 
 <p align="center">
@@ -27,7 +27,7 @@
 </p>
 
 <p align="center">
-  <strong>Run it once on any always-on device — an old phone, PC, Raspberry Pi, or home server — and V2RayDAR continuously finds, verifies, and serves the best working configs to every device on your LAN. It also exposes a standard SOCKS5/HTTP proxy, so every device on your LAN gets a working V2Ray connection — no V2Ray client needed (if you need one, <a href="https://github.com/clash-verge-rev/clash-verge-rev">Clash Verge Rev</a> is recommended).</strong>
+  <strong>Tired of manually ping-testing V2Ray configs to see which one actually works for you? Does a config work for your friend but not on your network? Run V2RayDAR once on any always-on device — an old phone, PC, Raspberry Pi, or home server — and it continuously finds, verifies, and serves the best working configs to every device on your LAN. It also exposes a standard SOCKS5/HTTP proxy, so every device on your LAN gets a working V2Ray connection — no V2Ray client required (if you need one, <a href="https://github.com/clash-verge-rev/clash-verge-rev">Clash Verge Rev</a> is recommended).</strong>
 </p>
 
 <p align="center">

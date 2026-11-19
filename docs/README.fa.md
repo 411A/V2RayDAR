@@ -1,12 +1,6 @@
 <div dir="ltr">
 
 <p align="center">
-  <a href="https://deepwiki.com/411A/V2RayDAR">
-    <img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki About V2RayDAR">
-  </a>
-</p>
-
-<p align="center">
   <strong>🌐 Available in</strong><br>
   <strong><a href="../README.md">English</a></strong>
   • <strong><a href="README.fa.md">فارسی</a></strong>
@@ -17,6 +11,12 @@
 
 <p align="center">
   <img src="../assets/V2RayDAR_logo_v1.png" alt="V2RayDAR logo" width="200" height="200">
+</p>
+
+<p align="center">
+  <a href="https://deepwiki.com/411A/V2RayDAR">
+    <img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki About V2RayDAR">
+  </a>
 </p>
 
 <h1 align="center">V2RayDAR</h1>
@@ -33,7 +33,7 @@
 </p>
 
 <p align="center">
-  <strong>آن را یک‌بار روی هر دستگاه همیشه‌روشن اجرا کنید — گوشی قدیمی، کامپیوتر، رزبری‌پای یا سرور خانگی — و V2RayDAR به‌طور مداوم بهترین کانفیگ‌های سالم را پیدا، بررسی و به همه دستگاه‌های شبکه محلی شما ارائه می‌کند. همچنین یک پروکسی استاندارد SOCKS5/HTTP ارائه می‌کند، پس همه دستگاه‌های شبکه محلی شما به یک اتصال V2Ray سالم دسترسی دارند — بدون نیاز به کلاینت V2Ray (اگر به کلاینت نیاز دارید، <a href="https://github.com/clash-verge-rev/clash-verge-rev">Clash Verge Rev</a> توصیه می‌شود).</strong>
+  <strong>از تست دستی کانفیگ‌های V2Ray خسته شده‌اید تا ببینید کدام واقعاً روی شبکه شما کار می‌کند؟ یک کانفیگ برای دوستتان کار می‌کند ولی روی شبکه شما نه؟ V2RayDAR را یک‌بار روی هر دستگاه همیشه‌روشن — گوشی قدیمی، کامپیوتر، رزبری‌پای یا سرور خانگی — اجرا کنید تا به‌طور مداوم بهترین کانفیگ‌های سالم را پیدا، بررسی و به همه دستگاه‌های شبکه محلی شما ارائه کند. همچنین یک پروکسی استاندارد SOCKS5/HTTP ارائه می‌کند، پس همه دستگاه‌های شبکه محلی شما به یک اتصال V2Ray سالم دسترسی دارند — بدون نیاز به کلاینت V2Ray (اگر به کلاینت نیاز دارید، <a href="https://github.com/clash-verge-rev/clash-verge-rev">Clash Verge Rev</a> توصیه می‌شود).</strong>
 </p>
 
 <p align="center">

@@ -71,7 +71,9 @@ pub fn allows_port(state_dir: &Path, port: u16) -> bool {
 
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
-        let _ = (state_dir, port);
+        // macOS has no manageable backend to query; reading the record is
+        // enough to keep the same signature and behavior (always true).
+        let _ = rule_recorded(state_dir, port);
         true
     }
 }

@@ -225,6 +225,12 @@ impl PersistentProxy {
         }
     }
 
+    /// Point future proxy starts at another sing-box executable. The running
+    /// child (if any) is left alone; the next start/revive uses the new path.
+    pub fn set_sing_box_path(&mut self, path: String) {
+        self.sing_box_path = path;
+    }
+
     fn emit_log(&self, level: LogLevel, message: &str) {
         if let Some(tx) = &self.events {
             let _ = tx.send(ProgressEvent::LiveLog(applog::line(level, message)));

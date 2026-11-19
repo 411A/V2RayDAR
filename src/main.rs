@@ -272,12 +272,20 @@ async fn main() -> Result<()> {
     crate::geoip::init(mmdb_path.as_deref(), zone_dir.as_deref());
 
     if active_probe_needs_setup(&config, &paths).await {
-        if !use_tui {
+        if use_tui {
+            tui::run_sing_box_setup(&mut config, &paths, &database).await?;
+        } else if cli.once || !cli.ping.is_empty() || cli.ping_file.is_some() {
+            // CLI-only modes have no dashboard to set the path in, so keep
+            // the actionable exit message.
             print_sing_box_setup_required(&paths);
             return Ok(());
+        } else {
+            // Default dashboard run: stay up even without sing-box. The
+            // Settings tab can set probe.sing_box_path, and the first refresh
+            // explains what is missing instead of the app exiting before the
+            // user can reach the UI.
+            print_sing_box_setup_pending(&paths);
         }
-
-        tui::run_sing_box_setup(&mut config, &paths, &database).await?;
     }
 
     let state = Arc::new(RwLock::new(RuntimeState::default()));
@@ -786,6 +794,33 @@ fn print_sing_box_setup_required(paths: &AppPaths) {
     println!("Then run V2RayDAR again.");
 }
 
+/// Dashboard-mode notice when sing-box is missing: the app keeps serving so
+/// the path can be set from Settings instead of forcing a TUI-only setup.
+fn print_sing_box_setup_pending(paths: &AppPaths) {
+    let guide = setup_guide();
+    println!("sing-box was not found, so active probing is paused.");
+    println!(
+        "The dashboard still starts: open Settings > Probe > sing-box path, enter {}, then click Refresh.",
+        guide.executable_name
+    );
+    println!(
+        "Download: {} ({})",
+        sing_box_download_url(),
+        guide.release_asset
+    );
+    println!(
+        "Or place {} beside the executable and restart.",
+        guide.executable_name
+    );
+    println!("Database: {}", paths.root_dir.join(DB_FILE_NAME).display());
+}
+
+/// Active probing cannot run without a sing-box executable path. Kept pure
+/// so the refresh/ping loops and their tests agree on one rule.
+fn active_probe_missing_sing_box(config: &AppConfig) -> bool {
+    config.probe.mode == ProbeMode::Active && config.probe.sing_box_path.trim().is_empty()
+}
+
 /// Working results kept from a ping that a refresh preempted.
 ///
 /// The refresh skips re-probing these (verified seconds ago) and only
@@ -1179,6 +1214,15 @@ async fn refresh_once(
     ping_cancel: Option<Arc<AtomicBool>>,
     manual: bool,
 ) -> Result<()> {
+    // Dashboard runs may start without sing-box (the path can be set from
+    // Settings). Fail the cycle with an actionable message instead of
+    // launching one empty-path process per config and flooding the log.
+    if active_probe_missing_sing_box(config) {
+        return Err(anyhow!(
+            "active probing needs sing-box. Open Settings → Probe → sing-box path, enter the \
+             sing-box executable (or a PATH command), then click Refresh"
+        ));
+    }
     crate::parser::set_transport_security_required(config.probe.require_transport_security);
     // Refresh is always prioritized over ping: when a fetch comes due while
     // a ping is still running, stop the ping and keep the working results it
@@ -2594,6 +2638,18 @@ async fn run_ping_cycle(
     print_compact_progress: bool,
     label: &str,
 ) {
+    if active_probe_missing_sing_box(config) {
+        push_tui_progress(
+            state,
+            ProgressEvent::LiveLog(applog::warn_line(
+                "Ping skipped: sing-box is not configured (Settings → Probe → sing-box path)",
+            )),
+            &HashSet::new(),
+            true,
+        )
+        .await;
+        return;
+    }
     let outcome = ping_once(
         config,
         database.clone(),
@@ -2652,7 +2708,12 @@ fn spawn_ping_loop(
             // cycle lock every round, and their countdowns drift a second
             // apart): park the automatic timer and let refreshes carry the
             // cadence. Manual pings still run on demand.
-            let auto_ping = ping_seconds != 0
+            //
+            // No automatic ping without sing-box either: the refresh error
+            // already tells the user what to configure.
+            let sing_box_ready = !active_probe_missing_sing_box(&config_snapshot);
+            let auto_ping = sing_box_ready
+                && ping_seconds != 0
                 && (config_snapshot.refresh_seconds == 0
                     || ping_seconds != config_snapshot.refresh_seconds);
 
@@ -3145,14 +3206,17 @@ async fn update_proxy_and_ranked(
     // Sync ranked list for the health-check failover loop
     (*shared_ranked.write().await).clone_from(&ranked);
 
-    proxy
-        .lock()
-        .await
+    let mut manager = proxy.lock().await;
+    // A path set from the dashboard must reach the proxy too, otherwise a
+    // later proxy start keeps trying the empty auto-detected path.
+    manager.set_sing_box_path(config.probe.sing_box_path.clone());
+    manager
         .update(&config.proxy, &ranked, clear_blacklist)
         .await;
+    let snapshot = manager.snapshot().await;
+    drop(manager);
 
     // Reflect proxy state in RuntimeState so the TUI shows live info
-    let snapshot = proxy.lock().await.snapshot().await;
     let mut runtime = state.write().await;
     runtime.proxy_running = snapshot.running;
     runtime
@@ -3504,6 +3568,27 @@ mod tests {
 
     use super::*;
     use crate::model::Endpoint;
+
+    #[test]
+    fn active_probe_without_sing_box_is_reported_as_missing() {
+        let mut config = AppConfig::default_for_first_run();
+        config.probe.mode = ProbeMode::Active;
+        config.probe.sing_box_path.clear();
+        assert!(active_probe_missing_sing_box(&config));
+        config.probe.sing_box_path = "  ".to_string();
+        assert!(
+            active_probe_missing_sing_box(&config),
+            "blank path counts as empty"
+        );
+        config.probe.sing_box_path = "sing-box".to_string();
+        assert!(!active_probe_missing_sing_box(&config));
+        config.probe.mode = ProbeMode::Tcp;
+        config.probe.sing_box_path.clear();
+        assert!(
+            !active_probe_missing_sing_box(&config),
+            "TCP mode needs no binary"
+        );
+    }
 
     fn temp_uninstall_root(name: &str) -> PathBuf {
         // Unique per call: the wall clock only ticks every few

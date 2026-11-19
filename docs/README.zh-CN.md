@@ -219,7 +219,7 @@ Windows 用户将 `v2raydar` 替换为 `v2raydar.exe`。macOS 上首次打开捆
 | `bind` | `127.0.0.1:27141` | 本地 HTTP 绑定地址，用于 `/subscription`、`/subscription.txt`、`/results` 和 `/health`。 |
 | `top_n` | `10` | 发布给客户端的可用配置数量。 |
 | `refresh_seconds` | `900` | 自动刷新间隔（秒）；`0` 禁用定时刷新。 |
-| `ping_seconds` | `300` | 已缓存配置的重测间隔（秒），不重新获取订阅；`0` 禁用。当缓存验证通过的数量少于 `top_n` 时，ping 还会检测数据库中此前见过的配置以补足。两者均计入 Sub Usage。 |
+| `ping_seconds` | `300` | 已缓存配置的重测间隔（秒），不重新获取订阅；`0` 禁用。当缓存验证通过的数量少于 `top_n` 时，ping 还会检测数据库中此前见过的配置以补足。两者均计入 traffic usage。 |
 | `encoded_subscription` | `true` | `/subscription` 返回 base64 编码（兼容 v2rayN / v2rayNG）。 |
 | `prioritize_stability` | `true` | 优先重新探测上一轮保存的 Top-N，即使新发现的配置延迟更低也保持其靠前。设为 `false` 则优先选择低延迟的可用配置。 |
 | `return_configs_asap` | `false` | 设为 `true` 时，找到可用配置后立即发布到端点，最多 `top_n` 个；早期配置可能不是延迟最低或最稳定的。 |

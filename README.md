@@ -224,7 +224,7 @@ Windows users replace `v2raydar` with `v2raydar.exe`. On macOS open the bundled 
 | `bind` | `127.0.0.1:27141` | Local HTTP bind address for `/subscription`, `/subscription.txt`, `/results`, and `/health`. |
 | `top_n` | `10` | Number of working configs published to clients. |
 | `refresh_seconds` | `900` | Auto-refresh interval in seconds; `0` disables the timer. |
-| `ping_seconds` | `300` | Re-ping interval in seconds for cached configs without re-fetching; `0` disables. When the cache verifies fewer than `top_n`, the ping also probes previously-seen database configs to refill. Both count toward Sub Usage. |
+| `ping_seconds` | `300` | Re-ping interval in seconds for cached configs without re-fetching; `0` disables. When the cache verifies fewer than `top_n`, the ping also probes previously-seen database configs to refill. Both count toward traffic usage. |
 | `encoded_subscription` | `true` | Returns `/subscription` as base64 (v2rayN / v2rayNG friendly). |
 | `prioritize_stability` | `true` | Re-pings the previous run's saved top-N first and keeps repeat winners ahead within the same throughput class. A proven bulk node always outranks a low-latency handshake that dies mid-body. |
 | `return_configs_asap` | `false` | When `true`, publishes working configs to the endpoint and `Current Found Configs` as soon as they are found, up to `top_n`; early configs may not have the lowest ping or best stability. |
@@ -247,7 +247,7 @@ Windows users replace `v2raydar` with `v2raydar.exe`. On macOS open the bundled 
 | `proxy.slow_traffic_kbps` | `64` | Slow-link floor; `0` disables the slow-traffic switch. |
 | `proxy.bulk_check_interval_seconds` | `300` | Minimum gap between deep 10 MB checks; `0` disables them. |
 | `probe.mode` | `active` | `active` uses `sing-box`; `tcp` is diagnostic only. |
-| `probe.sing_box_path` | `null` | Optional path to `sing-box`. Leave `null` for desktop `_with_singbox` or Termux builds with bundled `sing-box`. |
+| `probe.sing_box_path` | `null` | Optional path to `sing-box`. Set it from the dashboard Settings tab or TUI Configurations (verified on save). Leave `null` for desktop `_with_singbox` or Termux builds with bundled `sing-box`. |
 | `probe.connect_timeout_ms` | `5000` | TCP connect timeout for diagnostic probing. |
 | `probe.active_timeout_ms` | `30000` | HTTP test timeout in active mode. |
 | `probe.startup_timeout_ms` | `5000` | Wait time for the temporary proxy to come up. |

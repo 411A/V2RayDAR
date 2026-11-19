@@ -163,9 +163,9 @@ Portable mode path:
 v2raydar_data/data.db
 ```
 
-If `probe.mode` is `active`, V2RayDAR first looks for a bundled `sing-box` beside the executable, then for `probe.sing_box_path`. If none is valid, the interactive TUI asks for the OS-specific `sing-box` executable path and verifies it with `sing-box version`.
+If `probe.mode` is `active`, V2RayDAR first looks for a bundled `sing-box` beside the executable, then for `probe.sing_box_path`. The interactive TUI asks for the OS-specific `sing-box` executable path and verifies it with `sing-box version`. The default dashboard starts even without `sing-box`: open **Settings > Probe > sing-box path**, enter the executable path (or a PATH command), save, and click Refresh. The path is verified the same way before it is stored, so a wrong file or an archive is rejected immediately.
 
-In quiet (default), `--no-tui`, or `--once` mode, V2RayDAR cannot run the interactive setup prompt. It prints OS-specific setup instructions and exits until a bundled or configured `sing-box` executable is available.
+In CLI-only modes with no dashboard to edit settings (`--once`, `--ping`, or `--ping-file`), V2RayDAR prints the OS-specific setup instructions and exits until a bundled or configured `sing-box` executable is available.
 
 ## Run Modes
 
@@ -422,7 +422,7 @@ String-like null values such as `null`, `"null"`, empty strings, `"none"`, and `
 | `bind` | Socket address | `127.0.0.1:27141` | Primary HTTP bind address. |
 | `top_n` | Integer | `10` | Number of reachable configs published to clients. |
 | `refresh_seconds` | Integer seconds | `900` | Automatic refresh interval. `0` disables timer refreshes but config changes can still trigger refreshes. |
-| `ping_seconds` | Integer seconds | `300` | Re-ping interval for cached configs without re-fetching subscriptions. `0` disables. When the cache verifies fewer than `top_n`, the ping also probes previously-seen database configs to refill. Fetch and ping traffic both count toward Sub Usage. |
+| `ping_seconds` | Integer seconds | `300` | Re-ping interval for cached configs without re-fetching subscriptions. `0` disables. When the cache verifies fewer than `top_n`, the ping also probes previously-seen database configs to refill. Fetch and ping traffic both count toward traffic usage. |
 | `encoded_subscription` | Boolean | `true` | Makes `/subscription` return base64 text. `/subscription.txt` is always raw text. |
 | `prioritize_stability` | Boolean | `true` | Re-pings the previous run's saved top-N first and keeps repeat winners ahead **inside the same throughput class**. Throughput class and measured speed always come first; stability then beats latency among equally fast configs, so a low-latency handshake that cannot carry a body never outranks a proven bulk node. The saved top-N lives in the `stable_top` table of `data.db`, so it survives a restart. |
 | `return_configs_asap` | Boolean | `false` | When `true`, publishes each working config to `/subscription`, `/subscription.txt`, `/results`, and the TUI `Current Found Configs` box as soon as it is found, until `top_n` working configs are available. Early configs may not have the lowest ping or best stability. |
@@ -506,7 +506,7 @@ http://192.0.2.23:27141/subscription?token=GENERATED_TOKEN
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `probe.mode` | `active` or `tcp` | `active` | Validation strategy. |
-| `probe.sing_box_path` | String or null | `null` | Optional path to `sing-box`. Leave `null` for desktop `_with_singbox` or Termux builds with bundled `sing-box`. |
+| `probe.sing_box_path` | String or null | `null` | Optional path to `sing-box`. Set it from the dashboard Settings tab or TUI Configurations (verified on save). Leave `null` for desktop `_with_singbox` or Termux builds with bundled `sing-box`. |
 | `probe.connect_timeout_ms` | Integer milliseconds | `5000` | TCP connect timeout in `tcp` mode. |
 | `probe.active_timeout_ms` | Integer milliseconds | `30000` | HTTP request timeout in active mode. |
 | `probe.startup_timeout_ms` | Integer milliseconds | `5000` | Time to wait for temporary `sing-box` proxies to start. |
@@ -527,7 +527,7 @@ http://192.0.2.23:27141/subscription?token=GENERATED_TOKEN
 
 Active mode uses the optional `probe.download_url` (on by default) to measure real throughput for selected working configs. The result appears in `/results` as `download_mbps` and `download_bytes`. Speed is scored over the last two seconds, not the whole body; a transfer that ends early or stalls is kept as evidence but ranked below configs that carried the full bulk minimum.
 
-Active mode requires a working `sing-box` executable. If `sing-box` is unavailable, candidates are marked failed with an error explaining that `sing-box` could not be run.
+Active mode requires a working `sing-box` executable. If it is unavailable, the dashboard stays up and the refresh reports an actionable error instead of failing every candidate silently; set `probe.sing_box_path` in Settings (or run `--tui` for the setup screen) and click Refresh.
 
 ## TCP Mode
 

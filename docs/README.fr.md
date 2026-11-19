@@ -219,7 +219,7 @@ Les utilisateurs Windows remplacent `v2raydar` par `v2raydar.exe`. Sous macOS, o
 | `bind` | `127.0.0.1:27141` | Adresse HTTP locale pour `/subscription`, `/subscription.txt`, `/results` et `/health`. |
 | `top_n` | `10` | Nombre de configs fonctionnelles publiées aux clients. |
 | `refresh_seconds` | `900` | Intervalle de rafraîchissement automatique (secondes) ; `0` désactive le timer. |
-| `ping_seconds` | `300` | Intervalle de re-test des configs en cache sans re-téléchargement (secondes) ; `0` désactive. Quand le cache vérifie moins de `top_n`, le ping sonde aussi les configs déjà vues en base pour compléter. Les deux comptent dans Sub Usage. |
+| `ping_seconds` | `300` | Intervalle de re-test des configs en cache sans re-téléchargement (secondes) ; `0` désactive. Quand le cache vérifie moins de `top_n`, le ping sonde aussi les configs déjà vues en base pour compléter. Les deux comptent dans traffic usage. |
 | `encoded_subscription` | `true` | `/subscription` renvoie du base64 (compatible v2rayN / v2rayNG). |
 | `prioritize_stability` | `true` | Re-vérifie le Top-N sauvegardé de la session précédente et les garde en tête, même si de nouvelles configs avec latence plus basse apparaissent. Avec `false`, préfère toute config fonctionnelle à faible latence. |
 | `return_configs_asap` | `false` | Avec `true`, publie les configs fonctionnelles dès leur découverte (max `top_n`) ; les premières configs peuvent ne pas avoir la meilleure latence ou stabilité. |

@@ -2126,6 +2126,19 @@ pub async fn api_config_patch(
     if let Err(message) = apply_web_setting(&mut cfg, body.key.trim(), &body.value) {
         return mutation_error(StatusCode::BAD_REQUEST, message);
     }
+    // A typed sing-box path must be usable now, not only after a restart:
+    // verify it exactly like the TUI setup screen does. An empty value (or
+    // "null") re-arms auto-detection and needs no binary check.
+    if body.key.trim() == "probe.sing_box_path" {
+        let normalized = crate::sing_box::normalize_path(&body.value);
+        let auto = normalized.is_empty() || normalized.eq_ignore_ascii_case("null");
+        if !auto && let Err(error) = crate::sing_box::verify_path(&normalized).await {
+            return mutation_error(
+                StatusCode::BAD_REQUEST,
+                format!("sing-box path rejected: {error}"),
+            );
+        }
+    }
     if let Err(response) = persist_config(&state, &cfg).await {
         return response;
     }
@@ -4078,6 +4091,47 @@ mod tests {
             .await;
             assert_eq!(response.status(), StatusCode::BAD_REQUEST, "key: {key}");
         }
+    }
+
+    #[tokio::test]
+    async fn config_patch_verifies_a_typed_sing_box_path() {
+        let (state, _refresh_rx, _ping_rx, _config_rx) = mutation_state(RuntimeState::default());
+        let (headers, query, connect) = no_auth();
+        let response = super::api_config_patch(
+            axum::extract::State(state.clone()),
+            headers,
+            query,
+            connect,
+            axum::Json(super::ConfigPatch {
+                key: "probe.sing_box_path".to_string(),
+                value: "sing-box.zip".to_string(),
+            }),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "an archive is not an executable and must be rejected with guidance"
+        );
+        assert!(
+            stored_config(&state).probe.sing_box_path.is_empty(),
+            "a rejected path must not be persisted"
+        );
+
+        // Empty re-arms auto-detection: no binary to verify, still accepted.
+        let (headers, query, connect) = no_auth();
+        let response = super::api_config_patch(
+            axum::extract::State(state.clone()),
+            headers,
+            query,
+            connect,
+            axum::Json(super::ConfigPatch {
+                key: "probe.sing_box_path".to_string(),
+                value: String::new(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]

@@ -706,6 +706,7 @@ fn fetch_group(config: &RuntimeConfig) -> ConfigGroup {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn probe_group(config: &RuntimeConfig) -> ConfigGroup {
     ConfigGroup {
         id: "probe",
@@ -780,6 +781,20 @@ fn probe_group(config: &RuntimeConfig) -> ConfigGroup {
                 "int",
                 &[],
             ),
+            config_row_kind(
+                "probe.speedtest_top_n",
+                config.speedtest_top_n.to_string(),
+                "top configs speedtested per run; lower uses less data",
+                "int",
+                &[],
+            ),
+            config_row_kind(
+                "probe.speedtest_interval_seconds",
+                config.speedtest_interval_seconds.to_string(),
+                "reuse a speedtest for this many seconds; 0 retests every cycle",
+                "int",
+                &[],
+            ),
             config_row(
                 "probe.download_url",
                 config
@@ -793,6 +808,13 @@ fn probe_group(config: &RuntimeConfig) -> ConfigGroup {
                 config.speedtest_enabled.to_string(),
                 "on when probe.download_url is set",
                 "readonly",
+                &[],
+            ),
+            config_row_kind(
+                "probe.require_transport_security",
+                config.require_transport_security.to_string(),
+                "true drops no-TLS and fake-Reality configs before probing",
+                "bool",
                 &[],
             ),
         ],
@@ -871,6 +893,20 @@ fn proxy_group(config: &RuntimeConfig) -> ConfigGroup {
                 "proxy.health_check_interval_seconds",
                 config.health_check_interval_seconds.to_string(),
                 "seconds between checks of the running proxy for failover (not the ranked-list re-ping)",
+                "int",
+                &[],
+            ),
+            config_row_kind(
+                "proxy.slow_traffic_kbps",
+                config.proxy_slow_traffic_kbps.to_string(),
+                "live traffic below this KB/s for two windows switches; 0 disables",
+                "int",
+                &[],
+            ),
+            config_row_kind(
+                "proxy.bulk_check_interval_seconds",
+                config.proxy_bulk_check_interval_seconds.to_string(),
+                "seconds between deep 10 MB checks; 0 disables",
                 "int",
                 &[],
             ),
@@ -1944,6 +1980,20 @@ fn apply_probe_setting(
                 _ => Some(value.to_string()),
             };
         }
+        "probe.speedtest_top_n" => {
+            cfg.probe.speedtest_top_n = value.parse::<usize>().map_err(|_| {
+                "probe.speedtest_top_n must be a whole number (0 disables)".to_string()
+            })?;
+        }
+        "probe.speedtest_interval_seconds" => {
+            cfg.probe.speedtest_interval_seconds = value.parse::<u64>().map_err(|_| {
+                "probe.speedtest_interval_seconds must be seconds (0 always retests)".to_string()
+            })?;
+        }
+        "probe.require_transport_security" => {
+            cfg.probe.require_transport_security =
+                parse_bool(value).ok_or_else(|| "expected true/false".to_string())?;
+        }
         _ => return Ok(false),
     }
     Ok(true)
@@ -2012,6 +2062,16 @@ fn apply_sharing_proxy_setting(
         "proxy.health_check_interval_seconds" => {
             cfg.proxy.health_check_interval_seconds = parse_positive(value).ok_or_else(|| {
                 "proxy.health_check_interval_seconds must be greater than 0".to_string()
+            })?;
+        }
+        "proxy.slow_traffic_kbps" => {
+            cfg.proxy.slow_traffic_kbps = value
+                .parse::<u64>()
+                .map_err(|_| "proxy.slow_traffic_kbps must be KB/s (0 disables)".to_string())?;
+        }
+        "proxy.bulk_check_interval_seconds" => {
+            cfg.proxy.bulk_check_interval_seconds = value.parse::<u64>().map_err(|_| {
+                "proxy.bulk_check_interval_seconds must be seconds (0 disables)".to_string()
             })?;
         }
         _ => return Ok(false),
@@ -2738,6 +2798,9 @@ mod tests {
             accepted_statuses: vec![204, 200],
             download_bytes_limit: 1_048_576,
             download_url: None,
+            speedtest_top_n: 2,
+            speedtest_interval_seconds: 900,
+            require_transport_security: false,
             subscription_count: 0,
             enabled_subscription_count: 0,
             proxy_enabled: false,
@@ -2746,6 +2809,8 @@ mod tests {
             rotating_proxy: true,
             health_check_url: "https://cp.cloudflare.com".to_string(),
             health_check_interval_seconds: 60,
+            proxy_slow_traffic_kbps: 64,
+            proxy_bulk_check_interval_seconds: 300,
             proxy_manual_uri: None,
         };
         HttpState {
@@ -3257,6 +3322,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines)]
     async fn config_serves_grouped_live_settings_without_token_leak() {
         let state = http_state(RuntimeState::default(), false);
         let secret = "config-endpoint-secret-token";
@@ -3283,6 +3349,10 @@ mod tests {
         let mut seen_sing_box_path = false;
         let mut seen_process_concurrency = false;
         let mut seen_rotating_proxy = false;
+        let mut seen_speedtest_top_n = false;
+        let mut seen_require_transport_security = false;
+        let mut seen_slow_traffic = false;
+        let mut seen_bulk_check = false;
         let mut seen_emergency = false;
         let mut seen_advanced = false;
         for group in groups {
@@ -3331,6 +3401,22 @@ mod tests {
                     seen_rotating_proxy = true;
                     assert_eq!(row["kind"], serde_json::Value::from("bool"));
                 }
+                if row["key"] == "probe.speedtest_top_n" {
+                    seen_speedtest_top_n = true;
+                    assert_eq!(row["kind"], serde_json::Value::from("int"));
+                }
+                if row["key"] == "probe.require_transport_security" {
+                    seen_require_transport_security = true;
+                    assert_eq!(row["kind"], serde_json::Value::from("bool"));
+                }
+                if row["key"] == "proxy.slow_traffic_kbps" {
+                    seen_slow_traffic = true;
+                    assert_eq!(row["kind"], serde_json::Value::from("int"));
+                }
+                if row["key"] == "proxy.bulk_check_interval_seconds" {
+                    seen_bulk_check = true;
+                    assert_eq!(row["kind"], serde_json::Value::from("int"));
+                }
                 if row["key"] == "emergency_config" {
                     seen_emergency = true;
                     assert_eq!(row["value"], serde_json::Value::from(""));
@@ -3350,6 +3436,16 @@ mod tests {
             "probe.process_concurrency is served"
         );
         assert!(seen_rotating_proxy, "proxy.rotating_proxy is served");
+        assert!(seen_speedtest_top_n, "probe.speedtest_top_n is served");
+        assert!(
+            seen_require_transport_security,
+            "probe.require_transport_security is served"
+        );
+        assert!(seen_slow_traffic, "proxy.slow_traffic_kbps is served");
+        assert!(
+            seen_bulk_check,
+            "proxy.bulk_check_interval_seconds is served"
+        );
         assert!(seen_emergency, "emergency_config is served");
         assert!(seen_advanced, "advanced group is served");
     }
@@ -4148,6 +4244,27 @@ mod tests {
         assert_eq!(cfg.geoip_db_path, None);
         assert!(super::apply_web_setting(&mut cfg, "geoip_db_path", "/data/geo.mmdb").is_ok());
         assert_eq!(cfg.geoip_db_path.as_deref(), Some("/data/geo.mmdb"));
+        assert!(super::apply_web_setting(&mut cfg, "probe.speedtest_top_n", "2").is_ok());
+        assert_eq!(cfg.probe.speedtest_top_n, 2);
+        assert!(super::apply_web_setting(&mut cfg, "probe.speedtest_top_n", "off").is_err());
+        assert!(
+            super::apply_web_setting(&mut cfg, "probe.speedtest_interval_seconds", "900").is_ok()
+        );
+        assert_eq!(cfg.probe.speedtest_interval_seconds, 900);
+        assert!(
+            super::apply_web_setting(&mut cfg, "probe.speedtest_interval_seconds", "soon").is_err()
+        );
+        assert!(
+            super::apply_web_setting(&mut cfg, "probe.require_transport_security", "on").is_ok()
+        );
+        assert!(cfg.probe.require_transport_security);
+        assert!(super::apply_web_setting(&mut cfg, "proxy.slow_traffic_kbps", "0").is_ok());
+        assert_eq!(cfg.proxy.slow_traffic_kbps, 0);
+        assert!(super::apply_web_setting(&mut cfg, "proxy.slow_traffic_kbps", "fast").is_err());
+        assert!(
+            super::apply_web_setting(&mut cfg, "proxy.bulk_check_interval_seconds", "600").is_ok()
+        );
+        assert_eq!(cfg.proxy.bulk_check_interval_seconds, 600);
         assert!(super::apply_web_setting(&mut cfg, "unknown.key", "1").is_err());
     }
 

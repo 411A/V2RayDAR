@@ -62,6 +62,9 @@ pub enum ConfigKey {
     AcceptedStatuses,
     DownloadUrl,
     DownloadLimit,
+    SpeedtestTopN,
+    SpeedtestInterval,
+    RequireTransportSecurity,
     CleanOfflineDays,
     TokenRequired,
     Token,
@@ -71,6 +74,8 @@ pub enum ConfigKey {
     RotatingProxy,
     ProxyHealthCheckUrl,
     ProxyHealthCheckInterval,
+    SlowTrafficKbps,
+    BulkCheckInterval,
     ResetDefaults,
 }
 

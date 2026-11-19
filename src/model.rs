@@ -239,6 +239,9 @@ pub struct RuntimeConfig {
     pub download_bytes_limit: usize,
     /// Speedtest download link (`None` = speedtest off, shown as `off`).
     pub download_url: Option<String>,
+    pub speedtest_top_n: usize,
+    pub speedtest_interval_seconds: u64,
+    pub require_transport_security: bool,
     pub subscription_count: usize,
     pub enabled_subscription_count: usize,
     pub proxy_enabled: bool,
@@ -247,6 +250,8 @@ pub struct RuntimeConfig {
     pub rotating_proxy: bool,
     pub health_check_url: String,
     pub health_check_interval_seconds: u64,
+    pub proxy_slow_traffic_kbps: u64,
+    pub proxy_bulk_check_interval_seconds: u64,
     /// Pinned config URI (`None` = auto-select). Carried so the TUI can
     /// adopt pins made from the dashboard (which live-pushes without
     /// touching the file the TUI edits from).

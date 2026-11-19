@@ -533,6 +533,9 @@ mod tests {
             accepted_statuses: DEFAULT_ACCEPTED_STATUSES.to_vec(),
             download_bytes_limit: DEFAULT_DOWNLOAD_BYTES_LIMIT,
             download_url: None,
+            speedtest_top_n: 2,
+            speedtest_interval_seconds: 900,
+            require_transport_security: false,
             subscription_count: 0,
             enabled_subscription_count: 0,
             proxy_enabled: false,
@@ -541,6 +544,8 @@ mod tests {
             rotating_proxy: DEFAULT_ROTATING_PROXY,
             health_check_url: DEFAULT_PROXY_HEALTH_CHECK_URL.to_string(),
             health_check_interval_seconds: DEFAULT_PROXY_HEALTH_CHECK_INTERVAL,
+            proxy_slow_traffic_kbps: 64,
+            proxy_bulk_check_interval_seconds: 300,
             proxy_manual_uri: None,
         }
     }

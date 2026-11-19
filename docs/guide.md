@@ -459,7 +459,9 @@ Token checks apply only to LAN requests. Local requests from `127.0.0.1` are all
 | `proxy.discoverable` | Boolean | `false` | Binds to `0.0.0.0` instead of `127.0.0.1` and adds a firewall rule for LAN access. |
 | `proxy.rotating_proxy` | Boolean | `true` | `true` switches the proxy to the best-ranked config on each cycle; `false` keeps the current config while it stays reachable. Either way, live traffic holds the current config through ranking jitter, and a measured slow/stalled link switches immediately. |
 | `proxy.health_check_url` | String | `https://cp.cloudflare.com` | URL tested through the proxy to verify it's alive. |
-| `proxy.health_check_interval_seconds` | Integer | `60` | Seconds between proxy health checks. On failure, auto-failovers to the next ranked config. The detector also watches the live connection table: a connection that uploads with zero download, or traffic that stays below 64 KB/s for two 10-second windows, triggers a deep 10 MB check and a fast switch when the proxy is at fault. A manual pin is watched too; it is suspended after it fails, and auto-select takes over until you pin another config. |
+| `proxy.health_check_interval_seconds` | Integer | `60` | Seconds between proxy health checks. On failure, auto-failovers to the next ranked config. The detector also watches the live connection table: a connection that uploads with zero download, or traffic that stays below the slow-link floor for two 10-second windows, triggers a deep 10 MB check and a fast switch when the proxy is at fault. A manual pin is watched too; it is suspended after it fails, and auto-select takes over until you pin another config. |
+| `proxy.slow_traffic_kbps` | Integer KB/s | `64` | Live traffic below this rate for two 10-second windows is treated as slow. `0` disables the slow-link switch; health and starvation failover still run. |
+| `proxy.bulk_check_interval_seconds` | Integer seconds | `300` | Minimum gap between deep 10 MB checks of the active proxy. `0` disables deep checks; probe measurements can still justify a switch. |
 
 When `proxy.discoverable: true`, other devices on the same LAN can use the proxy. Replace `YOUR_LAN_IP` with the actual LAN IP shown in the TUI's **Current Configuration** panel under **Network**, and open the URL on your phone:
 
@@ -515,6 +517,9 @@ http://192.0.2.23:27141/subscription?token=GENERATED_TOKEN
 | `probe.accepted_statuses` | HTTP status array | `[204, 200]` | HTTP statuses treated as successful active validation. |
 | `probe.download_url` | URL string or null | `https://download.thinkbroadband.com/10MB.zip` | Static object used to measure real throughput for the top working configs. `null` turns throughput ranking off and falls back to stability + latency. A URL that answers `204` or only headers measures nothing. |
 | `probe.download_bytes_limit` | Integer bytes | `4194304` | Bytes read per speed test. Four MiB is the bulk bar: a config that lands below it is ranked behind configs that finished. The tail two seconds decide the rate, so a burst-then-crawl link cannot pass on its average. |
+| `probe.speedtest_top_n` | Integer | `2` | How many of the best reachable configs get a real-body speed test per run. Lower values use less data; `0` turns speed tests off. |
+| `probe.speedtest_interval_seconds` | Integer seconds | `900` | Re-use a fresh speed-test result for this long before downloading the body again. `0` re-tests every cycle. |
+| `probe.require_transport_security` | Boolean | `false` | When `true`, drop Shadowsocks/SSR, no-TLS VMess/VLESS, and Reality configs whose SNI is an IP, a bare word, or an unknown public suffix before probing. `REQUIRE_TRANSPORT_SECURITY=1` is an environment override. |
 
 ## Active Mode
 

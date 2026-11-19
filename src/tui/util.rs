@@ -99,6 +99,8 @@ fn merge_section_proxy(merged: &mut AppConfig, startup: &AppConfig, tui: &AppCon
     pick!(copy rotating_proxy);
     pick!(health_check_url);
     pick!(copy health_check_interval_seconds);
+    pick!(copy slow_traffic_kbps);
+    pick!(copy bulk_check_interval_seconds);
 }
 
 fn merge_section_probe(merged: &mut AppConfig, startup: &AppConfig, tui: &AppConfig) {
@@ -132,6 +134,9 @@ fn merge_section_probe(merged: &mut AppConfig, startup: &AppConfig, tui: &AppCon
     pick!(accepted_statuses);
     pick!(download_url);
     pick!(copy download_bytes_limit);
+    pick!(copy speedtest_top_n);
+    pick!(copy speedtest_interval_seconds);
+    pick!(copy require_transport_security);
 }
 
 pub fn human_bytes(bytes: u64) -> String {

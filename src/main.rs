@@ -1179,6 +1179,7 @@ async fn refresh_once(
     ping_cancel: Option<Arc<AtomicBool>>,
     manual: bool,
 ) -> Result<()> {
+    crate::parser::set_transport_security_required(config.probe.require_transport_security);
     // Refresh is always prioritized over ping: when a fetch comes due while
     // a ping is still running, stop the ping and keep the working results it
     // gathered (carried below) instead of resetting the count. `refreshing`
@@ -2170,6 +2171,7 @@ async fn ping_once(
     ping_cancel: Arc<AtomicBool>,
     manual: bool,
 ) -> Result<bool> {
+    crate::parser::set_transport_security_required(config.probe.require_transport_security);
     let actor = cycle_actor(manual);
     let Ok(_cycle_guard) = cycle.try_lock() else {
         debug!("ping skipped: fetch cycle is running");
@@ -3464,6 +3466,9 @@ impl From<&AppConfig> for RuntimeConfig {
             accepted_statuses: config.probe.accepted_statuses.clone(),
             download_bytes_limit: config.probe.download_bytes_limit,
             download_url: config.probe.download_url.clone(),
+            speedtest_top_n: config.probe.speedtest_top_n,
+            speedtest_interval_seconds: config.probe.speedtest_interval_seconds,
+            require_transport_security: config.probe.require_transport_security,
             subscription_count: config.subscriptions.len(),
             enabled_subscription_count: config
                 .subscriptions
@@ -3476,6 +3481,8 @@ impl From<&AppConfig> for RuntimeConfig {
             rotating_proxy: config.proxy.rotating_proxy,
             health_check_url: config.proxy.health_check_url.clone(),
             health_check_interval_seconds: config.proxy.health_check_interval_seconds,
+            proxy_slow_traffic_kbps: config.proxy.slow_traffic_kbps,
+            proxy_bulk_check_interval_seconds: config.proxy.bulk_check_interval_seconds,
             proxy_manual_uri: config.proxy.manual_proxy_uri.clone(),
         }
     }

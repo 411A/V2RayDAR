@@ -4,6 +4,7 @@ mod xray;
 use std::{
     collections::{HashSet, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use anyhow::{Result, anyhow};
@@ -195,7 +196,19 @@ pub fn parse_share_link(source: &str, priority: u32, uri: &str) -> Result<Candid
 /// not a real public hostname are rejected before they can take a probe slot.
 /// Off by default: other countries should not lose working Shadowsocks or
 /// no-TLS nodes because a restricted network wants a stricter pool.
+/// Runtime switch for the optional ingest hardener. `main` updates it from
+/// `probe.require_transport_security`; `REQUIRE_TRANSPORT_SECURITY` remains
+/// an environment override for scripts and first-run setups.
+static TRANSPORT_SECURITY_REQUIRED: AtomicBool = AtomicBool::new(false);
+
+pub fn set_transport_security_required(required: bool) {
+    TRANSPORT_SECURITY_REQUIRED.store(required, Ordering::Relaxed);
+}
+
 fn require_transport_security() -> bool {
+    if TRANSPORT_SECURITY_REQUIRED.load(Ordering::Relaxed) {
+        return true;
+    }
     std::env::var("REQUIRE_TRANSPORT_SECURITY").is_ok_and(|value| {
         !matches!(
             value.trim().to_ascii_lowercase().as_str(),

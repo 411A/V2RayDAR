@@ -67,6 +67,15 @@ pub const DEFAULT_ACCEPTED_STATUSES: &[u16] = &[204, 200];
 /// link into a 2 KB/s crawl, so configs were certified by a body they could
 /// never finish. The default target carries 10 MiB; we read this much.
 pub const DEFAULT_DOWNLOAD_BYTES_LIMIT: usize = 4 * 1024 * 1024;
+/// How many of the top reachable configs get a speedtest in one run. Lower
+/// values save data; the rest keep their previous measurement or stay
+/// unmeasured (class 1, behind proven bulk nodes).
+pub const DEFAULT_SPEEDTEST_TOP_N: usize = 2;
+/// Re-use a successful speedtest for this long before downloading the body
+/// again. 0 re-tests on every cycle.
+pub const DEFAULT_SPEEDTEST_INTERVAL_SECONDS: u64 = 900;
+/// Off by default: other countries keep every transport that works for them.
+pub const DEFAULT_REQUIRE_TRANSPORT_SECURITY: bool = false;
 /// Public static objects (not a speed-test API) used when the user has not
 /// chosen a speed-test URL. Both support HTTP Range and return a real body.
 pub const DEFAULT_DOWNLOAD_URL: &str = "https://download.thinkbroadband.com/10MB.zip";
@@ -96,6 +105,12 @@ pub const DEFAULT_PROXY_DISCOVERABLE: bool = false;
 pub const DEFAULT_ROTATING_PROXY: bool = true;
 pub const DEFAULT_PROXY_HEALTH_CHECK_URL: &str = "https://cp.cloudflare.com";
 pub const DEFAULT_PROXY_HEALTH_CHECK_INTERVAL: u64 = 60;
+/// Live-traffic floor for an automatic speed switch. 0 turns the slow-link
+/// switch off; starvation and health failover still run.
+pub const DEFAULT_PROXY_SLOW_TRAFFIC_KBPS: u64 = PROXY_STREAM_SLOW_BPS / 1024;
+/// Minimum gap between deep 10 MB checks on the active proxy. 0 turns the
+/// deep check off (probe measurements can still justify a switch).
+pub const DEFAULT_PROXY_BULK_CHECK_INTERVAL_SECONDS: u64 = PROXY_BULK_CHECK_INTERVAL.as_secs();
 pub const PROXY_MAX_CONSECUTIVE_FAILURES: u32 = 3;
 pub const PROXY_FAILOVER_COOLDOWN: Duration = Duration::from_secs(10);
 /// Minimum dwell on a freshly switched config: post-cycle updates must not
@@ -432,7 +447,7 @@ pub const SUBSCRIPTION_ACTIONS: [SubscriptionAction; 6] = [
     SubscriptionAction::Delete,
     SubscriptionAction::Back,
 ];
-pub const CONFIG_KEYS: [ConfigKey; 35] = [
+pub const CONFIG_KEYS: [ConfigKey; 40] = [
     ConfigKey::Bind,
     ConfigKey::TopN,
     ConfigKey::RefreshSeconds,
@@ -458,6 +473,9 @@ pub const CONFIG_KEYS: [ConfigKey; 35] = [
     ConfigKey::AcceptedStatuses,
     ConfigKey::DownloadUrl,
     ConfigKey::DownloadLimit,
+    ConfigKey::SpeedtestTopN,
+    ConfigKey::SpeedtestInterval,
+    ConfigKey::RequireTransportSecurity,
     ConfigKey::CleanOfflineDays,
     ConfigKey::TokenRequired,
     ConfigKey::Token,
@@ -467,6 +485,8 @@ pub const CONFIG_KEYS: [ConfigKey; 35] = [
     ConfigKey::RotatingProxy,
     ConfigKey::ProxyHealthCheckUrl,
     ConfigKey::ProxyHealthCheckInterval,
+    ConfigKey::SlowTrafficKbps,
+    ConfigKey::BulkCheckInterval,
     ConfigKey::ResetDefaults,
 ];
 
@@ -507,6 +527,21 @@ pub const SETTING_GUIDES: &[SettingGuide] = &[
         key: "prioritize_stability",
         label: "Stable ranking",
         help: "true keeps the previous run's top-N ahead inside the same throughput class (re-pinged first). Measured bulk throughput always decides first; false drops the stability carry-over.",
+    },
+    SettingGuide {
+        key: "probe.speedtest_top_n",
+        label: "Speedtest count",
+        help: "How many top reachable configs get a real-body speedtest per run. Lower uses less data; 0 turns speedtests off.",
+    },
+    SettingGuide {
+        key: "probe.require_transport_security",
+        label: "Require TLS",
+        help: "true drops Shadowsocks/SSR, no-TLS VMess/VLESS, and Reality with an impossible SNI before they take a probe slot. Off by default.",
+    },
+    SettingGuide {
+        key: "proxy.slow_traffic_kbps",
+        label: "Slow link floor",
+        help: "Live traffic below this KB/s for two windows triggers a fast switch. 0 disables the slow-link switch; health and starvation failover still run.",
     },
     SettingGuide {
         key: "return_configs_asap",

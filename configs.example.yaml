@@ -57,6 +57,12 @@ proxy:
   health_check_url: https://cp.cloudflare.com
   # Seconds between proxy health checks.
   health_check_interval_seconds: 60
+  # Live traffic under this many KB/s for two windows triggers a fast switch.
+  # 0 turns the slow-link switch off; starvation and health failover still run.
+  slow_traffic_kbps: 64
+  # Minimum seconds between deep 10 MB checks of the active proxy.
+  # 0 turns deep checks off; probe measurements can still justify a switch.
+  bulk_check_interval_seconds: 300
 
 #* Candidate validation settings.
 probe:
@@ -87,6 +93,13 @@ probe:
   # Maximum bytes read per speed test; high values use more data/time.
   # Four MiB is the bulk-capability bar: below it a shaper's burst wins.
   download_bytes_limit: 4194304
+  # Only the top N reachable configs are speedtested per run. Lower = less data.
+  speedtest_top_n: 2
+  # Re-use a fresh speedtest for this many seconds; 0 re-tests every cycle.
+  speedtest_interval_seconds: 900
+  # true drops no-TLS and fake-Reality configs before they take a probe slot.
+  # Off by default so other networks keep every transport that works.
+  require_transport_security: false
 
 #* Public subscription sources to fetch, parse, probe, and rank.
 subscriptions:

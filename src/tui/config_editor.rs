@@ -36,6 +36,9 @@ pub const fn label(key: ConfigKey) -> &'static str {
         ConfigKey::AcceptedStatuses => "probe.accepted_statuses",
         ConfigKey::DownloadUrl => "probe.download_url",
         ConfigKey::DownloadLimit => "probe.download_bytes_limit",
+        ConfigKey::SpeedtestTopN => "probe.speedtest_top_n",
+        ConfigKey::SpeedtestInterval => "probe.speedtest_interval_seconds",
+        ConfigKey::RequireTransportSecurity => "probe.require_transport_security",
         ConfigKey::CleanOfflineDays => "clean_offlines_after_days",
         ConfigKey::TokenRequired => "sharing.require_token",
         ConfigKey::Token => "sharing.token",
@@ -45,6 +48,8 @@ pub const fn label(key: ConfigKey) -> &'static str {
         ConfigKey::RotatingProxy => "proxy.rotating_proxy",
         ConfigKey::ProxyHealthCheckUrl => "proxy.health_check_url",
         ConfigKey::ProxyHealthCheckInterval => "proxy.health_check_interval_seconds",
+        ConfigKey::SlowTrafficKbps => "proxy.slow_traffic_kbps",
+        ConfigKey::BulkCheckInterval => "proxy.bulk_check_interval_seconds",
         ConfigKey::ResetDefaults => "reset to defaults",
     }
 }
@@ -80,6 +85,9 @@ pub const fn guide(key: ConfigKey) -> &'static str {
         ConfigKey::AcceptedStatuses => "HTTP codes, e.g. 204,200",
         ConfigKey::DownloadUrl => "speedtest URL or off/null",
         ConfigKey::DownloadLimit => "speedtest byte limit",
+        ConfigKey::SpeedtestTopN => "top configs speedtested per run; 0 skips",
+        ConfigKey::SpeedtestInterval => "reuse a speedtest for this many seconds; 0 always retests",
+        ConfigKey::RequireTransportSecurity => "true drops no-TLS and fake-Reality configs",
         ConfigKey::CleanOfflineDays => "days before offline configs are removed",
         ConfigKey::TokenRequired => "true/false for URL token",
         ConfigKey::Token => "token text, empty allowed",
@@ -89,6 +97,8 @@ pub const fn guide(key: ConfigKey) -> &'static str {
         ConfigKey::RotatingProxy => "true switches to lowest ping; false keeps current",
         ConfigKey::ProxyHealthCheckUrl => "URL tested through the proxy",
         ConfigKey::ProxyHealthCheckInterval => "seconds between health checks",
+        ConfigKey::SlowTrafficKbps => "KB/s floor for a live slow-link switch; 0 disables",
+        ConfigKey::BulkCheckInterval => "seconds between deep 10 MB checks; 0 disables",
         ConfigKey::ResetDefaults => "type shown code to reset",
     }
 }
@@ -136,6 +146,9 @@ pub fn value(config: &crate::config::AppConfig, key: ConfigKey) -> String {
             .clone()
             .unwrap_or_else(|| "off".into()),
         ConfigKey::DownloadLimit => config.probe.download_bytes_limit.to_string(),
+        ConfigKey::SpeedtestTopN => config.probe.speedtest_top_n.to_string(),
+        ConfigKey::SpeedtestInterval => config.probe.speedtest_interval_seconds.to_string(),
+        ConfigKey::RequireTransportSecurity => config.probe.require_transport_security.to_string(),
         ConfigKey::CleanOfflineDays => config.clean_offlines_after_days.to_string(),
         ConfigKey::TokenRequired => config.sharing.require_token.to_string(),
         ConfigKey::Token => config.sharing.token.clone(),
@@ -147,6 +160,8 @@ pub fn value(config: &crate::config::AppConfig, key: ConfigKey) -> String {
         ConfigKey::ProxyHealthCheckInterval => {
             config.proxy.health_check_interval_seconds.to_string()
         }
+        ConfigKey::SlowTrafficKbps => config.proxy.slow_traffic_kbps.to_string(),
+        ConfigKey::BulkCheckInterval => config.proxy.bulk_check_interval_seconds.to_string(),
         ConfigKey::ResetDefaults => "keeps subscriptions".to_string(),
     }
 }
@@ -199,6 +214,19 @@ pub fn apply(config: &mut crate::config::AppConfig, key: ConfigKey, raw: &str) -
         ConfigKey::DownloadLimit => {
             config.probe.download_bytes_limit = positive(value, label(key))?;
         }
+        ConfigKey::SpeedtestTopN => {
+            config.probe.speedtest_top_n = value
+                .parse::<usize>()
+                .map_err(|_| anyhow!("probe.speedtest_top_n must be a whole number"))?;
+        }
+        ConfigKey::SpeedtestInterval => {
+            config.probe.speedtest_interval_seconds = value
+                .parse::<u64>()
+                .map_err(|_| anyhow!("probe.speedtest_interval_seconds must be seconds"))?;
+        }
+        ConfigKey::RequireTransportSecurity => {
+            config.probe.require_transport_security = bool_value(value)?;
+        }
         ConfigKey::CleanOfflineDays => {
             config.clean_offlines_after_days = positive(value, label(key))?;
         }
@@ -221,6 +249,16 @@ pub fn apply(config: &mut crate::config::AppConfig, key: ConfigKey, raw: &str) -
         }
         ConfigKey::ProxyHealthCheckInterval => {
             config.proxy.health_check_interval_seconds = nonzero(value, label(key))?;
+        }
+        ConfigKey::SlowTrafficKbps => {
+            config.proxy.slow_traffic_kbps = value
+                .parse::<u64>()
+                .map_err(|_| anyhow!("proxy.slow_traffic_kbps must be KB/s or 0"))?;
+        }
+        ConfigKey::BulkCheckInterval => {
+            config.proxy.bulk_check_interval_seconds = value
+                .parse::<u64>()
+                .map_err(|_| anyhow!("proxy.bulk_check_interval_seconds must be seconds or 0"))?;
         }
         ConfigKey::ResetDefaults => {}
     }
@@ -328,5 +366,24 @@ mod tests {
         // An explicit token is never overwritten.
         apply(&mut config, ConfigKey::Token, "user-token").expect("sets");
         assert_eq!(config.sharing.token, "user-token");
+    }
+
+    #[test]
+    fn speed_and_ingest_settings_round_trip_through_the_tui() {
+        let mut config = AppConfig::default_for_first_run();
+        apply(&mut config, ConfigKey::SpeedtestTopN, "2").expect("top n");
+        apply(&mut config, ConfigKey::SpeedtestInterval, "900").expect("interval");
+        apply(&mut config, ConfigKey::RequireTransportSecurity, "on").expect("hardening");
+        apply(&mut config, ConfigKey::SlowTrafficKbps, "0").expect("slow off");
+        apply(&mut config, ConfigKey::BulkCheckInterval, "600").expect("deep interval");
+        assert_eq!(config.probe.speedtest_top_n, 2);
+        assert_eq!(config.probe.speedtest_interval_seconds, 900);
+        assert!(config.probe.require_transport_security);
+        assert_eq!(config.proxy.slow_traffic_kbps, 0);
+        assert_eq!(config.proxy.bulk_check_interval_seconds, 600);
+        assert_eq!(
+            super::value(&config, ConfigKey::SpeedtestTopN),
+            "2".to_string()
+        );
     }
 }

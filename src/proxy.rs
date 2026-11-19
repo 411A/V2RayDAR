@@ -25,8 +25,8 @@ use crate::{
     config::ProxyConfig,
     constants::{
         BULK_CHECK_FALLBACK_URL, BULK_MIN_MBPS, DEFAULT_DOWNLOAD_URL, LOCALHOST_IP,
-        PROXY_BULK_CHECK_BYTES, PROXY_BULK_CHECK_FALLBACK_TIMEOUT, PROXY_BULK_CHECK_INTERVAL,
-        PROXY_BULK_CHECK_TIMEOUT, PROXY_CLASH_API_TIMEOUT, PROXY_CLASH_CONTROLLER_PORT_ATTEMPTS,
+        PROXY_BULK_CHECK_BYTES, PROXY_BULK_CHECK_FALLBACK_TIMEOUT, PROXY_BULK_CHECK_TIMEOUT,
+        PROXY_CLASH_API_TIMEOUT, PROXY_CLASH_CONTROLLER_PORT_ATTEMPTS,
         PROXY_CLASH_UNREACHABLE_RETRY_POLLS, PROXY_DNS_FALLBACK, PROXY_DNS_PRIMARY,
         PROXY_FAILOVER_COOLDOWN, PROXY_HEALTH_CHECK_BODY_BYTES, PROXY_HEALTH_CHECK_TIMEOUT,
         PROXY_HEALTH_FULL_BPS, PROXY_HEALTH_LIGHT_TIMEOUT, PROXY_HEALTH_MIN_BPS,
@@ -36,9 +36,8 @@ use crate::{
         PROXY_SING_BOX_TAG_DNS_PROXY, PROXY_SING_BOX_TAG_INBOUND, PROXY_SING_BOX_TAG_OUTBOUND,
         PROXY_SLOW_CHECK_WARN, PROXY_STARTUP_TIMEOUT, PROXY_STARVATION_MIN_AGE,
         PROXY_STARVATION_MIN_UPLOAD_BYTES, PROXY_STARVATION_POLL_INTERVAL, PROXY_STREAM_MIN_AGE,
-        PROXY_STREAM_MIN_WINDOW_BYTES, PROXY_STREAM_SLOW_BPS, PROXY_STREAM_SLOW_WINDOWS,
-        PROXY_STREAM_UPGRADE_FACTOR, PROXY_STREAM_WINDOW, SING_BOX_CLEANUP_TIMEOUT,
-        SING_BOX_CONFIG_FILE_PREFIX,
+        PROXY_STREAM_MIN_WINDOW_BYTES, PROXY_STREAM_SLOW_WINDOWS, PROXY_STREAM_UPGRADE_FACTOR,
+        PROXY_STREAM_WINDOW, SING_BOX_CLEANUP_TIMEOUT, SING_BOX_CONFIG_FILE_PREFIX,
     },
     model::{ProgressEvent, RankedConfig, RuntimeState},
     probe::{sing_box_outbound_from_share_link, sing_box_version_at_least},
@@ -1579,11 +1578,12 @@ pub fn spawn_starvation_loop(
         loop {
             time::sleep(PROXY_STARVATION_POLL_INTERVAL).await;
 
-            let (running, controller, secret) = read_proxy_state(&proxy, |state| {
+            let (running, controller, secret, slow_kbps) = read_proxy_state(&proxy, |state| {
                 (
                     state.running,
                     state.clash_controller,
                     state.clash_secret.clone(),
+                    state.proxy_config.slow_traffic_kbps,
                 )
             })
             .await;
@@ -1703,7 +1703,12 @@ pub fn spawn_starvation_loop(
             if window_started.elapsed() >= PROXY_STREAM_WINDOW {
                 let elapsed = window_started.elapsed().as_secs_f64();
                 let bytes_per_second = bytes_to_f64(window_bytes) / elapsed.max(0.001);
-                let slow = stream_is_slow(window_active, bytes_per_second, PROXY_STREAM_SLOW_BPS);
+                let slow = slow_kbps > 0
+                    && stream_is_slow(
+                        window_active,
+                        bytes_per_second,
+                        slow_kbps.saturating_mul(1024),
+                    );
                 if slow {
                     slow_windows = slow_windows.saturating_add(1);
                 } else {
@@ -1844,11 +1849,18 @@ async fn on_slow_traffic(
 /// cannot be reached at all is `Unknown` (never a reason to switch); a body
 /// that arrives truncated or slow is `Broken`.
 async fn deep_bulk_check(proxy: &SharedProxy) -> BulkVerdict {
-    let (port, last) = read_proxy_state(proxy, |state| {
-        (state.proxy_config.port, state.last_bulk_check)
+    let (port, last, interval) = read_proxy_state(proxy, |state| {
+        (
+            state.proxy_config.port,
+            state.last_bulk_check,
+            state.proxy_config.bulk_check_interval_seconds,
+        )
     })
     .await;
-    if last.is_some_and(|at| at.elapsed() < PROXY_BULK_CHECK_INTERVAL) {
+    if interval == 0 {
+        return BulkVerdict::Unknown;
+    }
+    if last.is_some_and(|at| at.elapsed() < Duration::from_secs(interval)) {
         // Recently checked; a second slow window in the same interval is
         // origin-side or the switch already happened.
         return BulkVerdict::Unknown;
@@ -2154,6 +2166,7 @@ fn build_sing_box_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::PROXY_STREAM_SLOW_BPS;
     use std::time::Duration;
 
     fn selectable(name: &str, reachable: bool) -> RankedConfig {

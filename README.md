@@ -244,6 +244,8 @@ Windows users replace `v2raydar` with `v2raydar.exe`. On macOS open the bundled 
 | `proxy.rotating_proxy` | `true` | `true` switches the proxy to the best-ranked config on each cycle; `false` keeps the current config while it stays reachable. Live traffic holds the current link through ranking jitter; a measured slow/stalled link switches fast. |
 | `proxy.health_check_url` | `https://cp.cloudflare.com` | URL tested through the proxy to verify it's alive. |
 | `proxy.health_check_interval_seconds` | `60` | Seconds between proxy health checks. Auto-failover on failure; live connections that starve or stay below 64 KB/s trigger a deep 10 MB check and a switch when the proxy is at fault. A manual pin is suspended after it fails, and auto-select resumes. |
+| `proxy.slow_traffic_kbps` | `64` | Slow-link floor; `0` disables the slow-traffic switch. |
+| `proxy.bulk_check_interval_seconds` | `300` | Minimum gap between deep 10 MB checks; `0` disables them. |
 | `probe.mode` | `active` | `active` uses `sing-box`; `tcp` is diagnostic only. |
 | `probe.sing_box_path` | `null` | Optional path to `sing-box`. Leave `null` for desktop `_with_singbox` or Termux builds with bundled `sing-box`. |
 | `probe.connect_timeout_ms` | `5000` | TCP connect timeout for diagnostic probing. |
@@ -256,6 +258,9 @@ Windows users replace `v2raydar` with `v2raydar.exe`. On macOS open the bundled 
 | `probe.accepted_statuses` | `[204, 200]` | HTTP statuses counted as success. |
 | `probe.download_url` | `https://download.thinkbroadband.com/10MB.zip` | Real-body throughput target; `null` turns speed ranking off. |
 | `probe.download_bytes_limit` | `4194304` | Bytes read per speed test; the tail two seconds decide the rate. |
+| `probe.speedtest_top_n` | `2` | Top configs speedtested per run; `0` turns speed tests off. |
+| `probe.speedtest_interval_seconds` | `900` | Reuse a speedtest for this long; `0` retests every cycle. |
+| `probe.require_transport_security` | `false` | Drop no-TLS and fake-Reality configs before probing. |
 | `probe.download_bytes_limit` | `1048576` | Upper bound for the optional download test. |
 | `geoip_db_path` | `null` | Optional path to a `GeoLite2-Country.mmdb` file or a country-zone directory (`zones.txt`, or legacy `<cc>.zone` files). If `null`, uses `<data-root>/geoip` (MaxMind database first, zone fallback; both refreshed by the installer). Country data: GeoLite2 by MaxMind (CC BY-SA 4.0); fallback zones by ipdeny. |
 | `subscriptions` | _(pre-selected sources)_ | List of `{ name, url, enabled, priority }` sources. Add your own for better results. |

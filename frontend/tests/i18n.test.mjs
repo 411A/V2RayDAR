@@ -174,10 +174,13 @@ describe("frontend i18n: one unified strings file, English default", () => {
       "probe.active_timeout_ms",
       "probe.startup_timeout_ms", "probe.test_url",
       "probe.accepted_statuses", "probe.download_bytes_limit",
-      "probe.download_url", "probe.speedtest_enabled", "sharing.enabled",
+      "probe.download_url", "probe.speedtest_enabled",
+      "probe.speedtest_top_n", "probe.speedtest_interval_seconds",
+      "probe.require_transport_security", "sharing.enabled",
       "sharing.require_token", "sharing.token", "proxy.enabled",
       "proxy.port", "proxy.discoverable", "proxy.rotating_proxy",
       "proxy.health_check_url", "proxy.health_check_interval_seconds",
+      "proxy.slow_traffic_kbps", "proxy.bulk_check_interval_seconds",
       "clean_offlines_after_days", "geoip_db_path",
     ];
     const groups = ["connection", "fetch", "probe", "sharing", "proxy", "advanced"];

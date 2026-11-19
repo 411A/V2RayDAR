@@ -11,11 +11,13 @@ use crate::constants::{
     DEFAULT_DOWNLOAD_BYTES_LIMIT, DEFAULT_DOWNLOAD_URL, DEFAULT_ENCODED_SUBSCRIPTION,
     DEFAULT_FETCH_CONCURRENCY, DEFAULT_FETCH_TIMEOUT_MS, DEFAULT_MAX_SUBSCRIPTION_BYTES,
     DEFAULT_PING_SECONDS, DEFAULT_PRIORITIZE_STABILITY, DEFAULT_PROBE_BATCH_SIZE,
-    DEFAULT_PROBE_CONCURRENCY, DEFAULT_PROBE_PROCESS_CONCURRENCY, DEFAULT_PROXY_DISCOVERABLE,
-    DEFAULT_PROXY_ENABLED, DEFAULT_PROXY_HEALTH_CHECK_INTERVAL, DEFAULT_PROXY_HEALTH_CHECK_URL,
-    DEFAULT_PROXY_PORT, DEFAULT_REFRESH_SECONDS, DEFAULT_REQUIRE_TOKEN,
-    DEFAULT_RETURN_CONFIGS_ASAP, DEFAULT_ROTATING_PROXY, DEFAULT_SCAN_ALL_CONFIGS,
-    DEFAULT_SHARING_ENABLED, DEFAULT_SHARING_TOKEN, DEFAULT_SING_BOX_PATH,
+    DEFAULT_PROBE_CONCURRENCY, DEFAULT_PROBE_PROCESS_CONCURRENCY,
+    DEFAULT_PROXY_BULK_CHECK_INTERVAL_SECONDS, DEFAULT_PROXY_DISCOVERABLE, DEFAULT_PROXY_ENABLED,
+    DEFAULT_PROXY_HEALTH_CHECK_INTERVAL, DEFAULT_PROXY_HEALTH_CHECK_URL, DEFAULT_PROXY_PORT,
+    DEFAULT_PROXY_SLOW_TRAFFIC_KBPS, DEFAULT_REFRESH_SECONDS, DEFAULT_REQUIRE_TOKEN,
+    DEFAULT_REQUIRE_TRANSPORT_SECURITY, DEFAULT_RETURN_CONFIGS_ASAP, DEFAULT_ROTATING_PROXY,
+    DEFAULT_SCAN_ALL_CONFIGS, DEFAULT_SHARING_ENABLED, DEFAULT_SHARING_TOKEN,
+    DEFAULT_SING_BOX_PATH, DEFAULT_SPEEDTEST_INTERVAL_SECONDS, DEFAULT_SPEEDTEST_TOP_N,
     DEFAULT_STARTUP_TIMEOUT_MS, DEFAULT_SUBSCRIPTION_ENABLED, DEFAULT_SUBSCRIPTION_PRIORITY,
     DEFAULT_TEST_URL, DEFAULT_TOP_N, DEFAULT_USE_CACHE_ONLY,
 };
@@ -177,6 +179,12 @@ pub struct ProbeConfig {
     pub download_url: Option<String>,
     #[serde(default = "default_download_bytes_limit")]
     pub download_bytes_limit: usize,
+    #[serde(default = "default_speedtest_top_n")]
+    pub speedtest_top_n: usize,
+    #[serde(default = "default_speedtest_interval_seconds")]
+    pub speedtest_interval_seconds: u64,
+    #[serde(default = "default_require_transport_security")]
+    pub require_transport_security: bool,
     #[serde(skip)]
     pub sing_box_path_auto: bool,
 }
@@ -215,6 +223,10 @@ pub struct ProxyConfig {
     pub health_check_url: String,
     #[serde(default = "default_proxy_health_check_interval")]
     pub health_check_interval_seconds: u64,
+    #[serde(default = "default_proxy_slow_traffic_kbps")]
+    pub slow_traffic_kbps: u64,
+    #[serde(default = "default_proxy_bulk_check_interval_seconds")]
+    pub bulk_check_interval_seconds: u64,
     #[serde(skip)]
     pub manual_proxy_uri: Option<String>,
 }
@@ -234,6 +246,9 @@ impl Default for ProbeConfig {
             accepted_statuses: default_accepted_statuses(),
             download_url: default_download_url(),
             download_bytes_limit: default_download_bytes_limit(),
+            speedtest_top_n: default_speedtest_top_n(),
+            speedtest_interval_seconds: default_speedtest_interval_seconds(),
+            require_transport_security: default_require_transport_security(),
             sing_box_path_auto: false,
         }
     }
@@ -258,6 +273,8 @@ impl Default for ProxyConfig {
             rotating_proxy: default_rotating_proxy(),
             health_check_url: default_proxy_health_check_url(),
             health_check_interval_seconds: default_proxy_health_check_interval(),
+            slow_traffic_kbps: default_proxy_slow_traffic_kbps(),
+            bulk_check_interval_seconds: default_proxy_bulk_check_interval_seconds(),
             manual_proxy_uri: None,
         }
     }
@@ -790,6 +807,26 @@ const fn default_download_bytes_limit() -> usize {
 #[allow(clippy::unnecessary_wraps)]
 fn default_download_url() -> Option<String> {
     Some(DEFAULT_DOWNLOAD_URL.to_string())
+}
+
+const fn default_speedtest_top_n() -> usize {
+    DEFAULT_SPEEDTEST_TOP_N
+}
+
+const fn default_speedtest_interval_seconds() -> u64 {
+    DEFAULT_SPEEDTEST_INTERVAL_SECONDS
+}
+
+const fn default_require_transport_security() -> bool {
+    DEFAULT_REQUIRE_TRANSPORT_SECURITY
+}
+
+const fn default_proxy_slow_traffic_kbps() -> u64 {
+    DEFAULT_PROXY_SLOW_TRAFFIC_KBPS
+}
+
+const fn default_proxy_bulk_check_interval_seconds() -> u64 {
+    DEFAULT_PROXY_BULK_CHECK_INTERVAL_SECONDS
 }
 
 const fn default_clean_offlines_after_days() -> u32 {

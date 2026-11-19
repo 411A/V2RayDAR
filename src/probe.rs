@@ -751,7 +751,7 @@ async fn probe_active_batched(
     }
 
     let ranked = std::mem::take(&mut lock_shared(&shared).ranked);
-    finish_batched_probe(ranked, started, config, progress.as_ref(), stop_policy).await
+    finish_batched_probe(ranked, started, config, progress.as_ref()).await
 }
 
 /// CPU-bound preparation (outbound building) plus its logging, lifted out
@@ -864,14 +864,13 @@ async fn finish_batched_probe(
     started: Instant,
     config: &ProbeConfig,
     progress: Option<&UnboundedSender<ProgressEvent>>,
-    stop_policy: &ProbeStopPolicy,
 ) -> Vec<RankedConfig> {
     info!(
         ranked = ranked.len(),
         duration_ms = started.elapsed().as_millis(),
         "active probe batches finished"
     );
-    enrich_top_speedtests(&mut ranked, config, progress, stop_policy).await;
+    enrich_top_speedtests(&mut ranked, config, progress).await;
     send_progress(
         progress,
         LogLevel::Info,
@@ -1859,11 +1858,11 @@ fn exchange_bytes(test_url: &str, response: &reqwest::Response) -> u64 {
     request.saturating_add(headers)
 }
 
+#[allow(clippy::too_many_lines)]
 async fn enrich_top_speedtests(
     ranked: &mut [RankedConfig],
     config: &ProbeConfig,
     progress: Option<&UnboundedSender<ProgressEvent>>,
-    stop_policy: &ProbeStopPolicy,
 ) {
     let Some(download_url) = config
         .download_url
@@ -1873,6 +1872,14 @@ async fn enrich_top_speedtests(
     else {
         return;
     };
+    if config.speedtest_top_n == 0 {
+        send_progress(
+            progress,
+            LogLevel::Info,
+            "Speedtest: disabled by speedtest_top_n=0",
+        );
+        return;
+    }
 
     let mut indices = ranked
         .iter()
@@ -1885,12 +1892,39 @@ async fn enrich_top_speedtests(
     }
 
     indices.sort_by(|left, right| compare_ranked(&ranked[*left], &ranked[*right]));
-    let limit = speedtest_probe_limit(indices.len(), stop_policy);
+    // Data efficiency: a fresh measurement is reused for the configured
+    // interval. Filter before the top-N cut so a newly discovered config can
+    // still earn a test while old winners are not downloaded again.
+    let interval = Duration::from_secs(config.speedtest_interval_seconds);
+    let now = Instant::now();
+    let before = indices.len();
+    if !interval.is_zero() {
+        indices.retain(|index| {
+            let key = speedtest_cache_key(&ranked[*index], config);
+            speedtest_cache()
+                .lock()
+                .ok()
+                .and_then(|cache| cache.get(&key).copied())
+                .is_none_or(|at| now.duration_since(at) >= interval)
+        });
+    }
+    let skipped = before.saturating_sub(indices.len());
+    let limit = speedtest_probe_limit(indices.len(), config.speedtest_top_n);
     indices.truncate(limit);
+    if indices.is_empty() {
+        send_progress(
+            progress,
+            LogLevel::Info,
+            format!("Speedtest: reusing {skipped} recent measurement(s); no body downloaded"),
+        );
+        return;
+    }
     send_progress(
         progress,
         LogLevel::Info,
-        format!("Speedtest: measuring {limit} top reachable configs"),
+        format!(
+            "Speedtest: measuring {limit} top configs ({skipped} recent measurement(s) reused)"
+        ),
     );
 
     let concurrency = speedtest_probe_concurrency(config.concurrency, limit);
@@ -1930,16 +1964,34 @@ async fn enrich_top_speedtests(
             }
             ranked[index].download_mbps = Some(measurement.mbps);
             ranked[index].download_bytes = Some(measurement.bytes);
+            if let Ok(mut cache) = speedtest_cache().lock() {
+                if cache.len() > 8192 {
+                    cache.clear();
+                }
+                cache.insert(speedtest_cache_key(&ranked[index], config), Instant::now());
+            }
         }
     }
 }
 
-fn speedtest_probe_limit(reachable: usize, stop_policy: &ProbeStopPolicy) -> usize {
-    if stop_policy.scan_all_configs {
-        return reachable;
-    }
+fn speedtest_cache_key(item: &RankedConfig, config: &ProbeConfig) -> String {
+    format!(
+        "{}|{}|{}",
+        item.dedup_key,
+        config.download_url.as_deref().unwrap_or_default(),
+        config.download_bytes_limit
+    )
+}
 
-    reachable.min(stop_policy.top_n.max(1))
+fn speedtest_cache() -> &'static Mutex<HashMap<String, Instant>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn speedtest_probe_limit(reachable: usize, configured_top: usize) -> usize {
+    // `scan_all_configs` still bounds the speedtest: downloading every
+    // candidate body would be a bandwidth disaster. The setting is the cap.
+    reachable.min(configured_top.max(1))
 }
 
 fn speedtest_probe_concurrency(configured: usize, targets: usize) -> usize {
@@ -3687,6 +3739,9 @@ mod tests {
             accepted_statuses: vec![204],
             download_url: None,
             download_bytes_limit: 1_048_576,
+            speedtest_top_n: 2,
+            speedtest_interval_seconds: 900,
+            require_transport_security: false,
             sing_box_path_auto: false,
         }
     }
@@ -3967,6 +4022,13 @@ mod tests {
             }
         });
         addr
+    }
+
+    #[test]
+    fn speedtest_limit_follows_the_configured_top_n() {
+        assert_eq!(speedtest_probe_limit(10, 2), 2);
+        assert_eq!(speedtest_probe_limit(1, 2), 1);
+        assert_eq!(speedtest_probe_limit(10, 20), 10);
     }
 
     #[tokio::test]

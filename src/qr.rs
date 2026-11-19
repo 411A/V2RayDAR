@@ -849,6 +849,9 @@ mod tests {
             accepted_statuses: vec![200, 204],
             download_bytes_limit: 1_000_000,
             download_url: None,
+            speedtest_top_n: 2,
+            speedtest_interval_seconds: 900,
+            require_transport_security: false,
             subscription_count: 1,
             enabled_subscription_count: 1,
             proxy_enabled: true,
@@ -857,6 +860,8 @@ mod tests {
             rotating_proxy: true,
             health_check_url: "https://cp.cloudflare.com".to_string(),
             health_check_interval_seconds: 60,
+            proxy_slow_traffic_kbps: 64,
+            proxy_bulk_check_interval_seconds: 300,
             proxy_manual_uri: None,
         }
     }

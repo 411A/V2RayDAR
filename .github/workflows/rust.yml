@@ -20,8 +20,12 @@ concurrency:
 jobs:
   gates:
     name: fmt + strict clippy + tests
+    # The audit action publishes its result as a commit check. The Checks
+    # API refuses that without `checks: write`, and the action rethrows the
+    # refusal, so the step failed even with zero advisories.
     permissions:
       contents: read
+      checks: write
     # Mirror the release targets (Windows, Ubuntu, macOS): platform-only
     # faults must fail here, not after release.
     strategy:
@@ -50,14 +54,7 @@ jobs:
       - name: Tests
         run: cargo test --locked
 
-      # `rustsec/audit-check` publishes a commit check through the Checks API,
-      # which now returns "Not Found" even with `checks: write`. Run the audit
-      # directly on one OS instead: the dependency graph is the same on all
-      # three, and vulnerabilities still fail the job.
-      - name: Install cargo-audit
-        if: runner.os == 'Linux'
-        run: cargo install cargo-audit --locked
-
       - name: Audit dependencies
-        if: runner.os == 'Linux'
-        run: cargo audit
+        uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

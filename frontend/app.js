@@ -81,6 +81,7 @@ const state = {
   pollTimer: 0,
   subs: null, // { list, dirty } when /api/subscriptions exists
   settings: null, // server settings payload when /api/config exists
+  dashAuth: null, // /api/dashboard/status payload (security card)
   logLines: [],
   // Older lines loaded from the compressed session archive, oldest first.
   // The live tail stays in `logLines` so real-time rendering never waits on
@@ -244,6 +245,12 @@ async function fetchJson(path, options) {
     data = text ? JSON.parse(text) : null;
   } catch (err) {
     data = null;
+  }
+  // A stale dashboard session on a mutation: reload, and the server serves
+  // the sign-in page instead of leaving a button silently failing.
+  if (res.status === 401 && data && data.code === "dashboard_locked" &&
+    !String(path).startsWith("/api/dashboard/")) {
+    window.location.reload();
   }
   return { status: res.status, data };
 }
@@ -3590,6 +3597,159 @@ async function loadSettings() {
   renderSettings();
 }
 
+/* ---------- dashboard password card ---------- */
+
+async function loadDashboardAuth() {
+  const r = await fetchJson("/api/dashboard/status");
+  if (r.status === 200 && r.data && typeof r.data.enabled === "boolean") {
+    state.dashAuth = r.data;
+  } else {
+    state.dashAuth = null;
+  }
+  renderDashboardAuth();
+}
+
+function authValue(id) {
+  const node = $(id);
+  return node ? String(node.value) : "";
+}
+
+function authField(text, id, autocomplete) {
+  const label = el("label", null, "auth-field");
+  label.appendChild(document.createTextNode(text));
+  const input = document.createElement("input");
+  input.type = "password";
+  input.id = id;
+  input.autocomplete = autocomplete;
+  input.spellcheck = false;
+  label.appendChild(input);
+  return label;
+}
+
+function renderDashboardAuth() {
+  const card = $("dashboard-auth-card");
+  if (!card) {
+    return;
+  }
+  const status = state.dashAuth;
+  if (!status) {
+    card.hidden = true;
+    return;
+  }
+  card.hidden = false;
+  setText($("dash-auth-state"), status.enabled ? t("dashAuthOn") : t("dashAuthOff"));
+  const body = $("dash-auth-body");
+  while (body.firstChild) {
+    body.removeChild(body.firstChild);
+  }
+  const form = el("div", null, "auth-form");
+  if (status.enabled) {
+    form.appendChild(authField(t("dashAuthCurrent"), "auth-current", "current-password"));
+  }
+  form.appendChild(authField(t("dashAuthNew"), "auth-new", "new-password"));
+  form.appendChild(authField(t("dashAuthConfirm"), "auth-confirm", "new-password"));
+  form.appendChild(authField(t("dashAuthPhrase"), "auth-phrase", "off"));
+  form.appendChild(authField(t("dashAuthPhraseConfirm"), "auth-phrase-confirm", "off"));
+
+  const showLabel = el("label", null, "auth-show");
+  const show = document.createElement("input");
+  show.type = "checkbox";
+  show.id = "auth-show";
+  showLabel.appendChild(show);
+  showLabel.appendChild(
+    document.createTextNode(t("dashAuthShow")),
+  );
+  show.addEventListener("change", () => {
+    for (const input of form.querySelectorAll("input[type=password], input[type=text]")) {
+      input.type = show.checked ? "text" : "password";
+    }
+  });
+  form.appendChild(showLabel);
+
+  const hints = el("p", null, "hint");
+  hints.textContent = t("dashAuthHint", { n: status.min_password_chars }) + " " +
+    t("dashAuthPhraseHint", { n: status.min_phrase_chars });
+  form.appendChild(hints);
+
+  const actions = el("div", null, "auth-actions");
+  const primary = el("button", status.enabled ? t("dashAuthUpdate") : t("dashAuthEnable"), "btn primary");
+  primary.type = "button";
+  primary.addEventListener("click", () => void saveDashboardAuth(false));
+  actions.appendChild(primary);
+  if (status.enabled) {
+    const disable = el("button", t("dashAuthDisable"), "btn danger");
+    disable.type = "button";
+    disable.addEventListener("click", () => {
+      if (window.confirm(t("dashAuthDisableConfirm"))) {
+        void saveDashboardAuth(true);
+      }
+    });
+    actions.appendChild(disable);
+    const signOut = el("button", t("dashAuthSignOut"), "btn");
+    signOut.type = "button";
+    signOut.addEventListener("click", () => void logoutDashboard());
+    actions.appendChild(signOut);
+  }
+  form.appendChild(actions);
+  body.appendChild(form);
+}
+
+async function saveDashboardAuth(disable) {
+  const status = state.dashAuth;
+  if (!status) {
+    return;
+  }
+  const current = authValue("auth-current");
+  const next = authValue("auth-new");
+  const confirm = authValue("auth-confirm");
+  const phrase = authValue("auth-phrase");
+  const phraseConfirm = authValue("auth-phrase-confirm");
+  if (status.enabled && disable && !current) {
+    toast(t("dashAuthCurrentRequired"), "bad");
+    return;
+  }
+  if (!disable) {
+    if (next !== confirm) {
+      toast(t("dashAuthMismatch"), "bad");
+      return;
+    }
+    if (phrase !== phraseConfirm) {
+      toast(t("dashAuthPhraseMismatch"), "bad");
+      return;
+    }
+    if (!next || !phrase) {
+      toast(t("dashAuthRequired"), "bad");
+      return;
+    }
+  }
+  const payload = disable
+    ? { disable: true, current_password: current }
+    : {
+      current_password: current,
+      new_password: next,
+      confirm_password: confirm,
+      reset_phrase: phrase,
+      confirm_phrase: phraseConfirm,
+    };
+  const r = await fetchJson("/api/dashboard/password", { method: "POST", body: payload });
+  if (r.status === 200) {
+    toast(disable ? t("dashAuthDisabled") : t("dashAuthSaved"), "good");
+    await loadDashboardAuth();
+    return;
+  }
+  if (r.status === 401 && r.data && r.data.code === "dashboard_locked") {
+    window.location.reload();
+    return;
+  }
+  const msg = (r.data && (r.data.status || r.data.message)) || t("httpStatus", { status: r.status });
+  toast(t("dashAuthFailed", { msg }), "bad");
+}
+
+async function logoutDashboard() {
+  await fetchJson("/api/dashboard/logout", { method: "POST", body: {} });
+  window.location.assign("/");
+}
+
 /// Settings tab: name | value | description columns with a control that fits
 /// the row — on/off switch for booleans, dropdown for choices, inline editor
 /// for numbers/text/lists, a setter for the secret, plain text for read-only
@@ -3712,6 +3872,11 @@ function renderSettings() {
   }
   if (state.settingsEditing) {
     return;
+  }
+  const card = $("dashboard-auth-card");
+  const active = document.activeElement;
+  if (!card || !active || typeof card.contains !== "function" || !card.contains(active)) {
+    renderDashboardAuth();
   }
   preserveViewport(paintSettings);
 }
@@ -4131,6 +4296,7 @@ function showTab(name) {
   }
   if (name === "settings" && !state.settings) {
     void loadSettings();
+    void loadDashboardAuth();
   }
   if (name === "overview") {
     void loadOvConfig();

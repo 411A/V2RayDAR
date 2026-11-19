@@ -102,6 +102,8 @@ The web dashboard is the default interface and covers daily use end to end from 
 
 After starting the app, open http://127.0.0.1:27141 in your browser.
 
+An optional dashboard password (Settings → Dashboard password) locks the dashboard and every change request. It is stored only as an Argon2id hash, uses a personal recovery phrase for resets, and keeps a session cookie so a reload does not ask again; restarting the app signs browsers out. Read-only endpoints and subscription feeds stay open. If both the password and phrase are lost, run `v2raydar --reset-dashboard-password` locally.
+
 <p align="center">
   <img src="assets/WebUI_v0.9.0.png" alt="V2RayDAR web dashboard" width="100%">
 </p>
@@ -112,7 +114,7 @@ After starting the app, open http://127.0.0.1:27141 in your browser.
 
 ### 🖥️ Optional TUI (`--tui`)
 
-Run with `v2raydar --tui` for the classic terminal UI alongside the dashboard and the endpoint. It additionally offers cache cleanup and reset-to-defaults — everything else lives in the dashboard too.
+Run with `v2raydar --tui` for the classic terminal UI alongside the dashboard and the endpoint. It additionally offers cache cleanup, reset-to-defaults, and the **Dashboard Password** local management screen — everything else lives in the dashboard too.
 
 <p align="center">
   <img src="assets/Windows_TUI_v0.9.0.png" alt="V2RayDAR TUI on Windows" width="100%">
@@ -192,6 +194,7 @@ v2raydar --no-tui       # headless with details and logs, no TUI
 v2raydar --tui          # TUI + local subscription endpoint
 v2raydar --once         # refresh once, print results, exit
 v2raydar --portable     # keep all data next to the executable (auto-detected in portable folders)
+v2raydar --reset-dashboard-password  # clear dashboard password/phrase locally, then exit
 v2raydar --uninstall    # remove app data and owned firewall rules
 ```
 

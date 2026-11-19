@@ -141,6 +141,15 @@ export function createStub() {
     logSeq: 1,
     liveLogs: ["boot ok"],
     archiveLogs: [{ seq: 1, line: "boot ok" }],
+    dashAuth: {
+      enabled: false,
+      authenticated: true,
+      has_phrase: false,
+      reset_wait_seconds: null,
+      min_password_chars: 12,
+      min_phrase_chars: 8,
+    },
+    dashboardPasswordBodies: [],
   };
 
   const json = (res, status, obj) => {
@@ -222,6 +231,27 @@ export function createStub() {
     if (req.method === "GET" && p === "/api/summary") {
       const s = snapshot({ refreshing: stub.busyRefreshing, pinging: stub.busyPinging, fetch_errors: stub.fetchErrors, proxy_active_uri: stub.proxyActiveUri, proxy_running: stub.proxyEnabled, proxy_discoverable: stub.proxyDiscoverable, live_logs: stub.liveLogs, log_seq: stub.logSeq });
       json(res, 200, { ...s, qr_available: false, refresh_seconds: 60, ping_seconds: 300, started_at: "2026-09-16T10:00:00+00:00" });
+      return;
+    }
+    if (req.method === "GET" && p === "/api/dashboard/status") {
+      json(res, 200, stub.dashAuth);
+      return;
+    }
+    if (req.method === "POST" && p === "/api/dashboard/password") {
+      const body = await readBody(req);
+      stub.dashboardPasswordBodies.push(body);
+      if (body.disable) {
+        stub.dashAuth.enabled = false;
+        stub.dashAuth.has_phrase = false;
+      } else {
+        stub.dashAuth.enabled = true;
+        stub.dashAuth.has_phrase = true;
+      }
+      json(res, 200, { ok: true, enabled: stub.dashAuth.enabled });
+      return;
+    }
+    if (req.method === "POST" && p === "/api/dashboard/logout") {
+      json(res, 200, { ok: true });
       return;
     }
     if (req.method === "GET" && p === "/api/logs") {

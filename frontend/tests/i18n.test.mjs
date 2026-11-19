@@ -80,8 +80,11 @@ describe("frontend i18n: one unified strings file, English default", () => {
       "(prefers-color-scheme: dark)",
       "stat card",
       "btn small",
+      "btn primary",
+      "btn danger",
       "val editable",
       "drag-cell cell-grip",
+      "input[type=password], input[type=text]",
       // Code fragments (the scanner pairs quotes naively, so the selector
       // glue below surfaces with its neighbouring single quotes attached).
       " + key + ",

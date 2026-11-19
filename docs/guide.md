@@ -187,6 +187,12 @@ Run the interactive TUI alongside the local HTTP endpoint:
 v2raydar --tui
 ```
 
+Clear the dashboard password and recovery phrase when both are lost (stop the app first):
+
+```bash
+v2raydar --reset-dashboard-password
+```
+
 Run one refresh, print a terminal summary, and exit without starting the endpoint:
 
 ```bash
@@ -309,6 +315,17 @@ The same bind address serves a built-in offline dashboard at `/` (`/overview`, `
 The Settings tab lists every tunable option as name | value | description rows, in the dashboard language, with a control that fits the type: on/off switch for booleans, dropdown for choices (probe mode), inline editor for numbers/text/lists, a setter for the LAN token, and plain text for read-only rows. Every change saves to the database and the live runtime immediately.
 
 The Logs tab streams new lines in real time. The server keeps the complete session in independently compressed DEFLATE chunks while the live tail stays uncompressed for instant rendering; **Load older** pages backward and **Download log** exports the whole retained session. The archive is capped at 16 MiB compressed, so a very long run normally keeps every line and only a pathologically talkative run prunes its oldest chunks first, never the live tail.
+
+### Dashboard password
+
+Password protection is **off by default**. Enable it from the dashboard's **Settings → Dashboard password** card or the TUI's **Dashboard Password** menu. The password must be at least 12 characters; the recovery phrase at least 8 and is matched **exactly**, including spaces and case.
+
+- The password and phrase are stored only as **Argon2id hashes** in `data.db`; they never appear in the config payload, logs, or the browser.
+- The browser keeps only a random `HttpOnly` / `SameSite=Strict` session cookie (30 days). Reloading the page keeps you signed in; stopping and restarting V2RayDAR signs every browser out.
+- **Read-only endpoints, `/results`, and the subscription feeds stay open** by design. The dashboard page itself and every mutating `/api` request require the password.
+- Five wrong password attempts from one address trigger a short cooldown (escalating from one minute), and a wrong recovery phrase pauses further reset attempts for **one hour**. Neither is a permanent lock.
+- **No lockout:** if you forget both the password and the phrase, stop the app and run `v2raydar --reset-dashboard-password` on the machine that hosts it, or use the TUI Dashboard Password menu and leave the new password empty. The local terminal is the recovery path.
+- The dashboard is plain HTTP. Use the password for local/LAN access control; for access over an untrusted network, put it behind a VPN or an HTTPS tunnel.
 
 ## Client Setup
 

@@ -1123,6 +1123,57 @@ td .lat-bar > span {
   font-size: 0.82rem;
 }
 
+/* ---- Dashboard password card ---- */
+
+#dashboard-auth-card {
+  margin-block-end: 1rem;
+}
+
+.auth-form {
+  display: grid;
+  gap: 0.65rem;
+  max-inline-size: 440px;
+}
+
+.auth-field {
+  display: grid;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.auth-field input {
+  width: 100%;
+  font: inherit;
+  font-weight: 400;
+  padding: 0.55rem 0.65rem;
+  color: var(--text);
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.auth-field input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: transparent;
+}
+
+.auth-show {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.auth-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-block-start: 0.25rem;
+}
+
 /* ---- Logs ---- */
 
 .log-list {

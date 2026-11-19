@@ -1864,6 +1864,12 @@ async fn enrich_top_speedtests(
     config: &ProbeConfig,
     progress: Option<&UnboundedSender<ProgressEvent>>,
 ) {
+    debug!(
+        download_url = ?config.download_url,
+        speedtest_top_n = config.speedtest_top_n,
+        speedtest_interval_seconds = config.speedtest_interval_seconds,
+        "speedtest enrichment started"
+    );
     let Some(download_url) = config
         .download_url
         .as_deref()

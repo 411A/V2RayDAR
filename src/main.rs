@@ -3,6 +3,7 @@ mod clash;
 mod config;
 mod constants;
 mod convert;
+mod dashboard_auth;
 mod db;
 mod geoip;
 mod logarchive;
@@ -131,6 +132,12 @@ struct Cli {
 
     #[arg(
         long,
+        help = "Clear the dashboard password and recovery phrase, then exit"
+    )]
+    reset_dashboard_password: bool,
+
+    #[arg(
+        long,
         help = "Ping config URIs and print latency results",
         num_args = 1..
     )]
@@ -195,6 +202,23 @@ async fn main() -> Result<()> {
     let database = Arc::new(
         Database::open(&db_path)
             .with_context(|| format!("failed to open database at {}", db_path.display()))?,
+    );
+
+    if cli.reset_dashboard_password {
+        let removed = crate::dashboard_auth::clear_credentials(&database)
+            .context("failed to clear dashboard credentials")?;
+        if removed {
+            println!("Dashboard password and recovery phrase cleared.");
+        } else {
+            println!("No dashboard password was set.");
+        }
+        println!("Start V2RayDAR normally; the dashboard is now unlocked.");
+        return Ok(());
+    }
+
+    let dashboard_auth = Arc::new(
+        crate::dashboard_auth::DashboardAuth::load(&database)
+            .context("failed to load dashboard credentials")?,
     );
 
     // User preferences live in the database now: a legacy configs.yaml is
@@ -451,9 +475,9 @@ async fn main() -> Result<()> {
     let result = if use_tui {
         let data_dir = paths.root_dir.clone();
         tokio::select! {
-            result = serve(config.bind, state.clone(), runtime_config.clone(), subscriptions.clone(), data_dir, Some(config_tx.clone()), Some(refresh_trigger_tx.clone()), Some(ping_trigger_tx.clone()), Some(database.clone()), Some(shutdown_tx.clone())) => result,
+            result = serve(config.bind, state.clone(), runtime_config.clone(), subscriptions.clone(), data_dir, Some(config_tx.clone()), Some(refresh_trigger_tx.clone()), Some(ping_trigger_tx.clone()), Some(database.clone()), Some(shutdown_tx.clone()), dashboard_auth.clone()) => result,
             _ = shutdown_rx.recv() => { stopped_by_user = true; Ok(()) },
-            result = tui::run(config, paths, state, runtime_config, database.clone(), config_tx, refresh_trigger_tx, ping_trigger_tx) => result,
+            result = tui::run(config, paths, state, runtime_config, database.clone(), config_tx, refresh_trigger_tx, ping_trigger_tx, dashboard_auth.clone()) => result,
         }
     } else {
         // Non-TUI modes stay up until the web panel stop button (POST
@@ -472,6 +496,7 @@ async fn main() -> Result<()> {
                 Some(ping_trigger_tx),
                 Some(database.clone()),
                 Some(shutdown_tx),
+                dashboard_auth,
             ) => result,
             _ = shutdown_rx.recv() => {
                 stopped_by_user = true;

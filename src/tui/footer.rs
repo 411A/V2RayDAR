@@ -12,6 +12,7 @@ pub fn draw(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
     let input = match state.input_mode {
         InputMode::Command => format!(":{}", state.input),
         InputMode::None => String::new(),
+        InputMode::DashboardPassword(_) => "*".repeat(state.input.chars().count()),
         _ => state.input.clone(),
     };
     let dirty = if state.dirty { "unsaved" } else { "saved" };

@@ -22,6 +22,7 @@ pub enum MainItem {
     CleanCache,
     Configurations,
     Logs,
+    DashboardPassword,
     QrCodes,
 }
 
@@ -101,8 +102,17 @@ pub enum InputMode {
     ConfigValue(ConfigKey),
     ResetConfirm,
     CleanCacheConfirm,
+    DashboardPassword(DashboardPasswordStep),
     /// Confirm leaving with unsaved changes.
     QuitConfirm,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum DashboardPasswordStep {
+    NewPassword,
+    ConfirmPassword,
+    Phrase,
+    ConfirmPhrase,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -177,6 +187,10 @@ pub struct TuiState {
     pub input: String,
     pub new_subscription: Option<SubscriptionDraft>,
     pub reset_code: Option<String>,
+    /// Pending secrets during the local dashboard-password wizard. Never
+    /// written to logs or the config; cleared on cancel/finish.
+    pub dashboard_password: String,
+    pub dashboard_phrase: String,
     pub status: String,
     pub dirty: bool,
     pub hits: HitMap,
@@ -209,6 +223,8 @@ impl TuiState {
             input: String::new(),
             new_subscription: None,
             reset_code: None,
+            dashboard_password: String::new(),
+            dashboard_phrase: String::new(),
             status: "Ready".to_string(),
             dirty: false,
             hits: HitMap::default(),

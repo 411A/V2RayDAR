@@ -75,6 +75,9 @@ fn draw_main(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState, focused: b
                 MainItem::CleanCache => ("Clean Cache", "delete cached subscription snapshots"),
                 MainItem::Configurations => ("Configurations", "enter to edit config values"),
                 MainItem::Logs => ("Live Logs", "enter to inspect refresh progress"),
+                MainItem::DashboardPassword => {
+                    ("Dashboard Password", "enter to set/change/disable")
+                }
                 MainItem::QrCodes => ("QR Codes: Generate & View", "enter to generate & open"),
             };
             Row::new([Cell::from(name), Cell::from(value)])

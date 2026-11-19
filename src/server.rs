@@ -3,8 +3,9 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 use anyhow::{Context, Result};
 use axum::{
     Json, Router,
-    extract::{ConnectInfo, Query, State},
-    http::{HeaderMap, StatusCode, header},
+    extract::{ConnectInfo, Query, Request, State},
+    http::{HeaderMap, Method, StatusCode, header},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, patch, post},
 };
@@ -21,6 +22,7 @@ use tracing::{info, warn};
 use crate::{
     config::SubscriptionSource,
     constants::{SUBSCRIPTION_READY_POLL, SUBSCRIPTION_READY_WAIT},
+    dashboard_auth::{DashboardAuth, SESSION_COOKIE, SESSION_SECONDS},
     model::{RuntimeConfig, RuntimeState},
     network::primary_lan_ip,
 };
@@ -53,6 +55,8 @@ pub struct HttpState {
     /// the same path as Ctrl+C so the proxy child (and its temp config) is
     /// stopped instead of being orphaned by `process::exit`.
     pub shutdown_tx: Option<tokio::sync::mpsc::UnboundedSender<()>>,
+    /// Dashboard password state: hashes, in-memory sessions and rate limits.
+    pub auth: Arc<DashboardAuth>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -67,6 +71,7 @@ pub async fn serve(
     ping_tx: Option<tokio::sync::mpsc::UnboundedSender<()>>,
     database: Option<std::sync::Arc<crate::db::Database>>,
     shutdown_tx: Option<tokio::sync::mpsc::UnboundedSender<()>>,
+    auth: Arc<DashboardAuth>,
 ) -> Result<()> {
     let state = HttpState {
         runtime,
@@ -79,6 +84,7 @@ pub async fn serve(
         ping_tx,
         database,
         shutdown_tx,
+        auth,
     };
     let router = router(state.clone());
 
@@ -113,6 +119,26 @@ fn router(state: HttpState) -> Router {
         .route("/qr.js", get(crate::web::dashboard_qr))
         .route("/favicon.ico", get(crate::web::favicon))
         .route("/api/summary", get(crate::web::api_summary))
+        .route(
+            "/api/dashboard/status",
+            get(crate::web::api_dashboard_status),
+        )
+        .route(
+            "/api/dashboard/login",
+            post(crate::web::api_dashboard_login),
+        )
+        .route(
+            "/api/dashboard/logout",
+            post(crate::web::api_dashboard_logout),
+        )
+        .route(
+            "/api/dashboard/password",
+            post(crate::web::api_dashboard_password),
+        )
+        .route(
+            "/api/dashboard/reset",
+            post(crate::web::api_dashboard_reset),
+        )
         .route("/api/logs", get(crate::web::api_logs))
         .route("/api/logs/download", get(crate::web::api_logs_download))
         .route(
@@ -149,7 +175,73 @@ fn router(state: HttpState) -> Router {
         .route("/api/proxy/mode", post(crate::web::api_proxy_mode))
         .route("/api/sharing", post(crate::web::api_sharing))
         .route("/api/cache/clean", post(crate::web::api_cache_clean))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            dashboard_change_guard,
+        ))
         .with_state(state)
+}
+
+/// Read the dashboard session id from the Cookie header.
+pub fn session_token(headers: &HeaderMap) -> Option<&str> {
+    let raw = headers.get(header::COOKIE)?.to_str().ok()?;
+    let prefix = format!("{SESSION_COOKIE}=");
+    for part in raw.split(';') {
+        if let Some(value) = part.trim().strip_prefix(prefix.as_str())
+            && !value.is_empty()
+        {
+            return Some(value);
+        }
+    }
+    None
+}
+
+pub fn session_cookie_header(token: &str) -> String {
+    format!(
+        "{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={SESSION_SECONDS}"
+    )
+}
+
+#[must_use]
+pub fn clear_session_cookie_header() -> String {
+    format!("{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0")
+}
+
+/// Password gate for **changes** only. Read methods and the subscription
+/// feeds stay open; every mutating `/api` request (except the dashboard's own
+/// login/reset/logout/password handlers, which enforce their own rules) needs
+/// a live session when a dashboard password is enabled.
+fn change_requires_session(
+    auth: &DashboardAuth,
+    method: &Method,
+    path: &str,
+    token: Option<&str>,
+) -> bool {
+    if !auth.enabled() || matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {
+        return false;
+    }
+    path.starts_with("/api/") && !path.starts_with("/api/dashboard/") && !auth.valid_session(token)
+}
+
+async fn dashboard_change_guard(
+    State(state): State<HttpState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if change_requires_session(
+        &state.auth,
+        request.method(),
+        request.uri().path(),
+        session_token(request.headers()),
+    ) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            [(header::CONTENT_TYPE, "application/json")],
+            r#"{"code":"dashboard_locked","status":"Dashboard password required"}"#,
+        )
+            .into_response();
+    }
+    next.run(request).await
 }
 
 async fn serve_listener(bind: SocketAddr, router: Router) -> Result<()> {
@@ -483,8 +575,8 @@ mod tests {
     use tokio::sync::RwLock;
 
     use super::{
-        HttpState, authorize_request, bearer_token, bind_error_context, router,
-        subscription_response, tokens_equal,
+        HttpState, authorize_request, bearer_token, bind_error_context, change_requires_session,
+        router, subscription_response, tokens_equal,
     };
     use crate::{
         constants::{
@@ -499,6 +591,7 @@ mod tests {
             DEFAULT_STARTUP_TIMEOUT_MS, DEFAULT_TEST_URL, DEFAULT_TOP_N, DEFAULT_USE_CACHE_ONLY,
             LOCALHOST_IP,
         },
+        dashboard_auth::DashboardAuth,
         model::{Endpoint, RankedConfig, RuntimeConfig, RuntimeState},
     };
 
@@ -651,6 +744,50 @@ mod tests {
     }
 
     #[test]
+    fn mutations_need_a_session_but_reads_do_not() {
+        let auth = DashboardAuth::new();
+        auth.install_hashes("hash".to_string(), "phrase".to_string());
+        assert!(change_requires_session(
+            &auth,
+            &axum::http::Method::POST,
+            "/api/refresh",
+            None
+        ));
+        assert!(change_requires_session(
+            &auth,
+            &axum::http::Method::PATCH,
+            "/api/config",
+            Some("wrong")
+        ));
+        assert!(!change_requires_session(
+            &auth,
+            &axum::http::Method::GET,
+            "/api/summary",
+            None
+        ));
+        assert!(!change_requires_session(
+            &auth,
+            &axum::http::Method::POST,
+            "/api/dashboard/login",
+            None
+        ));
+        let session = auth.create_session().expect("session");
+        assert!(!change_requires_session(
+            &auth,
+            &axum::http::Method::POST,
+            "/api/refresh",
+            Some(&session)
+        ));
+        auth.clear_hashes();
+        assert!(!change_requires_session(
+            &auth,
+            &axum::http::Method::POST,
+            "/api/refresh",
+            None
+        ));
+    }
+
+    #[test]
     fn router_merges_read_and_mutation_methods_without_panic() {
         // Guards the merged GET+POST / GET+PATCH registrations: axum panics
         // at startup on conflicting method routes, so just building proves
@@ -666,6 +803,7 @@ mod tests {
             ping_tx: None,
             database: None,
             shutdown_tx: None,
+            auth: Arc::new(crate::dashboard_auth::DashboardAuth::default()),
         };
         let _ = router(state);
     }
@@ -693,6 +831,7 @@ mod tests {
             ping_tx: None,
             database: None,
             shutdown_tx: None,
+            auth: Arc::new(crate::dashboard_auth::DashboardAuth::default()),
         };
 
         let response =

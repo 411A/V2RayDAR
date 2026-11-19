@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>V2RayDAR — Dashboard locked</title>
+<style>
+  :root {
+    --bg: #0f1319;
+    --panel: #161c24;
+    --text: #e7edf5;
+    --muted: #9aa8b7;
+    --border: #283241;
+    --accent: #5ad1a5;
+    --accent-ink: #062016;
+    --danger: #ff8a8a;
+    --shadow: 0 24px 70px rgba(0, 0, 0, .45);
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #eef2f6;
+      --panel: #ffffff;
+      --text: #17202b;
+      --muted: #5c6b7a;
+      --border: #d8e0e8;
+      --accent: #0b8f68;
+      --accent-ink: #ffffff;
+      --danger: #b42318;
+      --shadow: 0 24px 70px rgba(23, 32, 43, .16);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { min-height: 100%; }
+  body {
+    margin: 0;
+    background: radial-gradient(1100px 600px at 50% -190px, rgba(90, 209, 165, .16), transparent 65%), var(--bg);
+    color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+  }
+  main {
+    width: min(440px, 100%);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    padding: 28px;
+    box-shadow: var(--shadow);
+  }
+  .eyebrow { color: var(--accent); font-size: .76rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
+  h1 { margin: .35rem 0 .25rem; font-size: 1.6rem; letter-spacing: -.02em; }
+  p.lead { margin: 0 0 1.2rem; color: var(--muted); }
+  label { display: grid; gap: .35rem; margin: .85rem 0; font-size: .88rem; font-weight: 600; }
+  .field { display: grid; grid-template-columns: 1fr auto; gap: .45rem; }
+  input {
+    width: 100%;
+    border: 1px solid var(--border);
+    background: color-mix(in srgb, var(--panel) 88%, var(--text));
+    color: var(--text);
+    border-radius: 10px;
+    padding: .72rem .8rem;
+    font: inherit;
+  }
+  input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
+  button {
+    font: inherit;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text);
+    padding: .5rem .75rem;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 700; }
+  button.wide { width: 100%; padding: .78rem 1rem; margin-top: .75rem; }
+  button:disabled { opacity: .55; cursor: wait; }
+  .toggle { font-size: .78rem; color: var(--muted); }
+  .link { border: 0; background: transparent; color: var(--accent); padding: .35rem 0; cursor: pointer; font-size: .86rem; }
+  .row { display: flex; gap: .6rem; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+  .banner { min-height: 1.4rem; margin: .4rem 0 0; font-size: .86rem; color: var(--muted); }
+  .banner.bad { color: var(--danger); }
+  .banner.good { color: var(--accent); }
+  .hint { color: var(--muted); font-size: .78rem; margin: .3rem 0 0; }
+  [hidden] { display: none !important; }
+  .brand { display: flex; align-items: center; gap: .6rem; margin-bottom: 1rem; }
+  .mark {
+    width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center;
+    background: linear-gradient(135deg, var(--accent), #2a8fb0); color: var(--accent-ink); font-weight: 900;
+  }
+  .brand span { font-weight: 800; letter-spacing: .02em; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+</style>
+</head>
+<body>
+<main>
+  <div class="brand"><div class="mark" aria-hidden="true">V</div><span>V2RayDAR</span></div>
+  <p class="eyebrow">Dashboard locked</p>
+  <h1>Sign in to continue</h1>
+  <p class="lead">Changes and the dashboard are protected by your password.</p>
+
+  <form id="login-form">
+    <label>Dashboard password
+      <span class="field">
+        <input id="login-password" type="password" autocomplete="current-password" autofocus required>
+        <button type="button" class="toggle" data-toggle="login-password">Show</button>
+      </span>
+    </label>
+    <button type="submit" class="primary wide" id="login-submit">Sign in</button>
+    <div class="row"><button type="button" class="link" id="show-reset">Forgot password? Use recovery phrase</button></div>
+  </form>
+
+  <form id="reset-form" hidden>
+    <p class="lead">Enter your recovery phrase exactly as you saved it. A wrong phrase locks recovery attempts for one hour.</p>
+    <label>Recovery phrase
+      <span class="field">
+        <input id="reset-phrase" type="password" autocomplete="off" required>
+        <button type="button" class="toggle" data-toggle="reset-phrase">Show</button>
+      </span>
+    </label>
+    <label>New password
+      <span class="field">
+        <input id="reset-password" type="password" autocomplete="new-password" required>
+        <button type="button" class="toggle" data-toggle="reset-password">Show</button>
+      </span>
+    </label>
+    <label>Confirm new password
+      <span class="field">
+        <input id="reset-confirm" type="password" autocomplete="new-password" required>
+        <button type="button" class="toggle" data-toggle="reset-confirm">Show</button>
+      </span>
+    </label>
+    <button type="submit" class="primary wide" id="reset-submit">Reset password</button>
+    <div class="row"><button type="button" class="link" id="back-login">Back to sign in</button></div>
+  </form>
+
+  <p class="banner" id="banner" role="status" aria-live="polite"></p>
+  <p class="hint">The password is stored only as a hash. Your browser keeps a random session cookie; restarting V2RayDAR signs every browser out.</p>
+</main>
+<script>
+(() => {
+  "use strict";
+  const params = new URLSearchParams(location.search);
+  const token = params.get("token");
+  const banner = document.getElementById("banner");
+  const loginForm = document.getElementById("login-form");
+  const resetForm = document.getElementById("reset-form");
+
+  function api(path) {
+    if (!token) return path;
+    return path + (path.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(token);
+  }
+  function say(text, kind) {
+    banner.textContent = text || "";
+    banner.className = "banner" + (kind ? " " + kind : "");
+  }
+  function secondsText(seconds) {
+    const s = Math.max(1, Math.ceil(Number(seconds) || 0));
+    if (s >= 3600) {
+      const m = Math.ceil(s / 60);
+      return m + " minute" + (m === 1 ? "" : "s");
+    }
+    return s + " second" + (s === 1 ? "" : "s");
+  }
+  function reload() {
+    location.replace(location.pathname + location.search);
+  }
+  function bindToggles() {
+    for (const button of document.querySelectorAll("[data-toggle]")) {
+      button.addEventListener("click", () => {
+        const input = document.getElementById(button.getAttribute("data-toggle"));
+        if (!input) return;
+        const show = input.type === "password";
+        input.type = show ? "text" : "password";
+        button.textContent = show ? "Hide" : "Show";
+      });
+    }
+  }
+  async function readJson(response) {
+    try { return await response.json(); } catch (err) { return null; }
+  }
+  async function checkStatus() {
+    try {
+      const response = await fetch(api("/api/dashboard/status"), { cache: "no-store" });
+      if (!response.ok) {
+        say("Dashboard status is unavailable. Check the server.", "bad");
+        return;
+      }
+      const status = await readJson(response);
+      if (!status) {
+        say("Dashboard status is unavailable. Check the server.", "bad");
+        return;
+      }
+      if (!status.enabled) { reload(); return; }
+      if (status.authenticated) { reload(); return; }
+      if (!status.has_phrase) {
+        document.getElementById("show-reset").hidden = true;
+      } else if (status.reset_wait_seconds) {
+        document.getElementById("show-reset").disabled = true;
+        document.getElementById("show-reset").textContent =
+          "Recovery paused for " + secondsText(status.reset_wait_seconds);
+      }
+    } catch (err) {
+      say("Cannot reach the dashboard server.", "bad");
+    }
+  }
+  loginForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const input = document.getElementById("login-password");
+    const button = document.getElementById("login-submit");
+    if (!input.value) { say("Enter the dashboard password.", "bad"); input.focus(); return; }
+    button.disabled = true;
+    say("Checking…");
+    try {
+      const response = await fetch(api("/api/dashboard/login"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: input.value }),
+      });
+      const data = await readJson(response);
+      if (response.ok) { reload(); return; }
+      if (response.status === 429) {
+        const wait = data && data.retry_after ? data.retry_after : 60;
+        say("Too many attempts. Try again in " + secondsText(wait) + ".", "bad");
+      } else if (response.status === 401) {
+        say("That password is not correct.", "bad");
+        input.select();
+      } else {
+        say((data && (data.status || data.message)) || "Sign in failed.", "bad");
+      }
+    } catch (err) {
+      say("Cannot reach the dashboard server.", "bad");
+    } finally {
+      button.disabled = false;
+    }
+  });
+  document.getElementById("show-reset").addEventListener("click", () => {
+    loginForm.hidden = true;
+    resetForm.hidden = false;
+    say("");
+    document.getElementById("reset-phrase").focus();
+  });
+  document.getElementById("back-login").addEventListener("click", () => {
+    resetForm.hidden = true;
+    loginForm.hidden = false;
+    say("");
+    document.getElementById("login-password").focus();
+  });
+  resetForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const phrase = document.getElementById("reset-phrase");
+    const password = document.getElementById("reset-password");
+    const confirm = document.getElementById("reset-confirm");
+    const button = document.getElementById("reset-submit");
+    if (!phrase.value) { say("Enter the recovery phrase.", "bad"); phrase.focus(); return; }
+    if (password.value !== confirm.value) { say("The new passwords do not match.", "bad"); confirm.focus(); return; }
+    button.disabled = true;
+    say("Checking…");
+    try {
+      const response = await fetch(api("/api/dashboard/reset"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          phrase: phrase.value,
+          new_password: password.value,
+          confirm_password: confirm.value,
+        }),
+      });
+      const data = await readJson(response);
+      if (response.ok) { reload(); return; }
+      if (response.status === 429) {
+        const wait = data && data.retry_after ? data.retry_after : 3600;
+        say("Wrong phrase or too many attempts. Try again in " + secondsText(wait) + ".", "bad");
+      } else {
+        say((data && (data.status || data.message)) || "Reset failed.", "bad");
+      }
+    } catch (err) {
+      say("Cannot reach the dashboard server.", "bad");
+    } finally {
+      button.disabled = false;
+    }
+  });
+  bindToggles();
+  void checkStatus();
+})();
+</script>
+</body>
+</html>

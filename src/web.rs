@@ -23,7 +23,7 @@ use std::{
 use axum::{
     Json,
     extract::{ConnectInfo, Path, Query, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{
         IntoResponse, Response,
         sse::{Event, KeepAlive, Sse},
@@ -35,13 +35,19 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use crate::{
     applog::{self, LogLevel},
     config::should_include_token_in_url,
+    dashboard_auth::{self, MIN_PASSWORD_CHARS, MIN_PHRASE_CHARS},
     model::{RankedConfig, RuntimeConfig},
     network,
-    server::{AuthQuery, HttpState, SharedState, authorize, bearer_token},
+    server::{
+        AuthQuery, HttpState, SharedState, authorize, bearer_token, clear_session_cookie_header,
+        session_cookie_header, session_token,
+    },
 };
 
 /// Embedded dashboard shell (single file, no external references).
 const DASHBOARD_HTML: &str = include_str!("../frontend/index.html");
+/// Self-contained sign-in page served when the dashboard password is on.
+const LOGIN_HTML: &str = include_str!("../frontend/login.html");
 /// Embedded dashboard stylesheet (CSS variables, no `url(` references).
 const DASHBOARD_CSS: &str = include_str!("../frontend/style.css");
 /// Embedded dashboard script (vanilla JS, same-origin API calls only).
@@ -96,6 +102,16 @@ pub async fn dashboard(
     ConnectInfo(remote_addr): ConnectInfo<std::net::SocketAddr>,
 ) -> Response {
     let token = query.token.as_deref().or_else(|| bearer_token(&headers));
+    if let Err(response) = authorize(&state, remote_addr, token).await {
+        return response;
+    }
+    if state.auth.enabled()
+        && !state
+            .auth
+            .valid_session(crate::server::session_token(&headers))
+    {
+        return login_page_response();
+    }
     static_response(
         &state,
         remote_addr,
@@ -104,6 +120,456 @@ pub async fn dashboard(
         "text/html; charset=utf-8",
     )
     .await
+}
+
+fn login_page_response() -> Response {
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store, no-cache, max-age=0"),
+        ],
+        LOGIN_HTML,
+    )
+        .into_response()
+}
+
+fn no_store(mut response: Response) -> Response {
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store, no-cache, max-age=0"),
+    );
+    response
+}
+
+fn auth_error(status: StatusCode, code: &str, message: &str) -> Response {
+    no_store(
+        (
+            status,
+            Json(serde_json::json!({ "code": code, "status": message })),
+        )
+            .into_response(),
+    )
+}
+
+fn auth_rate_limited(seconds: u64) -> Response {
+    no_store(
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({
+                "code": "rate_limited",
+                "status": "Too many attempts",
+                "retry_after": seconds,
+            })),
+        )
+            .into_response(),
+    )
+}
+
+fn with_session_cookie(mut response: Response, token: &str) -> Response {
+    if let Ok(value) = HeaderValue::from_str(&session_cookie_header(token)) {
+        response.headers_mut().insert(header::SET_COOKIE, value);
+    }
+    no_store(response)
+}
+
+fn with_cleared_cookie(mut response: Response) -> Response {
+    if let Ok(value) = HeaderValue::from_str(&clear_session_cookie_header()) {
+        response.headers_mut().insert(header::SET_COOKIE, value);
+    }
+    no_store(response)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DashboardLoginBody {
+    pub password: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DashboardResetBody {
+    pub phrase: String,
+    pub new_password: String,
+    pub confirm_password: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct DashboardPasswordBody {
+    #[serde(default)]
+    pub current_password: String,
+    #[serde(default)]
+    pub new_password: String,
+    #[serde(default)]
+    pub confirm_password: String,
+    #[serde(default)]
+    pub reset_phrase: String,
+    #[serde(default)]
+    pub confirm_phrase: String,
+    #[serde(default)]
+    pub disable: bool,
+}
+
+/// `GET /api/dashboard/status` - public state for the sign-in page.
+pub async fn api_dashboard_status(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    ConnectInfo(remote_addr): ConnectInfo<std::net::SocketAddr>,
+) -> Response {
+    let token = query.token.as_deref().or_else(|| bearer_token(&headers));
+    if let Err(response) = authorize(&state, remote_addr, token).await {
+        return response;
+    }
+    let enabled = state.auth.enabled();
+    let authenticated = !enabled || state.auth.valid_session(session_token(&headers));
+    let reset_wait_seconds = state
+        .auth
+        .reset_retry_after()
+        .map(|remaining| remaining.as_secs().saturating_add(1));
+    no_store(
+        Json(serde_json::json!({
+            "enabled": enabled,
+            "authenticated": authenticated,
+            "has_phrase": state.auth.phrase_configured(),
+            "reset_wait_seconds": reset_wait_seconds,
+            "min_password_chars": MIN_PASSWORD_CHARS,
+            "min_phrase_chars": MIN_PHRASE_CHARS,
+        }))
+        .into_response(),
+    )
+}
+
+/// `POST /api/dashboard/login` - password sign-in, rate-limited per address.
+pub async fn api_dashboard_login(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    ConnectInfo(remote_addr): ConnectInfo<std::net::SocketAddr>,
+    Json(body): Json<DashboardLoginBody>,
+) -> Response {
+    let token = query.token.as_deref().or_else(|| bearer_token(&headers));
+    if let Err(response) = authorize(&state, remote_addr, token).await {
+        return response;
+    }
+    if !state.auth.enabled() {
+        return auth_error(
+            StatusCode::BAD_REQUEST,
+            "dashboard_disabled",
+            "Dashboard password is not enabled",
+        );
+    }
+    let ip = remote_addr.ip();
+    if let Some(wait) = state.auth.login_retry_after(ip) {
+        return auth_rate_limited(wait.as_secs().saturating_add(1));
+    }
+    if body.password.chars().count() > 256 {
+        return auth_error(
+            StatusCode::UNAUTHORIZED,
+            "invalid_password",
+            "That password is not correct",
+        );
+    }
+    let Some(hash) = state.auth.password_hash() else {
+        return auth_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "password_missing",
+            "Dashboard password is not configured",
+        );
+    };
+    if !dashboard_auth::verify_secret(hash, body.password).await {
+        state.auth.note_login_failure(ip);
+        if let Some(wait) = state.auth.login_retry_after(ip) {
+            return auth_rate_limited(wait.as_secs().saturating_add(1));
+        }
+        return auth_error(
+            StatusCode::UNAUTHORIZED,
+            "invalid_password",
+            "That password is not correct",
+        );
+    }
+    state.auth.clear_login_failures(ip);
+    match state.auth.create_session() {
+        Ok(session) => with_session_cookie(
+            Json(serde_json::json!({ "ok": true })).into_response(),
+            &session,
+        ),
+        Err(error) => auth_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "session_failed",
+            &format!("Unable to create a session: {error}"),
+        ),
+    }
+}
+
+/// `POST /api/dashboard/logout` - revoke the current browser session.
+pub async fn api_dashboard_logout(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    ConnectInfo(remote_addr): ConnectInfo<std::net::SocketAddr>,
+) -> Response {
+    let token = query.token.as_deref().or_else(|| bearer_token(&headers));
+    if let Err(response) = authorize(&state, remote_addr, token).await {
+        return response;
+    }
+    if state.auth.enabled() && !state.auth.valid_session(session_token(&headers)) {
+        return auth_error(
+            StatusCode::UNAUTHORIZED,
+            "dashboard_locked",
+            "Dashboard password required",
+        );
+    }
+    state.auth.revoke_session(session_token(&headers));
+    with_cleared_cookie(Json(serde_json::json!({ "ok": true })).into_response())
+}
+
+/// `POST /api/dashboard/password` - enable, update, or disable the password.
+#[allow(clippy::too_many_lines)]
+pub async fn api_dashboard_password(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    ConnectInfo(remote_addr): ConnectInfo<std::net::SocketAddr>,
+    Json(body): Json<DashboardPasswordBody>,
+) -> Response {
+    let token = query.token.as_deref().or_else(|| bearer_token(&headers));
+    if let Err(response) = authorize(&state, remote_addr, token).await {
+        return response;
+    }
+    if state.auth.enabled() && !state.auth.valid_session(session_token(&headers)) {
+        return auth_error(
+            StatusCode::UNAUTHORIZED,
+            "dashboard_locked",
+            "Dashboard password required",
+        );
+    }
+    let Some(db) = state.database.clone() else {
+        return auth_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "database_missing",
+            "Settings database unavailable",
+        );
+    };
+    let current_hash = state.auth.password_hash();
+    let already_enabled = current_hash.is_some();
+    if already_enabled {
+        if let Some(wait) = state.auth.login_retry_after(remote_addr.ip()) {
+            return auth_rate_limited(wait.as_secs().saturating_add(1));
+        }
+        let Some(current_hash) = current_hash else {
+            return auth_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "password_missing",
+                "Dashboard password is not configured",
+            );
+        };
+        if body.current_password.is_empty() {
+            return auth_error(
+                StatusCode::BAD_REQUEST,
+                "current_required",
+                "Enter the current dashboard password",
+            );
+        }
+        if body.current_password.chars().count() > 256 {
+            state.auth.note_login_failure(remote_addr.ip());
+            return auth_error(
+                StatusCode::UNAUTHORIZED,
+                "invalid_password",
+                "Current dashboard password is not correct",
+            );
+        }
+        if !dashboard_auth::verify_secret(current_hash, body.current_password).await {
+            state.auth.note_login_failure(remote_addr.ip());
+            if let Some(wait) = state.auth.login_retry_after(remote_addr.ip()) {
+                return auth_rate_limited(wait.as_secs().saturating_add(1));
+            }
+            return auth_error(
+                StatusCode::UNAUTHORIZED,
+                "invalid_password",
+                "Current dashboard password is not correct",
+            );
+        }
+        state.auth.clear_login_failures(remote_addr.ip());
+    }
+
+    if body.disable {
+        let delete = tokio::task::spawn_blocking(move || {
+            let password = db.delete_setting(dashboard_auth::PASSWORD_KEY)?;
+            let phrase = db.delete_setting(dashboard_auth::PHRASE_KEY)?;
+            Ok::<bool, anyhow::Error>(password || phrase)
+        })
+        .await;
+        match delete {
+            Ok(Ok(_)) => {
+                state.auth.clear_hashes();
+                state.auth.revoke_all_sessions();
+                return with_cleared_cookie(
+                    Json(serde_json::json!({ "ok": true, "enabled": false })).into_response(),
+                );
+            }
+            _ => {
+                return auth_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "save_failed",
+                    "Unable to clear the dashboard password",
+                );
+            }
+        }
+    }
+
+    if body.new_password != body.confirm_password {
+        return auth_error(
+            StatusCode::BAD_REQUEST,
+            "password_mismatch",
+            "The new passwords do not match",
+        );
+    }
+    if body.reset_phrase != body.confirm_phrase {
+        return auth_error(
+            StatusCode::BAD_REQUEST,
+            "phrase_mismatch",
+            "The recovery phrases do not match",
+        );
+    }
+    if let Err(message) = dashboard_auth::validate_password(&body.new_password) {
+        return auth_error(StatusCode::BAD_REQUEST, "weak_password", &message);
+    }
+    if let Err(message) = dashboard_auth::validate_phrase(&body.reset_phrase) {
+        return auth_error(StatusCode::BAD_REQUEST, "weak_phrase", &message);
+    }
+    let password_hash = match dashboard_auth::hash_secret(body.new_password).await {
+        Ok(hash) => hash,
+        Err(message) => {
+            return auth_error(StatusCode::INTERNAL_SERVER_ERROR, "hash_failed", &message);
+        }
+    };
+    let phrase_hash = match dashboard_auth::hash_secret(body.reset_phrase).await {
+        Ok(hash) => hash,
+        Err(message) => {
+            return auth_error(StatusCode::INTERNAL_SERVER_ERROR, "hash_failed", &message);
+        }
+    };
+    let entries = vec![
+        (
+            dashboard_auth::PASSWORD_KEY.to_string(),
+            password_hash.clone(),
+        ),
+        (dashboard_auth::PHRASE_KEY.to_string(), phrase_hash.clone()),
+    ];
+    let saved = tokio::task::spawn_blocking(move || db.store_settings(&entries)).await;
+    if !matches!(saved, Ok(Ok(()))) {
+        return auth_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "save_failed",
+            "Unable to save the dashboard password",
+        );
+    }
+    state.auth.install_hashes(password_hash, phrase_hash);
+    state.auth.revoke_all_sessions();
+    state.auth.clear_login_failures(remote_addr.ip());
+    match state.auth.create_session() {
+        Ok(session) => with_session_cookie(
+            Json(serde_json::json!({ "ok": true, "enabled": true })).into_response(),
+            &session,
+        ),
+        Err(error) => auth_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "session_failed",
+            &format!("Password saved, but no session was created: {error}"),
+        ),
+    }
+}
+
+/// `POST /api/dashboard/reset` - recovery phrase reset, one attempt per hour.
+pub async fn api_dashboard_reset(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    ConnectInfo(remote_addr): ConnectInfo<std::net::SocketAddr>,
+    Json(body): Json<DashboardResetBody>,
+) -> Response {
+    let token = query.token.as_deref().or_else(|| bearer_token(&headers));
+    if let Err(response) = authorize(&state, remote_addr, token).await {
+        return response;
+    }
+    if !state.auth.enabled() {
+        return auth_error(
+            StatusCode::BAD_REQUEST,
+            "dashboard_disabled",
+            "Dashboard password is not enabled",
+        );
+    }
+    if let Some(wait) = state.auth.reset_retry_after() {
+        return auth_rate_limited(wait.as_secs().saturating_add(1));
+    }
+    if body.phrase.chars().count() > 512 {
+        return auth_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_phrase",
+            "That recovery phrase is not valid",
+        );
+    }
+    let Some(phrase_hash) = state.auth.phrase_hash() else {
+        return auth_error(
+            StatusCode::BAD_REQUEST,
+            "phrase_missing",
+            "No recovery phrase is configured",
+        );
+    };
+    if !dashboard_auth::verify_secret(phrase_hash.clone(), body.phrase).await {
+        state.auth.note_reset_failure();
+        let wait = state
+            .auth
+            .reset_retry_after()
+            .map_or(3600, |remaining| remaining.as_secs().saturating_add(1));
+        return auth_rate_limited(wait);
+    }
+    state.auth.clear_reset_failure();
+    if body.new_password != body.confirm_password {
+        return auth_error(
+            StatusCode::BAD_REQUEST,
+            "password_mismatch",
+            "The new passwords do not match",
+        );
+    }
+    if let Err(message) = dashboard_auth::validate_password(&body.new_password) {
+        return auth_error(StatusCode::BAD_REQUEST, "weak_password", &message);
+    }
+    let Some(db) = state.database.clone() else {
+        return auth_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "database_missing",
+            "Settings database unavailable",
+        );
+    };
+    let password_hash = match dashboard_auth::hash_secret(body.new_password).await {
+        Ok(hash) => hash,
+        Err(message) => {
+            return auth_error(StatusCode::INTERNAL_SERVER_ERROR, "hash_failed", &message);
+        }
+    };
+    let key = dashboard_auth::PASSWORD_KEY.to_string();
+    let saved_hash = password_hash.clone();
+    let saved = tokio::task::spawn_blocking(move || db.store_setting(&key, &saved_hash)).await;
+    if !matches!(saved, Ok(Ok(()))) {
+        return auth_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "save_failed",
+            "Unable to save the new password",
+        );
+    }
+    state.auth.install_hashes(password_hash, phrase_hash);
+    state.auth.revoke_all_sessions();
+    match state.auth.create_session() {
+        Ok(session) => with_session_cookie(
+            Json(serde_json::json!({ "ok": true, "enabled": true })).into_response(),
+            &session,
+        ),
+        Err(error) => auth_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "session_failed",
+            &format!("Password reset, but no session was created: {error}"),
+        ),
+    }
 }
 
 /// `GET /style.css` — dashboard stylesheet.
@@ -2838,11 +3304,13 @@ mod tests {
     use super::{
         DASHBOARD_CSS, DASHBOARD_HTML, DASHBOARD_I18N, DASHBOARD_JS, DASHBOARD_QR, FAVICON_SVG,
         FEED_MAX_LOG_FANOUT, FLAG_CN, FLAG_FR, FLAG_GB, FLAG_IR, FLAG_RU, FeedFingerprint,
-        config_response, events_response, favicon, newest_log_lines, qr_generate_response,
-        qr_image_response, static_response, subscriptions_response, summary_response,
+        LOGIN_HTML, config_response, events_response, favicon, newest_log_lines,
+        qr_generate_response, qr_image_response, static_response, subscriptions_response,
+        summary_response,
     };
     use crate::{
         constants::{DEFAULT_BIND, LOCALHOST_IP},
+        dashboard_auth::{self, DashboardAuth},
         model::RuntimeState,
         server::HttpState,
     };
@@ -2952,6 +3420,7 @@ mod tests {
             ping_tx: None,
             database: Some(test_db()),
             shutdown_tx: None,
+            auth: Arc::new(crate::dashboard_auth::DashboardAuth::default()),
         }
     }
 
@@ -3024,6 +3493,9 @@ mod tests {
         assert!(DASHBOARD_I18N.contains("I18N_STRINGS"));
         assert!(DASHBOARD_QR.contains("QREncode"));
         assert!(FAVICON_SVG.contains("<svg"));
+        assert!(LOGIN_HTML.contains("Dashboard locked"));
+        assert!(LOGIN_HTML.contains("id=\"login-password\""));
+        assert!(LOGIN_HTML.contains("id=\"reset-phrase\""));
         // Bare "http" substrings are fine (the UI builds loopback URLs like
         // "http://" + host at runtime); what must never appear is a remote
         // *reference* that would fetch off-device.
@@ -3040,7 +3512,13 @@ mod tests {
                 );
             }
         }
-        for asset in [DASHBOARD_HTML, DASHBOARD_CSS, DASHBOARD_JS, DASHBOARD_I18N] {
+        for asset in [
+            DASHBOARD_HTML,
+            DASHBOARD_CSS,
+            DASHBOARD_JS,
+            DASHBOARD_I18N,
+            LOGIN_HTML,
+        ] {
             assert!(!asset.contains("innerHTML"), "DOM injection sink");
             for snippet in [
                 "src=\"http",
@@ -3845,9 +4323,226 @@ mod tests {
         (state, refresh_rx, ping_rx, config_rx)
     }
 
+    async fn dashboard_auth_state(reset_cooldown: Duration) -> HttpState {
+        let mut state = http_state(RuntimeState::default(), false);
+        let password = dashboard_auth::hash_secret("correct horse battery staple".to_string())
+            .await
+            .expect("password hash");
+        let phrase = dashboard_auth::hash_secret("John Smith".to_string())
+            .await
+            .expect("phrase hash");
+        let auth = DashboardAuth::with_cooldowns(reset_cooldown, Duration::from_mins(1));
+        auth.install_hashes(password, phrase);
+        state.auth = Arc::new(auth);
+        state
+    }
+
+    fn cookie_from(response: &axum::response::Response) -> String {
+        let value = response
+            .headers()
+            .get(header::SET_COOKIE)
+            .expect("session cookie")
+            .to_str()
+            .expect("cookie text");
+        value.split(';').next().expect("cookie pair").to_string()
+    }
+
+    fn cookie_headers(cookie: &str) -> axum::http::HeaderMap {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_str(cookie).expect("cookie header"),
+        );
+        headers
+    }
+
     fn stored_config(state: &HttpState) -> crate::config::AppConfig {
         crate::settings::load_app_config(state.database.as_ref().expect("test db present"))
             .expect("settings reload")
+    }
+
+    #[tokio::test]
+    async fn dashboard_password_gates_the_shell_but_not_the_summary() {
+        let state = dashboard_auth_state(Duration::from_hours(1)).await;
+        let (headers, query, connect) = no_auth();
+        let page =
+            super::dashboard(axum::extract::State(state.clone()), headers, query, connect).await;
+        assert_eq!(page.status(), StatusCode::OK);
+        let body = to_bytes(page.into_body(), usize::MAX)
+            .await
+            .expect("login page reads");
+        assert!(String::from_utf8_lossy(&body).contains("Dashboard locked"));
+        assert!(!String::from_utf8_lossy(&body).contains("id=\"panel-overview\""));
+
+        // Read-only summary stays available even without a session.
+        let (headers, query, connect) = no_auth();
+        let summary =
+            super::api_summary(axum::extract::State(state.clone()), headers, query, connect).await;
+        assert_eq!(summary.status(), StatusCode::OK);
+
+        let (headers, query, connect) = no_auth();
+        let login = super::api_dashboard_login(
+            axum::extract::State(state.clone()),
+            headers,
+            query,
+            connect,
+            axum::Json(super::DashboardLoginBody {
+                password: "correct horse battery staple".to_string(),
+            }),
+        )
+        .await;
+        assert_eq!(login.status(), StatusCode::OK);
+        let cookie = cookie_from(&login);
+
+        let page = super::dashboard(
+            axum::extract::State(state),
+            cookie_headers(&cookie),
+            axum::extract::Query(crate::server::AuthQuery { token: None }),
+            axum::extract::ConnectInfo(loopback()),
+        )
+        .await;
+        let body = to_bytes(page.into_body(), usize::MAX)
+            .await
+            .expect("dashboard reads");
+        assert!(String::from_utf8_lossy(&body).contains("id=\"panel-overview\""));
+    }
+
+    #[tokio::test]
+    async fn wrong_password_is_rejected_and_a_change_requires_the_session() {
+        let state = dashboard_auth_state(Duration::from_hours(1)).await;
+        let (headers, query, connect) = no_auth();
+        let wrong = super::api_dashboard_login(
+            axum::extract::State(state.clone()),
+            headers,
+            query,
+            connect,
+            axum::Json(super::DashboardLoginBody {
+                password: "not the password".to_string(),
+            }),
+        )
+        .await;
+        assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
+
+        let (headers, query, connect) = no_auth();
+        let no_session = super::api_dashboard_password(
+            axum::extract::State(state.clone()),
+            headers,
+            query,
+            connect,
+            axum::Json(super::DashboardPasswordBody {
+                current_password: "correct horse battery staple".to_string(),
+                new_password: "a brand new password".to_string(),
+                confirm_password: "a brand new password".to_string(),
+                reset_phrase: "New Phrase".to_string(),
+                confirm_phrase: "New Phrase".to_string(),
+                disable: false,
+            }),
+        )
+        .await;
+        assert_eq!(no_session.status(), StatusCode::UNAUTHORIZED);
+
+        let (headers, query, connect) = no_auth();
+        let login = super::api_dashboard_login(
+            axum::extract::State(state.clone()),
+            headers,
+            query,
+            connect,
+            axum::Json(super::DashboardLoginBody {
+                password: "correct horse battery staple".to_string(),
+            }),
+        )
+        .await;
+        let cookie = cookie_from(&login);
+        let change = super::api_dashboard_password(
+            axum::extract::State(state),
+            cookie_headers(&cookie),
+            axum::extract::Query(crate::server::AuthQuery { token: None }),
+            axum::extract::ConnectInfo(loopback()),
+            axum::Json(super::DashboardPasswordBody {
+                current_password: "correct horse battery staple".to_string(),
+                new_password: "a brand new password".to_string(),
+                confirm_password: "a brand new password".to_string(),
+                reset_phrase: "New Phrase".to_string(),
+                confirm_phrase: "New Phrase".to_string(),
+                disable: false,
+            }),
+        )
+        .await;
+        assert_eq!(change.status(), StatusCode::OK);
+        assert_ne!(cookie_from(&change), "");
+    }
+
+    #[tokio::test]
+    async fn reset_phrase_is_rate_limited_and_changes_the_password() {
+        let state = dashboard_auth_state(Duration::from_hours(1)).await;
+        let (headers, query, connect) = no_auth();
+        let wrong = super::api_dashboard_reset(
+            axum::extract::State(state.clone()),
+            headers,
+            query,
+            connect,
+            axum::Json(super::DashboardResetBody {
+                phrase: "wrong phrase".to_string(),
+                new_password: "another good password".to_string(),
+                confirm_password: "another good password".to_string(),
+            }),
+        )
+        .await;
+        assert_eq!(wrong.status(), StatusCode::TOO_MANY_REQUESTS);
+        let body = to_bytes(wrong.into_body(), usize::MAX)
+            .await
+            .expect("reset error reads");
+        let value: serde_json::Value = serde_json::from_slice(&body).expect("reset error json");
+        assert!(
+            value["retry_after"]
+                .as_u64()
+                .is_some_and(|wait| wait >= 3500)
+        );
+
+        // A fresh state proves the correct phrase actually changes the
+        // password; the one-hour test above proves the wrong path blocks.
+        let state = dashboard_auth_state(Duration::ZERO).await;
+        let (headers, query, connect) = no_auth();
+        let correct = super::api_dashboard_reset(
+            axum::extract::State(state.clone()),
+            headers,
+            query,
+            connect,
+            axum::Json(super::DashboardResetBody {
+                phrase: "John Smith".to_string(),
+                new_password: "another good password".to_string(),
+                confirm_password: "another good password".to_string(),
+            }),
+        )
+        .await;
+        assert_eq!(correct.status(), StatusCode::OK);
+        assert_ne!(cookie_from(&correct), "");
+
+        let (headers, query, connect) = no_auth();
+        let old = super::api_dashboard_login(
+            axum::extract::State(state.clone()),
+            headers,
+            query,
+            connect,
+            axum::Json(super::DashboardLoginBody {
+                password: "correct horse battery staple".to_string(),
+            }),
+        )
+        .await;
+        assert_eq!(old.status(), StatusCode::UNAUTHORIZED);
+
+        let (headers, query, connect) = no_auth();
+        let new = super::api_dashboard_login(
+            axum::extract::State(state),
+            headers,
+            query,
+            connect,
+            axum::Json(super::DashboardLoginBody {
+                password: "another good password".to_string(),
+            }),
+        )
+        .await;
+        assert_eq!(new.status(), StatusCode::OK);
     }
 
     #[tokio::test]

@@ -36,6 +36,7 @@ pub fn handle_key(
     runtime_config: &Arc<RwLock<RuntimeConfig>>,
     database: &Arc<Database>,
     config_tx: &watch::Sender<AppConfig>,
+    auth: &Arc<crate::dashboard_auth::DashboardAuth>,
 ) -> Result<EventResult> {
     if key.kind != KeyEventKind::Press {
         return Ok(EventResult::Continue);
@@ -71,17 +72,19 @@ pub fn handle_key(
         | InputMode::Url
         | InputMode::Priority
         | InputMode::ConfigValue(_)
-        | InputMode::ResetConfirm => Ok(handle_input_key(
+        | InputMode::ResetConfirm
+        | InputMode::DashboardPassword(_) => Ok(handle_input_key(
             state,
             key,
             database,
             config_tx,
             runtime_config,
+            auth,
         )),
         InputMode::CleanCacheConfirm => handle_clean_cache_key(state, key, database),
         InputMode::QuitConfirm => Ok(handle_quit_confirm_key(state, key)),
         InputMode::None => {
-            handle_normal_key(state, key, paths, runtime_config, database, config_tx)
+            handle_normal_key(state, key, paths, runtime_config, database, config_tx, auth)
         }
     }
 }
@@ -93,12 +96,13 @@ fn handle_normal_key(
     runtime_config: &Arc<RwLock<RuntimeConfig>>,
     database: &Arc<Database>,
     config_tx: &watch::Sender<AppConfig>,
+    auth: &Arc<crate::dashboard_auth::DashboardAuth>,
 ) -> Result<EventResult> {
     match key.code {
         KeyCode::Char('q') => return Ok(request_quit(state)),
         KeyCode::Esc => go_back(state),
         KeyCode::Tab => cycle_focus(state),
-        KeyCode::Enter => activate(state, paths, runtime_config, database, config_tx)?,
+        KeyCode::Enter => activate(state, paths, runtime_config, database, config_tx, auth)?,
         KeyCode::Up | KeyCode::Char('k') => move_up(state),
         KeyCode::Down | KeyCode::Char('j') => move_down(state),
         KeyCode::Char('e' | 'E') => edit_selected_subscription(state),
@@ -442,6 +446,7 @@ fn activate(
     runtime_config: &Arc<RwLock<RuntimeConfig>>,
     database: &Arc<Database>,
     config_tx: &watch::Sender<AppConfig>,
+    auth: &Arc<crate::dashboard_auth::DashboardAuth>,
 ) -> Result<()> {
     // If a found panel row is selected, set it as the manual proxy
     if let Some(found_index) = state.selected_found {
@@ -449,7 +454,7 @@ fn activate(
         return Ok(());
     }
     match state.view {
-        MenuView::Main => activate_main(state, paths, runtime_config, database, config_tx),
+        MenuView::Main => activate_main(state, paths, runtime_config, database, config_tx, auth),
         MenuView::Subscriptions => {
             if state.selected_subscription == 0 {
                 run_action(state, Action::Add, database, config_tx, runtime_config)?;
@@ -580,6 +585,7 @@ fn activate_main(
     runtime_config: &Arc<RwLock<RuntimeConfig>>,
     database: &Arc<Database>,
     config_tx: &watch::Sender<AppConfig>,
+    auth: &Arc<crate::dashboard_auth::DashboardAuth>,
 ) -> Result<()> {
     match visible_main_items()[state.selected_main] {
         MainItem::Sharing => {
@@ -648,6 +654,20 @@ fn activate_main(
         MainItem::Logs => {
             state.view = MenuView::Logs;
             state.selected_log = 0;
+        }
+        MainItem::DashboardPassword => {
+            state.dashboard_password.clear();
+            state.dashboard_phrase.clear();
+            start_input(
+                state,
+                InputMode::DashboardPassword(super::state::DashboardPasswordStep::NewPassword),
+                "",
+            );
+            state.status = if auth.enabled() {
+                "Dashboard password is ON. Enter a new password (12+ chars), or leave empty to disable.".to_string()
+            } else {
+                "Dashboard password is OFF. Enter a new password (12+ chars).".to_string()
+            };
         }
         MainItem::QrCodes => {
             let live_config = RuntimeConfig::from(&state.editable);

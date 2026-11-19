@@ -55,6 +55,7 @@ pub async fn run(
     config_tx: watch::Sender<AppConfig>,
     refresh_trigger: tokio::sync::mpsc::UnboundedSender<()>,
     ping_trigger: tokio::sync::mpsc::UnboundedSender<()>,
+    auth: Arc<crate::dashboard_auth::DashboardAuth>,
 ) -> Result<()> {
     // Restore the terminal even on panic. Otherwise a crash on a long run
     // leaves raw mode / mouse capture stuck and the shell looks frozen.
@@ -107,7 +108,14 @@ pub async fn run(
             .min(TUI_INPUT_POLL_INTERVAL);
         if event::poll(poll_timeout).unwrap_or(false)
             && matches!(
-                drain_events(&mut tui, &paths, &runtime_config, &database, &config_tx)?,
+                drain_events(
+                    &mut tui,
+                    &paths,
+                    &runtime_config,
+                    &database,
+                    &config_tx,
+                    &auth
+                )?,
                 EventResult::Quit
             )
         {
@@ -125,12 +133,13 @@ fn drain_events(
     runtime_config: &Arc<RwLock<RuntimeConfig>>,
     database: &Arc<crate::db::Database>,
     config_tx: &watch::Sender<AppConfig>,
+    auth: &Arc<crate::dashboard_auth::DashboardAuth>,
 ) -> Result<EventResult> {
     for _ in 0..TUI_MAX_EVENTS_PER_FRAME {
         match event::read() {
             Ok(Event::Key(key)) => {
                 if matches!(
-                    handle_key(tui, key, paths, runtime_config, database, config_tx)?,
+                    handle_key(tui, key, paths, runtime_config, database, config_tx, auth)?,
                     EventResult::Quit
                 ) {
                     return Ok(EventResult::Quit);

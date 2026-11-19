@@ -10,7 +10,10 @@ use crate::{
 
 use super::{
     events::{EventResult, push_editable, update_live_runtime_config},
-    state::{InputMode, MenuView, NewSubscriptionStep, SubscriptionDraft, TuiState},
+    state::{
+        DashboardPasswordStep, InputMode, MenuView, NewSubscriptionStep, SubscriptionDraft,
+        TuiState,
+    },
 };
 
 pub fn start_new_subscription(state: &mut TuiState) {
@@ -48,8 +51,20 @@ pub fn start_input(state: &mut TuiState, mode: InputMode, value: &str) {
         InputMode::CleanCacheConfirm => {
             "Type DELETE to clean cached subscription snapshots".to_string()
         }
+        InputMode::DashboardPassword(step) => dashboard_password_guide(step).to_string(),
         _ => "Edit mode; Enter applies, Esc cancels".to_string(),
     };
+}
+
+const fn dashboard_password_guide(step: DashboardPasswordStep) -> &'static str {
+    match step {
+        DashboardPasswordStep::NewPassword => {
+            "dashboard password (12+ chars); Enter continues, empty disables, Esc cancels"
+        }
+        DashboardPasswordStep::ConfirmPassword => "re-enter the password; Enter continues",
+        DashboardPasswordStep::Phrase => "recovery phrase (8+ chars, exact match)",
+        DashboardPasswordStep::ConfirmPhrase => "re-enter the recovery phrase",
+    }
 }
 
 pub fn handle_input_key(
@@ -58,10 +73,13 @@ pub fn handle_input_key(
     database: &crate::db::Database,
     config_tx: &watch::Sender<AppConfig>,
     runtime_config: &Arc<RwLock<RuntimeConfig>>,
+    auth: &Arc<crate::dashboard_auth::DashboardAuth>,
 ) -> EventResult {
     match key.code {
         KeyCode::Esc => {
             state.input_mode = InputMode::None;
+            state.dashboard_password.clear();
+            state.dashboard_phrase.clear();
             if state.view == MenuView::NewSubscription {
                 state.view = MenuView::Subscriptions;
                 state.new_subscription = None;
@@ -70,7 +88,7 @@ pub fn handle_input_key(
             state.input.clear();
             state.status = "Edit cancelled".to_string();
         }
-        KeyCode::Enter => commit_input(state, database, config_tx, runtime_config),
+        KeyCode::Enter => commit_input(state, database, config_tx, runtime_config, auth),
         KeyCode::Backspace => {
             state.input.pop();
         }
@@ -88,6 +106,7 @@ fn commit_input(
     database: &crate::db::Database,
     config_tx: &watch::Sender<AppConfig>,
     runtime_config: &Arc<RwLock<RuntimeConfig>>,
+    auth: &Arc<crate::dashboard_auth::DashboardAuth>,
 ) {
     match state.input_mode {
         InputMode::None
@@ -102,6 +121,137 @@ fn commit_input(
         InputMode::Priority => commit_priority(state, config_tx, runtime_config),
         InputMode::ConfigValue(key) => commit_config(state, key, config_tx, runtime_config),
         InputMode::ResetConfirm => commit_reset(state, database, config_tx, runtime_config),
+        InputMode::DashboardPassword(step) => {
+            commit_dashboard_password(state, step, database, auth);
+        }
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn commit_dashboard_password(
+    state: &mut TuiState,
+    step: DashboardPasswordStep,
+    database: &crate::db::Database,
+    auth: &Arc<crate::dashboard_auth::DashboardAuth>,
+) {
+    let value = state.input.clone();
+    match step {
+        DashboardPasswordStep::NewPassword => {
+            if value.is_empty() {
+                match crate::dashboard_auth::clear_credentials(database) {
+                    Ok(_) => {
+                        auth.clear_hashes();
+                        auth.revoke_all_sessions();
+                        state.dashboard_password.clear();
+                        state.dashboard_phrase.clear();
+                        state.input.clear();
+                        state.input_mode = InputMode::None;
+                        state.status = "Dashboard password disabled.".to_string();
+                    }
+                    Err(error) => {
+                        state.status = format!("Could not disable dashboard password: {error}");
+                        state.input.clear();
+                    }
+                }
+                return;
+            }
+            if let Err(message) = crate::dashboard_auth::validate_password(&value) {
+                state.status = message;
+                state.input.clear();
+                return;
+            }
+            state.dashboard_password = value;
+            start_input(
+                state,
+                InputMode::DashboardPassword(DashboardPasswordStep::ConfirmPassword),
+                "",
+            );
+            state.status = "Re-enter the dashboard password, then press Enter.".to_string();
+        }
+        DashboardPasswordStep::ConfirmPassword => {
+            if value != state.dashboard_password {
+                state.status = "Passwords do not match. Enter the password again.".to_string();
+                state.dashboard_password.clear();
+                start_input(
+                    state,
+                    InputMode::DashboardPassword(DashboardPasswordStep::NewPassword),
+                    "",
+                );
+                return;
+            }
+            start_input(
+                state,
+                InputMode::DashboardPassword(DashboardPasswordStep::Phrase),
+                "",
+            );
+            state.status =
+                "Enter the recovery phrase (8+ characters, matched exactly).".to_string();
+        }
+        DashboardPasswordStep::Phrase => {
+            if let Err(message) = crate::dashboard_auth::validate_phrase(&value) {
+                state.status = message;
+                state.input.clear();
+                return;
+            }
+            state.dashboard_phrase = value;
+            start_input(
+                state,
+                InputMode::DashboardPassword(DashboardPasswordStep::ConfirmPhrase),
+                "",
+            );
+            state.status = "Re-enter the recovery phrase, then press Enter.".to_string();
+        }
+        DashboardPasswordStep::ConfirmPhrase => {
+            if value != state.dashboard_phrase {
+                state.status = "Recovery phrases do not match. Enter the phrase again.".to_string();
+                state.dashboard_phrase.clear();
+                start_input(
+                    state,
+                    InputMode::DashboardPassword(DashboardPasswordStep::Phrase),
+                    "",
+                );
+                return;
+            }
+            let password_hash =
+                match crate::dashboard_auth::hash_secret_blocking(&state.dashboard_password) {
+                    Ok(hash) => hash,
+                    Err(error) => {
+                        state.status = format!("Could not hash dashboard password: {error}");
+                        return;
+                    }
+                };
+            let phrase_hash =
+                match crate::dashboard_auth::hash_secret_blocking(&state.dashboard_phrase) {
+                    Ok(hash) => hash,
+                    Err(error) => {
+                        state.status = format!("Could not hash recovery phrase: {error}");
+                        return;
+                    }
+                };
+            let entries = vec![
+                (
+                    crate::dashboard_auth::PASSWORD_KEY.to_string(),
+                    password_hash.clone(),
+                ),
+                (
+                    crate::dashboard_auth::PHRASE_KEY.to_string(),
+                    phrase_hash.clone(),
+                ),
+            ];
+            if let Err(error) = database.store_settings(&entries) {
+                state.status = format!("Could not save dashboard password: {error}");
+                return;
+            }
+            auth.install_hashes(password_hash, phrase_hash);
+            auth.revoke_all_sessions();
+            state.dashboard_password.clear();
+            state.dashboard_phrase.clear();
+            state.input.clear();
+            state.input_mode = InputMode::None;
+            state.status =
+                "Dashboard password updated. Browsers must sign in with the new password."
+                    .to_string();
+        }
     }
 }
 
@@ -394,10 +544,11 @@ mod tests {
     use crate::config::SubscriptionSource;
 
     use super::{
-        commit_new_enabled, commit_new_url, commit_priority, commit_reset, commit_url,
-        start_new_subscription,
+        commit_dashboard_password, commit_new_enabled, commit_new_url, commit_priority,
+        commit_reset, commit_url, start_new_subscription,
     };
-    use crate::tui::state::{InputMode, NewSubscriptionStep, TuiState};
+    use crate::dashboard_auth::{self, DashboardAuth};
+    use crate::tui::state::{DashboardPasswordStep, InputMode, NewSubscriptionStep, TuiState};
 
     fn subscription(name: &str, priority: u32) -> SubscriptionSource {
         SubscriptionSource {
@@ -595,5 +746,74 @@ mod tests {
             state.status, "URL updated",
             "echo-save of the same row works"
         );
+    }
+
+    #[test]
+    fn tui_password_wizard_sets_and_clears_credentials() {
+        let path = std::env::temp_dir().join(format!(
+            "v2raydar-tui-auth-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        let db = crate::db::Database::open(&path).expect("test database");
+        let auth = std::sync::Arc::new(DashboardAuth::new());
+        let mut state = state_with(Vec::new());
+
+        state.input_mode = InputMode::DashboardPassword(DashboardPasswordStep::NewPassword);
+        state.input = "short".to_string();
+        commit_dashboard_password(&mut state, DashboardPasswordStep::NewPassword, &db, &auth);
+        assert!(state.status.contains("at least"));
+
+        state.input_mode = InputMode::DashboardPassword(DashboardPasswordStep::NewPassword);
+        state.input = "correct horse battery staple".to_string();
+        commit_dashboard_password(&mut state, DashboardPasswordStep::NewPassword, &db, &auth);
+        assert_eq!(
+            state.input_mode,
+            InputMode::DashboardPassword(DashboardPasswordStep::ConfirmPassword)
+        );
+
+        state.input = "correct horse battery staple".to_string();
+        commit_dashboard_password(
+            &mut state,
+            DashboardPasswordStep::ConfirmPassword,
+            &db,
+            &auth,
+        );
+        assert_eq!(
+            state.input_mode,
+            InputMode::DashboardPassword(DashboardPasswordStep::Phrase)
+        );
+
+        state.input = "John Smith".to_string();
+        commit_dashboard_password(&mut state, DashboardPasswordStep::Phrase, &db, &auth);
+        assert_eq!(
+            state.input_mode,
+            InputMode::DashboardPassword(DashboardPasswordStep::ConfirmPhrase)
+        );
+
+        state.input = "John Smith".to_string();
+        commit_dashboard_password(&mut state, DashboardPasswordStep::ConfirmPhrase, &db, &auth);
+        assert!(auth.enabled());
+        assert_eq!(state.input_mode, InputMode::None);
+        assert!(
+            db.load_setting(dashboard_auth::PASSWORD_KEY)
+                .expect("read")
+                .is_some()
+        );
+
+        state.input_mode = InputMode::DashboardPassword(DashboardPasswordStep::NewPassword);
+        state.input.clear();
+        commit_dashboard_password(&mut state, DashboardPasswordStep::NewPassword, &db, &auth);
+        assert!(!auth.enabled());
+        assert!(
+            db.load_setting(dashboard_auth::PASSWORD_KEY)
+                .expect("read")
+                .is_none()
+        );
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
     }
 }

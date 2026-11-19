@@ -415,13 +415,14 @@ pub const WINDOWS_CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[cfg(test)]
 pub const TEST_REALITY_PUBLIC_KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
-pub const MAIN_ITEMS: [MainItem; 7] = [
+pub const MAIN_ITEMS: [MainItem; 8] = [
     MainItem::Sharing,
     MainItem::Proxy,
     MainItem::Subscriptions,
     MainItem::CleanCache,
     MainItem::Configurations,
     MainItem::Logs,
+    MainItem::DashboardPassword,
     MainItem::QrCodes,
 ];
 

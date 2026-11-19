@@ -578,6 +578,63 @@ impl Database {
         Ok(())
     }
 
+    /// Read one settings row (used by process-wide credentials that are not
+    /// part of [`crate::config::AppConfig`], such as dashboard password hashes).
+    #[allow(clippy::significant_drop_tightening)]
+    pub fn load_setting(&self, key: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        conn.query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            params![key],
+            |row| row.get(0),
+        )
+        .optional()
+        .context("failed to read settings row")
+    }
+
+    /// Upsert one settings row without touching the rest of the config.
+    #[allow(clippy::significant_drop_tightening)]
+    pub fn store_setting(&self, key: &str, value: &str) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )
+        .with_context(|| format!("failed to store setting {key}"))?;
+        Ok(())
+    }
+
+    /// Upsert a small set of settings in one transaction (used for the
+    /// dashboard password + recovery phrase so a crash cannot leave only one).
+    #[allow(clippy::significant_drop_tightening)]
+    pub fn store_settings(&self, entries: &[(String, String)]) -> Result<()> {
+        let mut conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            )?;
+            for (key, value) in entries {
+                stmt.execute(params![key, value])
+                    .with_context(|| format!("failed to store setting {key}"))?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Delete one settings row. Returns true when a row was present.
+    #[allow(clippy::significant_drop_tightening)]
+    pub fn delete_setting(&self, key: &str) -> Result<bool> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let removed = conn
+            .execute("DELETE FROM settings WHERE key = ?1", params![key])
+            .with_context(|| format!("failed to delete setting {key}"))?;
+        Ok(removed > 0)
+    }
+
     #[allow(clippy::significant_drop_tightening)]
     pub fn load_settings(&self) -> Result<std::collections::HashMap<String, String>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;

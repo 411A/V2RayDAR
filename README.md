@@ -1,10 +1,10 @@
 <p align="center">
   <strong>🌐 Available in</strong><br>
-  <strong><a href="README.md">English</a></strong>
-  • <strong><a href="docs/README.fa.md">فارسی</a></strong>
-  • <strong><a href="docs/README.zh-CN.md">简体中文</a></strong>
-  • <strong><a href="docs/README.ru.md">Русский</a></strong>
-  • <strong><a href="docs/README.fr.md">Français</a></strong>
+  <strong><a href="https://github.com/411A/V2RayDAR/blob/main/README.md">English</a></strong>
+  • <strong><a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.zh-CN.md">简体中文</a></strong>
+  • <strong><a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.ru.md">Русский</a></strong>
+  • <strong><a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.fr.md">Français</a></strong>
+  • <strong><a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.fa.md">فارسی</a></strong>
 </p>
 
 <p align="center">

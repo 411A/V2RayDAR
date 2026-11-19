@@ -98,7 +98,7 @@
 
 ### 🌐 Web Dashboard (default)
 
-The web dashboard is the default interface and covers daily use end to end from a single browser page: live Overview stats, ranked Configs with per-row QR codes, Subscriptions management (add, edit, on/off, delete, drag-and-drop reorder), every setting on the Settings tab, the Proxy tab, LAN sharing, live Logs, and a QR sheet for onboarding phones.
+The web dashboard is the default interface and covers daily use end to end from a single browser page: live Overview stats, ranked Configs with per-row QR codes, Subscriptions management (add, edit, on/off, delete, drag-and-drop reorder), every setting on the Settings tab, the Proxy tab, LAN sharing, live Logs with full-session history, and a QR sheet for onboarding phones.
 
 After starting the app, open http://127.0.0.1:27141 in your browser.
 

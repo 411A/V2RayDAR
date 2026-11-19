@@ -308,6 +308,8 @@ The same bind address serves a built-in offline dashboard at `/` (`/overview`, `
 
 The Settings tab lists every tunable option as name | value | description rows, in the dashboard language, with a control that fits the type: on/off switch for booleans, dropdown for choices (probe mode), inline editor for numbers/text/lists, a setter for the LAN token, and plain text for read-only rows. Every change saves to the database and the live runtime immediately.
 
+The Logs tab streams new lines in real time. The server keeps the complete session in independently compressed DEFLATE chunks while the live tail stays uncompressed for instant rendering; **Load older** pages backward and **Download log** exports the whole retained session. The archive is capped at 16 MiB compressed, so a very long run normally keeps every line and only a pathologically talkative run prunes its oldest chunks first, never the live tail.
+
 ## Client Setup
 
 ### v2rayN / v2rayNG (share-link format)

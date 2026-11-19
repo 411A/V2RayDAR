@@ -19,6 +19,8 @@ const POLL_RESULTS_MS = 10000;
 const ROW_LIMIT_KEY = "v2raydar-row-limit";
 const LOG_LEVEL_KEY = "v2raydar.logLevel";
 const MAX_LOGS = 300;
+const MAX_OLDER_LOGS = 1000; // loaded/dropped history cap; server keeps the rest
+const LOG_PAGE_SIZE = 500;
 const MAX_TOASTS = 4;
 const TOAST_MS = 4500;
 const THEME_KEY = "v2raydar-theme";
@@ -80,6 +82,15 @@ const state = {
   subs: null, // { list, dirty } when /api/subscriptions exists
   settings: null, // server settings payload when /api/config exists
   logLines: [],
+  // Older lines loaded from the compressed session archive, oldest first.
+  // The live tail stays in `logLines` so real-time rendering never waits on
+  // archive decompression.
+  logOlder: [],
+  logOlderFirst: 0, // seq of logOlder[0], 0 when empty
+  logTailFirst: 0, // seq of logLines[0], 0 when unknown
+  logHasOlder: false,
+  logOlderLoading: false,
+  logArchiveKnown: false,
   detailUri: "",
   qrUri: "",
   qrObjectUrl: "",
@@ -988,7 +999,7 @@ function connectFeed() {
   });
   sse.addEventListener("log", (ev) => {
     if (current()) {
-      pushLogLine(ev.data);
+      pushLogLine(ev.data, ev.lastEventId);
     }
   });
   sse.addEventListener("probe-delta", (ev) => {
@@ -1335,20 +1346,48 @@ function applyRanked(text) {
   });
 }
 
-function pushLogLine(text) {
+/// Append one live line. `seq` arrives in the SSE event id (empty on older
+/// servers) and lets the client keep a contiguous view when the live ring
+/// trims: dropped live lines move into the older section instead of leaving a
+/// hole between history and the tail.
+function pushLogLine(text, seq) {
   if (text === null || text === undefined) {
     return;
   }
-  state.logLines.push(String(text));
-  if (state.logLines.length > MAX_LOGS) {
-    state.logLines.splice(0, state.logLines.length - MAX_LOGS);
+  const numeric = Number(seq);
+  if (state.logTailFirst <= 0 && Number.isFinite(numeric) && numeric > 0) {
+    state.logTailFirst = numeric;
+    state.logOlderFirst = numeric;
   }
+  state.logLines.push(String(text));
+  const extra = state.logLines.length - MAX_LOGS;
+  if (extra > 0) {
+    const dropped = state.logLines.splice(0, extra);
+    if (state.logOlder.length === 0) {
+      state.logOlderFirst = state.logTailFirst;
+    }
+    state.logOlder.push(...dropped);
+    state.logTailFirst += extra;
+    trimOlderLines();
+  }
+  state.logHasOlder = state.logArchiveKnown && state.logOlderFirst > 1;
   // Hidden tabs paint nothing anyway; skip the DOM rebuilds and let the
   // resume snapshot render the current tail in one frame.
   if (document.hidden === true) {
     return;
   }
   scheduleRender("logs", renderLogs);
+}
+
+/// Keep the loaded-history slice bounded. The dropped prefix is still in the
+/// server archive, so "Load older" can pull it back; the live tail is never
+/// affected.
+function trimOlderLines() {
+  const extra = state.logOlder.length - MAX_OLDER_LOGS;
+  if (extra > 0) {
+    state.logOlder.splice(0, extra);
+    state.logOlderFirst += extra;
+  }
 }
 
 function ingestLogs(snap) {
@@ -1363,6 +1402,16 @@ function ingestLogs(snap) {
     }
   }
   state.logLines = lines.slice(-MAX_LOGS);
+  const total = typeof snap.log_seq === "number" ? Number(snap.log_seq) : 0;
+  state.logArchiveKnown = total > 0;
+  state.logOlder = [];
+  state.logOlderFirst = 0;
+  state.logTailFirst = total > 0 && state.logLines.length > 0
+    ? Math.max(1, total - state.logLines.length + 1)
+    : 0;
+  state.logOlderFirst = state.logTailFirst;
+  state.logHasOlder = state.logArchiveKnown && state.logTailFirst > 1;
+  state.logOlderLoading = false;
 }
 
 /* ---------- rendering ---------- */
@@ -2432,7 +2481,7 @@ function paintLogs() {
   }
   const q = state.logFilter.trim().toLowerCase();
   let shown = 0;
-  for (const line of state.logLines) {
+  for (const line of state.logOlder.concat(state.logLines)) {
     const parsed = parseLogLine(line);
     if (!logLineVisible(parsed, state.logLevel, q, line)) {
       continue;
@@ -2451,12 +2500,91 @@ function paintLogs() {
     shown += 1;
   }
   $("log-empty").hidden = shown !== 0;
+  updateLogButtons();
   if (state.follow) {
     try {
       list.scrollTop = list.scrollHeight;
     } catch (err) {
       /* non-scrollable container */
     }
+  }
+}
+
+/// Enable/disable the archive controls from the current state.
+function updateLogButtons() {
+  const older = $("btn-log-older");
+  if (older) {
+    older.disabled = state.logOlderLoading || !state.logHasOlder;
+  }
+  const download = $("btn-log-download");
+  if (download) {
+    download.hidden = !state.logArchiveKnown;
+  }
+}
+
+/// Pull the previous page of history from the compressed server archive.
+/// The live tail stays untouched; the page is prepended and the scroll anchor
+/// is restored so the user does not lose their place.
+async function loadOlderLogs() {
+  if (state.logOlderLoading) {
+    return;
+  }
+  const before = state.logOlder.length > 0 ? state.logOlderFirst : state.logTailFirst;
+  if (!before || before <= 1) {
+    state.logHasOlder = false;
+    updateLogButtons();
+    return;
+  }
+  state.logOlderLoading = true;
+  updateLogButtons();
+  const list = $("log-list");
+  const fromBottom = list ? Math.max(0, list.scrollHeight - list.scrollTop) : 0;
+  try {
+    const r = await fetchJson("/api/logs?before=" + before + "&limit=" + LOG_PAGE_SIZE);
+    if (r.status !== 200 || !r.data || !Array.isArray(r.data.lines)) {
+      toast(t("logLoadFailed"), "bad");
+      return;
+    }
+    const page = r.data.lines;
+    if (page.length === 0) {
+      state.logHasOlder = false;
+      return;
+    }
+    state.logArchiveKnown = true;
+    const texts = page.map((row) => String(row.line));
+    state.logOlder = texts.concat(state.logOlder);
+    state.logOlderFirst = Number(page[0].seq) || Math.max(1, before - texts.length);
+    state.logHasOlder = !!r.data.has_more && state.logOlderFirst > 1;
+    trimOlderLines();
+    // Inspecting history means the user is no longer following the tail.
+    state.follow = false;
+    const follow = $("log-follow");
+    if (follow) {
+      follow.checked = false;
+    }
+    renderLogs();
+    if (list) {
+      list.scrollTop = Math.max(0, list.scrollHeight - fromBottom);
+    }
+  } finally {
+    state.logOlderLoading = false;
+    updateLogButtons();
+  }
+}
+
+/// Download the complete session log (the server streams the decompressed
+/// archive). User-initiated only, so the live dashboard path stays cheap.
+function downloadLogs() {
+  const a = document.createElement("a");
+  a.href = apiPath("/api/logs/download");
+  a.download = "v2raydar-session.log";
+  a.hidden = true;
+  document.body.appendChild(a);
+  if (typeof a.click === "function") {
+    a.click();
+  }
+  if (typeof a.remove === "function") {
+    a.remove();
   }
 }
 
@@ -4191,9 +4319,16 @@ function wire() {
   });
   $("btn-log-clear").addEventListener("click", () => {
     state.logLines = [];
+    state.logOlder = [];
+    state.logTailFirst = 0;
+    state.logOlderFirst = 0;
+    state.logHasOlder = false;
+    updateLogButtons();
     renderLogs();
     toast(t("logCleared"), "good");
   });
+  $("btn-log-older").addEventListener("click", () => void loadOlderLogs());
+  $("btn-log-download").addEventListener("click", downloadLogs);
 
   $("btn-lang").addEventListener("click", () => toggleLangMenu());
   const menu = $("lang-menu");

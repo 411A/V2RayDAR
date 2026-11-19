@@ -136,6 +136,11 @@ export function createStub() {
       "probe.speedtest_enabled": "false",
       "sharing.token": "set",
     },
+    // Session log archive emulation: the live tail and the full history the
+    // dashboard pages through with "Load older".
+    logSeq: 1,
+    liveLogs: ["boot ok"],
+    archiveLogs: [{ seq: 1, line: "boot ok" }],
   };
 
   const json = (res, status, obj) => {
@@ -211,12 +216,42 @@ export function createStub() {
     }
     if (req.method === "GET" && p === "/results") {
       stub.resultsGets += 1;
-      json(res, 200, snapshot({ refreshing: stub.busyRefreshing, pinging: stub.busyPinging, fetch_errors: stub.fetchErrors, proxy_active_uri: stub.proxyActiveUri, proxy_running: stub.proxyEnabled, proxy_discoverable: stub.proxyDiscoverable }));
+      json(res, 200, snapshot({ refreshing: stub.busyRefreshing, pinging: stub.busyPinging, fetch_errors: stub.fetchErrors, proxy_active_uri: stub.proxyActiveUri, proxy_running: stub.proxyEnabled, proxy_discoverable: stub.proxyDiscoverable, live_logs: stub.liveLogs, log_seq: stub.logSeq }));
       return;
     }
     if (req.method === "GET" && p === "/api/summary") {
-      const s = snapshot({ refreshing: stub.busyRefreshing, pinging: stub.busyPinging, fetch_errors: stub.fetchErrors, proxy_active_uri: stub.proxyActiveUri, proxy_running: stub.proxyEnabled, proxy_discoverable: stub.proxyDiscoverable });
+      const s = snapshot({ refreshing: stub.busyRefreshing, pinging: stub.busyPinging, fetch_errors: stub.fetchErrors, proxy_active_uri: stub.proxyActiveUri, proxy_running: stub.proxyEnabled, proxy_discoverable: stub.proxyDiscoverable, live_logs: stub.liveLogs, log_seq: stub.logSeq });
       json(res, 200, { ...s, qr_available: false, refresh_seconds: 60, ping_seconds: 300, started_at: "2026-09-16T10:00:00+00:00" });
+      return;
+    }
+    if (req.method === "GET" && p === "/api/logs") {
+      const url = new URL(req.url, "http://127.0.0.1");
+      const limit = Math.min(Number(url.searchParams.get("limit") || 500), 1000);
+      const from = url.searchParams.get("from");
+      const before = url.searchParams.get("before");
+      let lines;
+      if (from !== null) {
+        lines = stub.archiveLogs.filter((row) => row.seq >= Number(from)).slice(0, limit);
+      } else {
+        const cursor = before === null ? Number.MAX_SAFE_INTEGER : Number(before);
+        lines = stub.archiveLogs.filter((row) => row.seq < cursor).slice(-limit);
+      }
+      const first = stub.archiveLogs[0] ? stub.archiveLogs[0].seq : 0;
+      json(res, 200, {
+        lines,
+        first_seq: first,
+        total: stub.logSeq,
+        has_more: lines.length > 0 && lines[0].seq > first,
+      });
+      return;
+    }
+    if (req.method === "GET" && p === "/api/logs/download") {
+      const body = stub.archiveLogs.map((row) => row.line).join("\n") + "\n";
+      res.writeHead(200, {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Content-Disposition": 'attachment; filename="v2raydar-session.log"',
+      });
+      res.end(body);
       return;
     }
     if (req.method === "GET" && p === "/api/events") {
@@ -227,7 +262,7 @@ export function createStub() {
         Connection: "keep-alive",
       });
       sseClients.add(res);
-      const s = snapshot({ refreshing: stub.busyRefreshing, pinging: stub.busyPinging, fetch_errors: stub.fetchErrors, proxy_active_uri: stub.proxyActiveUri, proxy_running: stub.proxyEnabled, proxy_discoverable: stub.proxyDiscoverable });
+      const s = snapshot({ refreshing: stub.busyRefreshing, pinging: stub.busyPinging, fetch_errors: stub.fetchErrors, proxy_active_uri: stub.proxyActiveUri, proxy_running: stub.proxyEnabled, proxy_discoverable: stub.proxyDiscoverable, live_logs: stub.liveLogs, log_seq: stub.logSeq });
       res.write(`event: hello\ndata: ${JSON.stringify({ snapshot: s })}\n\n`);
       if (stub.rankedPush) {
         const rows = stub.rankedPush;

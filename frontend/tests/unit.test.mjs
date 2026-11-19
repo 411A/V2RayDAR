@@ -1859,12 +1859,17 @@ describe("long-run log batching", () => {
       api.pushLogLine(`2026/10/25 13:20:59.324 [INFO] line ${i}`);
     }
     assert.equal(frames.length, 1, "all events collapse into one frame");
-    assert.equal(api.state.logLines.length, api.MAX_LOGS, "client ring stays bounded");
+    assert.equal(api.state.logLines.length, api.MAX_LOGS, "live tail stays bounded");
+    assert.ok(
+      api.state.logOlder.length <= api.MAX_OLDER_LOGS,
+      "loaded history stays bounded",
+    );
+    const expectedRows = api.state.logOlder.length + api.state.logLines.length;
     api.flushRenders();
     assert.equal(
       sandbox.__elements.get("log-list").children.length,
-      api.MAX_LOGS,
-      "one repaint renders the bounded tail",
+      expectedRows,
+      "one repaint renders the bounded view",
     );
   });
 });

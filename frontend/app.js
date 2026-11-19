@@ -39,6 +39,13 @@ const state = {
   feed: "boot", // boot | live | polling | offline | locked
   serverStopped: false, // set after a confirmed shutdown; boot clears it
   sse: null,
+  // Monotonic feed generation: closing/reconnecting an EventSource leaves
+  // its already-queued events in the browser's task queue, and applying them
+  // after a fresh snapshot would rewind the dashboard through every change
+  // that happened while the tab was hidden. Handlers from an older
+  // generation become no-ops the moment a new feed is opened.
+  feedSeq: 0,
+  sseEverOpened: false, // a live feed worked at least once (resume reconnects)
   pollTimer: 0,
   subs: null, // { list, dirty } when /api/subscriptions exists
   settings: null, // server settings payload when /api/config exists
@@ -925,6 +932,8 @@ function connectFeed() {
     startPolling(false);
     return;
   }
+  const seq = ++state.feedSeq;
+  const current = () => seq === state.feedSeq;
   let sse;
   try {
     sse = new EventSource(apiPath("/api/events"));
@@ -936,17 +945,36 @@ function connectFeed() {
   let opened = false;
 
   sse.addEventListener("hello", (ev) => {
+    if (!current()) {
+      return;
+    }
     opened = true;
+    state.sseEverOpened = true;
     setFeedStatus("live");
     applyHello(ev.data);
     // Proves the modern API surface AND stores capabilities (uptime origin,
     // cadences, QR flag). Must run unblocked: it no-ops once flags are set.
     void syncCapabilitiesOnce();
   });
-  sse.addEventListener("log", (ev) => pushLogLine(ev.data));
-  sse.addEventListener("probe-delta", (ev) => applyProbeDelta(ev.data));
-  sse.addEventListener("ranked", (ev) => applyRanked(ev.data));
+  sse.addEventListener("log", (ev) => {
+    if (current()) {
+      pushLogLine(ev.data);
+    }
+  });
+  sse.addEventListener("probe-delta", (ev) => {
+    if (current()) {
+      applyProbeDelta(ev.data);
+    }
+  });
+  sse.addEventListener("ranked", (ev) => {
+    if (current()) {
+      applyRanked(ev.data);
+    }
+  });
   sse.addEventListener("config-changed", () => {
+    if (!current()) {
+      return;
+    }
     // A change this tab made is already reflected locally; only an external
     // change (the TUI, another browser) is worth announcing.
     if (Date.now() - state.selfConfigChangeAt > SELF_CONFIG_ECHO_MS) {
@@ -956,6 +984,9 @@ function connectFeed() {
     void loadOvConfig();
   });
   sse.onerror = () => {
+    if (!current()) {
+      return;
+    }
     try {
       sse.close();
     } catch (err) {
@@ -973,6 +1004,11 @@ function connectFeed() {
         status: t("statusReconnecting"),
       });
       window.setTimeout(() => {
+        // A visibility resume may already have opened a fresh feed; a second
+        // connection here would leak a live feed and double every event.
+        if (state.sse) {
+          return;
+        }
         void loadResults().then((ok) => {
           if (ok) {
             connectFeed();
@@ -983,6 +1019,35 @@ function connectFeed() {
       }, 3000);
     }
   };
+}
+
+/// Tab became visible again. Close the stale feed and open a fresh one so the
+/// `hello` snapshot (latest counters, ranked rows and log tail) is painted in
+/// one go. Any events still queued by the old EventSource are ignored by the
+/// generation guard, so the dashboard shows the current truth instantly
+/// instead of fast-forwarding through everything that happened while away.
+function resumeFeed() {
+  if (state.serverStopped) {
+    return;
+  }
+  if (state.sse) {
+    const stale = state.sse;
+    state.sse = null;
+    try {
+      stale.close();
+    } catch (err) {
+      /* already closed */
+    }
+    connectFeed();
+    return;
+  }
+  if (state.sseEverOpened && "EventSource" in window) {
+    connectFeed();
+    return;
+  }
+  // Polling fallback (or an old server): one full snapshot is the cheapest
+  // way to jump to current truth.
+  void loadResults();
 }
 
 function startPolling(summaryAvailable) {
@@ -1063,10 +1128,16 @@ function safeParse(text) {
 
 function applyHello(text) {
   const msg = safeParse(text);
-  if (msg && msg.snapshot) {
-    state.snapshot = msg.snapshot;
+  // Modern servers send the flat RuntimeState (same shape as /results);
+  // older ones may wrap it in `{snapshot}`. Either one is a complete state,
+  // so paint it directly — a reconnect must never walk through the backlog.
+  const snap = msg && msg.snapshot
+    ? msg.snapshot
+    : (msg && Array.isArray(msg.live_logs) ? msg : null);
+  if (snap) {
+    state.snapshot = snap;
     syncProxyPending();
-    ingestLogs(msg.snapshot);
+    ingestLogs(snap);
     renderAll();
   } else {
     void loadResults();
@@ -1204,6 +1275,9 @@ function applyProbeDelta(text) {
   }
   const wasPending = state.proxyPendingUri;
   syncProxyPending();
+  if (document.hidden === true) {
+    return;
+  }
   if (proxyChanged || (wasPending !== undefined && state.proxyPendingUri === undefined)) {
     renderOvConfigs();
     renderConfigs();
@@ -1219,6 +1293,9 @@ function applyRanked(text) {
     return;
   }
   state.snapshot.ranked = Array.isArray(d) ? d : d.ranked || state.snapshot.ranked;
+  if (document.hidden === true) {
+    return;
+  }
   renderOvConfigs();
   renderConfigs();
   void renderShare();
@@ -1231,6 +1308,11 @@ function pushLogLine(text) {
   state.logLines.push(String(text));
   if (state.logLines.length > MAX_LOGS) {
     state.logLines.splice(0, state.logLines.length - MAX_LOGS);
+  }
+  // Hidden tabs paint nothing anyway; skip the DOM rebuilds and let the
+  // resume snapshot render the current tail in one frame.
+  if (document.hidden === true) {
+    return;
   }
   renderLogs();
 }
@@ -1404,7 +1486,7 @@ function buildStatCards(box, s) {
     }
   }
   // TUI top-strip parity: Running For / Refresh / Last Scan / Fetched /
-  // Failed / Working / Sub Usage. Seven tight badges share one row (narrow
+  // Failed / Working / Traffic usage. Seven tight badges share one row (narrow
   // landscape viewports scroll horizontally instead of wrapping or
   // overflowing); portrait phones hide Fetched (`#stat-fetched`) and show
   // the remaining six in a fixed 3x2 grid — see style.css.
@@ -2271,15 +2353,16 @@ async function copyText(text, okMsg) {
 /* ---------- logs ---------- */
 
 /// Split a raw log line into `{ ts, level, msg }`. Tagged lines look like
-/// `20:20:02.792 [INFO] message`; unknown level tokens fall back to INFO
-/// (keeping the message), and legacy lines without a prefix — plus any
-/// non-string input (shown in string form, like before) — yield an empty
-/// ts with level INFO.
+/// `2026/10/25 13:20:59.324 [INFO] message`; older servers sent the clock
+/// alone (`13:20:59.324`), so both shapes parse. Unknown level tokens fall
+/// back to INFO (keeping the message), and legacy lines without a prefix —
+/// plus any non-string input (shown in string form, like before) — yield an
+/// empty ts with level INFO.
 function parseLogLine(line) {
   if (typeof line !== "string") {
     return { ts: "", level: "INFO", msg: String(line) };
   }
-  const m = line.match(/^(\d{2}:\d{2}:\d{2}\.\d{3}) \[([A-Z]+)\] ([\s\S]+)$/);
+  const m = line.match(/^(\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2}\.\d{3}|\d{2}:\d{2}:\d{2}\.\d{3}) \[([A-Z]+)\] ([\s\S]+)$/);
   if (m) {
     return {
       ts: m[1],
@@ -4209,12 +4292,14 @@ function wire() {
   window.addEventListener("popstate", () => showTab(currentTab()));
   // Minimized/background windows get throttled timers and may sit on a dead
   // SSE connection for hours: resync the moment the page is visible again
-  // instead of waiting for the next throttled tick, so every badge jumps to
-  // current truth in one repaint.
+  // instead of waiting for the next throttled tick. A fresh feed snapshot
+  // replaces the whole view in one repaint, so the user sees the latest
+  // changes immediately rather than a fast-forward of the backlog.
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) {
-      void loadResults();
+    if (document.hidden) {
+      return;
     }
+    resumeFeed();
   });
   // In-app tab links navigate instantly (no reload); anything else (skip
   // link, dialogs, external URLs) keeps native behavior.
@@ -4268,7 +4353,9 @@ async function boot() {
     const retry = async () => {
       const good = await loadResults();
       if (good) {
-        connectFeed();
+        if (!state.sse) {
+          connectFeed();
+        }
       } else {
         window.setTimeout(retry, 5000);
       }

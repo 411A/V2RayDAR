@@ -85,6 +85,7 @@ export function createStub() {
     refreshPosts: 0,
     pingPosts: 0,
     resultsGets: 0,
+    eventsGets: 0,
     refreshDelayMs: 0,
     pingDelayMs: 0,
     rankedPush: null,
@@ -219,6 +220,7 @@ export function createStub() {
       return;
     }
     if (req.method === "GET" && p === "/api/events") {
+      stub.eventsGets += 1;
       res.writeHead(200, {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache",

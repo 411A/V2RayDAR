@@ -1719,6 +1719,18 @@ describe("live-logs severity filter contract", () => {
     assert.equal(dbg.msg, "probe tick");
   });
 
+  it("parseLogLine keeps the full date-time stamp the server now emits", () => {
+    const full = api.parseLogLine("2026/10/25 13:20:59.324 [INFO] refresh started");
+    assert.equal(full.ts, "2026/10/25 13:20:59.324");
+    assert.equal(full.level, "INFO");
+    assert.equal(full.msg, "refresh started");
+
+    const warn = api.parseLogLine("2026/10/25 13:21:00.001 [WARN] slow peer");
+    assert.equal(warn.ts, "2026/10/25 13:21:00.001");
+    assert.equal(warn.level, "WARN");
+    assert.equal(warn.msg, "slow peer");
+  });
+
   it("parseLogLine folds unknown levels to INFO, keeps legacy/non-string", () => {
     const unknown = api.parseLogLine("20:20:02.792 [VERBOSE] chatter");
     assert.equal(unknown.ts, "20:20:02.792");
@@ -1782,6 +1794,56 @@ describe("live-logs severity filter contract", () => {
     assert.equal(api.logLineVisible(err, "ERROR", "good", errRaw), true);
     assert.equal(api.logLineVisible(err, "ERROR", "missing", errRaw), false);
     assert.equal(api.logLineVisible(api.parseLogLine("20:20:05.000 [DEBUG] good"), "ERROR", "good", "20:20:05.000 [DEBUG] good"), false);
+  });
+});
+
+describe("resume feed snapshot", () => {
+  it("applyHello paints the flat RuntimeState without an extra round trip", () => {
+    api.state.hasSummaryApi = false;
+    api.state.qrKnown = false;
+    api.state.snapshot = { total_candidates: 1, live_logs: ["old line"], ranked: [] };
+    const calls = sandbox.__fetchCalls.filter((u) => u.includes("/results")).length;
+    api.applyHello(JSON.stringify({
+      live_logs: ["2026/10/25 13:20:59.324 [INFO] newest line"],
+      ranked: [],
+      refreshing: false,
+      pinging: false,
+      total_candidates: 9,
+      tested_candidates: 3,
+      reachable_candidates: 2,
+      fetch_bytes: 10,
+      fetch_errors: [],
+      proxy_running: false,
+    }));
+    assert.equal(
+      sandbox.__fetchCalls.filter((u) => u.includes("/results")).length,
+      calls,
+      "hello must not fetch /results",
+    );
+    assert.equal(api.state.snapshot.total_candidates, 9);
+    assert.equal(api.state.logLines.length, 1, "log backlog is replaced by the snapshot tail");
+    assert.equal(api.state.logLines[0], "2026/10/25 13:20:59.324 [INFO] newest line");
+  });
+
+  it("applyHello still accepts the wrapped snapshot shape", () => {
+    api.state.hasSummaryApi = false;
+    api.state.qrKnown = false;
+    api.applyHello(JSON.stringify({
+      snapshot: {
+        live_logs: ["wrapped"],
+        ranked: [],
+        refreshing: false,
+        pinging: false,
+        total_candidates: 4,
+        tested_candidates: 0,
+        reachable_candidates: 0,
+        fetch_bytes: 0,
+        fetch_errors: [],
+        proxy_running: false,
+      },
+    }));
+    assert.equal(api.state.snapshot.total_candidates, 4);
+    assert.equal(api.state.logLines[0], "wrapped");
   });
 });
 

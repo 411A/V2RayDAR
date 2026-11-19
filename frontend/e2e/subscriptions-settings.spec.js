@@ -223,6 +223,9 @@ test("settings edits keep the viewport and focus (no scroll jump)", async ({ pag
   await page.setViewportSize({ width: 800, height: 350 });
   await page.goto(base + "/settings");
   const sw = page.locator(".set-row .switch").first();
+  // Wait for the settings rows before measuring: scrolling an unrendered
+  // page yields scrollY 0 and makes the position check meaningless.
+  await expect(sw).toBeVisible();
   // Order-independent: the bool test earlier in the file may have flipped it.
   const was = (await sw.textContent()).trim();
   const flipped = was === "On" ? "Off" : "On";

@@ -83,6 +83,11 @@ struct ProxyState {
     /// Ranking updates hold the active config while this is non-zero unless
     /// the active config is proven unable to carry bulk traffic.
     active_connections: usize,
+    /// Connections the Clash API still lists, moving or idle (updated by the
+    /// traffic loop). A ranking switch restarts sing-box and kills every one
+    /// of them, so a ranking change waits for the proxy to go idle. Proven
+    /// failures and a verified crawl still switch immediately.
+    open_connections: usize,
     last_traffic: Option<Instant>,
     /// Last deep bulk check, so a slow stream does not download ten
     /// megabytes on every poll.
@@ -213,6 +218,7 @@ impl PersistentProxy {
                 manual_proxy_uri,
                 pin_suspended_uri: None,
                 active_connections: 0,
+                open_connections: 0,
                 last_traffic: None,
                 last_bulk_check: None,
                 last_performance_switch: None,
@@ -257,7 +263,7 @@ impl PersistentProxy {
         // A pin only re-arms selection when it actually changes: a pin that
         // was suspended after failing must stay suspended across later
         // refresh updates, otherwise the app would flap back onto it.
-        let (pin_suspended, active_uri, traffic_active, active_class) = {
+        let (pin_suspended, active_uri, traffic_active, active_class, open_connections) = {
             let mut state = self.state.write().await;
             let previous_manual = state.manual_proxy_uri.clone();
             state.proxy_config = config.clone();
@@ -279,12 +285,19 @@ impl PersistentProxy {
                 && state
                     .last_traffic
                     .is_some_and(|seen| seen.elapsed() < PROXY_STREAM_WINDOW.saturating_mul(3));
+            let open_connections = state.open_connections;
             drop(state);
             let active_class = active_uri
                 .as_deref()
                 .and_then(|uri| ranked.iter().find(|item| item.uri == uri))
                 .map(RankedConfig::throughput_class);
-            (pin_suspended, active_uri, traffic_active, active_class)
+            (
+                pin_suspended,
+                active_uri,
+                traffic_active,
+                active_class,
+                open_connections,
+            )
         };
         let pin_active = config.manual_proxy_uri.is_some() && !pin_suspended;
 
@@ -368,10 +381,15 @@ impl PersistentProxy {
                     // While the user has live traffic, ranking alone does not
                     // justify cutting the stream; the traffic loop switches
                     // when it can prove the active config is bad or slower.
+                    // Open connections count even when quiet: a Telegram long
+                    // poll moves no bytes but dies the moment sing-box is
+                    // restarted, so a switch waits for the proxy to go idle.
                     if !dwell_allows(state.last_switch, Instant::now(), pin_active) {
                         (false, "dwell")
                     } else if traffic_active && !pin_active && active_class != Some(2) {
                         (false, "traffic")
+                    } else if open_connections > 0 && !pin_active {
+                        (false, "open")
                     } else {
                         (true, "new config")
                     }
@@ -402,6 +420,18 @@ impl PersistentProxy {
                 info!(
                     name = %best.name,
                     "proxy: keeping the active config while user traffic flows"
+                );
+            } else if reason == "open" {
+                info!(
+                    name = %best.name,
+                    open_connections,
+                    "proxy: connections are open; keeping the active config instead of restarting sing-box"
+                );
+                self.emit_log(
+                    LogLevel::Debug,
+                    &format!(
+                        "proxy: {open_connections} open connection(s); config switch deferred until idle"
+                    ),
                 );
             }
             return;
@@ -1627,6 +1657,10 @@ pub fn spawn_starvation_loop(
                 samples.clear();
                 reported.clear();
                 unreachable = None;
+                write_proxy_state(&proxy, |state| {
+                    state.open_connections = 0;
+                })
+                .await;
                 continue;
             };
             if !running {
@@ -1635,6 +1669,7 @@ pub fn spawn_starvation_loop(
                 unreachable = None;
                 write_proxy_state(&proxy, |state| {
                     state.active_connections = 0;
+                    state.open_connections = 0;
                 })
                 .await;
                 continue;
@@ -1660,6 +1695,12 @@ pub fn spawn_starvation_loop(
                         "proxy: clash API unreachable, traffic monitor paused"
                     );
                     unreachable = Some((addr, 0));
+                    // Cannot prove anyone is connected: do not block a switch
+                    // on a count we can no longer refresh.
+                    write_proxy_state(&proxy, |state| {
+                        state.open_connections = 0;
+                    })
+                    .await;
                     continue;
                 }
             };
@@ -1691,6 +1732,7 @@ pub fn spawn_starvation_loop(
                 .count();
             write_proxy_state(&proxy, |state| {
                 state.active_connections = active;
+                state.open_connections = connections.len();
                 if poll_delta > 0 {
                     state.last_traffic = Some(now);
                 }
@@ -1725,6 +1767,10 @@ pub fn spawn_starvation_loop(
                 // snapshot is stale. Start the next poll from scratch.
                 samples.clear();
                 reported.clear();
+                write_proxy_state(&proxy, |state| {
+                    state.open_connections = 0;
+                })
+                .await;
                 slow_windows = 0;
                 window_started = now;
                 continue;
@@ -2396,6 +2442,30 @@ mod tests {
             )
             .await;
         assert_eq!(proxy.state.read().await.pin_suspended_uri, None);
+    }
+
+    #[tokio::test]
+    async fn update_defers_a_ranking_switch_while_connections_are_open() {
+        // A Telegram long poll is idle but open. Restarting sing-box for a
+        // better-ranked config would kill it, so the switch must wait.
+        let proxy = PersistentProxy::new(auto_proxy_config(), String::new(), None);
+        {
+            let mut state = proxy.state.write().await;
+            state.active_config_uri = Some("vless://current@example.com:443".to_string());
+            state.open_connections = 3;
+        }
+        let ranked = vec![selectable("better", true)];
+        proxy.update(&auto_proxy_config(), &ranked, false).await;
+
+        let (active_uri, running) = {
+            let state = proxy.state.read().await;
+            (state.active_config_uri.clone(), state.running)
+        };
+        assert_eq!(
+            active_uri.as_deref(),
+            Some("vless://current@example.com:443")
+        );
+        assert!(!running);
     }
 
     #[tokio::test]

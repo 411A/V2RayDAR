@@ -36,8 +36,9 @@ use crate::{
         PROXY_SING_BOX_TAG_DNS_PROXY, PROXY_SING_BOX_TAG_INBOUND, PROXY_SING_BOX_TAG_OUTBOUND,
         PROXY_SLOW_CHECK_WARN, PROXY_STARTUP_TIMEOUT, PROXY_STARVATION_MIN_AGE,
         PROXY_STARVATION_MIN_UPLOAD_BYTES, PROXY_STARVATION_POLL_INTERVAL, PROXY_STREAM_MIN_AGE,
-        PROXY_STREAM_MIN_WINDOW_BYTES, PROXY_STREAM_SLOW_WINDOWS, PROXY_STREAM_UPGRADE_FACTOR,
-        PROXY_STREAM_WINDOW, SING_BOX_CLEANUP_TIMEOUT, SING_BOX_CONFIG_FILE_PREFIX,
+        PROXY_STREAM_MIN_WINDOW_BYTES, PROXY_STREAM_SLOW_MIN_BYTES, PROXY_STREAM_SLOW_MIN_FLOW,
+        PROXY_STREAM_SLOW_WINDOWS, PROXY_STREAM_UPGRADE_FACTOR, PROXY_STREAM_WINDOW,
+        SING_BOX_CLEANUP_TIMEOUT, SING_BOX_CONFIG_FILE_PREFIX,
     },
     model::{ProgressEvent, RankedConfig, RuntimeState},
     probe::{sing_box_outbound_from_share_link, sing_box_version_at_least},
@@ -1285,11 +1286,13 @@ const fn failover_tripped(failures: u32) -> bool {
     failures >= PROXY_MAX_CONSECUTIVE_FAILURES
 }
 
-/// Pure slow-window rule: at least one long-lived connection moved bytes, the
-/// window carried enough to rule out a keep-alive, and the average stayed
-/// under the floor. Two of these in a row trigger a performance switch.
-fn stream_is_slow(active: usize, bytes_per_second: f64, floor: u64) -> bool {
-    active > 0 && bytes_per_second < bytes_to_f64(floor)
+/// Pure slow-flow rule: an unbroken flow that carried enough to rule out a
+/// keep-alive, lasted long enough to rule out a page load, and averaged under
+/// the floor. A completed transfer ends its flow, so idle time never counts.
+fn stream_is_slow(flow_bytes: u64, flow_seconds: f64, floor: u64) -> bool {
+    flow_bytes >= PROXY_STREAM_SLOW_MIN_BYTES
+        && flow_seconds >= PROXY_STREAM_SLOW_MIN_FLOW.as_secs_f64()
+        && bytes_to_f64(flow_bytes) / flow_seconds.max(0.001) < bytes_to_f64(floor)
 }
 
 /// Anti-flap dwell: a "new config" switch inside the dwell window is held
@@ -1464,6 +1467,12 @@ struct ConnSample {
     last_moved: Option<Instant>,
     last_delta: u64,
     total_moved: u64,
+    /// Start of the current unbroken flow (bytes in every poll since), and the
+    /// bytes carried in it. A single zero-byte poll ends the flow, so a
+    /// completed page load or an idle keep-alive can never be measured as a
+    /// slow download.
+    flow_started: Option<Instant>,
+    flow_bytes: u64,
 }
 
 impl ConnSample {
@@ -1475,6 +1484,8 @@ impl ConnSample {
             last_moved: None,
             last_delta: 0,
             total_moved: 0,
+            flow_started: None,
+            flow_bytes: 0,
         }
     }
 
@@ -1489,9 +1500,29 @@ impl ConnSample {
         self.last_delta = delta;
         self.total_moved = self.total_moved.saturating_add(delta);
         if delta > 0 {
+            if self.flow_started.is_none() {
+                self.flow_started = Some(now);
+            }
             self.last_moved = Some(now);
+            self.flow_bytes = self.flow_bytes.saturating_add(delta);
+        } else {
+            self.flow_started = None;
+            self.flow_bytes = 0;
         }
         delta
+    }
+
+    /// Continuous flow, long enough and large enough to be a real transfer,
+    /// still moving below the floor right now.
+    fn sustained_slow(&self, now: Instant, floor: u64) -> bool {
+        if self.last_delta == 0 {
+            return false;
+        }
+        let Some(started) = self.flow_started else {
+            return false;
+        };
+        let elapsed = now.saturating_duration_since(started).as_secs_f64();
+        stream_is_slow(self.flow_bytes, elapsed, floor)
     }
 }
 
@@ -1553,16 +1584,17 @@ enum BulkVerdict {
 /// 1. **Starvation** — a connection uploaded real volume and got nothing
 ///    back. It is transfer-verified and the proxy fails over when even a
 ///    small body cannot complete.
-/// 2. **Slow live traffic** — connections keep moving bytes but the whole
-///    window stays below a usable rate. A deep 10 MB check distinguishes a
-///    truncating/slow proxy from a slow origin; if the proxy is the problem
-///    (or another ranked config is proven much faster), the proxy switches
-///    immediately to the next bulk-capable config.
+/// 2. **Slow live traffic** — one transfer keeps moving bytes in every poll
+///    for long enough to rule out a page load, and stays below a usable rate.
+///    A deep 10 MB check distinguishes a truncating/slow proxy from a slow
+///    origin; if the proxy is the problem (or another ranked config is proven
+///    much faster), the proxy switches to the next bulk-capable config.
 ///
-/// Idle users are untouched: a connection that stops moving bytes leaves the
-/// slow window (no delta) and never triggers. A manually pinned config is
-/// watched too: a user's pick is a preference, not a reason to keep serving a
-/// dead or crawling link.
+/// Idle users are untouched: a connection that stops moving bytes ends its
+/// flow, a completed page load never counts, and a quiet proxy is never
+/// switched out from under its users. A manually pinned config is watched
+/// too: a user's pick is a preference, not a reason to keep serving a dead or
+/// crawling link.
 #[allow(clippy::too_many_lines)]
 pub fn spawn_starvation_loop(
     proxy: SharedProxy,
@@ -1577,8 +1609,6 @@ pub fn spawn_starvation_loop(
         // in case the same port comes back on a later restart.
         let mut unreachable: Option<(SocketAddr, u8)> = None;
         let mut window_started = Instant::now();
-        let mut window_bytes = 0_u64;
-        let mut window_active = 0_usize;
         let mut slow_windows = 0_u8;
 
         loop {
@@ -1659,8 +1689,6 @@ pub fn spawn_starvation_loop(
                         })
                 })
                 .count();
-            window_active = window_active.max(active);
-            window_bytes = window_bytes.saturating_add(poll_delta);
             write_proxy_state(&proxy, |state| {
                 state.active_connections = active;
                 if poll_delta > 0 {
@@ -1697,36 +1725,43 @@ pub fn spawn_starvation_loop(
                 // snapshot is stale. Start the next poll from scratch.
                 samples.clear();
                 reported.clear();
-                window_bytes = 0;
-                window_active = 0;
                 slow_windows = 0;
                 window_started = now;
                 continue;
             }
 
-            // Rule 2: sustained slow-but-alive traffic. Evaluate only on a
-            // whole window so one page load or a keep-alive cannot trip it.
+            // Rule 2: sustained slow-but-alive traffic. Only an unbroken flow
+            // that has moved bytes in every poll for long enough is measured:
+            // idle connections, completed page loads and keep-alives never
+            // count, so a quiet proxy is never switched out from under its
+            // users. Two such windows in a row trigger a performance switch.
             if window_started.elapsed() >= PROXY_STREAM_WINDOW {
-                let elapsed = window_started.elapsed().as_secs_f64();
-                let bytes_per_second = bytes_to_f64(window_bytes) / elapsed.max(0.001);
-                let slow = slow_kbps > 0
-                    && stream_is_slow(
-                        window_active,
-                        bytes_per_second,
-                        slow_kbps.saturating_mul(1024),
-                    );
+                let floor = slow_kbps.saturating_mul(1024);
+                let mut slow_bytes = 0_u64;
+                let mut slow_seconds = 0.0_f64;
+                for sample in samples
+                    .values()
+                    .filter(|sample| sample.sustained_slow(now, floor))
+                {
+                    let Some(flow_since) = sample.flow_started else {
+                        continue;
+                    };
+                    slow_bytes = slow_bytes.saturating_add(sample.flow_bytes);
+                    slow_seconds =
+                        slow_seconds.max(now.saturating_duration_since(flow_since).as_secs_f64());
+                }
+                let slow = floor > 0 && stream_is_slow(slow_bytes, slow_seconds, floor);
                 if slow {
                     slow_windows = slow_windows.saturating_add(1);
                 } else {
                     slow_windows = 0;
                 }
                 if slow_windows >= PROXY_STREAM_SLOW_WINDOWS {
+                    let bytes_per_second = bytes_to_f64(slow_bytes) / slow_seconds.max(0.001);
                     on_slow_traffic(&proxy, &ranked, &runtime, bytes_per_second).await;
                     slow_windows = 0;
                 }
                 window_started = Instant::now();
-                window_bytes = 0;
-                window_active = 0;
             }
         }
     });
@@ -2477,15 +2512,53 @@ mod tests {
     }
 
     #[test]
-    fn stream_window_rule_only_trips_on_sustained_slow_traffic() {
-        // 2 KB/s across a live, already-moving connection: slow.
-        assert!(stream_is_slow(1, 2.0 * 1024.0, PROXY_STREAM_SLOW_BPS));
-        // A fast page load: not slow.
-        assert!(!stream_is_slow(1, 512.0 * 1024.0, PROXY_STREAM_SLOW_BPS));
-        // No long-lived connection: never slow, even at zero rate.
-        assert!(!stream_is_slow(0, 0.0, PROXY_STREAM_SLOW_BPS));
-        // A stalled connection (moved before, now zero) is slow.
-        assert!(stream_is_slow(1, 0.0, PROXY_STREAM_SLOW_BPS));
+    fn slow_flow_rule_needs_a_long_enough_sustained_transfer() {
+        let floor = PROXY_STREAM_SLOW_BPS;
+        // A 4 KB/s crawl that has been flowing for 20 s: slow.
+        assert!(stream_is_slow(80 * 1024, 20.0, floor));
+        // A fast bulk transfer: not slow.
+        assert!(!stream_is_slow(10 * 1024 * 1024, 20.0, floor));
+        // A short page load: not slow even at a low average over one window.
+        assert!(!stream_is_slow(200 * 1024, 1.0, floor));
+        // A quiet window: no flow, never slow.
+        assert!(!stream_is_slow(0, 0.0, floor));
+        // Too small or too short to prove a transfer.
+        assert!(!stream_is_slow(1024, 20.0, floor));
+        assert!(!stream_is_slow(80 * 1024, 10.0, floor));
+        // 0 disables the slow-link rule.
+        assert!(!stream_is_slow(80 * 1024, 20.0, 0));
+    }
+
+    #[test]
+    fn idle_connections_never_look_slow() {
+        let t0 = Instant::now();
+        let mut sample = ConnSample::new(t0, 0, 0);
+        // A page load lands between polls and completes.
+        sample.observe(t0, 0, 50 * 1024);
+        // A minute later the line is still quiet: no flow, not slow.
+        let now = t0 + Duration::from_secs(60);
+        sample.observe(now, 0, 50 * 1024);
+        assert!(!sample.sustained_slow(now, PROXY_STREAM_SLOW_BPS));
+        assert_eq!(sample.flow_bytes, 0);
+        assert!(sample.flow_started.is_none());
+    }
+
+    #[test]
+    fn sustained_slow_needs_every_poll_to_move() {
+        let t0 = Instant::now();
+        let mut sample = ConnSample::new(t0, 0, 0);
+        // 32 KB every 5 s = 6.4 KB/s, continuously: slow.
+        let mut down = 0_u64;
+        for step in 1..=5 {
+            down += 32 * 1024;
+            sample.observe(t0 + Duration::from_secs(5 * step), 0, down);
+        }
+        let now = t0 + Duration::from_secs(25);
+        assert!(sample.sustained_slow(now, PROXY_STREAM_SLOW_BPS));
+
+        // One stalled poll ends the flow: a slow HTTP retry must not trigger.
+        sample.observe(now + Duration::from_secs(5), 0, down);
+        assert!(!sample.sustained_slow(now + Duration::from_secs(5), PROXY_STREAM_SLOW_BPS));
     }
 
     #[test]

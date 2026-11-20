@@ -163,6 +163,13 @@ pub const PROXY_STREAM_MIN_AGE: Duration = Duration::from_secs(10);
 pub const PROXY_STREAM_MIN_WINDOW_BYTES: u64 = 8 * 1024;
 pub const PROXY_STREAM_SLOW_BPS: u64 = 64 * 1024;
 pub const PROXY_STREAM_SLOW_WINDOWS: u8 = 2;
+/// A slow transfer must keep moving bytes in every poll for at least this
+/// long before it can trip the slow-link switch. A page load, a chat message
+/// or a keep-alive ends sooner and never qualifies.
+pub const PROXY_STREAM_SLOW_MIN_FLOW: Duration = Duration::from_secs(15);
+/// ...and it must have carried at least this much in that stretch, so a
+/// handful of ACK-sized polls can never look like a crawling download.
+pub const PROXY_STREAM_SLOW_MIN_BYTES: u64 = 64 * 1024;
 /// A candidate must be at least this much faster than live traffic before its
 /// measured speed alone justifies switching (avoids flapping on noise).
 pub const PROXY_STREAM_UPGRADE_FACTOR: f64 = 2.0;

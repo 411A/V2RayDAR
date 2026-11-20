@@ -1,6 +1,6 @@
 [package]
 name = "v2raydar"
-version = "0.9.5"
+version = "0.9.6"
 edition = "2024"
 # `Duration::from_mins` / `Duration::from_hours` (Rust 1.91) make the
 # durations in the code read as "one minute" / "five minutes" instead of
@@ -45,3 +45,4 @@ strip = true
 lto = true
 codegen-units = 1
 panic = "abort"
+

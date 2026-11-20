@@ -78,7 +78,7 @@
 ### 🌐 Proxy persistant
 
 - **Proxy toujours actif** — garde un processus `sing-box` actif avec la meilleure config et expose un port proxy local utilisable par toute application, sans client V2Ray.
-- **Bascule automatique** — adopte la config suivante en cas d'échec, et une meilleure config à chaque cycle de rafraîchissement.
+- **Bascule automatique** — adopte la config suivante en cas d'échec, et une meilleure config dès que le proxy est inactif.
 
 ### 📱 Partage LAN & QR codes
 
@@ -247,7 +247,7 @@ Les utilisateurs Windows remplacent `v2raydar` par `v2raydar.exe`. Sous macOS, o
 | `proxy.enabled` | `false` | Démarre un processus SOCKS5/HTTP persistant via `sing-box`. |
 | `proxy.port` | `27910` | Port du proxy mixte SOCKS5/HTTP. |
 | `proxy.discoverable` | `false` | Lie sur `0.0.0.0` et ajoute une règle de pare-feu pour l'accès LAN. |
-| `proxy.rotating_proxy` | `true` | `true` fait basculer le proxy vers la meilleure config à chaque cycle ; `false` conserve la config actuelle tant qu'elle reste joignable. Le trafic réel maintient le lien actuel malgré les variations du classement ; un lien mesuré lent ou bloqué bascule rapidement. |
+| `proxy.rotating_proxy` | `true` | `true` fait basculer le proxy vers la meilleure config à chaque cycle quand aucune connexion n'est ouverte ; `false` conserve la config actuelle tant qu'elle reste joignable. Les connexions ouvertes maintiennent le lien actuel malgré les variations du classement ; un lien mesuré lent ou bloqué bascule rapidement. |
 | `proxy.health_check_url` | `https://cp.cloudflare.com` | URL testée via le proxy pour vérifier son état. |
 | `proxy.health_check_interval_seconds` | `60` | Secondes entre les vérifications de santé. Bascule automatique en cas d'échec ; un lien qui s'affame ou reste sous 64 Ko/s déclenche une vérification profonde de 10 Mio et un changement si le proxy est en cause. Un épinglage manuel est suspendu après échec et la sélection automatique reprend. |
 | `proxy.slow_traffic_kbps` | `64` | Seuil de lien lent ; `0` désactive la bascule sur trafic lent. |

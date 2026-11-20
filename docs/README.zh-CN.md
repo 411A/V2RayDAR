@@ -78,7 +78,7 @@
 ### 🌐 持久代理
 
 - **常驻代理** — 保持 `sing-box` 进程持续运行，使用最佳配置对外提供本地混合 SOCKS5/HTTP 代理，任何应用均可使用，无需 V2Ray 客户端。
-- **自动切换** — 当前配置失效时切换到下一个最佳配置，每个刷新周期切换到更优配置。
+- **自动切换** — 当前配置失效时切换到下一个最佳配置；有连接打开时不因排名变化重启代理，空闲后再采用更优配置。
 
 ### 📱 局域网共享与二维码
 
@@ -247,7 +247,7 @@ Windows 用户将 `v2raydar` 替换为 `v2raydar.exe`。macOS 上首次打开捆
 | `proxy.enabled` | `false` | 启动持久的 `sing-box` 进程，对外提供混合 SOCKS5/HTTP 代理。 |
 | `proxy.port` | `27910` | 混合 SOCKS5/HTTP 代理端口。 |
 | `proxy.discoverable` | `false` | 绑定到 `0.0.0.0` 并添加防火墙规则以允许局域网访问。 |
-| `proxy.rotating_proxy` | `true` | `true` 表示每个周期切换到最佳配置；`false` 表示当前配置可用时保持不变。真实流量会保持当前链路，即使排名波动；实测变慢或卡住的链路会快速切换。 |
+| `proxy.rotating_proxy` | `true` | `true` 表示每个周期切换到最佳配置，但仅在没有打开的连接时切换；`false` 表示当前配置可用时保持不变。有连接打开时，排名波动不会中断当前链路；实测变慢或卡住的链路会快速切换。 |
 | `proxy.health_check_url` | `https://cp.cloudflare.com` | 通过代理测试的健康检查 URL。 |
 | `proxy.health_check_interval_seconds` | `60` | 代理健康检查间隔（秒）。故障时自动切换；链路饥饿或持续低于 64 KB/s 时触发 10 MiB 深度检查，确认是代理问题后切换。手动固定失败或变慢后会被暂停，自动选择恢复。 |
 | `proxy.slow_traffic_kbps` | `64` | 慢链路阈值；`0` 关闭慢流量切换。 |

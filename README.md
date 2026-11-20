@@ -79,8 +79,8 @@
 ### 🌐 Persistent Proxy
 
 - **Always-on proxy** — keeps a `sing-box` process running with the best config, exposing a local mixed SOCKS5/HTTP proxy any app can use — no V2Ray client needed.
-- **Automatic failover** — switches to the next best config when the current one fails, and to a better config on each refresh cycle.
-- **Rotation control** — `proxy.rotating_proxy` selects best-ranked switching or sticky-config behavior; live traffic holds the current link through ranking jitter, and a measured slow link switches fast.
+- **Automatic failover** — switches to the next best config when the current one fails, and adopts a better-ranked config once the proxy is idle.
+- **Rotation control** — `proxy.rotating_proxy` selects best-ranked switching or sticky-config behavior; open connections keep the current link through ranking jitter, and a measured slow link switches fast.
 
 ### 📱 LAN Sharing & QR Onboarding
 
@@ -244,7 +244,7 @@ Windows users replace `v2raydar` with `v2raydar.exe`. On macOS open the bundled 
 | `proxy.enabled` | `false` | Starts a persistent `sing-box` process exposing a mixed SOCKS5/HTTP proxy. |
 | `proxy.port` | `27910` | Port for the mixed SOCKS5/HTTP proxy. |
 | `proxy.discoverable` | `false` | Binds to `0.0.0.0` and adds a firewall rule for LAN access. |
-| `proxy.rotating_proxy` | `true` | `true` switches the proxy to the best-ranked config on each cycle; `false` keeps the current config while it stays reachable. Live traffic holds the current link through ranking jitter; a measured slow/stalled link switches fast. |
+| `proxy.rotating_proxy` | `true` | `true` switches the proxy to the best-ranked config on each cycle when no connections are open; `false` keeps the current config while it stays reachable. Open connections hold the current link through ranking jitter; a measured slow/stalled link switches fast. |
 | `proxy.health_check_url` | `https://cp.cloudflare.com` | URL tested through the proxy to verify it's alive. |
 | `proxy.health_check_interval_seconds` | `60` | Seconds between proxy health checks. Auto-failover on failure; live connections that starve or stay below 64 KB/s trigger a deep 10 MB check and a switch when the proxy is at fault. A manual pin is suspended after it fails, and auto-select resumes. |
 | `proxy.slow_traffic_kbps` | `64` | Slow-link floor; `0` disables the slow-traffic switch. |

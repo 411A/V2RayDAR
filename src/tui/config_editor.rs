@@ -35,6 +35,7 @@ pub const fn label(key: ConfigKey) -> &'static str {
         ConfigKey::TestUrl => "probe.test_url",
         ConfigKey::AcceptedStatuses => "probe.accepted_statuses",
         ConfigKey::DownloadUrl => "probe.download_url",
+        ConfigKey::UploadUrl => "probe.upload_url",
         ConfigKey::DownloadLimit => "probe.download_bytes_limit",
         ConfigKey::SpeedtestTopN => "probe.speedtest_top_n",
         ConfigKey::SpeedtestInterval => "probe.speedtest_interval_seconds",
@@ -84,6 +85,7 @@ pub const fn guide(key: ConfigKey) -> &'static str {
         ConfigKey::TestUrl => "URL used for active probe",
         ConfigKey::AcceptedStatuses => "HTTP codes, e.g. 204,200",
         ConfigKey::DownloadUrl => "speedtest URL or off/null",
+        ConfigKey::UploadUrl => "16 KB upload probe URL or off/null",
         ConfigKey::DownloadLimit => "speedtest byte limit",
         ConfigKey::SpeedtestTopN => "top configs speedtested per run; 0 skips",
         ConfigKey::SpeedtestInterval => "reuse a speedtest for this many seconds; 0 always retests",
@@ -143,6 +145,11 @@ pub fn value(config: &crate::config::AppConfig, key: ConfigKey) -> String {
         ConfigKey::DownloadUrl => config
             .probe
             .download_url
+            .clone()
+            .unwrap_or_else(|| "off".into()),
+        ConfigKey::UploadUrl => config
+            .probe
+            .upload_url
             .clone()
             .unwrap_or_else(|| "off".into()),
         ConfigKey::DownloadLimit => config.probe.download_bytes_limit.to_string(),
@@ -211,6 +218,7 @@ pub fn apply(config: &mut crate::config::AppConfig, key: ConfigKey, raw: &str) -
         ConfigKey::TestUrl => config.probe.test_url = required(value, label(key))?,
         ConfigKey::AcceptedStatuses => config.probe.accepted_statuses = statuses(value)?,
         ConfigKey::DownloadUrl => config.probe.download_url = optional(value),
+        ConfigKey::UploadUrl => config.probe.upload_url = optional(value),
         ConfigKey::DownloadLimit => {
             config.probe.download_bytes_limit = positive(value, label(key))?;
         }
@@ -376,6 +384,22 @@ mod tests {
         apply(&mut config, ConfigKey::RequireTransportSecurity, "on").expect("hardening");
         apply(&mut config, ConfigKey::SlowTrafficKbps, "0").expect("slow off");
         apply(&mut config, ConfigKey::BulkCheckInterval, "600").expect("deep interval");
+        apply(&mut config, ConfigKey::UploadUrl, "off").expect("upload off");
+        assert_eq!(config.probe.upload_url, None);
+        apply(
+            &mut config,
+            ConfigKey::UploadUrl,
+            "https://example.com/post",
+        )
+        .expect("upload url");
+        assert_eq!(
+            config.probe.upload_url.as_deref(),
+            Some("https://example.com/post")
+        );
+        assert_eq!(
+            super::value(&config, ConfigKey::UploadUrl),
+            "https://example.com/post".to_string()
+        );
         assert_eq!(config.probe.speedtest_top_n, 2);
         assert_eq!(config.probe.speedtest_interval_seconds, 900);
         assert!(config.probe.require_transport_security);

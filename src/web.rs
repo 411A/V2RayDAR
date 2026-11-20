@@ -1343,6 +1343,14 @@ fn probe_group(config: &RuntimeConfig) -> ConfigGroup {
                     .unwrap_or_else(|| "off".to_string()),
                 "speedtest download link; off disables it",
             ),
+            config_row(
+                "probe.upload_url",
+                config
+                    .upload_url
+                    .clone()
+                    .unwrap_or_else(|| "off".to_string()),
+                "16 KB upload probe link; off disables upload ranking",
+            ),
             config_row_kind(
                 "probe.speedtest_enabled",
                 config.speedtest_enabled.to_string(),
@@ -2520,6 +2528,14 @@ fn apply_probe_setting(
                 _ => Some(value.to_string()),
             };
         }
+        // Same optional rule as the download URL: off/null disables the
+        // upload probe and the ranking falls back to downloads.
+        "probe.upload_url" => {
+            cfg.probe.upload_url = match value.to_ascii_lowercase().as_str() {
+                "" | "off" | "none" | "null" => None,
+                _ => Some(value.to_string()),
+            };
+        }
         "probe.speedtest_top_n" => {
             cfg.probe.speedtest_top_n = value.parse::<usize>().map_err(|_| {
                 "probe.speedtest_top_n must be a whole number (0 disables)".to_string()
@@ -3375,6 +3391,7 @@ mod tests {
             accepted_statuses: vec![204, 200],
             download_bytes_limit: 1_048_576,
             download_url: None,
+            upload_url: None,
             speedtest_top_n: 2,
             speedtest_interval_seconds: 900,
             require_transport_security: false,
@@ -4027,6 +4044,7 @@ mod tests {
         let mut seen_token = false;
         let mut seen_statuses = false;
         let mut seen_download_url = false;
+        let mut seen_upload_url = false;
         let mut seen_sing_box_path = false;
         let mut seen_process_concurrency = false;
         let mut seen_rotating_proxy = false;
@@ -4067,6 +4085,11 @@ mod tests {
                 }
                 if row["key"] == "probe.download_url" {
                     seen_download_url = true;
+                    assert_eq!(row["value"], serde_json::Value::from("off"));
+                    assert_eq!(row["kind"], serde_json::Value::from("text"));
+                }
+                if row["key"] == "probe.upload_url" {
+                    seen_upload_url = true;
                     assert_eq!(row["value"], serde_json::Value::from("off"));
                     assert_eq!(row["kind"], serde_json::Value::from("text"));
                 }
@@ -4111,6 +4134,7 @@ mod tests {
         assert!(seen_token, "sharing.token presence marker is served");
         assert!(seen_statuses, "probe.accepted_statuses list is served");
         assert!(seen_download_url, "probe.download_url switch is served");
+        assert!(seen_upload_url, "probe.upload_url switch is served");
         assert!(seen_sing_box_path, "probe.sing_box_path is served");
         assert!(
             seen_process_concurrency,
@@ -5139,6 +5163,16 @@ mod tests {
         assert_eq!(
             cfg.probe.download_url.as_deref(),
             Some("https://example.com/1gb")
+        );
+        assert!(super::apply_web_setting(&mut cfg, "probe.upload_url", "off").is_ok());
+        assert_eq!(cfg.probe.upload_url, None);
+        assert!(
+            super::apply_web_setting(&mut cfg, "probe.upload_url", "https://example.com/post")
+                .is_ok()
+        );
+        assert_eq!(
+            cfg.probe.upload_url.as_deref(),
+            Some("https://example.com/post")
         );
         // New keys mirror the TUI validators exactly.
         assert!(super::apply_web_setting(&mut cfg, "use_cache_only", "yes").is_ok());

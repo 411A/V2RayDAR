@@ -3580,6 +3580,7 @@ impl From<&AppConfig> for RuntimeConfig {
             accepted_statuses: config.probe.accepted_statuses.clone(),
             download_bytes_limit: config.probe.download_bytes_limit,
             download_url: config.probe.download_url.clone(),
+            upload_url: config.probe.upload_url.clone(),
             speedtest_top_n: config.probe.speedtest_top_n,
             speedtest_interval_seconds: config.probe.speedtest_interval_seconds,
             require_transport_security: config.probe.require_transport_security,
@@ -3690,6 +3691,7 @@ mod tests {
             http_status: Some(204),
             download_mbps: None,
             download_bytes: None,
+            upload_ok: None,
             error: None,
             country_code: None,
         }
@@ -4336,6 +4338,7 @@ mod tests {
             http_status: None,
             download_mbps: None,
             download_bytes: None,
+            upload_ok: None,
             error: None,
             country_code: None,
         }
@@ -4598,6 +4601,7 @@ mod tests {
             http_status: Some(204),
             download_mbps: None,
             download_bytes: None,
+            upload_ok: None,
             error: None,
             country_code: None,
         };

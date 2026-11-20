@@ -304,6 +304,7 @@ v2raydar --uninstall    # حذف داده‌های برنامه و قوانین 
 | <code>probe.download_url</code> | <code>https://download.thinkbroadband.com/10MB.zip</code> | &#x200F;هدف تست پهنای باند واقعی؛ <code>null</code> رتبه‌بندی سرعت را خاموش می‌کند. |
 | <code>probe.download_bytes_limit</code> | <code>4194304</code> | &#x200F;بایت خوانده‌شده در هر تست سرعت؛ دو ثانیه آخر نرخ را تعیین می‌کند. |
 | <code>probe.speedtest_top_n</code> | <code>2</code> | &#x200F;تعداد کانفیگ برتر برای تست سرعت در هر چرخه؛ <code>0</code> تست سرعت را خاموش می‌کند. |
+| <code>probe.upload_url</code> | <code>https://postman-echo.com/post</code> | &#x200F;مقصد POST ۱۶ کیلوبایتی برای بررسی آپلود؛ <code>off</code> رتبه‌بندی آپلود را خاموش می‌کند. |
 | <code>probe.speedtest_interval_seconds</code> | <code>900</code> | &#x200F;مدت بازاستفاده از نتیجه تست سرعت؛ <code>0</code> هر چرخه دوباره تست می‌کند. |
 | <code>probe.require_transport_security</code> | <code>false</code> | &#x200F;کانفیگ‌های بدون TLS و Reality جعلی را قبل از تست حذف می‌کند. |
 | <code>geoip_db_path</code> | <code>null</code> | &#x200F;مسیر اختیاری فایل <code>GeoLite2-Country.mmdb</code> یا پوشه zoneهای کشورها (<code>zones.txt</code> یا فایل‌های قدیمی <code>&lt;cc&gt;.zone</code>). اگر <code>null</code> باشد از <code>&lt;data-root&gt;/geoip</code> استفاده می‌شود (اول پایگاه MaxMind بعد zoneها؛ هر دو توسط نصب‌کننده به‌روز می‌شوند). Country data: GeoLite2 by MaxMind (CC BY-SA 4.0); fallback zones by ipdeny |

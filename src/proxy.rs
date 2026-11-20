@@ -38,7 +38,7 @@ use crate::{
         PROXY_STARVATION_MIN_UPLOAD_BYTES, PROXY_STARVATION_POLL_INTERVAL, PROXY_STREAM_MIN_AGE,
         PROXY_STREAM_MIN_WINDOW_BYTES, PROXY_STREAM_SLOW_MIN_BYTES, PROXY_STREAM_SLOW_MIN_FLOW,
         PROXY_STREAM_SLOW_WINDOWS, PROXY_STREAM_UPGRADE_FACTOR, PROXY_STREAM_WINDOW,
-        SING_BOX_CLEANUP_TIMEOUT, SING_BOX_CONFIG_FILE_PREFIX,
+        PROXY_UPLOAD_ACTIVE_BYTES, SING_BOX_CLEANUP_TIMEOUT, SING_BOX_CONFIG_FILE_PREFIX,
     },
     model::{ProgressEvent, RankedConfig, RuntimeState},
     probe::{sing_box_outbound_from_share_link, sing_box_version_at_least},
@@ -88,6 +88,10 @@ struct ProxyState {
     /// of them, so a ranking change waits for the proxy to go idle. Proven
     /// failures and a verified crawl still switch immediately.
     open_connections: usize,
+    /// Connections that sent a real body since the last poll. A performance
+    /// switch restarts sing-box, so it must never fire while an upload is in
+    /// flight even if the download side looks slow or idle.
+    uploading_connections: usize,
     last_traffic: Option<Instant>,
     /// Last deep bulk check, so a slow stream does not download ten
     /// megabytes on every poll.
@@ -219,6 +223,7 @@ impl PersistentProxy {
                 pin_suspended_uri: None,
                 active_connections: 0,
                 open_connections: 0,
+                uploading_connections: 0,
                 last_traffic: None,
                 last_bulk_check: None,
                 last_performance_switch: None,
@@ -1659,6 +1664,7 @@ pub fn spawn_starvation_loop(
                 unreachable = None;
                 write_proxy_state(&proxy, |state| {
                     state.open_connections = 0;
+                    state.uploading_connections = 0;
                 })
                 .await;
                 continue;
@@ -1670,6 +1676,7 @@ pub fn spawn_starvation_loop(
                 write_proxy_state(&proxy, |state| {
                     state.active_connections = 0;
                     state.open_connections = 0;
+                    state.uploading_connections = 0;
                 })
                 .await;
                 continue;
@@ -1699,6 +1706,7 @@ pub fn spawn_starvation_loop(
                     // on a count we can no longer refresh.
                     write_proxy_state(&proxy, |state| {
                         state.open_connections = 0;
+                        state.uploading_connections = 0;
                     })
                     .await;
                     continue;
@@ -1708,13 +1716,19 @@ pub fn spawn_starvation_loop(
             let now = Instant::now();
             let live: HashSet<&str> = connections.iter().map(|conn| conn.id.as_str()).collect();
             let mut poll_delta = 0_u64;
+            let mut uploading = 0_usize;
             for conn in &connections {
                 let upload = u64::try_from(conn.upload.max(0)).unwrap_or(u64::MAX);
                 let download = u64::try_from(conn.download.max(0)).unwrap_or(u64::MAX);
                 let sample = samples
                     .entry(conn.id.clone())
                     .or_insert_with(|| ConnSample::new(now, upload, download));
-                poll_delta = poll_delta.saturating_add(sample.observe(now, upload, download));
+                let previous_upload = sample.upload;
+                let delta = sample.observe(now, upload, download);
+                if upload.saturating_sub(previous_upload) >= PROXY_UPLOAD_ACTIVE_BYTES {
+                    uploading = uploading.saturating_add(1);
+                }
+                poll_delta = poll_delta.saturating_add(delta);
             }
             samples.retain(|id, _| live.contains(id.as_str()));
             reported.retain(|id| live.contains(id.as_str()));
@@ -1733,6 +1747,7 @@ pub fn spawn_starvation_loop(
             write_proxy_state(&proxy, |state| {
                 state.active_connections = active;
                 state.open_connections = connections.len();
+                state.uploading_connections = uploading;
                 if poll_delta > 0 {
                     state.last_traffic = Some(now);
                 }
@@ -1769,6 +1784,7 @@ pub fn spawn_starvation_loop(
                 reported.clear();
                 write_proxy_state(&proxy, |state| {
                     state.open_connections = 0;
+                    state.uploading_connections = 0;
                 })
                 .await;
                 slow_windows = 0;
@@ -1886,6 +1902,15 @@ async fn on_slow_traffic(
     let current_mbps = bytes_per_second * 8.0 / 1_000_000.0;
     let current_uri = read_proxy_state(proxy, |state| state.active_config_uri.clone()).await;
     if current_uri.is_none() {
+        return;
+    }
+    // A restart would kill the upload even when its download side looks
+    // slow or idle. Let it finish; the next window can still switch.
+    if read_proxy_state(proxy, |state| state.uploading_connections).await > 0 {
+        proxy.lock().await.emit_log(
+            LogLevel::Info,
+            "proxy: an upload is in flight; keeping the current config",
+        );
         return;
     }
     let best_upgrade = ranked.read().await.iter().any(|item| {
@@ -2277,6 +2302,7 @@ mod tests {
             http_status: Some(204),
             download_mbps: None,
             download_bytes: None,
+            upload_ok: None,
             error: None,
             country_code: None,
         }

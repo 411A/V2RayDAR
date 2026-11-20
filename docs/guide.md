@@ -539,6 +539,7 @@ http://192.0.2.23:27141/subscription?token=GENERATED_TOKEN
 | `probe.download_url` | URL string or null | `https://download.thinkbroadband.com/10MB.zip` | Static object used to measure real throughput for the top working configs. `null` turns throughput ranking off and falls back to stability + latency. A URL that answers `204` or only headers measures nothing. |
 | `probe.download_bytes_limit` | Integer bytes | `4194304` | Bytes read per speed test. Four MiB is the bulk bar: a config that lands below it is ranked behind configs that finished. The tail two seconds decide the rate, so a burst-then-crawl link cannot pass on its average. Keep at least 4 MiB if you want bulk ranking; to save data, lower `speedtest_top_n`, raise the interval, or set the URL off. |
 | `probe.speedtest_top_n` | Integer | `2` | How many of the best reachable configs get a real-body speed test per run. Lower values use less data; `0` turns speed tests off. |
+| `probe.upload_url` | URL string or null | `https://postman-echo.com/post` | 16 KB POST target used after the speed test to prove a config can carry an upload. `null` disables the upload probe; ranking then falls back to download quality. |
 | `probe.speedtest_interval_seconds` | Integer seconds | `900` | Re-use a fresh speed-test result for this long before downloading the body again. `0` re-tests every cycle. |
 | `probe.require_transport_security` | Boolean | `false` | When `true`, drop Shadowsocks/SSR, no-TLS VMess/VLESS, and Reality configs whose SNI is an IP, a bare word, or an unknown public suffix before probing. `REQUIRE_TRANSPORT_SECURITY=1` is an environment override. |
 
@@ -546,7 +547,7 @@ http://192.0.2.23:27141/subscription?token=GENERATED_TOKEN
 
 `probe.mode: active` is the normal mode. It uses `sing-box` to create temporary local proxy listeners, routes test HTTP requests through the candidate configs, and marks a config reachable only when the configured `probe.test_url` returns one of `probe.accepted_statuses`.
 
-Active mode uses the optional `probe.download_url` (on by default) to measure real throughput for selected working configs. The result appears in `/results` as `download_mbps` and `download_bytes`. Speed is scored over the last two seconds, not the whole body; a transfer that ends early or stalls is kept as evidence but ranked below configs that carried the full bulk minimum.
+Active mode uses the optional `probe.download_url` (on by default) to measure real throughput for selected working configs. The result appears in `/results` as `download_mbps` and `download_bytes`. Speed is scored over the last two seconds, not the whole body; a transfer that ends early or stalls is kept as evidence but ranked below configs that carried the full bulk minimum. The same configs then send a 16 KB POST to `probe.upload_url`; a config that cannot carry it is demoted while an upload-capable one exists, and the pool falls back to download ranking when none is.
 
 Active mode requires a working `sing-box` executable. If it is unavailable, the dashboard stays up and the refresh reports an actionable error instead of failing every candidate silently; set `probe.sing_box_path` in Settings (or run `--tui` for the setup screen) and click Refresh.
 

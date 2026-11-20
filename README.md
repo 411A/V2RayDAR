@@ -262,6 +262,7 @@ Windows users replace `v2raydar` with `v2raydar.exe`. On macOS open the bundled 
 | `probe.download_url` | `https://download.thinkbroadband.com/10MB.zip` | Real-body throughput target; `null` turns speed ranking off. |
 | `probe.download_bytes_limit` | `4194304` | Bytes read per speed test; the tail two seconds decide the rate. |
 | `probe.speedtest_top_n` | `2` | Top configs speedtested per run; `0` turns speed tests off. |
+| `probe.upload_url` | `https://postman-echo.com/post` | 16 KB POST target for the upload probe; `off` disables upload ranking. |
 | `probe.speedtest_interval_seconds` | `900` | Reuse a speedtest for this long; `0` retests every cycle. |
 | `probe.require_transport_security` | `false` | Drop no-TLS and fake-Reality configs before probing. |
 | `geoip_db_path` | `null` | Optional path to a `GeoLite2-Country.mmdb` file or a country-zone directory (`zones.txt`, or legacy `<cc>.zone` files). If `null`, uses `<data-root>/geoip` (MaxMind database first, zone fallback; both refreshed by the installer). Country data: GeoLite2 by MaxMind (CC BY-SA 4.0); fallback zones by ipdeny. |

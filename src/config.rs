@@ -19,7 +19,7 @@ use crate::constants::{
     DEFAULT_SCAN_ALL_CONFIGS, DEFAULT_SHARING_ENABLED, DEFAULT_SHARING_TOKEN,
     DEFAULT_SING_BOX_PATH, DEFAULT_SPEEDTEST_INTERVAL_SECONDS, DEFAULT_SPEEDTEST_TOP_N,
     DEFAULT_STARTUP_TIMEOUT_MS, DEFAULT_SUBSCRIPTION_ENABLED, DEFAULT_SUBSCRIPTION_PRIORITY,
-    DEFAULT_TEST_URL, DEFAULT_TOP_N, DEFAULT_USE_CACHE_ONLY,
+    DEFAULT_TEST_URL, DEFAULT_TOP_N, DEFAULT_UPLOAD_URL, DEFAULT_USE_CACHE_ONLY,
 };
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -177,6 +177,11 @@ pub struct ProbeConfig {
         deserialize_with = "deserialize_optional_string"
     )]
     pub download_url: Option<String>,
+    #[serde(
+        default = "default_upload_url",
+        deserialize_with = "deserialize_optional_string"
+    )]
+    pub upload_url: Option<String>,
     #[serde(default = "default_download_bytes_limit")]
     pub download_bytes_limit: usize,
     #[serde(default = "default_speedtest_top_n")]
@@ -245,6 +250,7 @@ impl Default for ProbeConfig {
             test_url: default_test_url(),
             accepted_statuses: default_accepted_statuses(),
             download_url: default_download_url(),
+            upload_url: default_upload_url(),
             download_bytes_limit: default_download_bytes_limit(),
             speedtest_top_n: default_speedtest_top_n(),
             speedtest_interval_seconds: default_speedtest_interval_seconds(),
@@ -315,6 +321,7 @@ impl AppConfig {
 pub fn validate_config(mut config: AppConfig) -> Result<AppConfig> {
     config.probe.sing_box_path = normalize_string_or_null(&config.probe.sing_box_path);
     config.probe.download_url = normalize_optional_string(config.probe.download_url.as_deref());
+    config.probe.upload_url = normalize_optional_string(config.probe.upload_url.as_deref());
     config.emergency_config = normalize_optional_string(config.emergency_config.as_deref());
     config.sharing.token = normalize_sharing_token(&config.sharing.token);
 
@@ -807,6 +814,11 @@ const fn default_download_bytes_limit() -> usize {
 #[allow(clippy::unnecessary_wraps)]
 fn default_download_url() -> Option<String> {
     Some(DEFAULT_DOWNLOAD_URL.to_string())
+}
+
+#[allow(clippy::unnecessary_wraps)]
+fn default_upload_url() -> Option<String> {
+    Some(DEFAULT_UPLOAD_URL.to_string())
 }
 
 const fn default_speedtest_top_n() -> usize {

@@ -753,6 +753,7 @@ fn map_ranked_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RankedConfig> {
         http_status: row.get::<_, Option<i64>>(12)?.map(|v| v as u16),
         download_mbps: row.get(13)?,
         download_bytes: row.get::<_, Option<i64>>(14)?.map(|v| v as usize),
+        upload_ok: None,
         error: None,
         country_code: row.get(15)?,
     })
@@ -799,6 +800,7 @@ mod tests {
             http_status: None,
             download_mbps: None,
             download_bytes: None,
+            upload_ok: None,
             error: None,
             country_code: None,
         }

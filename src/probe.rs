@@ -33,9 +33,9 @@ use crate::{
         ACTIVE_PROBE_BATCH_MIN_SIZE, ACTIVE_PROBE_HTTP_MAX_CONCURRENCY,
         ACTIVE_PROBE_PROCESS_MAX_CONCURRENCY, BITS_PER_BYTE, BITS_PER_MEGABIT, BULK_MIN_BYTES,
         BULK_MIN_MBPS, DOWNLOAD_TAIL_WINDOW, HTTP_EXCHANGE_OVERHEAD_BYTES,
-        LOCAL_PROXY_CONNECT_TIMEOUT, LOCAL_PROXY_WAIT_INTERVAL, LOCALHOST_IP,
-        SING_BOX_CLEANUP_TIMEOUT, SING_BOX_CONFIG_FILE_PREFIX, SING_BOX_INBOUND_TAG_PREFIX,
-        SING_BOX_OUTBOUND_TAG_PREFIX, SPEEDTEST_TIMEOUT,
+        LOCAL_PROXY_CONNECT_TIMEOUT, LOCAL_PROXY_WAIT_INTERVAL, LOCALHOST_IP, PROBE_UPLOAD_BYTES,
+        PROBE_UPLOAD_TIMEOUT, SING_BOX_CLEANUP_TIMEOUT, SING_BOX_CONFIG_FILE_PREFIX,
+        SING_BOX_INBOUND_TAG_PREFIX, SING_BOX_OUTBOUND_TAG_PREFIX, SPEEDTEST_TIMEOUT,
     },
     convert::{
         decode_base64_bytes, decode_base64_to_string, first_param, json_bool, json_string,
@@ -410,6 +410,7 @@ async fn probe_tcp(candidate: Candidate, timeout: Duration) -> RankedConfig {
         http_status: None,
         download_mbps: None,
         download_bytes: None,
+        upload_ok: None,
         error,
         country_code,
     }
@@ -1764,6 +1765,7 @@ async fn successful_config(candidate: Candidate, active: &ActiveProbeSuccess) ->
         http_status: Some(active.http_status),
         download_mbps: active.download_mbps,
         download_bytes: active.download_bytes,
+        upload_ok: None,
         error: None,
         country_code,
     }
@@ -1878,6 +1880,11 @@ async fn enrich_top_speedtests(
     else {
         return;
     };
+    let upload_url = config
+        .upload_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|url| !url.is_empty());
     if config.speedtest_top_n == 0 {
         send_progress(
             progress,
@@ -1886,6 +1893,9 @@ async fn enrich_top_speedtests(
         );
         return;
     }
+
+    apply_upload_cache(ranked, config, upload_url.is_some());
+    keep_upload_preference_only_when_available(ranked);
 
     let mut indices = ranked
         .iter()
@@ -1944,11 +1954,12 @@ async fn enrich_top_speedtests(
     let mut results = stream::iter(targets.into_iter().map(|(index, uri)| {
         let sing_box_path = sing_box_path.clone();
         async move {
-            let measurement = measure_download_with_sing_box(
+            let measurement = measure_download_and_upload_with_sing_box(
                 &sing_box_path,
                 &uri,
                 startup_timeout,
                 download_url,
+                upload_url,
                 bytes_limit,
             )
             .await
@@ -1958,18 +1969,22 @@ async fn enrich_top_speedtests(
     }))
     .buffer_unordered(concurrency);
 
+    let mut upload_results: Vec<(usize, bool)> = Vec::new();
     while let Some((index, measurement)) = results.next().await {
-        if let Some(measurement) = measurement {
-            if !measurement.complete {
+        if let Some((download, upload_ok)) = measurement {
+            if !download.complete {
                 debug!(
                     name = %ranked[index].name,
-                    bytes = measurement.bytes,
-                    mbps = measurement.mbps,
+                    bytes = download.bytes,
+                    mbps = download.mbps,
                     "speedtest body ended early or stalled; ranking it below measured bulk configs"
                 );
             }
-            ranked[index].download_mbps = Some(measurement.mbps);
-            ranked[index].download_bytes = Some(measurement.bytes);
+            ranked[index].download_mbps = Some(download.mbps);
+            ranked[index].download_bytes = Some(download.bytes);
+            if let Some(ok) = upload_ok {
+                upload_results.push((index, ok));
+            }
             if let Ok(mut cache) = speedtest_cache().lock() {
                 if cache.len() > 8192 {
                     cache.clear();
@@ -1978,6 +1993,8 @@ async fn enrich_top_speedtests(
             }
         }
     }
+    publish_upload_results(ranked, upload_results);
+    keep_upload_preference_only_when_available(ranked);
 }
 
 fn speedtest_cache_key(item: &RankedConfig, config: &ProbeConfig) -> String {
@@ -2004,19 +2021,162 @@ fn speedtest_probe_concurrency(configured: usize, targets: usize) -> usize {
     configured.clamp(1, 4).min(targets.max(1))
 }
 
-async fn measure_download_with_sing_box(
+async fn measure_download_and_upload_with_sing_box(
     sing_box_path: &str,
     uri: &str,
     startup_timeout: Duration,
     download_url: &str,
+    upload_url: Option<&str>,
     bytes_limit: usize,
-) -> Result<DownloadMeasurement> {
+) -> Result<(DownloadMeasurement, Option<bool>)> {
     run_with_sing_box_proxy(sing_box_path, uri, startup_timeout, |port| async move {
         let proxy_url = format!("http://{LOCALHOST_IP}:{port}");
-        measure_download_through_proxy(&proxy_url, download_url, bytes_limit, SPEEDTEST_TIMEOUT)
-            .await
+        let download = measure_download_through_proxy(
+            &proxy_url,
+            download_url,
+            bytes_limit,
+            SPEEDTEST_TIMEOUT,
+        )
+        .await?;
+        // A failed POST is evidence about this config, not an error: the
+        // download measurement is still worth keeping. If every measured
+        // config fails, the caller treats the whole run as unknown so a
+        // blocked echo endpoint cannot demote the pool.
+        let upload_ok = match upload_url {
+            Some(upload_url) => {
+                match measure_upload_through_proxy(
+                    &proxy_url,
+                    upload_url,
+                    PROBE_UPLOAD_BYTES,
+                    PROBE_UPLOAD_TIMEOUT,
+                )
+                .await
+                {
+                    Ok(ok) => Some(ok),
+                    Err(error) => {
+                        debug!(error = %error, "upload probe failed through this config");
+                        Some(false)
+                    }
+                }
+            }
+            None => None,
+        };
+        Ok((download, upload_ok))
     })
     .await
+}
+
+/// A small POST through an explicit proxy. The echo endpoint must accept the
+/// body and answer 2xx; a body-dropping or upload-shaped node fails here even
+/// when its download speed looks perfect.
+async fn measure_upload_through_proxy(
+    proxy_url: &str,
+    upload_url: &str,
+    bytes: usize,
+    timeout: Duration,
+) -> Result<bool> {
+    let mut builder = reqwest::Client::builder()
+        .timeout(timeout)
+        .proxy(Proxy::all(proxy_url)?);
+    if cfg!(target_os = "android")
+        && let Some(tls) = crate::FALLBACK_TLS.get()
+    {
+        builder = builder.tls_backend_preconfigured(tls.clone());
+    }
+    let client = builder.build()?;
+    measure_upload(&client, upload_url, bytes).await
+}
+
+async fn measure_upload(client: &reqwest::Client, upload_url: &str, bytes: usize) -> Result<bool> {
+    let response = client
+        .post(upload_url)
+        .header(
+            reqwest::header::USER_AGENT,
+            concat!("V2RayDAR/", env!("CARGO_PKG_VERSION")),
+        )
+        .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+        .body(vec![0_u8; bytes])
+        .send()
+        .await?;
+    Ok(response.status().is_success())
+}
+
+fn upload_cache_key(item: &RankedConfig) -> String {
+    item.dedup_key.clone()
+}
+
+fn upload_cache() -> &'static Mutex<HashMap<String, (Instant, bool)>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, (Instant, bool)>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Re-apply upload verdicts from the last measurement so a ranking reload
+/// (cache-only or ping cycle) keeps demoting a proven upload-dead config.
+fn apply_upload_cache(ranked: &mut [RankedConfig], config: &ProbeConfig, enabled: bool) {
+    if !enabled {
+        return;
+    }
+    let interval = Duration::from_secs(config.speedtest_interval_seconds);
+    let now = Instant::now();
+    let Ok(cache) = upload_cache().lock() else {
+        return;
+    };
+    for item in ranked.iter_mut().filter(|item| item.reachable) {
+        if let Some((at, ok)) = cache.get(&upload_cache_key(item))
+            && (interval.is_zero() || now.saturating_duration_since(*at) < interval)
+        {
+            item.upload_ok = Some(*ok);
+        }
+    }
+}
+
+/// Publish per-config upload verdicts. If every measured config failed, the
+/// echo endpoint itself is probably unreachable: leave the pool unknown
+/// instead of demoting every node.
+fn publish_upload_results(ranked: &mut [RankedConfig], results: Vec<(usize, bool)>) {
+    if results.is_empty() {
+        return;
+    }
+    if !results.iter().any(|(_, ok)| *ok) {
+        warn!("upload probe failed through every measured config; upload capability unknown");
+        return;
+    }
+    let now = Instant::now();
+    let mut cache = upload_cache().lock().ok();
+    for (index, ok) in results {
+        ranked[index].upload_ok = Some(ok);
+        if !ok {
+            debug!(
+                name = %ranked[index].name,
+                "upload probe proved this config cannot carry a request body; demoted"
+            );
+        }
+        if let Some(cache) = cache.as_mut() {
+            if cache.len() > 8192 {
+                cache.clear();
+            }
+            cache.insert(upload_cache_key(&ranked[index]), (now, ok));
+        }
+    }
+}
+
+/// An upload verdict is a preference, never an exclusion. It only demotes
+/// configs while at least one reachable config is proven upload-capable. If
+/// none is, the pool falls back to the normal download ranking, so a network
+/// where every node is upload-shaped still gets the best download node.
+fn keep_upload_preference_only_when_available(ranked: &mut [RankedConfig]) {
+    if ranked
+        .iter()
+        .any(|item| item.reachable && item.upload_ok == Some(true))
+    {
+        return;
+    }
+    for item in ranked
+        .iter_mut()
+        .filter(|item| item.upload_ok == Some(false))
+    {
+        item.upload_ok = None;
+    }
 }
 
 pub struct DownloadMeasurement {
@@ -2456,6 +2616,7 @@ fn failed_config(candidate: Candidate, validation: &str, error: String) -> Ranke
         http_status: None,
         download_mbps: None,
         download_bytes: None,
+        upload_ok: None,
         error: Some(error),
         country_code: None,
     }
@@ -3098,6 +3259,7 @@ mod tests {
             http_status: Some(204),
             download_mbps: None,
             download_bytes: None,
+            upload_ok: None,
             error: None,
             country_code: None,
         }
@@ -3744,6 +3906,7 @@ mod tests {
             test_url: "http://probe.test/".to_string(),
             accepted_statuses: vec![204],
             download_url: None,
+            upload_url: None,
             download_bytes_limit: 1_048_576,
             speedtest_top_n: 2,
             speedtest_interval_seconds: 900,
@@ -4007,6 +4170,88 @@ mod tests {
         assert!(eval_shared_stop(&shared, &policy, progress).is_some());
         assert!(matches!(rx.try_recv(), Ok(ProgressEvent::LiveLog(_))));
         assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn upload_probe_requires_2xx() {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .expect("test client builds");
+        let ok = spawn_status_server(200).await;
+        assert!(
+            measure_upload(&client, &format!("http://{ok}/post"), 1024)
+                .await
+                .expect("echo answers"),
+            "a 2xx echo accepts the body"
+        );
+        let bad = spawn_status_server(500).await;
+        assert!(
+            !measure_upload(&client, &format!("http://{bad}/post"), 1024)
+                .await
+                .expect("error status still answers"),
+            "a 5xx is not upload-capable"
+        );
+    }
+
+    #[test]
+    fn upload_verdict_never_empties_the_pool() {
+        let mut pool = vec![
+            ranked("ok", "ok", true, Some(10)),
+            ranked("dead", "dead", true, Some(10)),
+        ];
+        pool[0].upload_ok = Some(true);
+        pool[1].upload_ok = Some(false);
+        keep_upload_preference_only_when_available(&mut pool);
+        assert_eq!(
+            pool[1].upload_ok,
+            Some(false),
+            "a proven upload-dead config is demoted while an upload-capable one exists"
+        );
+
+        // The upload-capable config disappears: clear the verdict so the
+        // best download config can win instead of an empty pool.
+        pool[0].upload_ok = None;
+        keep_upload_preference_only_when_available(&mut pool);
+        assert_eq!(
+            pool[1].upload_ok, None,
+            "without any upload-capable config the download ranking decides"
+        );
+    }
+
+    #[test]
+    fn a_batch_where_every_upload_failed_stays_unknown() {
+        let mut pool = vec![
+            ranked("a", "a", true, Some(10)),
+            ranked("b", "b", true, Some(10)),
+        ];
+        // A stale verdict from an earlier batch must not demote the pool when
+        // this batch proved nothing (the echo endpoint may be unreachable).
+        pool[0].upload_ok = Some(false);
+        publish_upload_results(&mut pool, vec![(0, false), (1, false)]);
+        keep_upload_preference_only_when_available(&mut pool);
+        assert_eq!(pool[0].upload_ok, None);
+        assert_eq!(pool[1].upload_ok, None);
+    }
+
+    async fn spawn_status_server(status: u16) -> std::net::SocketAddr {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("status server binds");
+        let addr = listener.local_addr().expect("status server addr");
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0_u8; 1024];
+                let _ = stream.read(&mut buf).await;
+                let response = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        addr
     }
 
     async fn spawn_body_server(body: Vec<u8>, declared: usize) -> std::net::SocketAddr {

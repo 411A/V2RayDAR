@@ -849,6 +849,7 @@ mod tests {
             accepted_statuses: vec![200, 204],
             download_bytes_limit: 1_000_000,
             download_url: None,
+            upload_url: None,
             speedtest_top_n: 2,
             speedtest_interval_seconds: 900,
             require_transport_security: false,

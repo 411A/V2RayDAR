@@ -90,6 +90,9 @@ probe:
   # A real body is required: a URL that answers 204/HEAD measures nothing.
   # You can use this URL for example: https://archive.org/download/steamboat-willie_1928/steamboat-willie_1928.ia.mp4
   download_url: https://download.thinkbroadband.com/10MB.zip
+  # 16 KB POST target used to prove a config can carry uploads; off disables it.
+  # Point this at your own echo endpoint if the public one is blocked.
+  upload_url: https://postman-echo.com/post
   # Maximum bytes read per speed test; high values use more data/time.
   # Four MiB is the bulk-capability bar: below it a shaper's burst wins.
   download_bytes_limit: 4194304

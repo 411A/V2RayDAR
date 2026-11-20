@@ -265,6 +265,7 @@ Windows-пользователи заменяют `v2raydar` на `v2raydar.exe`
 | `probe.download_url` | `https://download.thinkbroadband.com/10MB.zip` | Цель теста реальной пропускной способности; `null` отключает ранжирование по скорости. |
 | `probe.download_bytes_limit` | `4194304` | Байт на тест скорости; скорость определяют последние две секунды. |
 | `probe.speedtest_top_n` | `2` | Сколько лучших конфигов тестировать по скорости за цикл; `0` отключает тесты. |
+| `probe.upload_url` | `https://postman-echo.com/post` | Цель POST на 16 КБ для проверки загрузки; `off` отключает учёт загрузки. |
 | `probe.speedtest_interval_seconds` | `900` | Сколько секунд переиспользовать результат теста скорости; `0` тестирует каждый цикл. |
 | `probe.require_transport_security` | `false` | Отбрасывает конфиги без TLS и поддельные Reality до проверки. |
 | `geoip_db_path` | `null` | Необязательный путь к файлу `GeoLite2-Country.mmdb` или каталогу country-зон (`zones.txt` или устаревшие `<cc>.zone`). При `null` используется `<data-root>/geoip` (сначала база MaxMind, затем zone; оба обновляются установщиком). Country data: GeoLite2 by MaxMind (CC BY-SA 4.0); fallback zones by ipdeny. |

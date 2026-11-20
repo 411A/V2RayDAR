@@ -628,6 +628,7 @@ mod tests {
             accepted_statuses: DEFAULT_ACCEPTED_STATUSES.to_vec(),
             download_bytes_limit: DEFAULT_DOWNLOAD_BYTES_LIMIT,
             download_url: None,
+            upload_url: None,
             speedtest_top_n: 2,
             speedtest_interval_seconds: 900,
             require_transport_security: false,
@@ -670,6 +671,7 @@ mod tests {
             http_status: Some(204),
             download_mbps: None,
             download_bytes: None,
+            upload_ok: None,
             error: None,
             country_code: None,
         }

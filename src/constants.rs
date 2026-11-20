@@ -91,6 +91,15 @@ pub const DOWNLOAD_TAIL_WINDOW: Duration = Duration::from_secs(2);
 /// One speed-test attempt, body included. Without this a stalled download
 /// could hang a cycle forever (the client itself had no timeout).
 pub const SPEEDTEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Upload probe: a small POST through the same proxy. Download-only shaping
+/// is invisible to a download speed test, so a config that cannot carry a
+/// request body is demoted before it is picked to serve uploads.
+pub const DEFAULT_UPLOAD_URL: &str = "https://postman-echo.com/post";
+pub const PROBE_UPLOAD_BYTES: usize = 16 * 1024;
+pub const PROBE_UPLOAD_TIMEOUT: Duration = Duration::from_secs(10);
+/// A live connection that sent at least this much since the last poll is
+/// treated as uploading; a performance switch must not kill it.
+pub const PROXY_UPLOAD_ACTIVE_BYTES: u64 = 8 * 1024;
 /// Active-proxy deep check: ten megabytes, the size that exposes a
 /// TLS-inspecting middlebox that truncates around 12 KB. The check passes as
 /// soon as it has carried the bulk minimum at the bulk rate; otherwise it
@@ -455,7 +464,7 @@ pub const SUBSCRIPTION_ACTIONS: [SubscriptionAction; 6] = [
     SubscriptionAction::Delete,
     SubscriptionAction::Back,
 ];
-pub const CONFIG_KEYS: [ConfigKey; 40] = [
+pub const CONFIG_KEYS: [ConfigKey; 41] = [
     ConfigKey::Bind,
     ConfigKey::TopN,
     ConfigKey::RefreshSeconds,
@@ -480,6 +489,7 @@ pub const CONFIG_KEYS: [ConfigKey; 40] = [
     ConfigKey::TestUrl,
     ConfigKey::AcceptedStatuses,
     ConfigKey::DownloadUrl,
+    ConfigKey::UploadUrl,
     ConfigKey::DownloadLimit,
     ConfigKey::SpeedtestTopN,
     ConfigKey::SpeedtestInterval,
@@ -540,6 +550,11 @@ pub const SETTING_GUIDES: &[SettingGuide] = &[
         key: "probe.speedtest_top_n",
         label: "Speedtest count",
         help: "How many top reachable configs get a real-body speedtest per run. Lower uses less data; 0 turns speedtests off.",
+    },
+    SettingGuide {
+        key: "probe.upload_url",
+        label: "Upload probe",
+        help: "16 KB POST target used to prove a config can carry uploads. Off disables the upload check; ranking then falls back to downloads.",
     },
     SettingGuide {
         key: "probe.require_transport_security",

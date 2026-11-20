@@ -133,6 +133,7 @@ fn merge_section_probe(merged: &mut AppConfig, startup: &AppConfig, tui: &AppCon
     pick!(test_url);
     pick!(accepted_statuses);
     pick!(download_url);
+    pick!(upload_url);
     pick!(copy download_bytes_limit);
     pick!(copy speedtest_top_n);
     pick!(copy speedtest_interval_seconds);

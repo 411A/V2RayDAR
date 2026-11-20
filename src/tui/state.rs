@@ -62,6 +62,7 @@ pub enum ConfigKey {
     TestUrl,
     AcceptedStatuses,
     DownloadUrl,
+    UploadUrl,
     DownloadLimit,
     SpeedtestTopN,
     SpeedtestInterval,

@@ -265,6 +265,7 @@ Windows 用户将 `v2raydar` 替换为 `v2raydar.exe`。macOS 上首次打开捆
 | `probe.download_url` | `https://download.thinkbroadband.com/10MB.zip` | 真实响应体吞吐测试目标；`null` 关闭速度排名。 |
 | `probe.download_bytes_limit` | `4194304` | 每次速度测试读取的字节数；最后两秒决定速率。 |
 | `probe.speedtest_top_n` | `2` | 每轮测速的前几个配置；`0` 关闭测速。 |
+| `probe.upload_url` | `https://postman-echo.com/post` | 上传探测的 16 KB POST 目标；`off` 关闭上传排名。 |
 | `probe.speedtest_interval_seconds` | `900` | 复用测速结果的秒数；`0` 每轮重新测速。 |
 | `probe.require_transport_security` | `false` | 探测前丢弃无 TLS 和伪造 Reality 配置。 |
 | `geoip_db_path` | `null` | 可选的 `GeoLite2-Country.mmdb` 文件或国家 IP 区目录（`zones.txt`，或旧式 `<cc>.zone` 文件）路径。为 `null` 时使用 `<data-root>/geoip`（优先 MaxMind 数据库，zone 兜底；两者均由安装程序更新）。Country data: GeoLite2 by MaxMind (CC BY-SA 4.0); fallback zones by ipdeny. |

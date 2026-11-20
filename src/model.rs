@@ -48,6 +48,9 @@ pub struct RankedConfig {
     pub http_status: Option<u16>,
     pub download_mbps: Option<f64>,
     pub download_bytes: Option<usize>,
+    /// `Some(false)` when the upload probe proved this config cannot carry a
+    /// request body; `None` when it has not been measured.
+    pub upload_ok: Option<bool>,
     pub error: Option<String>,
     pub country_code: Option<String>,
 }
@@ -57,13 +60,17 @@ impl RankedConfig {
     /// - `0`: measured, carried the bulk minimum, and its tail was fast
     ///   enough for real streaming/downloads;
     /// - `1`: never measured (unknown, not proven bad);
-    /// - `2`: measured and either cut short or too slow — a shaper, a
-    ///   truncating middlebox, or a link that cannot finish a body.
+    /// - `2`: measured and either cut short or too slow, or the upload probe
+    ///   proved it cannot carry a request body. A download-only shaper is
+    ///   useless for forms and file uploads even when it streams well.
     ///
     /// The class comes before latency because a 40 ms handshake on a link
     /// that dies at 12 KB is worthless, while the reverse is merely slower.
     #[must_use]
     pub fn throughput_class(&self) -> u8 {
+        if self.upload_ok == Some(false) {
+            return 2;
+        }
         match (self.download_bytes, self.download_mbps) {
             (Some(bytes), Some(mbps)) if bytes >= BULK_MIN_BYTES && mbps >= BULK_MIN_MBPS => 0,
             (None, _) => 1,
@@ -251,6 +258,8 @@ pub struct RuntimeConfig {
     pub download_bytes_limit: usize,
     /// Speedtest download link (`None` = speedtest off, shown as `off`).
     pub download_url: Option<String>,
+    /// 16 KB upload probe URL (`None` = upload probe off).
+    pub upload_url: Option<String>,
     pub speedtest_top_n: usize,
     pub speedtest_interval_seconds: u64,
     pub require_transport_security: bool,
@@ -348,9 +357,23 @@ mod tests {
             http_status: Some(200),
             download_mbps,
             download_bytes,
+            upload_ok: None,
             error: None,
             country_code: None,
         }
+    }
+
+    #[test]
+    fn upload_dead_config_is_demoted_but_still_selectable() {
+        let mut dead = ranked("dead", 10, Some(9.0), Some(BULK_MIN_BYTES));
+        dead.upload_ok = Some(false);
+        let good = ranked("good", 500, Some(2.1), Some(BULK_MIN_BYTES));
+
+        assert_eq!(dead.throughput_class(), 2);
+        assert!(!dead.bulk_capable());
+        assert_eq!(compare_ranked(&good, &dead), Ordering::Less);
+        // It is still reachable and eligible when nothing better exists.
+        assert!(dead.reachable);
     }
 
     #[test]

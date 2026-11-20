@@ -432,7 +432,15 @@ function Heal-FlippedDatabase {
     $installedSize = (Get-Item $installedDb).Length
     $portableSize = 0
     if (Test-Path $portableDb) { $portableSize = (Get-Item $portableDb).Length }
-    if ($installedSize -le $portableSize) { return }
+    # A real portable database (far more than a fresh seed) must never be
+    # replaced by an older installed-root copy: it holds the newest settings
+    # and configs. Keep both and let the user choose.
+    if ($portableSize -gt 1048576) {
+        Write-Warn "both databases exist; keeping the portable one at $portableDb"
+        Write-Warn "the older installed-root database is at $installedDb"
+        return
+    }
+    if ($installedSize -le $portableSize -or $installedSize -lt 1048576) { return }
     $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
     $portableDir = Join-Path $Target "v2raydar_data"
     if (Test-Path $portableDir) {

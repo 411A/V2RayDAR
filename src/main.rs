@@ -241,6 +241,12 @@ async fn main() -> Result<()> {
             println!("Initialized default settings in {}", db_path.display());
         }
         crate::settings::StartupOutcome::Loaded => {}
+        crate::settings::StartupOutcome::IgnoredLegacyFile { backup } => println!(
+            "Kept stored settings in {}; a legacy {} was set aside as {} instead of overwriting them.",
+            db_path.display(),
+            paths.config_path.display(),
+            backup.display()
+        ),
     }
     // Upgrade merge: brand-new default keys and subscriptions land
     // automatically; keys the user customized are left alone. Runs on every

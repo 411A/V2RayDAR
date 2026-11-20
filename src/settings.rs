@@ -11,7 +11,10 @@
 //! are `#[serde(skip)]` and never reach the database, exactly like the old
 //! file writer, which stripped them before saving.
 
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result, anyhow};
 use serde_json::{Map, Value};
@@ -32,6 +35,10 @@ pub enum StartupOutcome {
     SeededDefaults,
     /// Stored rows were loaded as-is.
     Loaded,
+    /// A real legacy file reappeared after the database already held
+    /// settings. The database is the source of truth: the file was set aside
+    /// instead of replacing values the user changed since the migration.
+    IgnoredLegacyFile { backup: PathBuf },
 }
 
 /// Resolve user preferences at startup, in order:
@@ -39,6 +46,8 @@ pub enum StartupOutcome {
 /// 1. Legacy file with real content → parse (yaml or json), store in the
 ///    database, then replace the file with [`CONFIG_MIGRATION_NOTE`].
 ///    Runs in every mode (TUI, `--no-tui`, `--once`, quiet default): one code path.
+///    If the database already holds settings, the file is set aside instead:
+///    the stored values are newer than the file and must win.
 /// 2. Migration-note file → already migrated; load stored rows. If the
 ///    database was deleted since, re-seed defaults instead of failing.
 /// 3. No file → load stored rows, or seed defaults on first run. A custom
@@ -58,6 +67,20 @@ pub fn load_or_migrate(paths: &AppPaths, db: &Database) -> Result<(AppConfig, St
             }
             let config = seed_defaults(db)?;
             return Ok((config, StartupOutcome::SeededDefaults));
+        }
+
+        // A real file after the migration already happened (an old backup
+        // restored, an archive unpacked over the folder, or a stale installer
+        // copy). The database holds every change made since; importing the
+        // file would silently reset those preferences to whatever the file
+        // says. Keep the database, preserve the file for the user, and stop
+        // treating it as pending migration.
+        if db.has_settings()? {
+            let backup = set_aside_legacy_file(&paths.config_path)?;
+            return Ok((
+                load_app_config(db)?,
+                StartupOutcome::IgnoredLegacyFile { backup },
+            ));
         }
 
         let config = parse_legacy_file(&paths.config_path)?;
@@ -116,6 +139,25 @@ pub fn load_app_config(db: &Database) -> Result<AppConfig> {
         serde_json::from_value(value).context("stored settings failed to parse")?;
     config.subscriptions = db.load_subscriptions()?;
     crate::config::validate_config(config)
+}
+
+/// Move a reappeared legacy file beside itself instead of importing it.
+/// The first name is `<file>.ignored`; repeated collisions get a numeric
+/// suffix, so a user's second restored backup is never overwritten.
+fn set_aside_legacy_file(path: &Path) -> Result<PathBuf> {
+    let name = path.file_name().map_or_else(
+        || "config".into(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    let mut backup = path.with_file_name(format!("{name}.ignored"));
+    let mut counter = 2_u32;
+    while backup.exists() {
+        backup = path.with_file_name(format!("{name}.ignored-{counter}"));
+        counter = counter.saturating_add(1);
+    }
+    std::fs::rename(path, &backup)
+        .with_context(|| format!("unable to set aside legacy config {}", path.display()))?;
+    Ok(backup)
 }
 
 /// Parse a legacy yaml/json config file: same formats, same validation as
@@ -574,6 +616,51 @@ mod tests {
         // Stripped before saving, like the old file writer did.
         assert_eq!(loaded.probe.sing_box_path, "");
         assert_eq!(loaded.proxy.manual_proxy_uri, None);
+    }
+
+    #[test]
+    fn a_legacy_file_never_overwrites_settings_already_in_the_database() {
+        let (db, _db_guard) = open_temp_db("legacy-keeps-db");
+        let (paths, _dir_guard) = legacy_paths("legacy-keeps-db", "configs.yaml");
+        let mut stored = AppConfig::default_for_first_run();
+        stored.top_n = 42;
+        stored.refresh_seconds = 1200;
+        save_app_config(&db, &stored).expect("stored settings save");
+        std::fs::write(&paths.config_path, "top_n: 7\nrefresh_seconds: 900\n")
+            .expect("legacy file writes");
+
+        let (config, outcome) = load_or_migrate(&paths, &db).expect("loads the database");
+        assert!(matches!(outcome, StartupOutcome::IgnoredLegacyFile { .. }));
+        assert_eq!(config.top_n, 42, "the stored value wins");
+        assert_eq!(config.refresh_seconds, 1200, "the stored value wins");
+        assert!(
+            !paths.config_path.exists(),
+            "the pending file is no longer treated as a migration source"
+        );
+        let backup = paths.config_path.with_file_name("configs.yaml.ignored");
+        assert_eq!(
+            std::fs::read_to_string(&backup)
+                .expect("the legacy file is preserved")
+                .trim(),
+            "top_n: 7\nrefresh_seconds: 900"
+        );
+    }
+
+    #[test]
+    fn merge_keeps_a_customized_refresh_interval() {
+        // The reported case: the default is 900, the user runs 1200.
+        let user = HashMap::from([("refresh_seconds".to_string(), "1200".to_string())]);
+        let old = HashMap::from([("refresh_seconds".to_string(), "900".to_string())]);
+        let new = HashMap::from([("refresh_seconds".to_string(), "900".to_string())]);
+
+        let (merged, added, updated) = merge_default_values(user, &old, &new);
+        assert_eq!(
+            merged.get("refresh_seconds"),
+            Some(&"1200".to_string()),
+            "a customized refresh interval must survive an upgrade"
+        );
+        assert_eq!(added, 0);
+        assert_eq!(updated, 0);
     }
 
     #[test]

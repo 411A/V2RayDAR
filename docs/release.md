@@ -5,11 +5,11 @@
 Download the file for your operating system from the GitHub release page:
 
 - Windows: `v2raydar-windows-x86_64.exe`
-- Windows with bundled `sing-box` 1.13.13: `v2raydar-windows-x86_64_with_singbox.zip`
+- Windows with bundled `sing-box` 1.13.16: `v2raydar-windows-x86_64_with_singbox.zip`
 - Linux: `v2raydar-linux-x86_64`
-- Linux with bundled `sing-box` 1.13.13: `v2raydar-linux-x86_64_with_singbox.tar.gz`
+- Linux with bundled `sing-box` 1.13.16: `v2raydar-linux-x86_64_with_singbox.tar.gz`
 - macOS: `v2raydar-macos-universal.app.zip`
-- macOS with bundled `sing-box` 1.13.13: `v2raydar-macos-universal_with_singbox.zip`
+- macOS with bundled `sing-box` 1.13.16: `v2raydar-macos-universal_with_singbox.zip`
 - Termux: `v2raydar-termux-aarch64.tar.gz` or `v2raydar-termux-x86_64.tar.gz`
 
 The release also includes `checksums.txt`.
@@ -42,7 +42,7 @@ V2RayDAR is shipped as an icon-bearing executable on Windows, a compatibility-fi
 
 Active probing requires `sing-box`, which is downloaded separately. On first run in TUI mode (`--tui`), V2RayDAR asks for the local `sing-box` executable path, verifies it with `sing-box version`, saves it in `data.db`, and then starts scanning. The default dashboard starts even without `sing-box`: open **Settings > Probe > sing-box path**, enter and save the path, then refresh. Command-line-only modes (`--once`, `--ping`, `--ping-file`) print OS-specific setup instructions and exit until a bundled or configured `sing-box` executable is available.
 
-The `_with_singbox` desktop archives include pinned `sing-box` 1.13.13 beside V2RayDAR, so `probe.sing_box_path` can remain `null`. If you use the non-embedded desktop assets, download the sing-box archive for your OS: `sing-box.exe` from the Windows archive, `sing-box` from the Linux archive, or `sing-box` from the Darwin archive for macOS. Windows users who already have v2rayN can also check the v2rayN installation folder for `sing-box.exe`.
+The `_with_singbox` desktop archives include pinned `sing-box` 1.13.16 beside V2RayDAR, so `probe.sing_box_path` can remain `null`. If you use the non-embedded desktop assets, download the sing-box archive for your OS: `sing-box.exe` from the Windows archive, `sing-box` from the Linux archive, or `sing-box` from the Darwin archive for macOS. Windows users who already have v2rayN can also check the v2rayN installation folder for `sing-box.exe`.
 
 For Android / Termux:
 

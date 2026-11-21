@@ -46,6 +46,10 @@ use crate::{
 
 pub type SharedProxy = Arc<Mutex<PersistentProxy>>;
 
+/// Marker for a controller port owned by another process; the start is
+/// retried without the Clash controller so the proxy still serves.
+const CONTROLLER_REJECTED: &str = "did not accept our secret";
+
 pub struct PersistentProxy {
     sing_box_path: String,
     state: Arc<RwLock<ProxyState>>,
@@ -608,13 +612,28 @@ impl PersistentProxy {
 
     async fn start_with_config(&self, config: &RankedConfig) -> Result<()> {
         self.state.write().await.starting = true;
-        let result = self.start_with_config_inner(config).await;
+        let mut result = self.start_with_config_inner(config, true).await;
+        if let Err(error) = &result
+            && error.to_string().contains(CONTROLLER_REJECTED)
+        {
+            // Another sing-box (often v2rayN's) owns the controller port.
+            // That must disable starvation detection, not the proxy.
+            warn!(
+                error = %error,
+                "proxy: controller port conflict; retrying without the Clash controller"
+            );
+            result = self.start_with_config_inner(config, false).await;
+        }
         self.state.write().await.starting = false;
         result
     }
 
     #[allow(clippy::too_many_lines)]
-    async fn start_with_config_inner(&self, config: &RankedConfig) -> Result<()> {
+    async fn start_with_config_inner(
+        &self,
+        config: &RankedConfig,
+        use_controller: bool,
+    ) -> Result<()> {
         if self.state.read().await.shutting_down {
             return Err(anyhow::anyhow!("proxy: shutting down"));
         }
@@ -634,7 +653,11 @@ impl PersistentProxy {
             LOCALHOST_IP
         };
 
-        let clash_api = self.maybe_alloc_clash_api(current_config.port).await;
+        let clash_api = if use_controller {
+            self.maybe_alloc_clash_api(current_config.port).await
+        } else {
+            None
+        };
         let config_json =
             build_sing_box_config(&outbound, current_config.port, listen, clash_api.as_ref());
         let config_path = write_proxy_config(&config_json).await?;
@@ -678,12 +701,22 @@ impl PersistentProxy {
                     .expect("localhost IP is a valid address"),
                 api.port,
             );
-            if !controller_accepts(addr, &api.secret).await {
+            // The proxy port may be ready before the controller has bound:
+            // give the child a short window instead of declaring a conflict.
+            let mut accepted = false;
+            for _ in 0..5 {
+                if controller_accepts(addr, &api.secret).await {
+                    accepted = true;
+                    break;
+                }
+                time::sleep(Duration::from_millis(100)).await;
+            }
+            if !accepted {
                 let _ = child.start_kill();
                 let _ = time::timeout(SING_BOX_CLEANUP_TIMEOUT, child.wait()).await;
                 let _ = fs::remove_file(&config_path).await;
                 return Err(anyhow!(
-                    "controller on port {} did not accept our secret; another process owns the proxy port",
+                    "controller on port {} {CONTROLLER_REJECTED}",
                     api.port
                 ));
             }
@@ -1369,7 +1402,19 @@ fn select_proxy_config<'a>(
 /// bodies always pass.
 async fn body_transfers(client: &reqwest::Client, url: &str, floor_bps: u64) -> bool {
     let outcome = transfer_outcome(client, url).await;
-    transfer_ok(outcome, floor_bps)
+    let ok = transfer_ok(outcome, floor_bps);
+    if !ok {
+        debug!(
+            url,
+            status_ok = outcome.status_ok,
+            received = outcome.received,
+            complete = outcome.complete,
+            elapsed_ms = outcome.elapsed.as_millis(),
+            floor_bps,
+            "proxy: health check transfer failed"
+        );
+    }
+    ok
 }
 
 /// Measurable result of one transfer attempt, so the pass rule stays a pure
@@ -1400,15 +1445,16 @@ async fn transfer_outcome(client: &reqwest::Client, url: &str) -> TransferOutcom
     let Ok(resp) = client.get(url).send().await else {
         return TransferOutcome::idle();
     };
-    let status = resp.status();
-    if !(status.is_success() || status.as_u16() == 204) {
+    let status = resp.status().as_u16();
+    let redirect = (300..=399).contains(&status);
+    if !health_status_ok(status) {
         return TransferOutcome::idle();
     }
     let (received, complete) =
         accumulate_limited(resp.bytes_stream(), PROXY_HEALTH_CHECK_BODY_BYTES).await;
     TransferOutcome {
         status_ok: true,
-        empty_status: status.as_u16() == 204,
+        empty_status: status == 204 || redirect,
         received,
         complete,
         elapsed: started.elapsed(),
@@ -1421,6 +1467,12 @@ async fn transfer_outcome(client: &reqwest::Client, url: &str) -> TransferOutcom
 /// ones must clear the floor. Tiny fast pages pass by design — the proxy
 /// moved them, so switching cannot help, and the starvation detector owns
 /// real user traffic. Slow trickles fail instead of choking apps silently.
+/// 2xx and 3xx prove the proxy carried the request; a redirect body is not
+/// the point, so it counts like an empty 204.
+const fn health_status_ok(status: u16) -> bool {
+    status >= 200 && status <= 399
+}
+
 const fn transfer_ok(outcome: TransferOutcome, floor_bps: u64) -> bool {
     if !outcome.status_ok {
         return false;
@@ -1561,6 +1613,10 @@ pub fn spawn_health_loop(
 
             time::sleep(Duration::from_secs(last_interval)).await;
 
+            let (refreshing, pinging) = {
+                let runtime = runtime.read().await;
+                (runtime.refreshing, runtime.pinging)
+            };
             let (running, starting, controller, secret, manual, last_switch, active_connections) =
                 read_proxy_state(&proxy, |state| {
                     (
@@ -1584,6 +1640,8 @@ pub fn spawn_health_loop(
                 interval_secs = last_interval,
                 since_switch_secs = last_switch.map(|at| at.elapsed().as_secs()),
                 active_flows = active_connections,
+                refreshing,
+                pinging,
                 "proxy: health tick"
             );
 
@@ -1615,8 +1673,9 @@ pub fn spawn_health_loop(
 
             // A flow is moving bytes right now: the data plane is proven, and
             // a synthetic check under saturation can false-fail into a
-            // restart that kills the user's stream. Keep the proxy.
-            if active_connections > 0 {
+            // restart that kills the user's stream. A running probe cycle
+            // saturates the link the same way. Keep the proxy in both cases.
+            if active_connections > 0 || refreshing || pinging {
                 continue;
             }
 
@@ -3226,6 +3285,21 @@ mod tests {
             complete,
             elapsed: Duration::from_secs(elapsed_secs),
         }
+    }
+
+    #[test]
+    fn health_accepts_redirects_but_not_client_errors() {
+        for status in [200, 204, 301, 302, 308] {
+            assert!(health_status_ok(status), "{status} proves connectivity");
+        }
+        for status in [199, 400, 404, 429, 500, 503] {
+            assert!(!health_status_ok(status), "{status} is not healthy");
+        }
+        // A redirect has no body but still proves the proxy moved the request.
+        assert!(transfer_ok(
+            outcome(true, true, 0, true, 0),
+            PROXY_HEALTH_FULL_BPS
+        ));
     }
 
     #[test]

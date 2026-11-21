@@ -39,3 +39,27 @@ test("returning from a hidden tab reconnects the live feed instead of replaying 
   expect(stub.resultsGets).toBe(0);
   await expect(page.locator("#stat-cards .card")).toHaveCount(7);
 });
+
+test("hidden tab freezes the seconds clock and repaints once on return", async ({ page }) => {
+  await page.goto(base + "/overview");
+  const clock = page.locator("#stat-running");
+  await expect(clock).toHaveText(/\d\d:\d\d:\d\d/);
+  const before = await clock.innerText();
+  await page.waitForTimeout(1200);
+  const ticked = await clock.innerText();
+  expect(ticked).not.toBe(before);
+
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", { value: true, configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  const frozen = await clock.innerText();
+  await page.waitForTimeout(2200);
+  expect(await clock.innerText()).toBe(frozen);
+
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", { value: false, configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect.poll(() => clock.innerText(), { timeout: 2000 }).not.toBe(frozen);
+});

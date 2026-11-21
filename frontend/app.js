@@ -104,7 +104,7 @@ const state = {
   startedAt: null, // server start (RFC3339) — "Running For" clock
   refreshSeconds: 0, // countdown cadence; 0 = unknown/manual
   pingSeconds: 0,
-  clockTimer: 0, // wall-clock-aligned ticker timeout (uptime + countdowns)
+  clockTimer: 0, // 1 Hz ticker timeout (uptime + countdowns)
   ovConfig: null, // cached /api/config payload for the overview card
   search: "",
   reachableOnly: true,
@@ -1647,12 +1647,9 @@ function lastRefreshStamp(s) {
   return iso;
 }
 
-/// Wall-clock-aligned live ticker: uptime + countdowns only. A plain
-/// `setInterval(1000)` drifts (late wakeups, background throttling), so the
-/// displayed second would lag real time and then visibly jump whenever a data
-/// render recomputed it — exactly the "seconds jump when Failed updates"
-/// bug. Instead each tick schedules the next one for just past the upcoming
-/// second boundary, so ticker and renders always agree to the second.
+/// Live ticker: uptime + countdowns from `Date.now()`, so a late wakeup
+/// corrects itself. A fixed one-second cadence avoids the stop-then-double
+/// look of wall-boundary re-alignment after a delayed tick.
 /// Writes are change-guarded: identical text never touches the DOM.
 function tickClock() {
   // While offline the server is gone: freeze the clock on the last known
@@ -1688,14 +1685,21 @@ function scheduleClock() {
     window.clearTimeout(state.clockTimer);
     state.clockTimer = 0;
   }
-  // Just past the next second boundary (the +10 ms keeps us off the edge so
-  // the new second is always the one displayed).
-  const delay = 1000 - (Date.now() % 1000) + 10;
-  state.clockTimer = window.setTimeout(tickClock, delay);
+  state.clockTimer = window.setTimeout(tickClock, 1000);
+}
+
+/// Hidden pages throttle timers; stop outright, then repaint and restart.
+function stopClock() {
+  if (state.clockTimer) {
+    window.clearTimeout(state.clockTimer);
+    state.clockTimer = 0;
+  }
 }
 
 function startClock() {
-  scheduleClock();
+  if (!document.hidden) {
+    scheduleClock();
+  }
 }
 
 function proxyPill(running, uri) {
@@ -4942,8 +4946,11 @@ function wire() {
   // changes immediately rather than a fast-forward of the backlog.
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
+      stopClock();
       return;
     }
+    // Paint before the first throttled timeout can stall the clock.
+    tickClock();
     resumeFeed();
   });
   // In-app tab links navigate instantly (no reload); anything else (skip

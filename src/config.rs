@@ -20,6 +20,7 @@ use crate::constants::{
     DEFAULT_SING_BOX_PATH, DEFAULT_SPEEDTEST_INTERVAL_SECONDS, DEFAULT_SPEEDTEST_TOP_N,
     DEFAULT_STARTUP_TIMEOUT_MS, DEFAULT_SUBSCRIPTION_ENABLED, DEFAULT_SUBSCRIPTION_PRIORITY,
     DEFAULT_TEST_URL, DEFAULT_TOP_N, DEFAULT_UPLOAD_URL, DEFAULT_USE_CACHE_ONLY,
+    SUPPORTED_PROTOCOLS,
 };
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -190,6 +191,10 @@ pub struct ProbeConfig {
     pub speedtest_interval_seconds: u64,
     #[serde(default = "default_require_transport_security")]
     pub require_transport_security: bool,
+    /// Protocols that may be probed and ranked. Empty is rejected: an empty
+    /// list would silently disable every config.
+    #[serde(default = "default_protocols")]
+    pub protocols: Vec<String>,
     #[serde(skip)]
     pub sing_box_path_auto: bool,
 }
@@ -255,8 +260,19 @@ impl Default for ProbeConfig {
             speedtest_top_n: default_speedtest_top_n(),
             speedtest_interval_seconds: default_speedtest_interval_seconds(),
             require_transport_security: default_require_transport_security(),
+            protocols: default_protocols(),
             sing_box_path_auto: false,
         }
+    }
+}
+
+impl ProbeConfig {
+    /// Whether this protocol may be probed and ranked.
+    #[must_use]
+    pub fn protocol_enabled(&self, protocol: &str) -> bool {
+        self.protocols
+            .iter()
+            .any(|enabled| enabled.eq_ignore_ascii_case(protocol))
     }
 }
 
@@ -322,6 +338,7 @@ pub fn validate_config(mut config: AppConfig) -> Result<AppConfig> {
     config.probe.sing_box_path = normalize_string_or_null(&config.probe.sing_box_path);
     config.probe.download_url = normalize_optional_string(config.probe.download_url.as_deref());
     config.probe.upload_url = normalize_optional_string(config.probe.upload_url.as_deref());
+    config.probe.protocols = parse_protocol_list(&config.probe.protocols.join(","))?;
     config.emergency_config = normalize_optional_string(config.emergency_config.as_deref());
     config.sharing.token = normalize_sharing_token(&config.sharing.token);
 
@@ -841,6 +858,47 @@ const fn default_proxy_slow_traffic_kbps() -> u64 {
     DEFAULT_PROXY_SLOW_TRAFFIC_KBPS
 }
 
+fn default_protocols() -> Vec<String> {
+    SUPPORTED_PROTOCOLS
+        .iter()
+        .map(|protocol| (*protocol).to_string())
+        .collect()
+}
+
+/// Canonical protocol list from a comma/space separated value. Unknown names
+/// are an error (a typo must not silently disable a protocol), duplicates are
+/// folded, and the result follows `SUPPORTED_PROTOCOLS` order.
+pub fn parse_protocol_list(value: &str) -> Result<Vec<String>> {
+    let requested = value
+        .split([',', ' '])
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>();
+    if requested.is_empty() {
+        return Err(anyhow!("select at least one protocol"));
+    }
+    let mut unknown = requested
+        .iter()
+        .filter(|name| !SUPPORTED_PROTOCOLS.contains(&name.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    unknown.sort();
+    unknown.dedup();
+    if !unknown.is_empty() {
+        return Err(anyhow!(
+            "unsupported protocol(s): {}; supported: {}",
+            unknown.join(", "),
+            SUPPORTED_PROTOCOLS.join(", ")
+        ));
+    }
+    Ok(SUPPORTED_PROTOCOLS
+        .iter()
+        .filter(|known| requested.iter().any(|name| name == *known))
+        .map(|known| (*known).to_string())
+        .collect())
+}
+
 const fn default_proxy_bulk_check_interval_seconds() -> u64 {
     DEFAULT_PROXY_BULK_CHECK_INTERVAL_SECONDS
 }
@@ -1306,5 +1364,32 @@ mod tests {
             .map(|entry| entry.priority)
             .collect();
         assert_eq!(ranks, vec![1, 2]);
+    }
+
+    #[test]
+    fn protocol_list_is_canonical_and_validated() {
+        let parsed = super::parse_protocol_list(" Trojan, vless,VLESS , ss ").expect("valid list");
+        assert_eq!(
+            parsed,
+            vec!["vless", "trojan", "ss"],
+            "canonical order, deduped"
+        );
+        assert!(super::parse_protocol_list("").is_err(), "empty is rejected");
+        assert!(
+            super::parse_protocol_list(",, ").is_err(),
+            "blank is rejected"
+        );
+        let error = super::parse_protocol_list("vless,skynet").expect_err("unknown protocol");
+        assert!(error.to_string().contains("skynet"), "{error}");
+    }
+
+    #[test]
+    fn disabled_protocol_is_not_enabled() {
+        let mut probe = super::ProbeConfig::default();
+        assert!(probe.protocol_enabled("ss"));
+        assert!(probe.protocol_enabled("VLESS"), "case-insensitive");
+        probe.protocols = vec!["vless".to_string()];
+        assert!(probe.protocol_enabled("vless"));
+        assert!(!probe.protocol_enabled("ss"));
     }
 }

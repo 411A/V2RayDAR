@@ -67,7 +67,7 @@ At runtime, V2RayDAR:
 - stores previously-probed configs in a local SQLite database,
 - parses raw text, base64, JSON, and YAML content from HTTP(S), single local-file, and `data:` subscription sources,
 - **parses Clash/Mihomo YAML subscription configs** — detects `proxies:` lists and extracts vmess, vless, trojan, and ss proxy entries,
-- extracts `vmess`, `vless`, `trojan`, `ss`, `ssr`, `hysteria2`, `hy2`, and `tuic` share links,
+- extracts `vmess`, `vless`, `trojan`, `ss`, `hysteria2`, `hy2`, `tuic`, and `anytls` share links,
 - **converts between V2Ray share-link formats and Clash/Mihomo YAML proxy entries** (bidirectional),
 - validates candidates with either active `sing-box` HTTP probing or diagnostic TCP probing,
 - ranks reachable configs by priority, latency, speed-test result, protocol, name, and URI,
@@ -87,7 +87,7 @@ Required:
 
 Required for active validation:
 
-- A working `sing-box` executable. Desktop `_with_singbox` and Termux release archives include pinned `sing-box` 1.13.13 beside V2RayDAR.
+- A working `sing-box` executable. Desktop `_with_singbox` and Termux release archives include pinned `sing-box` 1.13.16 beside V2RayDAR.
 - If you are not using a bundled archive, set `probe.sing_box_path` to the executable path or a PATH command.
 
 Optional for building from source:
@@ -99,11 +99,11 @@ Optional for building from source:
 Release builds are expected to be published as:
 
 - Windows: `v2raydar-windows-x86_64.exe`
-- Windows with bundled `sing-box` 1.13.13: `v2raydar-windows-x86_64_with_singbox.zip`
+- Windows with bundled `sing-box` 1.13.16: `v2raydar-windows-x86_64_with_singbox.zip`
 - Linux: `v2raydar-linux-x86_64`
-- Linux with bundled `sing-box` 1.13.13: `v2raydar-linux-x86_64_with_singbox.tar.gz`
+- Linux with bundled `sing-box` 1.13.16: `v2raydar-linux-x86_64_with_singbox.tar.gz`
 - macOS: `v2raydar-macos-universal.app.zip`
-- macOS with bundled `sing-box` 1.13.13: `v2raydar-macos-universal_with_singbox.zip`
+- macOS with bundled `sing-box` 1.13.16: `v2raydar-macos-universal_with_singbox.zip`
 - Termux: `v2raydar-termux-aarch64.tar.gz` and `v2raydar-termux-x86_64.tar.gz`
 - Checksum file: `checksums.txt`
 
@@ -541,6 +541,7 @@ http://192.0.2.23:27141/subscription?token=GENERATED_TOKEN
 | `probe.speedtest_top_n` | Integer | `2` | How many of the best reachable configs get a real-body speed test per run. Lower values use less data; `0` turns speed tests off. |
 | `probe.upload_url` | URL string or null | `https://postman-echo.com/post` | 16 KB POST target used after the speed test to prove a config can carry an upload. `null` disables the upload probe; ranking then falls back to download quality. |
 | `probe.speedtest_interval_seconds` | Integer seconds | `900` | Re-use a fresh speed-test result for this long before downloading the body again. `0` re-tests every cycle. |
+| `probe.protocols` | List | `[vless, vmess, trojan, ss, hysteria2, tuic, anytls]` | Protocols that may be probed and ranked. A disabled protocol is never tested and never enters the top-N. |
 | `probe.require_transport_security` | Boolean | `false` | When `true`, drop Shadowsocks/SSR, no-TLS VMess/VLESS, and Reality configs whose SNI is an IP, a bare word, or an unknown public suffix before probing. `REQUIRE_TRANSPORT_SECURITY=1` is an environment override. |
 
 ## Active Mode
@@ -620,14 +621,14 @@ Parsed share-link schemes:
 - `vless://`
 - `trojan://`
 - `ss://`
-- `ssr://`
+- `anytls://`
 - `hysteria2://`
 - `hy2://`
 - `tuic://`
 
 Duplicate URIs are removed while preserving source order.
 
-When a subscription source contains a Clash/Mihomo config (YAML with a `proxies:` list), V2RayDAR automatically detects it and converts each proxy entry to the corresponding share-link URI. Supported proxy types for extraction are `vmess`, `vless`, `trojan`, and `ss`. Unsupported types (e.g., `wireguard`, `hysteria`) are silently skipped.
+When a subscription source contains a Clash/Mihomo config (YAML with a `proxies:` list), V2RayDAR automatically detects it and converts each proxy entry to the corresponding share-link URI. Supported proxy types for extraction are `vmess`, `vless`, `trojan`, `ss`, `hysteria2`/`hy2`, `tuic`, and `anytls`. Unsupported types (e.g., `wireguard`, `ssr`, `hysteria` v1) are silently skipped.
 
 ## Active Validation Link Support
 
@@ -638,9 +639,10 @@ Active `sing-box` validation currently builds outbound configs for:
 - Trojan,
 - Shadowsocks,
 - Hysteria2 / HY2,
-- TUIC.
+- TUIC,
+- AnyTLS.
 
-SSR links are parsed for discovery and TCP diagnostics, but active `sing-box` probing does not currently convert SSR share links into `sing-box` outbounds.
+ShadowsocksR is not ingested: `sing-box` removed the outbound in 1.6.0, so an SSR link could never be probed or ranked. AnyTLS is supported by `sing-box` 1.12+ and is selectable in `probe.protocols`.
 
 Supported active transports include:
 
@@ -1312,7 +1314,7 @@ probe:
   sing_box_path: C:\Tools\sing-box\sing-box.exe
 ```
 
-Use a working `sing-box` executable for active probing. Desktop `_with_singbox` and Termux releases include pinned `sing-box` 1.13.13 and auto-detect it from beside the V2RayDAR executable. If you already use v2rayN on Windows, check the v2rayN installation folder for `sing-box.exe`.
+Use a working `sing-box` executable for active probing. Desktop `_with_singbox` and Termux releases include pinned `sing-box` 1.13.16 and auto-detect it from beside the V2RayDAR executable. If you already use v2rayN on Windows, check the v2rayN installation folder for `sing-box.exe`.
 
 ### Port cannot bind
 

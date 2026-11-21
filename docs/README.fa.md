@@ -70,7 +70,7 @@
 ### &#x200F;🔎 کشف و بررسی
 
 - &#x200F;**دریافت همزمان** — دریافت همزمان اشتراک‌ها از تعداد نامحدودی منابع.
-- &#x200F;**پشتیبانی چندفرمتی** — فرمت‌های خام، <code>base64</code>، <code>JSON</code> و <code>YAML</code> &#x200F;و لینک‌های اشتراک <code>vmess</code>، <code>vless</code>، <code>trojan</code>، <code>ss</code>، <code>ssr</code>، <code>hysteria2</code>، <code>hy2</code>، <code>tuic</code>.
+- &#x200F;**پشتیبانی چندفرمتی** — فرمت‌های خام، <code>base64</code>، <code>JSON</code> و <code>YAML</code> &#x200F;و لینک‌های اشتراک <code>vmess</code>، <code>vless</code>، <code>trojan</code>، <code>ss</code>، <code>hysteria2</code>، <code>hy2</code>، <code>tuic</code>.
 - &#x200F;**بررسی واقعی** — بررسی هر کانفیگ از طریق شبکه واقعی شما با <code>sing-box</code> &#x200F;(یعنی واقعاً یک URL تست را از مسیر پروکسی بارگذاری می‌کند).
 - &#x200F;**رتبه‌بندی بر اساس سرعت واقعی** — ۴ مگابایت دانلود می‌شود و انتهای انتقال امتیاز می‌گیرد؛ بدنه‌ای که ناقص بماند آخر می‌رود و گره‌ای که واقعاً جریان را حمل می‌کند از یک دست‌دادن سریع که وسط راه می‌میرد جلوتر است.
 
@@ -307,6 +307,7 @@ v2raydar --uninstall    # حذف داده‌های برنامه و قوانین 
 | <code>probe.upload_url</code> | <code>https://postman-echo.com/post</code> | &#x200F;مقصد POST ۱۶ کیلوبایتی برای بررسی آپلود؛ <code>off</code> رتبه‌بندی آپلود را خاموش می‌کند. |
 | <code>probe.speedtest_interval_seconds</code> | <code>900</code> | &#x200F;مدت بازاستفاده از نتیجه تست سرعت؛ <code>0</code> هر چرخه دوباره تست می‌کند. |
 | <code>probe.require_transport_security</code> | <code>false</code> | &#x200F;کانفیگ‌های بدون TLS و Reality جعلی را قبل از تست حذف می‌کند. |
+| <code>probe.protocols</code> | <code>[vless, vmess, trojan, ss, hysteria2, tuic, anytls]</code> | &#x200F;پروتکل‌هایی که آزمون و رتبه‌بندی می‌شوند؛ برای نادیده گرفتن، تیک را بردارید. |
 | <code>geoip_db_path</code> | <code>null</code> | &#x200F;مسیر اختیاری فایل <code>GeoLite2-Country.mmdb</code> یا پوشه zoneهای کشورها (<code>zones.txt</code> یا فایل‌های قدیمی <code>&lt;cc&gt;.zone</code>). اگر <code>null</code> باشد از <code>&lt;data-root&gt;/geoip</code> استفاده می‌شود (اول پایگاه MaxMind بعد zoneها؛ هر دو توسط نصب‌کننده به‌روز می‌شوند). Country data: GeoLite2 by MaxMind (CC BY-SA 4.0); fallback zones by ipdeny |
 | <code>subscriptions</code> | <em>منابع پیش‌انتخاب</em> | &#x200F;فهرست منابع اشتراک |
 

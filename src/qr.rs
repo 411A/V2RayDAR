@@ -853,6 +853,7 @@ mod tests {
             speedtest_top_n: 2,
             speedtest_interval_seconds: 900,
             require_transport_security: false,
+            protocols: Vec::new(),
             subscription_count: 1,
             enabled_subscription_count: 1,
             proxy_enabled: true,

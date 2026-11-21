@@ -223,7 +223,7 @@ fn validate_transport_security(uri: &str, protocol: &str, required: bool) -> Res
     }
     let lower = uri.to_ascii_lowercase();
     match protocol {
-        "trojan" | "hysteria2" | "tuic" => Ok(()),
+        "trojan" | "hysteria2" | "tuic" | "anytls" => Ok(()),
         "ss" | "ssr" => Err(anyhow!(
             "{protocol} has no TLS transport (REQUIRE_TRANSPORT_SECURITY=1)"
         )),
@@ -377,12 +377,17 @@ fn parse_standard_uri(uri: &str) -> Result<ParsedLink> {
         .host_str()
         .ok_or_else(|| anyhow!("uri has no host"))?
         .to_string();
-    let port = url.port().ok_or_else(|| anyhow!("uri has no port"))?;
     let protocol = match url.scheme() {
         "hy2" => "hysteria2",
         other => other,
     }
     .to_string();
+    // TLS-only links (AnyTLS, Hysteria2, TUIC, Trojan) may omit the port;
+    // the ecosystem default is 443. Plain links still require one.
+    let port = url
+        .port()
+        .or_else(|| protocol_defaults_to_tls(&protocol).then_some(443))
+        .ok_or_else(|| anyhow!("uri has no port"))?;
     let name = url
         .fragment()
         .map(percent_decode)
@@ -594,7 +599,7 @@ fn normalize_host(host: &str) -> String {
 fn protocol_defaults_to_tls(protocol: &str) -> bool {
     matches!(
         protocol.to_ascii_lowercase().as_str(),
-        "trojan" | "hysteria2" | "tuic"
+        "trojan" | "hysteria2" | "tuic" | "anytls"
     )
 }
 
@@ -602,6 +607,26 @@ fn protocol_defaults_to_tls(protocol: &str) -> bool {
 mod tests {
     use super::*;
     use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+    #[test]
+    fn parses_anytls_with_default_port_and_tls() {
+        let candidate = parse_share_link(
+            "test",
+            1,
+            "anytls://secret@example.com/?sni=edge.example.com#Any",
+        )
+        .expect("anytls parses");
+        assert_eq!(candidate.protocol, "anytls");
+        assert_eq!(candidate.endpoint.host, "example.com");
+        assert_eq!(
+            candidate.endpoint.port, 443,
+            "TLS-only links default to 443"
+        );
+        assert!(
+            validate_transport_security("anytls://secret@example.com#Any", "anytls", true).is_ok(),
+            "AnyTLS is TLS by definition"
+        );
+    }
 
     #[test]
     fn parses_base64_vmess_subscription() {

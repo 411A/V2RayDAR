@@ -1912,6 +1912,17 @@ async fn refresh_once(
             );
         }
     }
+    // A protocol disabled in settings must not be published or ranked, even
+    // when it arrived from the carry or the previous-set fallback.
+    let before_protocol_filter = ranked.len();
+    ranked.retain(|item| config.probe.protocol_enabled(&item.protocol));
+    if before_protocol_filter != ranked.len() {
+        info!(
+            skipped = before_protocol_filter - ranked.len(),
+            protocols = ?config.probe.protocols,
+            "ranked list filtered by protocol"
+        );
+    }
     // Use the accumulated reachable count from probing — do NOT recalculate
     // from the final ranked list, as deduplication may reduce the count and
     // cause the "Working" display to drop after refresh finishes.
@@ -2774,6 +2785,15 @@ async fn ping_once(
     } else {
         ranked.iter().filter(|item| item.reachable).count()
     };
+    let before_protocol_filter = ranked.len();
+    ranked.retain(|item| config.probe.protocol_enabled(&item.protocol));
+    if before_protocol_filter != ranked.len() {
+        info!(
+            skipped = before_protocol_filter - ranked.len(),
+            protocols = ?config.probe.protocols,
+            "ping results filtered by protocol"
+        );
+    }
     {
         let mut runtime = state.write().await;
         runtime.ranked = ranked;
@@ -3420,7 +3440,10 @@ async fn update_proxy_and_ranked(
     config: &AppConfig,
     clear_blacklist: bool,
 ) {
-    let ranked = state.read().await.ranked.clone();
+    let mut ranked = state.read().await.ranked.clone();
+    // Last line of defense: a protocol disabled after this list was built
+    // must never be selected as the active proxy.
+    ranked.retain(|item| config.probe.protocol_enabled(&item.protocol));
 
     // Sync ranked list for the health-check failover loop
     (*shared_ranked.write().await).clone_from(&ranked);
@@ -3836,6 +3859,7 @@ impl From<&AppConfig> for RuntimeConfig {
             speedtest_top_n: config.probe.speedtest_top_n,
             speedtest_interval_seconds: config.probe.speedtest_interval_seconds,
             require_transport_security: config.probe.require_transport_security,
+            protocols: config.probe.protocols.clone(),
             subscription_count: config.subscriptions.len(),
             enabled_subscription_count: config
                 .subscriptions

@@ -267,6 +267,8 @@ pub struct RuntimeConfig {
     pub speedtest_top_n: usize,
     pub speedtest_interval_seconds: u64,
     pub require_transport_security: bool,
+    /// Protocols allowed to be probed and ranked (display order).
+    pub protocols: Vec<String>,
     pub subscription_count: usize,
     pub enabled_subscription_count: usize,
     pub proxy_enabled: bool,

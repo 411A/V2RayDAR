@@ -19,7 +19,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  SING_BOX_VERSION: "1.13.13"
+  SING_BOX_VERSION: "1.13.16"
 
 jobs:
   build:

@@ -64,7 +64,7 @@
 ### 🔎 发现与验证
 
 - **并行获取** — 并行获取任意数量的订阅源。
-- **多格式解析** — 解析原始文本、base64、JSON 和 YAML 格式，支持 `vmess`、`vless`、`trojan`、`ss`、`ssr`、`hysteria2`、`hy2`、`tuic` 分享链接。
+- **多格式解析** — 解析原始文本、base64、JSON 和 YAML 格式，支持 `vmess`、`vless`、`trojan`、`ss`、`hysteria2`、`hy2`、`tuic`, `anytls` 分享链接。
 - **真实验证** — 通过 `sing-box` 在当前网络中验证每个候选配置（实际加载测试 URL 通过代理）。
 - **按真实吞吐排名** — 下载 4 MiB 并对末段计速，提前截断的响应排在最后；真正能承载流的节点优先于握手快但传不动数据的配置。
 
@@ -268,6 +268,7 @@ Windows 用户将 `v2raydar` 替换为 `v2raydar.exe`。macOS 上首次打开捆
 | `probe.upload_url` | `https://postman-echo.com/post` | 上传探测的 16 KB POST 目标；`off` 关闭上传排名。 |
 | `probe.speedtest_interval_seconds` | `900` | 复用测速结果的秒数；`0` 每轮重新测速。 |
 | `probe.require_transport_security` | `false` | 探测前丢弃无 TLS 和伪造 Reality 配置。 |
+| `probe.protocols` | `[vless, vmess, trojan, ss, hysteria2, tuic, anytls]` | 允许探测和排名的协议；取消勾选即可完全跳过。 |
 | `geoip_db_path` | `null` | 可选的 `GeoLite2-Country.mmdb` 文件或国家 IP 区目录（`zones.txt`，或旧式 `<cc>.zone` 文件）路径。为 `null` 时使用 `<data-root>/geoip`（优先 MaxMind 数据库，zone 兜底；两者均由安装程序更新）。Country data: GeoLite2 by MaxMind (CC BY-SA 4.0); fallback zones by ipdeny. |
 | `subscriptions` | _（预选源）_ | `{ name, url, enabled, priority }` 源列表。建议添加自己的源以获得更好的覆盖。 |
 

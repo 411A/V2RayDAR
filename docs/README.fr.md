@@ -64,7 +64,7 @@
 ### 🔎 Découverte & validation
 
 - **Récupération parallèle** — récupère les abonnements en parallèle depuis autant de sources que vous voulez.
-- **Prise en charge multi-format** — formats brut, base64, JSON et YAML, ainsi que les liens de partage `vmess`, `vless`, `trojan`, `ss`, `ssr`, `hysteria2`, `hy2`, `tuic`.
+- **Prise en charge multi-format** — formats brut, base64, JSON et YAML, ainsi que les liens de partage `vmess`, `vless`, `trojan`, `ss`, `hysteria2`, `hy2`, `tuic`, `anytls`.
 - **Validation réelle** — valide chaque candidat via votre réseau réel avec `sing-box` (charge réellement une URL de test à travers le proxy).
 - **Classement par débit réel** — télécharge 4 Mio, note la fin du transfert, place un corps tronqué en dernier et préfère un nœud qui transporte vraiment un flux à une poignée de main rapide.
 
@@ -268,6 +268,7 @@ Les utilisateurs Windows remplacent `v2raydar` par `v2raydar.exe`. Sous macOS, o
 | `probe.upload_url` | `https://postman-echo.com/post` | Cible POST de 16 Ko pour le test d'envoi ; `off` désactive le classement d'envoi. |
 | `probe.speedtest_interval_seconds` | `900` | Réutilise un test de vitesse pendant cette durée ; `0` reteste à chaque cycle. |
 | `probe.require_transport_security` | `false` | Écarte les configs sans TLS et les faux Reality avant le test. |
+| `probe.protocols` | `[vless, vmess, trojan, ss, hysteria2, tuic, anytls]` | Protocoles autorisés au test et au classement ; décochez pour ignorer. |
 | `geoip_db_path` | `null` | Chemin optionnel vers un fichier `GeoLite2-Country.mmdb` ou un répertoire de zones pays (`zones.txt`, ou fichiers `<cc>.zone` historiques). Si `null`, utilise `<data-root>/geoip` (base MaxMind d'abord, zones en repli ; les deux mis à jour par l'installateur). Country data: GeoLite2 by MaxMind (CC BY-SA 4.0); fallback zones by ipdeny. |
 | `subscriptions` | _(sources pré-sélectionnées)_ | Liste de sources `{ name, url, enabled, priority }`. Ajoutez les vôtres pour une meilleure couverture. |
 

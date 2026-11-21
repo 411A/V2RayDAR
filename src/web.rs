@@ -1130,6 +1130,11 @@ fn status_list(statuses: &[u16]) -> String {
     format!("[{inner}]")
 }
 
+/// Comma-separated enabled protocol list for the checkbox row.
+fn protocol_list(protocols: &[String]) -> String {
+    protocols.join(", ")
+}
+
 /// Token presence marker for the polled settings table — the secret itself
 /// must never enter a response here (explicit reveal lives behind
 /// `GET /api/config/token`, fetched only on Show).
@@ -1357,6 +1362,13 @@ fn probe_group(config: &RuntimeConfig) -> ConfigGroup {
                 "on when probe.download_url is set",
                 "readonly",
                 &[],
+            ),
+            config_row_kind(
+                "probe.protocols",
+                protocol_list(&config.protocols),
+                "protocols tested and allowed in the ranked list; uncheck to skip",
+                "checks",
+                crate::constants::SUPPORTED_PROTOCOLS,
             ),
             config_row_kind(
                 "probe.require_transport_security",
@@ -2546,6 +2558,10 @@ fn apply_probe_setting(
                 "probe.speedtest_interval_seconds must be seconds (0 always retests)".to_string()
             })?;
         }
+        "probe.protocols" => {
+            cfg.probe.protocols =
+                crate::config::parse_protocol_list(value).map_err(|error| error.to_string())?;
+        }
         "probe.require_transport_security" => {
             cfg.probe.require_transport_security =
                 parse_bool(value).ok_or_else(|| "expected true/false".to_string())?;
@@ -3395,6 +3411,7 @@ mod tests {
             speedtest_top_n: 2,
             speedtest_interval_seconds: 900,
             require_transport_security: false,
+            protocols: vec!["vless".to_string(), "ss".to_string()],
             subscription_count: 0,
             enabled_subscription_count: 0,
             proxy_enabled: false,
@@ -4045,6 +4062,7 @@ mod tests {
         let mut seen_statuses = false;
         let mut seen_download_url = false;
         let mut seen_upload_url = false;
+        let mut seen_protocols = false;
         let mut seen_sing_box_path = false;
         let mut seen_process_concurrency = false;
         let mut seen_rotating_proxy = false;
@@ -4093,6 +4111,30 @@ mod tests {
                     assert_eq!(row["value"], serde_json::Value::from("off"));
                     assert_eq!(row["kind"], serde_json::Value::from("text"));
                 }
+                if row["key"] == "probe.protocols" {
+                    seen_protocols = true;
+                    assert_eq!(row["value"], serde_json::Value::from("vless, ss"));
+                    assert_eq!(row["kind"], serde_json::Value::from("checks"));
+                    let options = row["options"].as_array().expect("options array");
+                    for protocol in [
+                        "vless",
+                        "vmess",
+                        "trojan",
+                        "ss",
+                        "hysteria2",
+                        "tuic",
+                        "anytls",
+                    ] {
+                        assert!(
+                            options.iter().any(|value| value == protocol),
+                            "checkbox offers {protocol}"
+                        );
+                    }
+                    assert!(
+                        !options.iter().any(|value| value == "ssr"),
+                        "SSR is not selectable: sing-box removed it in 1.6.0"
+                    );
+                }
                 if row["key"] == "probe.sing_box_path" {
                     seen_sing_box_path = true;
                     assert_eq!(row["kind"], serde_json::Value::from("text"));
@@ -4135,6 +4177,7 @@ mod tests {
         assert!(seen_statuses, "probe.accepted_statuses list is served");
         assert!(seen_download_url, "probe.download_url switch is served");
         assert!(seen_upload_url, "probe.upload_url switch is served");
+        assert!(seen_protocols, "probe.protocols checkbox group is served");
         assert!(seen_sing_box_path, "probe.sing_box_path is served");
         assert!(
             seen_process_concurrency,
@@ -5138,6 +5181,15 @@ mod tests {
             serde_json::Value::String(super::APPLIES_NEXT_CYCLE_CODE.to_string()),
             "reset restoring refresh settings flags next-cycle: {moved}"
         );
+    }
+
+    #[test]
+    fn web_protocol_list_validator_mirrors_tui() {
+        let mut cfg = crate::config::AppConfig::default_for_first_run();
+        assert!(super::apply_web_setting(&mut cfg, "probe.protocols", "vless, Trojan").is_ok());
+        assert_eq!(cfg.probe.protocols, vec!["vless", "trojan"]);
+        assert!(super::apply_web_setting(&mut cfg, "probe.protocols", "").is_err());
+        assert!(super::apply_web_setting(&mut cfg, "probe.protocols", "vless,nope").is_err());
     }
 
     #[test]

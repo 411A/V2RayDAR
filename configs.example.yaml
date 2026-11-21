@@ -103,6 +103,10 @@ probe:
   # true drops no-TLS and fake-Reality configs before they take a probe slot.
   # Off by default so other networks keep every transport that works.
   require_transport_security: false
+  # Protocols that may be probed and ranked. Remove one to skip it entirely:
+  # it is never tested and never enters the top-N. SSR is not listed because
+  # sing-box removed its outbound in 1.6.0.
+  protocols: [vless, vmess, trojan, ss, hysteria2, tuic, anytls]
 
 #* Public subscription sources to fetch, parse, probe, and rank.
 subscriptions:

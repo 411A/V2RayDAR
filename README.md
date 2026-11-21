@@ -65,7 +65,7 @@
 
 - **Parallel fetching** — pulls any number of subscription sources concurrently.
 - **Multi-format parsing** — reads raw, base64, JSON, and YAML feeds.
-- **Share-link protocols** — extracts `vmess`, `vless`, `trojan`, `ss`, `ssr`, `hysteria2`, `hy2`, and `tuic` links.
+- **Share-link protocols** — extracts `vmess`, `vless`, `trojan`, `ss`, `hysteria2`, `hy2`, `tuic`, and `anytls` links.
 - **Real-network validation** — tests each candidate through your current network with `sing-box` by loading a test URL through the proxy.
 - **Throughput-first ranking** — real 4 MB downloads are tail-scored, a body that cuts short is ranked last, and a proven bulk node outranks a low-latency handshake that cannot carry a stream.
 
@@ -265,6 +265,7 @@ Windows users replace `v2raydar` with `v2raydar.exe`. On macOS open the bundled 
 | `probe.upload_url` | `https://postman-echo.com/post` | 16 KB POST target for the upload probe; `off` disables upload ranking. |
 | `probe.speedtest_interval_seconds` | `900` | Reuse a speedtest for this long; `0` retests every cycle. |
 | `probe.require_transport_security` | `false` | Drop no-TLS and fake-Reality configs before probing. |
+| `probe.protocols` | `[vless, vmess, trojan, ss, hysteria2, tuic, anytls]` | Protocols that may be probed and ranked; uncheck to skip entirely. |
 | `geoip_db_path` | `null` | Optional path to a `GeoLite2-Country.mmdb` file or a country-zone directory (`zones.txt`, or legacy `<cc>.zone` files). If `null`, uses `<data-root>/geoip` (MaxMind database first, zone fallback; both refreshed by the installer). Country data: GeoLite2 by MaxMind (CC BY-SA 4.0); fallback zones by ipdeny. |
 | `subscriptions` | _(pre-selected sources)_ | List of `{ name, url, enabled, priority }` sources. Add your own for better results. |
 
@@ -357,7 +358,7 @@ Three fallback mechanisms, in order:
 2. **In-network bridge** — if some subscription URLs don't connect but one config is reachable, the app uses that config to retry those failed fetches. By default this happens automatically; if there are no working configs on your network but you have one working config yourself, set it as `emergency_config` (dashboard Settings tab or TUI Configurations screen) so the app uses it to retry failed fetches.
 3. **Emergency config** — your own known-working share-link as an explicit fallback.
 
-On a high-DPI network where plain or fake-cover transports are already burned, start with `REQUIRE_TRANSPORT_SECURITY=1`. The ingest filter then drops Shadowsocks/SSR, no-TLS VMess/VLESS, and Reality configs with an impossible SNI, before they take a probe slot. Off by default, so other countries keep every transport that works for them.
+On a high-DPI network where plain or fake-cover transports are already burned, start with `REQUIRE_TRANSPORT_SECURITY=1`. The ingest filter then drops Shadowsocks, no-TLS VMess/VLESS, and Reality configs with an impossible SNI, before they take a probe slot. Off by default, so other countries keep every transport that works for them.
 
 See [Restricted-Network Behavior](docs/guide.md#restricted-network-behavior) in the detailed guide for the full retry order and examples.
 

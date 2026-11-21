@@ -245,7 +245,7 @@ pub const SING_BOX_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 pub const SING_BOX_CONFIG_FILE_PREFIX: &str = "v2raydar-sing-box";
 pub const SING_BOX_INBOUND_TAG_PREFIX: &str = "mixed-in";
 pub const SING_BOX_OUTBOUND_TAG_PREFIX: &str = "proxy";
-pub const SING_BOX_VERSION: &str = "1.13.13";
+pub const SING_BOX_VERSION: &str = "1.13.16";
 pub const SING_BOX_RELEASE_URL_PREFIX: &str = "https://github.com/SagerNet/sing-box/releases/tag/v";
 
 pub fn sing_box_download_url() -> String {
@@ -255,15 +255,27 @@ pub fn sing_box_download_url() -> String {
 pub const HTTP_EXCHANGE_OVERHEAD_BYTES: u64 = 1024;
 pub const BITS_PER_BYTE: f64 = 8.0;
 pub const BITS_PER_MEGABIT: f64 = 1_000_000.0;
+/// Protocol names produced by the parser, in display order. The settings
+/// checkboxes and the pre-probe filter share this list.
+pub const SUPPORTED_PROTOCOLS: &[&str] = &[
+    "vless",
+    "vmess",
+    "trojan",
+    "ss",
+    "hysteria2",
+    "tuic",
+    "anytls",
+];
+
 pub const SUPPORTED_URI_SCHEMES: &[&str] = &[
     "vmess://",
     "vless://",
     "trojan://",
     "ss://",
-    "ssr://",
     "hysteria2://",
     "hy2://",
     "tuic://",
+    "anytls://",
 ];
 
 /// Public suffixes that appear in real Reality cover hostnames. The ingest
@@ -402,6 +414,7 @@ pub const KNOWN_PUBLIC_SUFFIXES: &[&str] = &[
 pub const SUPPORTED_SS_METHODS: &[&str] = &[
     // AEAD
     "aes-128-gcm",
+    "aes-192-gcm",
     "aes-256-gcm",
     "chacha20-ietf-poly1305",
     "xchacha20-ietf-poly1305",
@@ -409,19 +422,17 @@ pub const SUPPORTED_SS_METHODS: &[&str] = &[
     "2022-blake3-aes-128-gcm",
     "2022-blake3-aes-256-gcm",
     "2022-blake3-chacha20-poly1305",
-    // Legacy stream ciphers (Mihomo/sing-box compat)
+    // Legacy stream ciphers actually implemented by sing-box
+    "none",
     "aes-128-cfb",
     "aes-128-ctr",
-    "aes-128-ofb",
+    "aes-192-cfb",
+    "aes-192-ctr",
     "aes-256-cfb",
     "aes-256-ctr",
-    "aes-256-ofb",
-    "bf-cfb",
-    "cast5-cfb",
-    "chacha20",
     "chacha20-ietf",
     "rc4-md5",
-    "seed-cfb",
+    "xchacha20",
 ];
 
 pub const TUI_FRAME_INTERVAL: Duration = Duration::from_millis(100);
@@ -481,7 +492,7 @@ pub const SUBSCRIPTION_ACTIONS: [SubscriptionAction; 6] = [
     SubscriptionAction::Delete,
     SubscriptionAction::Back,
 ];
-pub const CONFIG_KEYS: [ConfigKey; 41] = [
+pub const CONFIG_KEYS: [ConfigKey; 42] = [
     ConfigKey::Bind,
     ConfigKey::TopN,
     ConfigKey::RefreshSeconds,
@@ -511,6 +522,7 @@ pub const CONFIG_KEYS: [ConfigKey; 41] = [
     ConfigKey::SpeedtestTopN,
     ConfigKey::SpeedtestInterval,
     ConfigKey::RequireTransportSecurity,
+    ConfigKey::Protocols,
     ConfigKey::CleanOfflineDays,
     ConfigKey::TokenRequired,
     ConfigKey::Token,
@@ -576,7 +588,12 @@ pub const SETTING_GUIDES: &[SettingGuide] = &[
     SettingGuide {
         key: "probe.require_transport_security",
         label: "Require TLS",
-        help: "true drops Shadowsocks/SSR, no-TLS VMess/VLESS, and Reality with an impossible SNI before they take a probe slot. Off by default.",
+        help: "true drops Shadowsocks, no-TLS VMess/VLESS, and Reality with an impossible SNI before they take a probe slot. Off by default.",
+    },
+    SettingGuide {
+        key: "probe.protocols",
+        label: "Protocols",
+        help: "Comma list of protocols that may be probed and ranked (vless, vmess, trojan, ss, hysteria2, tuic, anytls). A disabled protocol is never tested and never enters the top-N.",
     },
     SettingGuide {
         key: "proxy.slow_traffic_kbps",

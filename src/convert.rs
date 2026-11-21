@@ -340,6 +340,7 @@ pub fn clash_proxy_to_uri(proxy: &YamlValue) -> Result<String> {
         "ssr" => clash_ssr_to_uri(proxy, &server, port, &name),
         "hysteria2" | "hy2" => Ok(clash_hysteria2_to_uri(proxy, &server, port, &name)),
         "tuic" => clash_tuic_to_uri(proxy, &server, port, &name),
+        "anytls" => clash_anytls_to_uri(proxy, &server, port, &name),
         other => Err(anyhow!("unsupported Clash proxy type: {other}")),
     }
 }
@@ -615,6 +616,8 @@ pub fn uri_to_clash_proxy(uri: &str) -> Result<YamlValue> {
         hysteria2_uri_to_clash(uri)
     } else if lower.starts_with("tuic://") {
         tuic_uri_to_clash(uri)
+    } else if lower.starts_with("anytls://") {
+        standard_uri_to_clash(uri, "anytls")
     } else {
         Err(anyhow!("unsupported URI scheme for Clash conversion"))
     }
@@ -733,7 +736,7 @@ fn standard_uri_to_clash(uri: &str, protocol: &str) -> Result<YamlValue> {
                 proxy.insert(yaml_key("flow"), YamlValue::String(flow));
             }
         }
-        "trojan" => {
+        "trojan" | "anytls" => {
             proxy.insert(yaml_key("password"), YamlValue::String(f.username.clone()));
         }
         _ => {}
@@ -764,7 +767,7 @@ fn standard_uri_to_clash(uri: &str, protocol: &str) -> Result<YamlValue> {
         if !reality_opts.is_empty() {
             proxy.insert(yaml_key("reality-opts"), YamlValue::Mapping(reality_opts));
         }
-    } else if security == "tls" || protocol == "trojan" {
+    } else if security == "tls" || protocol == "trojan" || protocol == "anytls" {
         proxy.insert(yaml_key("tls"), YamlValue::Bool(true));
         if let Some(sni) = first_param(&f.params, &["sni", "serverName", "peer"]) {
             proxy.insert(yaml_key("servername"), YamlValue::String(sni));
@@ -1221,6 +1224,32 @@ fn clash_tuic_to_uri(proxy: &YamlValue, server: &str, port: u16, name: &str) -> 
 
     Ok(format!(
         "tuic://{encoded_uuid}:{encoded_password}@{server}:{port}?{query}#{encoded_name}"
+    ))
+}
+
+#[allow(dead_code)]
+fn clash_anytls_to_uri(proxy: &YamlValue, server: &str, port: u16, name: &str) -> Result<String> {
+    let password =
+        yaml_string(proxy, &["password"]).ok_or_else(|| anyhow!("AnyTLS proxy has no password"))?;
+
+    let mut params = BTreeMap::new();
+    if let Some(sni) = yaml_string(proxy, &["sni", "servername"]) {
+        params.insert("sni".to_string(), sni);
+    }
+    if yaml_bool(proxy, &["skip-cert-verify"]) {
+        params.insert("insecure".to_string(), "1".to_string());
+    }
+    if let Some(alpn) = yaml_alpn(proxy) {
+        params.insert("alpn".to_string(), alpn);
+    }
+
+    let encoded_name =
+        percent_encoding::utf8_percent_encode(name, percent_encoding::NON_ALPHANUMERIC).to_string();
+    let encoded_password = percent_encoding::utf8_percent_encode(&password, URI_QUERY).to_string();
+    let query = encode_query(&params);
+
+    Ok(format!(
+        "anytls://{encoded_password}@{server}:{port}?{query}#{encoded_name}"
     ))
 }
 

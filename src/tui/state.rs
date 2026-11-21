@@ -67,6 +67,7 @@ pub enum ConfigKey {
     SpeedtestTopN,
     SpeedtestInterval,
     RequireTransportSecurity,
+    Protocols,
     CleanOfflineDays,
     TokenRequired,
     Token,

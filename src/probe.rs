@@ -190,6 +190,7 @@ async fn sing_box_available(path: &str) -> bool {
 /// when set, in-flight probes finish their current item and the run returns
 /// whatever was verified so far instead of the full list. `None` probes to
 /// completion (normal refreshes, CLI ping).
+#[allow(clippy::too_many_lines)]
 pub async fn probe_candidates(
     candidates: Vec<Candidate>,
     config: &ProbeConfig,
@@ -197,6 +198,20 @@ pub async fn probe_candidates(
     stop_policy: &ProbeStopPolicy,
     cancel: Option<Arc<AtomicBool>>,
 ) -> Vec<RankedConfig> {
+    let before_protocol_filter = candidates.len();
+    let candidates = candidates
+        .into_iter()
+        .filter(|candidate| config.protocol_enabled(&candidate.protocol))
+        .collect::<Vec<_>>();
+    let protocol_skipped = before_protocol_filter.saturating_sub(candidates.len());
+    if protocol_skipped > 0 {
+        info!(
+            skipped = protocol_skipped,
+            kept = candidates.len(),
+            protocols = ?config.protocols,
+            "configs skipped by the protocol filter"
+        );
+    }
     info!(
         mode = ?config.mode,
         candidates = candidates.len(),
@@ -2744,6 +2759,8 @@ pub fn sing_box_outbound_from_share_link(uri: &str) -> Result<Value> {
         standard_outbound(uri, StandardProtocol::Hysteria2)
     } else if lower.starts_with("tuic://") {
         standard_outbound(uri, StandardProtocol::Tuic)
+    } else if lower.starts_with("anytls://") {
+        standard_outbound(uri, StandardProtocol::AnyTls)
     } else {
         Err(anyhow!(
             "active sing-box probe does not support this URI scheme"
@@ -2757,8 +2774,10 @@ enum StandardProtocol {
     Trojan,
     Hysteria2,
     Tuic,
+    AnyTls,
 }
 
+#[allow(clippy::too_many_lines)]
 fn standard_outbound(uri: &str, protocol: StandardProtocol) -> Result<Value> {
     let url = Url::parse(uri)?;
     let host = url
@@ -2829,6 +2848,20 @@ fn standard_outbound(uri: &str, protocol: StandardProtocol) -> Result<Value> {
                 }
                 outbound.insert("obfs".to_string(), Value::Object(obfs_config));
             }
+            Ok(Value::Object(outbound))
+        }
+        StandardProtocol::AnyTls => {
+            let password = percent_decode(url.username());
+            if password.is_empty() {
+                return Err(anyhow!("AnyTLS link has no password"));
+            }
+
+            let mut outbound = base_outbound("anytls", &host, port);
+            outbound.insert("password".to_string(), json!(password));
+            outbound.insert(
+                "tls".to_string(),
+                tls_config(&params, true, &host)?.unwrap_or_else(|| json!({"enabled": true})),
+            );
             Ok(Value::Object(outbound))
         }
         StandardProtocol::Tuic => {
@@ -3500,6 +3533,21 @@ mod tests {
     }
 
     #[test]
+    fn builds_anytls_outbound() {
+        let outbound = sing_box_outbound_from_share_link(
+            "anytls://secret@example.com:8443?sni=edge.example.com#Any",
+        )
+        .expect("anytls outbound");
+
+        assert_eq!(outbound["type"], "anytls");
+        assert_eq!(outbound["server"], "example.com");
+        assert_eq!(outbound["server_port"], 8443);
+        assert_eq!(outbound["password"], "secret");
+        assert_eq!(outbound["tls"]["enabled"], true);
+        assert_eq!(outbound["tls"]["server_name"], "edge.example.com");
+    }
+
+    #[test]
     fn builds_shadowsocks_outbound() {
         let outbound =
             sing_box_outbound_from_share_link("ss://YWVzLTI1Ni1nY206cGFzcw@example.net:8388#SS")
@@ -4036,6 +4084,10 @@ mod tests {
             speedtest_top_n: 2,
             speedtest_interval_seconds: 900,
             require_transport_security: false,
+            protocols: crate::constants::SUPPORTED_PROTOCOLS
+                .iter()
+                .map(|protocol| (*protocol).to_string())
+                .collect(),
             sing_box_path_auto: false,
         }
     }

@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use anyhow::{Result, anyhow};
 
 use crate::{
-    config::{ProbeMode, normalize_sharing_token},
+    config::{ProbeMode, normalize_sharing_token, parse_protocol_list},
     sing_box,
 };
 
@@ -40,6 +40,7 @@ pub const fn label(key: ConfigKey) -> &'static str {
         ConfigKey::SpeedtestTopN => "probe.speedtest_top_n",
         ConfigKey::SpeedtestInterval => "probe.speedtest_interval_seconds",
         ConfigKey::RequireTransportSecurity => "probe.require_transport_security",
+        ConfigKey::Protocols => "probe.protocols",
         ConfigKey::CleanOfflineDays => "clean_offlines_after_days",
         ConfigKey::TokenRequired => "sharing.require_token",
         ConfigKey::Token => "sharing.token",
@@ -90,6 +91,7 @@ pub const fn guide(key: ConfigKey) -> &'static str {
         ConfigKey::SpeedtestTopN => "top configs speedtested per run; 0 skips",
         ConfigKey::SpeedtestInterval => "reuse a speedtest for this many seconds; 0 always retests",
         ConfigKey::RequireTransportSecurity => "true drops no-TLS and fake-Reality configs",
+        ConfigKey::Protocols => "comma list, e.g. vless,vmess,trojan",
         ConfigKey::CleanOfflineDays => "days before offline configs are removed",
         ConfigKey::TokenRequired => "true/false for URL token",
         ConfigKey::Token => "token text, empty allowed",
@@ -156,6 +158,7 @@ pub fn value(config: &crate::config::AppConfig, key: ConfigKey) -> String {
         ConfigKey::SpeedtestTopN => config.probe.speedtest_top_n.to_string(),
         ConfigKey::SpeedtestInterval => config.probe.speedtest_interval_seconds.to_string(),
         ConfigKey::RequireTransportSecurity => config.probe.require_transport_security.to_string(),
+        ConfigKey::Protocols => config.probe.protocols.join(","),
         ConfigKey::CleanOfflineDays => config.clean_offlines_after_days.to_string(),
         ConfigKey::TokenRequired => config.sharing.require_token.to_string(),
         ConfigKey::Token => config.sharing.token.clone(),
@@ -234,6 +237,10 @@ pub fn apply(config: &mut crate::config::AppConfig, key: ConfigKey, raw: &str) -
         }
         ConfigKey::RequireTransportSecurity => {
             config.probe.require_transport_security = bool_value(value)?;
+        }
+        ConfigKey::Protocols => {
+            config.probe.protocols =
+                parse_protocol_list(value).map_err(|error| anyhow!("{error}"))?;
         }
         ConfigKey::CleanOfflineDays => {
             config.clean_offlines_after_days = positive(value, label(key))?;
@@ -384,6 +391,13 @@ mod tests {
         apply(&mut config, ConfigKey::RequireTransportSecurity, "on").expect("hardening");
         apply(&mut config, ConfigKey::SlowTrafficKbps, "0").expect("slow off");
         apply(&mut config, ConfigKey::BulkCheckInterval, "600").expect("deep interval");
+        apply(&mut config, ConfigKey::Protocols, "vless, trojan").expect("protocols");
+        assert_eq!(config.probe.protocols, vec!["vless", "trojan"]);
+        assert_eq!(
+            super::value(&config, ConfigKey::Protocols),
+            "vless,trojan".to_string()
+        );
+        assert!(apply(&mut config, ConfigKey::Protocols, "").is_err());
         apply(&mut config, ConfigKey::UploadUrl, "off").expect("upload off");
         assert_eq!(config.probe.upload_url, None);
         apply(

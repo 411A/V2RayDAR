@@ -22,7 +22,7 @@ static ACCEPTED: AtomicUsize = AtomicUsize::new(0);
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("version") {
-        println!("sing-box version 1.13.13");
+        println!("sing-box version 1.13.16");
         return;
     }
     if args.get(1).map(String::as_str) != Some("run") || args.get(2).map(String::as_str) != Some("-c")

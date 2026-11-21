@@ -851,16 +851,23 @@ impl PersistentProxy {
         // tiny-JSON responders are out — they can never clear a speed floor,
         // so racing them only burns connections.
         // Light (idle) mode probes the primary alone on a short budget.
-        let fallback_urls = ["https://1.1.1.1", "https://cloudflare.com"];
+        let fallback_urls = [
+            "https://1.1.1.1",
+            "https://cloudflare.com",
+            "https://www.gstatic.com/generate_204",
+            "https://www.google.com/generate_204",
+        ];
         let started = Instant::now();
         let check_timeout = timeout.saturating_add(Duration::from_secs(1));
         let ok = if light {
-            time::timeout(
-                check_timeout,
-                body_transfers(&client, &health_url, floor_bps),
-            )
-            .await
-            .unwrap_or(false)
+            // A single URL is a single point of false failure: a config can
+            // browse normally while cp.cloudflare.com is blocked for it. Race
+            // the primary with two independent 204 endpoints on the same
+            // short budget.
+            let urls = [health_url.as_str(), fallback_urls[2], fallback_urls[3]];
+            time::timeout(check_timeout, any_transfers(&client, &urls, floor_bps))
+                .await
+                .unwrap_or(false)
         } else {
             let mut urls = vec![health_url.as_str()];
             urls.extend_from_slice(&fallback_urls);
@@ -1296,6 +1303,9 @@ impl PersistentProxy {
 
         let mut state = self.state.write().await;
         state.running = false;
+        // A deliberate stop is not a health failure: the next tick must be
+        // free to revive/start instead of treating this as a crashed child.
+        state.consecutive_failures = 0;
         // The controller dies with the process; a stale address must never
         // be polled (the secret is dropped here too).
         state.clash_controller = None;
@@ -1655,19 +1665,30 @@ pub fn spawn_health_loop(
                     // child mid-start.
                     continue;
                 }
-                // Failover-exhausted dead end: revive while enabled instead
-                // of skipping until the next cycle, minutes later. A config
-                // that keeps starting and dying must not be revived forever:
-                // once the crash count trips the threshold, fail over (and
-                // suspend a pin that is the crashing config).
-                if failover_tripped(failures) {
-                    PersistentProxy::on_health_failure(&proxy, &ranked, &runtime, manual).await;
+                // Failover-exhausted dead end or a child that died: a healthy
+                // start resets `consecutive_failures`, so a non-zero count
+                // here is evidence against this config. Reviving the same
+                // one loops forever; fail over immediately instead.
+                if failures > 0 {
+                    warn!(
+                        failures,
+                        "proxy: process is down after a failure; failing over instead of reviving it"
+                    );
+                    let _ = PersistentProxy::failover(&proxy, &ranked).await;
                 } else {
                     PersistentProxy::revive_if_enabled(&proxy, &ranked).await;
-                    // A revived proxy is serving a config now; without this
-                    // the door stays invisible until the next full cycle.
-                    sync_runtime_proxy_snapshot(&proxy, &runtime).await;
                 }
+                // A revived or failed-over proxy changed the door; without
+                // this it stays invisible until the next full cycle.
+                sync_runtime_proxy_snapshot(&proxy, &runtime).await;
+                continue;
+            }
+
+            // A fresh start needs a moment for DNS, the handshake, and the
+            // first controller reply. A health tick two seconds after start
+            // used to count as failure 1/3 and trigger a restart loop.
+            if last_switch.is_some_and(|at| at.elapsed() < PROXY_STARTUP_TIMEOUT.saturating_mul(2))
+            {
                 continue;
             }
 
@@ -3547,6 +3568,26 @@ mod tests {
         .await
         .expect("no hang");
         assert!(!ok);
+    }
+
+    #[tokio::test]
+    async fn deliberate_stop_clears_failures_for_the_next_start() {
+        let proxy = Arc::new(Mutex::new(PersistentProxy::new(
+            auto_proxy_config(),
+            String::new(),
+            None,
+        )));
+        write_proxy_state(&proxy, |state| {
+            state.running = true;
+            state.consecutive_failures = 2;
+        })
+        .await;
+        proxy.lock().await.stop().await;
+        assert_eq!(
+            read_proxy_state(&proxy, |state| state.consecutive_failures).await,
+            0
+        );
+        assert!(!read_proxy_state(&proxy, |state| state.running).await);
     }
 
     #[tokio::test]

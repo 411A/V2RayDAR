@@ -31,11 +31,11 @@ use crate::{
     constants::{
         ACTIVE_PROBE_BATCH_CONCURRENCY_MULTIPLIER, ACTIVE_PROBE_BATCH_MAX_SIZE,
         ACTIVE_PROBE_BATCH_MIN_SIZE, ACTIVE_PROBE_HTTP_MAX_CONCURRENCY,
-        ACTIVE_PROBE_PROCESS_MAX_CONCURRENCY, BITS_PER_BYTE, BITS_PER_MEGABIT,
-        DOWNLOAD_TAIL_WINDOW, HTTP_EXCHANGE_OVERHEAD_BYTES, LOCAL_PROXY_CONNECT_TIMEOUT,
-        LOCAL_PROXY_WAIT_INTERVAL, LOCALHOST_IP, PROBE_UPLOAD_BYTES, PROBE_UPLOAD_TIMEOUT,
-        SING_BOX_CLEANUP_TIMEOUT, SING_BOX_CONFIG_FILE_PREFIX, SING_BOX_INBOUND_TAG_PREFIX,
-        SING_BOX_OUTBOUND_TAG_PREFIX, SPEEDTEST_TIMEOUT,
+        ACTIVE_PROBE_PROCESS_MAX_CONCURRENCY, BITS_PER_BYTE, BITS_PER_MEGABIT, BULK_MIN_BYTES,
+        DOWNLOAD_TAIL_MIN_WINDOW, DOWNLOAD_TAIL_WINDOW, HTTP_EXCHANGE_OVERHEAD_BYTES,
+        LOCAL_PROXY_CONNECT_TIMEOUT, LOCAL_PROXY_WAIT_INTERVAL, LOCALHOST_IP, PROBE_UPLOAD_BYTES,
+        PROBE_UPLOAD_TIMEOUT, SING_BOX_CLEANUP_TIMEOUT, SING_BOX_CONFIG_FILE_PREFIX,
+        SING_BOX_INBOUND_TAG_PREFIX, SING_BOX_OUTBOUND_TAG_PREFIX, SPEEDTEST_TIMEOUT,
     },
     convert::{
         decode_base64_bytes, decode_base64_to_string, first_param, json_bool, json_string,
@@ -2074,7 +2074,7 @@ async fn enrich_top_speedtests(
                     "speedtest body ended early or stalled; ranking it below measured bulk configs"
                 );
             }
-            ranked[index].download_mbps = Some(download.mbps);
+            ranked[index].download_mbps = publishable_download_speed(&download);
             ranked[index].download_bytes = Some(download.bytes);
             if let Some((ok, error)) = upload {
                 upload_results.push((index, ok, error));
@@ -2089,6 +2089,18 @@ async fn enrich_top_speedtests(
     }
     publish_upload_results(ranked, upload_results);
     keep_upload_preference_only_when_available(ranked);
+}
+
+/// A speed belongs on screen only when it came from a complete bulk body.
+/// A 16 KB response can yield a mathematically correct but meaningless
+/// multi-gigabit rate; it still counts as bytes (throughput class 2), never
+/// as a displayed speed.
+fn publishable_download_speed(measurement: &DownloadMeasurement) -> Option<f64> {
+    (measurement.complete
+        && measurement.bytes >= BULK_MIN_BYTES
+        && measurement.mbps.is_finite()
+        && measurement.mbps > 0.0)
+        .then_some(measurement.mbps)
 }
 
 fn speedtest_cache_key(item: &RankedConfig, config: &ProbeConfig) -> String {
@@ -2414,8 +2426,13 @@ fn tail_speed(
         return (total, elapsed.as_secs_f64().max(0.001));
     };
     let bytes = last_bytes.saturating_sub(*first_bytes);
-    let seconds = last_at.saturating_duration_since(*first_at).as_secs_f64();
-    if bytes == 0 || seconds <= 0.0 {
+    let span = last_at.saturating_duration_since(*first_at);
+    let seconds = span.as_secs_f64();
+    // A body that finishes inside the tail window has no sustained tail to
+    // measure: its "tail" is the whole body minus connection setup, which is
+    // exactly how a 600 ms / 16 KB response produced 3378 Mbps. Use the
+    // whole-transfer rate instead.
+    if bytes == 0 || seconds <= 0.0 || span < DOWNLOAD_TAIL_MIN_WINDOW {
         return (total, elapsed.as_secs_f64().max(0.001));
     }
     (bytes, seconds)
@@ -4511,6 +4528,45 @@ mod tests {
         // 4 KB over 2 s is ~16 kbit/s: far below the bulk floor, exactly the
         // burst-then-crawl signal the whole-body average hides.
         assert!(bytes_per_second_to_mbps(bytes, seconds) < BULK_MIN_MBPS);
+    }
+
+    #[test]
+    fn short_tail_uses_the_whole_transfer_time() {
+        let now = Instant::now();
+        let mut samples = VecDeque::new();
+        samples.push_back((now - Duration::from_millis(40), 0));
+        samples.push_back((now, 16 * 1024));
+        // The server spent 648 ms on the request, then delivered 16 KB in a
+        // 40 ms burst. The old tail rule called that 3378 Mbps; the honest
+        // whole-transfer rate is ~0.2 Mbps.
+        let (bytes, seconds) = tail_speed(&samples, Duration::from_millis(648), 16 * 1024);
+        assert_eq!(bytes, 16 * 1024);
+        assert!((seconds - 0.648).abs() < 0.01);
+        assert!(bytes_per_second_to_mbps(bytes, seconds) < 1.0);
+    }
+
+    #[test]
+    fn only_a_complete_bulk_body_publishes_a_speed() {
+        let bulk = DownloadMeasurement {
+            mbps: 42.0,
+            bytes: BULK_MIN_BYTES,
+            complete: true,
+        };
+        assert_eq!(publishable_download_speed(&bulk), Some(42.0));
+
+        let short = DownloadMeasurement {
+            mbps: 3378.1,
+            bytes: 16 * 1024,
+            complete: true,
+        };
+        assert_eq!(publishable_download_speed(&short), None);
+
+        let truncated = DownloadMeasurement {
+            mbps: 42.0,
+            bytes: BULK_MIN_BYTES,
+            complete: false,
+        };
+        assert_eq!(publishable_download_speed(&truncated), None);
     }
 
     /// Real-network proof, not a HEAD. Run manually with the app's own proxy

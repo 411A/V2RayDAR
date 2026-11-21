@@ -101,6 +101,10 @@ pub const BULK_MIN_MBPS: f64 = 2.0;
 /// Speed is scored over the end of the transfer, not the whole-body average:
 /// a burst-then-crawl link has a great average and a useless tail.
 pub const DOWNLOAD_TAIL_WINDOW: Duration = Duration::from_secs(2);
+/// A shorter transfer has no meaningful tail: the whole-body average
+/// (including connection setup) is the honest rate, not a burst measured
+/// over a few milliseconds.
+pub const DOWNLOAD_TAIL_MIN_WINDOW: Duration = Duration::from_secs(1);
 /// One speed-test attempt, body included. Without this a stalled download
 /// could hang a cycle forever (the client itself had no timeout).
 pub const SPEEDTEST_TIMEOUT: Duration = Duration::from_secs(30);

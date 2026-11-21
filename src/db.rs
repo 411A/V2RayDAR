@@ -733,6 +733,14 @@ impl Database {
     clippy::cast_sign_loss
 )]
 fn map_ranked_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RankedConfig> {
+    // A historical speed from a short/partial body is not a bulk measurement.
+    // Keep the bytes (throughput class 2) but never show or rank by the bogus
+    // rate; the next speedtest will publish a fresh value.
+    let download_bytes = row.get::<_, Option<i64>>(14)?.map(|v| v as usize);
+    let download_mbps = row
+        .get::<_, Option<f64>>(13)?
+        .filter(|mbps| mbps.is_finite() && *mbps > 0.0)
+        .filter(|_| download_bytes.is_some_and(|bytes| bytes >= BULK_MIN_BYTES));
     Ok(RankedConfig {
         rank: 0,
         stability_count: row.get::<_, u32>(16)?,
@@ -751,8 +759,8 @@ fn map_ranked_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RankedConfig> {
         validation: row.get(10)?,
         latency_ms: row.get::<_, Option<i64>>(11)?.map(|v| v as u128),
         http_status: row.get::<_, Option<i64>>(12)?.map(|v| v as u16),
-        download_mbps: row.get(13)?,
-        download_bytes: row.get::<_, Option<i64>>(14)?.map(|v| v as usize),
+        download_mbps,
+        download_bytes,
         upload_ok: None,
         error: None,
         country_code: row.get(15)?,
@@ -804,6 +812,30 @@ mod tests {
             error: None,
             country_code: None,
         }
+    }
+
+    #[test]
+    fn cached_short_body_does_not_expose_a_bogus_speed() {
+        let db = open_temp_db("short-speed");
+        let mut short = ranked_row("short", true, "active_http", 1);
+        short.download_mbps = Some(3378.1);
+        short.download_bytes = Some(16 * 1024);
+        let mut bulk = ranked_row("bulk", true, "active_http", 1);
+        bulk.download_mbps = Some(42.0);
+        bulk.download_bytes = Some(crate::constants::BULK_MIN_BYTES);
+        db.upsert_configs(&[short, bulk]).expect("seeded speeds");
+        let loaded = db.load_ranked_configs(10).expect("ranked rows load");
+        let short = loaded
+            .iter()
+            .find(|item| item.dedup_key == "short")
+            .expect("short row");
+        assert_eq!(short.download_mbps, None);
+        assert_eq!(short.download_bytes, Some(16 * 1024));
+        let bulk = loaded
+            .iter()
+            .find(|item| item.dedup_key == "bulk")
+            .expect("bulk row");
+        assert_eq!(bulk.download_mbps, Some(42.0));
     }
 
     #[test]

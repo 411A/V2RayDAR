@@ -79,30 +79,47 @@ impl RuntimeView {
             speedtest_bytes: runtime.speedtest_bytes,
             logs: runtime.logs.clone(),
             live_logs: runtime.live_logs.clone(),
-            ranked: runtime
-                .ranked
-                .iter()
-                .filter(|item| item.reachable)
-                .take(config.top_n.min(TUI_MAX_VISIBLE_RANKED))
-                .map(|item| {
-                    let display_name =
-                        format_display_name(item.country_code.as_deref(), &item.name);
-                    let is_proxy = proxy_uri
-                        .as_deref()
-                        .is_some_and(|active| same_proxy_uri(active, &item.uri));
-                    RankedView {
-                        rank: item.rank,
-                        stability_count: item.stability_count,
-                        source: item.source.clone(),
-                        protocol: item.protocol.clone(),
-                        display_name,
-                        endpoint: format!("{}:{}", item.endpoint.host, item.endpoint.port),
-                        latency_ms: item.latency_ms,
-                        is_proxy,
-                        uri: item.uri.clone(),
-                    }
-                })
-                .collect(),
+            ranked: {
+                let limit = config.top_n.min(TUI_MAX_VISIBLE_RANKED);
+                let mut visible = runtime
+                    .ranked
+                    .iter()
+                    .filter(|item| item.reachable)
+                    .take(limit)
+                    .collect::<Vec<_>>();
+                // The door must stay visible even when the active config
+                // ranks below the window (manual pin, fallback server).
+                if let Some(active) = proxy_uri.as_deref()
+                    && !visible.iter().any(|item| same_proxy_uri(active, &item.uri))
+                    && let Some(item) = runtime
+                        .ranked
+                        .iter()
+                        .find(|item| item.reachable && same_proxy_uri(active, &item.uri))
+                {
+                    visible.push(item);
+                }
+                visible
+                    .into_iter()
+                    .map(|item| {
+                        let display_name =
+                            format_display_name(item.country_code.as_deref(), &item.name);
+                        let is_proxy = proxy_uri
+                            .as_deref()
+                            .is_some_and(|active| same_proxy_uri(active, &item.uri));
+                        RankedView {
+                            rank: item.rank,
+                            stability_count: item.stability_count,
+                            source: item.source.clone(),
+                            protocol: item.protocol.clone(),
+                            display_name,
+                            endpoint: format!("{}:{}", item.endpoint.host, item.endpoint.port),
+                            latency_ms: item.latency_ms,
+                            is_proxy,
+                            uri: item.uri.clone(),
+                        }
+                    })
+                    .collect()
+            },
         }
     }
 }

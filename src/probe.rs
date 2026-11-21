@@ -31,11 +31,11 @@ use crate::{
     constants::{
         ACTIVE_PROBE_BATCH_CONCURRENCY_MULTIPLIER, ACTIVE_PROBE_BATCH_MAX_SIZE,
         ACTIVE_PROBE_BATCH_MIN_SIZE, ACTIVE_PROBE_HTTP_MAX_CONCURRENCY,
-        ACTIVE_PROBE_PROCESS_MAX_CONCURRENCY, BITS_PER_BYTE, BITS_PER_MEGABIT, BULK_MIN_BYTES,
-        BULK_MIN_MBPS, DOWNLOAD_TAIL_WINDOW, HTTP_EXCHANGE_OVERHEAD_BYTES,
-        LOCAL_PROXY_CONNECT_TIMEOUT, LOCAL_PROXY_WAIT_INTERVAL, LOCALHOST_IP, PROBE_UPLOAD_BYTES,
-        PROBE_UPLOAD_TIMEOUT, SING_BOX_CLEANUP_TIMEOUT, SING_BOX_CONFIG_FILE_PREFIX,
-        SING_BOX_INBOUND_TAG_PREFIX, SING_BOX_OUTBOUND_TAG_PREFIX, SPEEDTEST_TIMEOUT,
+        ACTIVE_PROBE_PROCESS_MAX_CONCURRENCY, BITS_PER_BYTE, BITS_PER_MEGABIT,
+        DOWNLOAD_TAIL_WINDOW, HTTP_EXCHANGE_OVERHEAD_BYTES, LOCAL_PROXY_CONNECT_TIMEOUT,
+        LOCAL_PROXY_WAIT_INTERVAL, LOCALHOST_IP, PROBE_UPLOAD_BYTES, PROBE_UPLOAD_TIMEOUT,
+        SING_BOX_CLEANUP_TIMEOUT, SING_BOX_CONFIG_FILE_PREFIX, SING_BOX_INBOUND_TAG_PREFIX,
+        SING_BOX_OUTBOUND_TAG_PREFIX, SPEEDTEST_TIMEOUT,
     },
     convert::{
         decode_base64_bytes, decode_base64_to_string, first_param, json_bool, json_string,
@@ -2290,12 +2290,6 @@ pub struct DownloadMeasurement {
     pub(crate) complete: bool,
 }
 
-impl DownloadMeasurement {
-    pub fn bulk_capable(&self) -> bool {
-        self.bytes >= BULK_MIN_BYTES && self.mbps >= BULK_MIN_MBPS
-    }
-}
-
 /// Measure one download through an explicit proxy URL. Shared by the probe
 /// speedtest and the live proxy's deep check so both apply the same rule.
 pub async fn measure_download_through_proxy(
@@ -3223,6 +3217,7 @@ fn query_map(url: &Url) -> std::collections::BTreeMap<String, String> {
 mod tests {
     use super::*;
     use crate::constants::TEST_REALITY_PUBLIC_KEY;
+    use crate::constants::{BULK_MIN_BYTES, BULK_MIN_MBPS};
     use base64::{Engine as _, engine::general_purpose::STANDARD};
 
     fn failed_with(error: &str) -> RankedConfig {
@@ -4446,7 +4441,10 @@ mod tests {
 
         assert_eq!(measurement.bytes, 12 * 1024);
         assert!(!measurement.complete);
-        assert!(!measurement.bulk_capable());
+        assert!(
+            measurement.bytes < BULK_MIN_BYTES,
+            "a truncated body must never look bulk-capable"
+        );
     }
 
     #[test]

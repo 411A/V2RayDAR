@@ -151,6 +151,10 @@ pub const PROXY_HEALTH_LIGHT_TIMEOUT: Duration = Duration::from_secs(5);
 /// every reachable config has failed (nothing works — accept anything that
 /// moves at all, never lower).
 pub const PROXY_HEALTH_FULL_BPS: u64 = 10 * 1024;
+/// Tail rate below which the live deep check calls the proxy broken even
+/// when the slow-link switch is disabled. 16 KB/s (128 kbps) cannot carry a
+/// usable stream, so this is truncation rather than a merely slow link.
+pub const PROXY_BULK_BROKEN_KBPS: u64 = 16;
 pub const PROXY_HEALTH_MIN_BPS: u64 = 1024;
 /// A passing check slower than this logs a warning: the config works but is
 /// degrading, so the next failure reads in context instead of out of nowhere.

@@ -1779,7 +1779,7 @@ function paintOvConfigs() {
   const activeUri = s && s.proxy_active_uri ? s.proxy_active_uri : "";
   for (const c of rows) {
     const tr = document.createElement("tr");
-    if (activeUri && c.uri && c.uri === activeUri) {
+    if (activeUri && sameProxyUri(activeUri, c.uri)) {
       tr.className = "is-proxy";
     } else if (proxyRowState(c.uri) === "pending") {
       tr.className = "is-pending";
@@ -2096,7 +2096,7 @@ function paintConfigs() {
 
   for (const c of rows) {
     const tr = document.createElement("tr");
-    if (activeUri && c.uri && c.uri === activeUri) {
+    if (activeUri && sameProxyUri(activeUri, c.uri)) {
       tr.className = "is-proxy";
     } else if (proxyRowState(c.uri) === "pending") {
       tr.className = "is-pending";
@@ -2291,17 +2291,34 @@ function drawQr(text, canvasId, silent) {
   return true;
 }
 
+/// Compare proxy URIs ignoring the `#remark` fragment, like the TUI's
+/// `same_proxy_uri`: sources rename remarks daily, the server is the same.
+function sameProxyUri(a, b) {
+  if (!a || !b) {
+    // Both empty means "no pin / no active config": the same state.
+    return !a && !b;
+  }
+  if (a === b) {
+    return true;
+  }
+  const base = (u) => String(u).split("#")[0];
+  return base(a) === base(b);
+}
+
 /// Per-row proxy state for button labels: `active` (server-confirmed),
 /// `pending` (requested, confirmation in flight), or `idle`. Mirrors the
 /// TUI's `proxy_pending_uri`: a pending row only flips to active once
 /// `proxy_active_uri` catches up in a fresh snapshot.
 function proxyRowState(uri) {
+  if (!uri) {
+    return "idle";
+  }
   const s = state.snapshot;
   const activeUri = s && s.proxy_active_uri ? s.proxy_active_uri : null;
   if (state.proxyPendingUri !== undefined && uri === state.proxyPendingUri) {
-    return activeUri === uri ? "active" : "pending";
+    return sameProxyUri(activeUri, uri) ? "active" : "pending";
   }
-  return activeUri && uri === activeUri ? "active" : "idle";
+  return sameProxyUri(activeUri, uri) ? "active" : "idle";
 }
 
 /// Clear a pending switch once the server confirms it. Called on every path
@@ -2309,7 +2326,7 @@ function proxyRowState(uri) {
 /// Pending… button flips to Active without another round trip.
 function syncProxyPending() {
   if (state.proxyPendingUri !== undefined && state.snapshot &&
-    state.snapshot.proxy_active_uri === state.proxyPendingUri) {
+    sameProxyUri(state.snapshot.proxy_active_uri, state.proxyPendingUri)) {
     state.proxyPendingUri = undefined;
   }
 }
@@ -2340,7 +2357,7 @@ async function toggleProxy(uri) {
   }
   const s = state.snapshot;
   const activeUri = s && s.proxy_active_uri;
-  const unpin = !!(activeUri && uri === activeUri);
+  const unpin = sameProxyUri(activeUri, uri);
   state.proxyPendingUri = unpin ? null : uri;
   renderConfigs();
   renderOvConfigs();

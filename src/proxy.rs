@@ -25,8 +25,8 @@ use crate::{
     config::ProxyConfig,
     constants::{
         BULK_CHECK_FALLBACK_URL, BULK_MIN_MBPS, DEFAULT_DOWNLOAD_URL, LOCALHOST_IP,
-        PROXY_BULK_CHECK_BYTES, PROXY_BULK_CHECK_FALLBACK_TIMEOUT, PROXY_BULK_CHECK_TIMEOUT,
-        PROXY_CLASH_API_TIMEOUT, PROXY_CLASH_CONTROLLER_PORT_ATTEMPTS,
+        PROXY_BULK_BROKEN_KBPS, PROXY_BULK_CHECK_BYTES, PROXY_BULK_CHECK_FALLBACK_TIMEOUT,
+        PROXY_BULK_CHECK_TIMEOUT, PROXY_CLASH_API_TIMEOUT, PROXY_CLASH_CONTROLLER_PORT_ATTEMPTS,
         PROXY_CLASH_UNREACHABLE_RETRY_POLLS, PROXY_DNS_FALLBACK, PROXY_DNS_PRIMARY,
         PROXY_FAILOVER_COOLDOWN, PROXY_HEALTH_CHECK_BODY_BYTES, PROXY_HEALTH_CHECK_TIMEOUT,
         PROXY_HEALTH_FULL_BPS, PROXY_HEALTH_LIGHT_TIMEOUT, PROXY_HEALTH_MIN_BPS,
@@ -1561,7 +1561,7 @@ pub fn spawn_health_loop(
 
             time::sleep(Duration::from_secs(last_interval)).await;
 
-            let (running, starting, controller, secret, manual, last_switch) =
+            let (running, starting, controller, secret, manual, last_switch, active_connections) =
                 read_proxy_state(&proxy, |state| {
                     (
                         state.running,
@@ -1570,6 +1570,7 @@ pub fn spawn_health_loop(
                         state.clash_secret.clone(),
                         state.manual_proxy_uri.clone(),
                         state.last_switch,
+                        state.active_connections,
                     )
                 })
                 .await;
@@ -1582,6 +1583,7 @@ pub fn spawn_health_loop(
                 clash = controller.is_some(),
                 interval_secs = last_interval,
                 since_switch_secs = last_switch.map(|at| at.elapsed().as_secs()),
+                active_flows = active_connections,
                 "proxy: health tick"
             );
 
@@ -1604,7 +1606,17 @@ pub fn spawn_health_loop(
                     PersistentProxy::on_health_failure(&proxy, &ranked, &runtime, manual).await;
                 } else {
                     PersistentProxy::revive_if_enabled(&proxy, &ranked).await;
+                    // A revived proxy is serving a config now; without this
+                    // the door stays invisible until the next full cycle.
+                    sync_runtime_proxy_snapshot(&proxy, &runtime).await;
                 }
+                continue;
+            }
+
+            // A flow is moving bytes right now: the data plane is proven, and
+            // a synthetic check under saturation can false-fail into a
+            // restart that kills the user's stream. Keep the proxy.
+            if active_connections > 0 {
                 continue;
             }
 
@@ -1703,6 +1715,15 @@ impl ConnSample {
             self.flow_bytes = 0;
         }
         delta
+    }
+
+    /// Long enough, large enough, and recently moving: a real transfer.
+    fn is_active(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.first_seen) >= PROXY_STREAM_MIN_AGE
+            && self.total_moved >= PROXY_STREAM_MIN_WINDOW_BYTES
+            && self.last_moved.is_some_and(|moved| {
+                now.saturating_duration_since(moved) < PROXY_STREAM_WINDOW.saturating_mul(6)
+            })
     }
 
     /// Continuous flow, long enough and large enough to be a real transfer,
@@ -1895,14 +1916,7 @@ pub fn spawn_starvation_loop(
 
             let active = samples
                 .values()
-                .filter(|sample| {
-                    now.saturating_duration_since(sample.first_seen) >= PROXY_STREAM_MIN_AGE
-                        && sample.total_moved >= PROXY_STREAM_MIN_WINDOW_BYTES
-                        && sample.last_moved.is_some_and(|moved| {
-                            now.saturating_duration_since(moved)
-                                < PROXY_STREAM_WINDOW.saturating_mul(6)
-                        })
-                })
+                .filter(|sample| sample.is_active(now))
                 .count();
             write_proxy_state(&proxy, |state| {
                 state.active_connections = active;
@@ -1938,8 +1952,21 @@ pub fn spawn_starvation_loop(
             });
             if let Some((conn_id, upload)) = starved {
                 reported.insert(conn_id.clone());
-                let retry_allowed =
-                    on_starved_connection(&proxy, &ranked, &conn_id, upload, &runtime).await;
+                // A stalled request must not restart the proxy while another
+                // flow (a live stream, a download) is still moving.
+                let other_active = samples
+                    .iter()
+                    .filter(|(id, sample)| id.as_str() != conn_id && sample.is_active(now))
+                    .count();
+                let retry_allowed = on_starved_connection(
+                    &proxy,
+                    &ranked,
+                    &conn_id,
+                    upload,
+                    other_active,
+                    &runtime,
+                )
+                .await;
                 if retry_allowed {
                     reported.remove(&conn_id);
                 }
@@ -2012,6 +2039,7 @@ async fn on_starved_connection(
     ranked: &Arc<RwLock<Vec<RankedConfig>>>,
     conn_id: &str,
     upload: u64,
+    other_active_flows: usize,
     runtime: &Arc<RwLock<RuntimeState>>,
 ) -> bool {
     let (active_name, open_connections) = read_proxy_state(proxy, |state| {
@@ -2023,8 +2051,20 @@ async fn on_starved_connection(
         upload_bytes = upload,
         active = ?active_name,
         open_connections,
+        other_active_flows,
         "proxy: connection uploaded with zero download, verifying active config"
     );
+    // One stalled request must not restart sing-box while another flow (a
+    // live stream, a download) is moving data: that would kill the good
+    // flow to fix a connection that is probably origin-side.
+    if other_active_flows > 0 {
+        info!(
+            connection = %conn_id,
+            other_active_flows,
+            "proxy: starved connection while other flows move; keeping the proxy"
+        );
+        return false;
+    }
     proxy.lock().await.emit_log(
         LogLevel::Debug,
         &format!(
@@ -2123,12 +2163,12 @@ async fn on_slow_traffic(
                 info!(
                     kb_s = bytes_per_second / 1024.0,
                     best_upgrade,
-                    verdict = "origin",
-                    "proxy: slow traffic came from the origin, not the proxy; keeping"
+                    verdict = "flowing",
+                    "proxy: slow traffic is not truncation; keeping the active config"
                 );
                 proxy.lock().await.emit_log(
                     LogLevel::Info,
-                    "proxy: the active config carried a 10 MB body; slow traffic is upstream",
+                    "proxy: the active link is still moving data; slow traffic is upstream",
                 );
                 return;
             }
@@ -2149,8 +2189,8 @@ async fn on_slow_traffic(
         kb_s = bytes_per_second / 1024.0,
         mbps = current_mbps,
         best_upgrade,
-        verdict = "broken",
-        "proxy: active config cannot carry bulk traffic, switching for speed"
+        verdict = "truncating",
+        "proxy: active tail is below a usable stream; switching for speed"
     );
     if let Err(err) = PersistentProxy::failover_for(proxy, ranked, FailoverKind::Performance).await
     {
@@ -2159,9 +2199,20 @@ async fn on_slow_traffic(
     sync_runtime_proxy_snapshot(proxy, runtime).await;
 }
 
+/// Live verdict for a measured tail rate: a stream needs `floor_kbps`, not
+/// the 2 Mbps bulk-ranking bar. Below the floor the link is truncating;
+/// above it, restarting would only interrupt the viewer.
+fn live_bulk_verdict(mbps: f64, floor_kbps: u64) -> BulkVerdict {
+    if mbps * 125.0 >= bytes_to_f64(floor_kbps) {
+        BulkVerdict::Healthy
+    } else {
+        BulkVerdict::Broken
+    }
+}
+
 /// Download the deep-check object through the running proxy. A target that
-/// cannot be reached at all is `Unknown` (never a reason to switch); a body
-/// that arrives truncated or slow is `Broken`.
+/// cannot be reached at all is `Unknown` (never a reason to switch); a tail
+/// that stays below the usable-stream floor is `Broken`.
 async fn deep_bulk_check(proxy: &SharedProxy) -> BulkVerdict {
     let (port, last, interval) = read_proxy_state(proxy, |state| {
         (
@@ -2183,6 +2234,11 @@ async fn deep_bulk_check(proxy: &SharedProxy) -> BulkVerdict {
         state.last_bulk_check = Some(Instant::now());
     })
     .await;
+    // Only a near-dead tail proves the proxy itself is at fault. A merely
+    // slow link (the user's stream still plays) must not be restarted out
+    // from under the viewer; a genuinely faster config is handled by the
+    // measured `best_upgrade` path instead.
+    let floor_kbps = PROXY_BULK_BROKEN_KBPS;
     let proxy_url = format!("http://{LOCALHOST_IP}:{port}");
     let attempts = [
         (DEFAULT_DOWNLOAD_URL, PROXY_BULK_CHECK_TIMEOUT),
@@ -2198,17 +2254,15 @@ async fn deep_bulk_check(proxy: &SharedProxy) -> BulkVerdict {
         .await
         {
             Ok(measurement) => {
-                let verdict = if measurement.bulk_capable() {
-                    BulkVerdict::Healthy
-                } else {
-                    BulkVerdict::Broken
-                };
+                let verdict = live_bulk_verdict(measurement.mbps, floor_kbps);
                 info!(
                     attempt = attempt + 1,
                     bytes = measurement.bytes,
                     requested_bytes = PROXY_BULK_CHECK_BYTES,
                     mbps = measurement.mbps,
                     complete = measurement.complete,
+                    tail_kbps = measurement.mbps * 125.0,
+                    floor_kbps,
                     timeout_ms = timeout.as_millis(),
                     verdict = ?verdict,
                     "proxy: deep bulk check finished"
@@ -2870,6 +2924,31 @@ mod tests {
     }
 
     #[test]
+    fn only_a_long_lived_moving_flow_is_active() {
+        let now = Instant::now();
+        // Young: has moved data but has not been around long enough.
+        let mut fresh = ConnSample::new(now, 0, 0);
+        fresh.observe(now, 20_000, 20_000);
+        assert!(!fresh.is_active(now));
+        // Old and moving: a real transfer.
+        let old = now
+            .checked_sub(PROXY_STREAM_MIN_AGE + Duration::from_secs(1))
+            .expect("time");
+        let mut moving = ConnSample::new(old, 0, 0);
+        moving.observe(now, 20_000, 20_000);
+        assert!(moving.is_active(now));
+        // Old but idle for over a minute: not a live flow any more.
+        let ancient = now.checked_sub(Duration::from_secs(120)).expect("time");
+        let mut idle = ConnSample::new(ancient, 0, 0);
+        idle.observe(
+            now.checked_sub(Duration::from_secs(61)).expect("time"),
+            20_000,
+            0,
+        );
+        assert!(!idle.is_active(now));
+    }
+
+    #[test]
     fn connection_starved_matches_only_trying_without_data() {
         // Idle: no upload, never starved.
         assert!(!connection_starved(
@@ -3215,6 +3294,25 @@ mod tests {
             outcome(true, false, 2048, true, 1),
             PROXY_HEALTH_FULL_BPS
         ));
+    }
+
+    #[test]
+    fn live_bulk_verdict_keeps_a_slow_but_flowing_stream() {
+        // 1 Mbps = 125 KB/s: comfortably above the 64 KB/s stream floor.
+        assert_eq!(live_bulk_verdict(1.0, 64), BulkVerdict::Healthy);
+        // 0.32 Mbps = 40 KB/s: below the floor, so this link is truncating.
+        assert_eq!(live_bulk_verdict(0.32, 64), BulkVerdict::Broken);
+        // The floor follows the configured slow-link value.
+        assert_eq!(live_bulk_verdict(0.8, 32), BulkVerdict::Healthy);
+        // Slow switch off: only a near-dead link counts as broken.
+        assert_eq!(
+            live_bulk_verdict(0.12, PROXY_BULK_BROKEN_KBPS),
+            BulkVerdict::Broken
+        );
+        assert_eq!(
+            live_bulk_verdict(0.5, PROXY_BULK_BROKEN_KBPS),
+            BulkVerdict::Healthy
+        );
     }
 
     #[test]

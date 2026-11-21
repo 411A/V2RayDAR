@@ -11,6 +11,27 @@ beforeEach(() => {
   sandbox = loaded.sandbox;
 });
 
+describe("proxy row matching mirrors the TUI", () => {
+  it("sameProxyUri ignores a renamed remark but not another server", () => {
+    const base = "vless://uuid@example.com:443?security=tls";
+    assert.equal(api.sameProxyUri(`${base}#Old`, `${base}#New`), true);
+    assert.equal(
+      api.sameProxyUri(`${base}#Name`, "vless://uuid@other.example.com:443?security=tls#Name"),
+      false,
+    );
+    assert.equal(api.sameProxyUri(null, `${base}#Name`), false);
+    assert.equal(api.sameProxyUri(`${base}#Name`, null), false);
+  });
+
+  it("proxyRowState marks the active row through a remark rename", () => {
+    const base = "vless://uuid@example.com:443?security=tls";
+    api.state.proxyPendingUri = undefined;
+    api.state.snapshot = { proxy_active_uri: `${base}#New` };
+    assert.equal(api.proxyRowState(`${base}#Old`), "active");
+    assert.equal(api.proxyRowState("vless://uuid@other.example.com:443#X"), "idle");
+  });
+});
+
 describe("busy guards mirror TUI trigger_refresh/trigger_ping", () => {
   it("refreshBusy is true only while refreshing or a refresh POST is in flight", () => {
     api.state.snapshot = null;

@@ -161,7 +161,9 @@ impl PlainProgressReporter {
                     ranked.len()
                 ));
             }
-            ProgressEvent::WorkingConfigsFound { .. } | ProgressEvent::FetchedDelta(_) => {}
+            ProgressEvent::LiveProxyConfigs(_)
+            | ProgressEvent::WorkingConfigsFound { .. }
+            | ProgressEvent::FetchedDelta(_) => {}
         }
     }
 

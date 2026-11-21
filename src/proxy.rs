@@ -71,6 +71,10 @@ struct ProxyState {
     /// current config inside `PROXY_MIN_SWITCH_INTERVAL` instead of flapping
     /// on ranking jitter.
     last_switch: Option<Instant>,
+    /// The active config was started mid-cycle from a partial ranking. The
+    /// first post-cycle update may replace it immediately instead of waiting
+    /// out the anti-flap dwell; proven user traffic still wins.
+    provisional_start: bool,
     failed_config_keys: Vec<String>,
     proxy_config: ProxyConfig,
     manual_proxy_uri: Option<String>,
@@ -217,6 +221,7 @@ impl PersistentProxy {
                 last_failover: None,
                 degraded: false,
                 last_switch: None,
+                provisional_start: false,
                 failed_config_keys: Vec::new(),
                 proxy_config: config,
                 manual_proxy_uri,
@@ -276,6 +281,7 @@ impl PersistentProxy {
             active_class,
             open_connections,
             uploading_connections,
+            provisional_start,
         ) = {
             let mut state = self.state.write().await;
             let previous_manual = state.manual_proxy_uri.clone();
@@ -301,6 +307,13 @@ impl PersistentProxy {
                     .is_some_and(|seen| seen.elapsed() < PROXY_STREAM_WINDOW.saturating_mul(3));
             let open_connections = state.open_connections;
             let uploading_connections = state.uploading_connections;
+            // A provisional mid-cycle start is replaced by the first full
+            // ranking without the dwell wait. Clear here so the bypass is
+            // one-shot even when no switch is needed.
+            let provisional_start = state.provisional_start;
+            if clear_blacklist {
+                state.provisional_start = false;
+            }
             drop(state);
             let active_class = active_uri
                 .as_deref()
@@ -314,6 +327,7 @@ impl PersistentProxy {
                 active_class,
                 open_connections,
                 uploading_connections,
+                provisional_start,
             )
         };
         let pin_active = config.manual_proxy_uri.is_some() && !pin_suspended;
@@ -416,7 +430,13 @@ impl PersistentProxy {
                     // Open connections count even when quiet: a Telegram long
                     // poll moves no bytes but dies the moment sing-box is
                     // restarted, so a switch waits for the proxy to go idle.
-                    if !dwell_allows(state.last_switch, Instant::now(), pin_active) {
+                    if dwell_blocks_switch(
+                        state.last_switch,
+                        Instant::now(),
+                        pin_active,
+                        provisional_start,
+                        clear_blacklist,
+                    ) {
                         (false, "dwell")
                     } else if traffic_active && !pin_active && active_class != Some(2) {
                         (false, "traffic")
@@ -500,6 +520,9 @@ impl PersistentProxy {
         state.active_config_country.clone_from(&best.country_code);
         state.consecutive_failures = 0;
         state.last_switch = Some(Instant::now());
+        if matches!(reason, "starting" | "restarted") && !clear_blacklist {
+            state.provisional_start = true;
+        }
         if switched {
             // A new config means fresh hope: back to the full floor.
             state.degraded = false;
@@ -1450,6 +1473,18 @@ fn stream_is_slow(flow_bytes: u64, flow_seconds: f64, floor: u64) -> bool {
 
 /// Anti-flap dwell: a "new config" switch inside the dwell window is held
 /// unless the user pinned explicitly. Restarts and failovers bypass.
+/// Anti-flap hold. A config started mid-cycle from a partial ranking is
+/// provisional: the first full ranking after a refresh may replace it at once.
+fn dwell_blocks_switch(
+    last_switch: Option<Instant>,
+    now: Instant,
+    pinned: bool,
+    provisional_start: bool,
+    clear_blacklist: bool,
+) -> bool {
+    !(dwell_allows(last_switch, now, pinned) || (provisional_start && clear_blacklist))
+}
+
 fn dwell_allows(last_switch: Option<Instant>, now: Instant, pinned: bool) -> bool {
     if pinned {
         return true;
@@ -3201,6 +3236,25 @@ mod tests {
             .checked_sub(PROXY_MIN_SWITCH_INTERVAL + Duration::from_secs(1))
             .expect("time");
         assert!(dwell_allows(Some(old), now, false));
+    }
+
+    #[test]
+    fn provisional_start_bypasses_one_dwell_after_a_refresh() {
+        let now = Instant::now();
+        let recent = now.checked_sub(Duration::from_secs(10)).expect("time");
+        // A normal ranking update still waits out the dwell.
+        assert!(dwell_blocks_switch(Some(recent), now, false, false, true));
+        // A mid-cycle pick is replaced by the first full ranking at once.
+        assert!(!dwell_blocks_switch(Some(recent), now, false, true, true));
+        // A ping re-verifies the same set: the bypass does not apply.
+        assert!(dwell_blocks_switch(Some(recent), now, false, true, false));
+        // A live pin always wins, provisional or not.
+        assert!(!dwell_blocks_switch(Some(recent), now, true, false, false));
+        // Once the dwell has elapsed, every path is allowed.
+        let old = now
+            .checked_sub(PROXY_MIN_SWITCH_INTERVAL + Duration::from_secs(1))
+            .expect("time");
+        assert!(!dwell_blocks_switch(Some(old), now, false, false, true));
     }
 
     #[tokio::test]

@@ -337,6 +337,7 @@ async fn main() -> Result<()> {
             !cli.verbose,
             None,
             true,
+            None,
         )
         .await?;
         return Ok(());
@@ -1257,6 +1258,7 @@ async fn refresh_once(
     print_compact_progress: bool,
     ping_cancel: Option<Arc<AtomicBool>>,
     manual: bool,
+    live_proxy: Option<LiveProxyWiring>,
 ) -> Result<()> {
     // Dashboard runs may start without sing-box (the path can be set from
     // Settings). Fail the cycle with an actionable message instead of
@@ -1336,6 +1338,7 @@ async fn refresh_once(
         previous_top_n.clone(),
         print_compact_progress,
         true,
+        live_proxy,
     );
     if print_compact_progress {
         print_log(format!(
@@ -2098,6 +2101,7 @@ async fn probe_ping_backfill(
             previous_top_n.clone(),
             print_compact_progress,
             false,
+            None,
         );
         let mut backfill_ranked = probe_refresh_candidates(
             extra_candidates,
@@ -2218,6 +2222,7 @@ async fn probe_database_fallback(
             previous_top_n.clone(),
             print_compact_progress,
             false,
+            None,
         );
         let mut fallback_ranked = probe_refresh_candidates(
             extra_candidates,
@@ -2366,6 +2371,7 @@ async fn ping_once(
         // A ping re-tests cached configs without fetching: probe byte
         // counts must not leak into traffic usage (see `push_tui_progress`).
         false,
+        None,
     );
     *runtime_config.write().await = RuntimeConfig::from(config);
     {
@@ -3045,6 +3051,10 @@ fn spawn_refresh_loop(
                     print_compact_progress,
                     Some(ping_cancel.clone()),
                     false,
+                    Some(LiveProxyWiring {
+                        proxy: proxy.clone(),
+                        config: config.clone(),
+                    }),
                 )
                 .await
                 {
@@ -3091,7 +3101,7 @@ fn spawn_refresh_loop(
                         let config = config_rx.borrow().clone();
                         *runtime_config.write().await = RuntimeConfig::from(&config);
                         last_refresh_fingerprint = Some(RefreshFingerprint::from(&config));
-                        if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), cycle.clone(), print_terminal_summary, print_compact_progress, Some(ping_cancel.clone()), true).await {
+                        if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), cycle.clone(), print_terminal_summary, print_compact_progress, Some(ping_cancel.clone()), true, Some(LiveProxyWiring { proxy: proxy.clone(), config: config.clone() })).await {
                             error!(error = %err, "manual refresh failed");
                             record_refresh_error(&state, err.to_string()).await;
                         } else {
@@ -3125,6 +3135,10 @@ fn spawn_refresh_loop(
                         print_compact_progress,
                         Some(ping_cancel.clone()),
                         false,
+                        Some(LiveProxyWiring {
+                            proxy: proxy.clone(),
+                            config: config.clone(),
+                        }),
                     )
                     .await
                     {
@@ -3176,7 +3190,7 @@ fn spawn_refresh_loop(
                     drain_triggers(&mut trigger_rx);
                     let config = config_rx.borrow().clone();
                     last_refresh_fingerprint = Some(RefreshFingerprint::from(&config));
-                    if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), cycle.clone(), print_terminal_summary, print_compact_progress, Some(ping_cancel.clone()), false).await {
+                    if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), cycle.clone(), print_terminal_summary, print_compact_progress, Some(ping_cancel.clone()), false, Some(LiveProxyWiring { proxy: proxy.clone(), config: config.clone() })).await {
                         error!(error = %err, "refresh failed");
                         record_refresh_error(&state, err.to_string()).await;
                     } else {
@@ -3216,7 +3230,7 @@ fn spawn_refresh_loop(
                     }
                     let config = config_rx.borrow().clone();
                     last_refresh_fingerprint = Some(RefreshFingerprint::from(&config));
-                    if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), cycle.clone(), print_terminal_summary, print_compact_progress, Some(ping_cancel.clone()), true).await {
+                    if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), cycle.clone(), print_terminal_summary, print_compact_progress, Some(ping_cancel.clone()), true, Some(LiveProxyWiring { proxy: proxy.clone(), config: config.clone() })).await {
                         error!(error = %err, "manual refresh failed");
                         record_refresh_error(&state, err.to_string()).await;
                     } else {
@@ -3243,7 +3257,7 @@ fn spawn_refresh_loop(
                     let fingerprint = RefreshFingerprint::from(&config);
                     if should_refresh_now(last_refresh_fingerprint.as_ref(), &fingerprint) {
                         last_refresh_fingerprint = Some(fingerprint);
-                        if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), cycle.clone(), print_terminal_summary, print_compact_progress, Some(ping_cancel.clone()), false).await {
+                        if let Err(err) = refresh_once(&config, database.clone(), state.clone(), runtime_config.clone(), cycle.clone(), print_terminal_summary, print_compact_progress, Some(ping_cancel.clone()), false, Some(LiveProxyWiring { proxy: proxy.clone(), config: config.clone() })).await {
                             error!(error = %err, "refresh after config reload failed");
                             record_refresh_error(&state, err.to_string()).await;
                         } else {
@@ -3414,6 +3428,56 @@ async fn add_fetch_bytes(state: &Arc<RwLock<RuntimeState>>, bytes: u64) {
     state.fetch_bytes = state.fetch_bytes.saturating_add(bytes);
 }
 
+/// Proxy access for mid-cycle assignment: a verified working config starts
+/// the proxy immediately instead of waiting for the whole refresh to finish.
+struct LiveProxyWiring {
+    proxy: proxy::SharedProxy,
+    config: AppConfig,
+}
+
+/// Start the proxy from the best config verified so far, mid-cycle. Only a
+/// proxy with no active config is started here: a live one is never churned
+/// for a partial ranking, and the post-cycle update picks the final best with
+/// its one-shot dwell bypass.
+async fn start_live_proxy(
+    state: &Arc<RwLock<RuntimeState>>,
+    wiring: &LiveProxyWiring,
+    configs: &[RankedConfig],
+) -> bool {
+    {
+        let runtime = state.read().await;
+        if runtime.proxy_running && runtime.proxy_active_uri.is_some() {
+            return true;
+        }
+    }
+    let ranked = configs
+        .iter()
+        .filter(|item| item.reachable)
+        .cloned()
+        .collect::<Vec<_>>();
+    if ranked.is_empty() {
+        return true;
+    }
+
+    let mut manager = wiring.proxy.lock().await;
+    manager.set_sing_box_path(wiring.config.probe.sing_box_path.clone());
+    manager.update(&wiring.config.proxy, &ranked, false).await;
+    let snapshot = manager.snapshot().await;
+    drop(manager);
+
+    let mut runtime = state.write().await;
+    runtime.proxy_running = snapshot.running;
+    runtime
+        .proxy_active_config
+        .clone_from(&snapshot.active_config);
+    runtime.proxy_active_uri = snapshot.active_uri;
+    runtime.proxy_port = snapshot.port;
+    runtime.proxy_discoverable = snapshot.discoverable;
+    runtime.proxy_pin_suspended = snapshot.pin_suspended;
+    drop(runtime);
+    snapshot.running
+}
+
 /// Progress events from one probe run into live TUI state.
 ///
 /// `account_bytes` attributes probe byte counts to traffic usage: true for
@@ -3425,6 +3489,7 @@ fn spawn_tui_progress_forwarder(
     previous_top_n: HashSet<String>,
     print_compact_progress: bool,
     account_bytes: bool,
+    live_proxy: Option<LiveProxyWiring>,
 ) -> (
     mpsc::UnboundedSender<ProgressEvent>,
     tokio::task::JoinHandle<()>,
@@ -3432,11 +3497,26 @@ fn spawn_tui_progress_forwarder(
     let (tx, mut rx) = mpsc::unbounded_channel::<ProgressEvent>();
     let task = tokio::spawn(async move {
         let mut reporter = print_compact_progress.then(PlainProgressReporter::new);
+        // A failed mid-cycle start must not be retried for every later
+        // config: one broken sing-box is enough. The post-cycle update still
+        // runs normally.
+        let mut live_start_failed = false;
         while let Some(event) = rx.recv().await {
+            // A verified working config can start the proxy right away; the
+            // cycle keeps probing and speedtesting in the background.
+            let live_configs = match &event {
+                ProgressEvent::LiveProxyConfigs(configs) => Some(configs.clone()),
+                _ => None,
+            };
             if let Some(reporter) = reporter.as_mut() {
                 reporter.on_event(&event);
             }
             push_tui_progress(&state, event, &previous_top_n, account_bytes).await;
+            if !live_start_failed
+                && let (Some(configs), Some(wiring)) = (live_configs, live_proxy.as_ref())
+            {
+                live_start_failed = !start_live_proxy(&state, wiring, &configs).await;
+            }
         }
     });
     (tx, task)
@@ -3471,6 +3551,7 @@ async fn push_tui_progress(
             apply_snapshot_ranks(&mut ranked);
             state.ranked = ranked;
         }
+        ProgressEvent::LiveProxyConfigs(_) => {}
         ProgressEvent::WorkingConfigsFound { configs, top_n } => {
             append_asap_working_configs(&mut state, configs, top_n, previous_top_n);
         }
@@ -3986,6 +4067,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn live_start_is_skipped_while_a_config_is_already_active() {
+        let proxy = Arc::new(tokio::sync::Mutex::new(proxy::PersistentProxy::new(
+            crate::config::ProxyConfig {
+                enabled: false,
+                ..Default::default()
+            },
+            String::new(),
+            None,
+        )));
+        let state = Arc::new(RwLock::new(RuntimeState {
+            proxy_running: true,
+            proxy_active_uri: Some("vless://active@example.com:443".to_string()),
+            ..RuntimeState::default()
+        }));
+        let wiring = LiveProxyWiring {
+            proxy,
+            config: AppConfig::default_for_first_run(),
+        };
+        let configs = vec![ranked("new", "vless://new@example.com:443", true, Some(5))];
+
+        assert!(start_live_proxy(&state, &wiring, &configs).await);
+
+        let state = state.read().await;
+        assert_eq!(
+            state.proxy_active_uri.as_deref(),
+            Some("vless://active@example.com:443"),
+            "a live config is never churned for a mid-cycle finding"
+        );
+    }
+
+    #[tokio::test]
     async fn asap_working_configs_accumulate_without_touching_recent_logs() {
         let state = Arc::new(RwLock::new(RuntimeState {
             logs: vec!["previous summary".to_string()],
@@ -4451,6 +4563,7 @@ mod tests {
             false,
             None,
             false,
+            None,
         )
         .await
         .expect("refresh succeeds");
@@ -4495,6 +4608,7 @@ mod tests {
             false,
             None,
             false,
+            None,
         )
         .await
         .expect("refresh succeeds");
@@ -4950,6 +5064,7 @@ mod tests {
             false,
             Some(ping_cancel.clone()),
             false,
+            None,
         )
         .await
         .expect("refresh succeeds");
@@ -5020,6 +5135,7 @@ mod tests {
             false,
             Some(ping_cancel.clone()),
             false,
+            None,
         )
         .await
         .expect("refresh succeeds");
@@ -5104,6 +5220,7 @@ mod tests {
                 false,
                 None,
                 false,
+                None,
             )
             .await
             .expect("refresh succeeds");
@@ -5164,6 +5281,7 @@ mod tests {
             false,
             None,
             false,
+            None,
         )
         .await
         .expect("refresh succeeds");
@@ -5308,6 +5426,7 @@ mod tests {
             false,
             None,
             false,
+            None,
         )
         .await
         .expect("refresh succeeds");

@@ -36,6 +36,7 @@ unicode-width = "0.2.2"
 url = "2.5.8"
 qrcodegen = "1.8.0"
 jpeg-encoder = "0.7.1"
+sysinfo = { version = "0.38.4", default-features = false, features = ["system"] }
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1.31"

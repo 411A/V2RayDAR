@@ -62,7 +62,8 @@ use crate::{
     probe::{ping_configs, probe_candidates},
     server::serve,
     sing_box::{
-        active_probe_needs_setup, apply_runtime_sing_box_path, recommended_version, setup_guide,
+        active_probe_needs_setup, apply_runtime_sing_box_path, reap_orphaned_instances,
+        recommended_version, setup_guide,
     },
     subscription::{
         FetchFailure, FetchOutcome, load_candidates_with_cache, retry_failed_sources_with_proxy,
@@ -214,6 +215,13 @@ async fn main() -> Result<()> {
         }
         println!("Start V2RayDAR normally; the dashboard is now unlocked.");
         return Ok(());
+    }
+
+    // A crash or forced stop cannot run kill_on_drop: clean up its sing-box
+    // children before any new proxy/probe starts and steals their ports.
+    let orphaned = reap_orphaned_instances();
+    if orphaned > 0 {
+        println!("Cleaned up {orphaned} orphaned sing-box process(es).");
     }
 
     let dashboard_auth = Arc::new(

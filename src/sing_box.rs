@@ -1,11 +1,13 @@
-use std::{path::PathBuf, process::Stdio};
+use std::{ffi::OsString, path::PathBuf, process::Stdio};
 
 use anyhow::{Context, Result, anyhow};
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use tokio::process::Command;
+use tracing::{debug, info, warn};
 
 use crate::{
     config::{AppConfig, ProbeMode},
-    constants::{SING_BOX_VERSION, sing_box_download_url},
+    constants::{SING_BOX_CONFIG_FILE_PREFIX, SING_BOX_VERSION, sing_box_download_url},
     paths::AppPaths,
 };
 
@@ -19,6 +21,88 @@ pub struct SetupGuide {
     pub executable_name: &'static str,
     pub example_paths: &'static [&'static str],
     pub notes: Vec<String>,
+}
+
+/// Kill sing-box children left behind by a previous `V2RayDAR` process.
+///
+/// `kill_on_drop` cannot run when the OS terminates the app, so a crash or a
+/// forced stop leaves proxy and probe children holding ports and temp configs.
+/// A surviving proxy child can own the configured proxy port, making every
+/// new start exit and every health check talk to the wrong process.
+///
+/// Only processes whose command line names a `V2RayDAR` temp config are
+/// considered, and a child with a live `V2RayDAR` parent is left alone (another
+/// instance owns it). Returns how many orphaned processes were killed.
+pub fn reap_orphaned_instances() -> usize {
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing()
+            .with_cmd(UpdateKind::OnlyIfNotSet)
+            .without_tasks(),
+    );
+    let own_pid = std::process::id();
+    let mut live_instance = false;
+    let mut victims = Vec::new();
+    for (pid, process) in system.processes() {
+        if pid.as_u32() == own_pid || !is_v2raydar_sing_box_cmd(process.cmd()) {
+            continue;
+        }
+        let parent_alive = process
+            .parent()
+            .and_then(|parent| system.process(parent))
+            .is_some_and(|parent| {
+                parent
+                    .name()
+                    .to_string_lossy()
+                    .to_ascii_lowercase()
+                    .contains("v2raydar")
+            });
+        if parent_alive {
+            live_instance = true;
+            continue;
+        }
+        debug!(
+            pid = pid.as_u32(),
+            cmd = ?process.cmd(),
+            "sing-box: found orphaned instance"
+        );
+        victims.push(*pid);
+    }
+
+    let mut killed = 0;
+    for pid in victims {
+        if system.process(pid).is_some_and(sysinfo::Process::kill) {
+            killed += 1;
+        } else {
+            warn!(pid = pid.as_u32(), "sing-box: failed to kill orphan");
+        }
+    }
+
+    // Temp configs carry outbound credentials. Remove them only when no other
+    // V2RayDAR is alive to own its own files.
+    if !live_instance && let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) {
+        for entry in entries.flatten() {
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(SING_BOX_CONFIG_FILE_PREFIX)
+            {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+
+    if killed > 0 {
+        info!(killed, "sing-box: reaped orphaned instances");
+    }
+    killed
+}
+
+fn is_v2raydar_sing_box_cmd(cmd: &[OsString]) -> bool {
+    cmd.iter()
+        .any(|arg| arg.to_string_lossy().contains(SING_BOX_CONFIG_FILE_PREFIX))
 }
 
 pub async fn active_probe_needs_setup(config: &AppConfig, _paths: &AppPaths) -> bool {
@@ -273,6 +357,24 @@ fn is_archive_path(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn orphan_matcher_only_accepts_v2raydar_configs() {
+        let ours = [
+            OsString::from("sing-box"),
+            OsString::from("run"),
+            OsString::from("-c"),
+            OsString::from("/tmp/v2raydar-sing-box-proxy-123-1.json"),
+        ];
+        assert!(is_v2raydar_sing_box_cmd(&ours));
+        let foreign = [
+            OsString::from("sing-box"),
+            OsString::from("run"),
+            OsString::from("-c"),
+            OsString::from("/tmp/v2rayN-config.json"),
+        ];
+        assert!(!is_v2raydar_sing_box_cmd(&foreign));
+    }
 
     #[test]
     fn setup_is_required_only_for_empty_paths() {

@@ -916,7 +916,12 @@ async fn probe_refresh_candidates(
         } else {
             format!("{label} skipped: no new configs were loaded.")
         };
-        info!(label, "probe skipped because no candidates were loaded");
+        info!(
+            label,
+            candidates = 0,
+            mode = ?config.probe.mode,
+            "probe skipped because no candidates were loaded"
+        );
         if print_compact_progress {
             print_log(&message);
         }
@@ -934,6 +939,9 @@ async fn probe_refresh_candidates(
         candidates = candidate_count,
         mode = ?config.probe.mode,
         label,
+        concurrency = config.probe.concurrency,
+        batch_size = ?config.probe.batch_size,
+        top_n = config.top_n,
         "probe started"
     );
     if print_compact_progress {
@@ -1076,6 +1084,7 @@ async fn fetch_through_bridge(
                     parsed,
                     unique = retry.candidates.len(),
                     sources = retry.successes.len(),
+                    source_errors = retry.failures.len(),
                     duration_ms = started.elapsed().as_millis(),
                     "proxied subscription retry finished"
                 );
@@ -1214,7 +1223,10 @@ async fn persist_ranked_configs(
         .map_err(|e| anyhow!("{e}"))?
         .context("failed to clean offline configs")?;
         if cleaned > 0 {
-            info!(cleaned, "cleaned offline configs from database");
+            info!(
+                cleaned,
+                upserted, stable_keys, "cleaned offline configs from database"
+            );
         }
     }
     Ok(PersistStats {
@@ -1302,6 +1314,9 @@ async fn refresh_once(
         probe_concurrency = config.probe.concurrency,
         active_timeout_ms = config.probe.active_timeout_ms,
         startup_timeout_ms = config.probe.startup_timeout_ms,
+        top_n = config.top_n,
+        refresh_seconds = config.refresh_seconds,
+        ping_seconds = config.ping_seconds,
         "refresh started"
     );
     let started_at = Utc::now();
@@ -1366,8 +1381,17 @@ async fn refresh_once(
     }
 
     let fetch_started = std::time::Instant::now();
-    info!("subscription load started");
     let cache_only = config.use_cache_only;
+    info!(
+        cache_only,
+        enabled_sources = config
+            .subscriptions
+            .iter()
+            .filter(|source| source.enabled)
+            .count(),
+        top_n = config.top_n,
+        "subscription load started"
+    );
     let mut fetched = if cache_only {
         let db = database.clone();
         let top_n = config.top_n;
@@ -1444,7 +1468,9 @@ async fn refresh_once(
     let mut fetch_errors = fetched.errors.clone();
     info!(
         candidates = fetched_count,
+        sources_ok = fresh_success_count,
         fetch_errors = fetch_errors.len(),
+        cache_only,
         duration_ms = fetch_started.elapsed().as_millis(),
         "subscription load finished"
     );
@@ -1680,6 +1706,10 @@ async fn refresh_once(
     info!(
         ranked = ranked.len(),
         reachable = ranked.iter().filter(|item| item.reachable).count(),
+        fetched = fetched_count,
+        fetch_errors = fetch_errors.len(),
+        mode = ?config.probe.mode,
+        top_n = config.top_n,
         duration_ms = probe_started.elapsed().as_millis(),
         "probe finished"
     );
@@ -1739,6 +1769,8 @@ async fn refresh_once(
     if fell_back {
         warn!(
             previous_working = fallback_working,
+            tested = ranked.len(),
+            top_n = config.top_n,
             "refresh verified no working configs; keeping previous working set"
         );
         ranked.clone_from(&previous_before_refresh.ranked);
@@ -1865,8 +1897,16 @@ async fn refresh_once(
     if print_terminal_summary {
         print_summary(&runtime, config.top_n);
     }
+    let final_ranked = runtime.ranked.len();
+    let final_reachable = runtime.reachable_candidates;
+    let final_tested = runtime.tested_candidates;
+    let final_has_error = runtime.last_error.is_some();
     *state.write().await = runtime;
     info!(
+        ranked = final_ranked,
+        reachable = final_reachable,
+        tested = final_tested,
+        has_error = final_has_error,
         duration_ms = started_instant.elapsed().as_millis(),
         "refresh finished"
     );
@@ -2213,11 +2253,20 @@ async fn cache_fetched_candidates(database: &Arc<Database>, candidates: &[Candid
     }
     let db = database.clone();
     let sightings: Vec<Candidate> = candidates.to_vec();
+    let sighting_count = sightings.len();
     let result = tokio::task::spawn_blocking(move || db.insert_new_candidates(&sightings)).await;
     match result {
         Ok(Ok(())) => {}
-        Ok(Err(error)) => warn!(error = %error, "fetch cache skipped: database write failed"),
-        Err(error) => warn!(error = %error, "fetch cache skipped: database task failed"),
+        Ok(Err(error)) => warn!(
+            error = %error,
+            sightings = sighting_count,
+            "fetch cache skipped: database write failed"
+        ),
+        Err(error) => warn!(
+            error = %error,
+            sightings = sighting_count,
+            "fetch cache skipped: database task failed"
+        ),
     }
 }
 
@@ -2254,7 +2303,8 @@ async fn ping_once(
     crate::parser::set_transport_security_required(config.probe.require_transport_security);
     let actor = cycle_actor(manual);
     let Ok(_cycle_guard) = cycle.try_lock() else {
-        debug!("ping skipped: fetch cycle is running");
+        let refreshing = state.read().await.refreshing;
+        debug!(manual, refreshing, "ping skipped: fetch cycle is running");
         if manual {
             // The loop already checked `cycle_busy`, but a refresh can win
             // the lock in between: say so instead of going silent after the
@@ -2283,7 +2333,12 @@ async fn ping_once(
         .map(candidate_from_ranked)
         .collect();
     if cached.is_empty() {
-        debug!("ping skipped: no cached configs yet");
+        debug!(
+            manual,
+            refresh_seconds = config.refresh_seconds,
+            ping_seconds = config.ping_seconds,
+            "ping skipped: no cached configs yet"
+        );
         return Ok(false);
     }
     let cached_count = cached.len();
@@ -2497,6 +2552,8 @@ async fn ping_once(
     if fell_back {
         warn!(
             previous_working,
+            tested = ranked.len(),
+            top_n = config.top_n,
             "ping verified no working configs; keeping previous working set"
         );
         ranked.clone_from(&previous_before_ping.ranked);

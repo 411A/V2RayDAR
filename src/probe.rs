@@ -142,7 +142,6 @@ async fn sing_box_available(path: &str) -> bool {
         return cached.available;
     }
 
-    debug!(sing_box_path = %path, "checking sing-box availability");
     let started = Instant::now();
     let output = Command::new(path)
         .arg("version")
@@ -165,16 +164,13 @@ async fn sing_box_available(path: &str) -> bool {
         );
         if let Some(detected) = parse_sing_box_version(&reported) {
             version = Some(detected);
-            info!(
-                sing_box_path = %path,
-                version = ?detected,
-                "sing-box version detected"
-            );
         }
     }
     info!(
         sing_box_path = %path,
         available,
+        version = ?version,
+        exit = ?output.as_ref().and_then(|output| output.status.code()),
         duration_ms = started.elapsed().as_millis(),
         "sing-box availability check finished"
     );
@@ -206,6 +202,7 @@ pub async fn probe_candidates(
         candidates = candidates.len(),
         concurrency = config.concurrency,
         batch_size = ?config.batch_size,
+        active_timeout_ms = config.active_timeout_ms,
         "probe candidate queue received"
     );
     send_progress(
@@ -221,7 +218,9 @@ pub async fn probe_candidates(
     if config.mode == ProbeMode::Active && !sing_box_available(&config.sing_box_path).await {
         warn!(
             sing_box_path = %config.sing_box_path,
-            "sing-box availability check failed"
+            mode = ?config.mode,
+            candidates = candidates.len(),
+            "sing-box availability check failed; every candidate is marked failed"
         );
         let failed = candidates.len();
         send_progress(
@@ -725,6 +724,10 @@ async fn probe_active_batched(
                 batch_index = finished_batch_index,
                 next_batch_size = batch_sizer.current,
                 duration_ms = batch_duration.as_millis(),
+                produced = batch_stats.produced,
+                splits = batch_stats.splits,
+                failed_candidates = batch_stats.failed_candidates,
+                started_cleanly = batch_stats.started_cleanly,
                 "active probe batch finished"
             );
             if stop.stopped() {
@@ -868,6 +871,7 @@ async fn finish_batched_probe(
 ) -> Vec<RankedConfig> {
     info!(
         ranked = ranked.len(),
+        reachable = ranked.iter().filter(|item| item.reachable).count(),
         duration_ms = started.elapsed().as_millis(),
         "active probe batches finished"
     );
@@ -1358,6 +1362,7 @@ async fn probe_active_batch_with_fallback(
                         .failed_candidates
                         .saturating_add(failed_entry.candidate_count());
                     warn!(
+                        batch_index,
                         remaining = failure.entries.len(),
                         failed_candidates = failed_entry.candidate_count(),
                         error = %error,
@@ -1383,7 +1388,9 @@ async fn probe_active_batch_with_fallback(
                 } else if failure.retry_split && failure.entries.len() > 1 {
                     stats.splits = stats.splits.saturating_add(1);
                     warn!(
+                        batch_index,
                         entries = failure.entries.len(),
+                        candidates = candidate_count(&failure.entries),
                         error = %failure.error,
                         "active probe batch failed; splitting"
                     );
@@ -1401,7 +1408,9 @@ async fn probe_active_batch_with_fallback(
                     pending.push(left);
                 } else {
                     warn!(
+                        batch_index,
                         entries = batch_len,
+                        candidates = candidate_count(&failure.entries),
                         error = %error,
                         "active probe batch failed"
                     );
@@ -1449,10 +1458,6 @@ async fn probe_active_batch(
     }
 
     let started = Instant::now();
-    debug!(
-        entries = entries.len(),
-        "active probe reserving local ports"
-    );
     let entry_candidates = candidate_count(&entries);
     send_progress(
         progress,
@@ -1472,7 +1477,13 @@ async fn probe_active_batch(
         .iter()
         .map(|reservation| reservation.port)
         .collect::<Vec<_>>();
-    debug!(entries = entries.len(), ports = ?ports, "active probe local ports reserved");
+    debug!(
+        entries = entries.len(),
+        candidates = entry_candidates,
+        ports = ports.len(),
+        first_port = ports.first().copied(),
+        "active probe local ports reserved"
+    );
     let config_path = match write_sing_box_batch_config(&entries, &ports).await {
         Ok(path) => path,
         Err(err) => {
@@ -1499,7 +1510,9 @@ async fn probe_active_batch(
         Ok(child) => {
             debug!(
                 entries = entries.len(),
+                candidates = entry_candidates,
                 config_path = %config_path.display(),
+                pid = child.id(),
                 "sing-box batch process spawned"
             );
             child
@@ -1531,6 +1544,7 @@ async fn probe_active_batch(
             let mut remaining = entries;
             let failed_entry = remaining.remove(index);
             warn!(
+                batch_index,
                 failed_outbound_index = index,
                 failed_candidates = failed_entry.candidate_count(),
                 remaining = remaining.len(),
@@ -1544,7 +1558,11 @@ async fn probe_active_batch(
             ));
         }
         warn!(
+            batch_index,
             entries = entries.len(),
+            candidates = entry_candidates,
+            ports = ports.len(),
+            timeout_ms = config.startup_timeout_ms,
             duration_ms = started.elapsed().as_millis(),
             error = %err,
             "sing-box local proxies were not ready"
@@ -1559,19 +1577,28 @@ async fn probe_active_batch(
     if stop.stopped() {
         let stderr = cleanup_sing_box_child(child, config_path).await;
         if !stderr.is_empty() {
-            debug!(stderr = %stderr, "sing-box batch stderr after cancellation");
+            debug!(
+                batch_index,
+                entries = entries.len(),
+                stderr = %stderr,
+                "sing-box batch stderr after cancellation"
+            );
         }
         return Ok(0);
     }
-    debug!(
-        entries = entries.len(),
-        duration_ms = started.elapsed().as_millis(),
-        "sing-box local proxies ready"
-    );
     let total_entries = entries.len();
     let total_candidates = candidate_count(&entries);
     let http_concurrency = active_probe_http_concurrency(config.concurrency, total_entries);
     let progress_interval = http_concurrency.min(total_entries);
+    debug!(
+        batch_index,
+        entries = total_entries,
+        candidates = total_candidates,
+        ports = ports.len(),
+        http_concurrency,
+        duration_ms = started.elapsed().as_millis(),
+        "sing-box local proxies ready"
+    );
     let mut probe_results = stream::iter(entries.into_iter().zip(ports).map(
         |(entry, port)| async move {
             let result = probe_active_target_inner(port, config).await;
@@ -1606,6 +1633,7 @@ async fn probe_active_batch(
         }
         if completed == total_entries || completed % progress_interval == 0 {
             info!(
+                batch_index,
                 completed_probes = completed,
                 total_probes = total_entries,
                 ranked_candidates = produced,
@@ -1624,11 +1652,13 @@ async fn probe_active_batch(
         }
         if let Some(reason) = stop_reason {
             info!(
+                batch_index,
                 completed_probes = completed,
                 total_probes = total_entries,
                 ranked_candidates = produced,
                 total_candidates,
                 reachable = working,
+                reason = %reason,
                 "active probe batch stopped early"
             );
             send_progress(progress, LogLevel::Info, reason);
@@ -1641,10 +1671,15 @@ async fn probe_active_batch(
 
     let stderr = cleanup_sing_box_child(child, config_path).await;
     if !stderr.is_empty() {
-        debug!(stderr = %stderr, "sing-box batch stderr");
+        debug!(batch_index, stderr = %stderr, "sing-box batch stderr");
     }
     debug!(
+        batch_index,
         ranked = produced,
+        candidates = total_candidates,
+        reachable = working,
+        completed_probes = completed,
+        total_probes = total_entries,
         duration_ms = started.elapsed().as_millis(),
         "active probe batch process finished"
     );
@@ -1807,7 +1842,6 @@ async fn resolve_endpoint_country(host: &str) -> Option<String> {
 
 async fn probe_active_target_inner(port: u16, config: &ProbeConfig) -> Result<ActiveProbeSuccess> {
     let proxy_url = format!("http://{LOCALHOST_IP}:{port}");
-    debug!(port, test_url = %config.test_url, "active HTTP probe started");
     let mut builder = reqwest::Client::builder()
         .timeout(Duration::from_millis(config.active_timeout_ms))
         .proxy(Proxy::all(&proxy_url)?);
@@ -1827,7 +1861,12 @@ async fn probe_active_target_inner(port: u16, config: &ProbeConfig) -> Result<Ac
     let bytes = exchange_bytes(&config.test_url, &response);
     debug!(
         port,
-        status, latency_ms, "active HTTP probe response received"
+        status,
+        latency_ms,
+        bytes,
+        accepted = config.accepted_statuses.contains(&status),
+        timeout_ms = config.active_timeout_ms,
+        "active HTTP probe finished"
     );
     if !config.accepted_statuses.contains(&status) {
         return Err(anyhow!(
@@ -1867,9 +1906,11 @@ async fn enrich_top_speedtests(
     progress: Option<&UnboundedSender<ProgressEvent>>,
 ) {
     debug!(
-        download_url = ?config.download_url,
         speedtest_top_n = config.speedtest_top_n,
         speedtest_interval_seconds = config.speedtest_interval_seconds,
+        bytes_limit = config.download_bytes_limit,
+        upload_enabled = config.upload_url.is_some(),
+        reachable = ranked.iter().filter(|item| item.reachable).count(),
         "speedtest enrichment started"
     );
     let Some(download_url) = config
@@ -1969,21 +2010,24 @@ async fn enrich_top_speedtests(
     }))
     .buffer_unordered(concurrency);
 
-    let mut upload_results: Vec<(usize, bool)> = Vec::new();
+    let mut upload_results: Vec<(usize, bool, Option<String>)> = Vec::new();
     while let Some((index, measurement)) = results.next().await {
-        if let Some((download, upload_ok)) = measurement {
+        if let Some((download, upload)) = measurement {
+            let upload_ok = upload.as_ref().map(|(ok, _)| *ok);
             if !download.complete {
                 debug!(
                     name = %ranked[index].name,
                     bytes = download.bytes,
+                    requested_bytes = bytes_limit,
                     mbps = download.mbps,
+                    upload_ok = ?upload_ok,
                     "speedtest body ended early or stalled; ranking it below measured bulk configs"
                 );
             }
             ranked[index].download_mbps = Some(download.mbps);
             ranked[index].download_bytes = Some(download.bytes);
-            if let Some(ok) = upload_ok {
-                upload_results.push((index, ok));
+            if let Some((ok, error)) = upload {
+                upload_results.push((index, ok, error));
             }
             if let Ok(mut cache) = speedtest_cache().lock() {
                 if cache.len() > 8192 {
@@ -2028,7 +2072,7 @@ async fn measure_download_and_upload_with_sing_box(
     download_url: &str,
     upload_url: Option<&str>,
     bytes_limit: usize,
-) -> Result<(DownloadMeasurement, Option<bool>)> {
+) -> Result<(DownloadMeasurement, Option<(bool, Option<String>)>)> {
     run_with_sing_box_proxy(sing_box_path, uri, startup_timeout, |port| async move {
         let proxy_url = format!("http://{LOCALHOST_IP}:{port}");
         let download = measure_download_through_proxy(
@@ -2042,8 +2086,10 @@ async fn measure_download_and_upload_with_sing_box(
         // download measurement is still worth keeping. If every measured
         // config fails, the caller treats the whole run as unknown so a
         // blocked echo endpoint cannot demote the pool.
-        let upload_ok = match upload_url {
-            Some(upload_url) => {
+        // Keep the error instead of logging here: the caller has the name and
+        // emits one verdict summary for the whole cycle.
+        let upload = match upload_url {
+            Some(upload_url) => Some(
                 match measure_upload_through_proxy(
                     &proxy_url,
                     upload_url,
@@ -2052,16 +2098,13 @@ async fn measure_download_and_upload_with_sing_box(
                 )
                 .await
                 {
-                    Ok(ok) => Some(ok),
-                    Err(error) => {
-                        debug!(error = %error, "upload probe failed through this config");
-                        Some(false)
-                    }
-                }
-            }
+                    Ok(ok) => (ok, None),
+                    Err(error) => (false, Some(error.to_string())),
+                },
+            ),
             None => None,
         };
-        Ok((download, upload_ok))
+        Ok((download, upload))
     })
     .await
 }
@@ -2133,22 +2176,41 @@ fn apply_upload_cache(ranked: &mut [RankedConfig], config: &ProbeConfig, enabled
 /// Publish per-config upload verdicts. If every measured config failed, the
 /// echo endpoint itself is probably unreachable: leave the pool unknown
 /// instead of demoting every node.
-fn publish_upload_results(ranked: &mut [RankedConfig], results: Vec<(usize, bool)>) {
+fn publish_upload_results(
+    ranked: &mut [RankedConfig],
+    results: Vec<(usize, bool, Option<String>)>,
+) {
     if results.is_empty() {
         return;
     }
-    if !results.iter().any(|(_, ok)| *ok) {
-        warn!("upload probe failed through every measured config; upload capability unknown");
+    let accepted = results.iter().filter(|(_, ok, _)| *ok).count();
+    if accepted == 0 {
+        // One rich line: how many were tried, why the first one failed, and
+        // the fact that the whole pool stays unknown rather than demoted.
+        warn!(
+            measured = results.len(),
+            first_error = %results
+                .iter()
+                .find_map(|(_, _, error)| error.as_deref())
+                .unwrap_or("(rejected response)"),
+            "upload probe failed through every measured config; upload capability unknown"
+        );
         return;
     }
     let now = Instant::now();
     let mut cache = upload_cache().lock().ok();
-    for (index, ok) in results {
+    let mut rejected_total = 0usize;
+    for (index, ok, error) in results {
         ranked[index].upload_ok = Some(ok);
+        if !ok {
+            rejected_total += 1;
+        }
         if !ok {
             debug!(
                 name = %ranked[index].name,
-                "upload probe proved this config cannot carry a request body; demoted"
+                mbps = ?ranked[index].download_mbps,
+                error = ?error,
+                "upload probe rejected this config; upload ranking prefers an upload-capable one"
             );
         }
         if let Some(cache) = cache.as_mut() {
@@ -2158,6 +2220,12 @@ fn publish_upload_results(ranked: &mut [RankedConfig], results: Vec<(usize, bool
             cache.insert(upload_cache_key(&ranked[index]), (now, ok));
         }
     }
+    debug!(
+        measured = accepted + rejected_total,
+        accepted,
+        rejected = rejected_total,
+        "upload probe verdicts"
+    );
 }
 
 /// An upload verdict is a preference, never an exclusion. It only demotes
@@ -2346,11 +2414,6 @@ async fn wait_for_local_proxies(
 ) -> Result<()> {
     let started = Instant::now();
     let mut ready = vec![false; ports.len()];
-    debug!(
-        ports = ports.len(),
-        timeout_ms = timeout.as_millis(),
-        "waiting for sing-box local proxies"
-    );
     loop {
         if let Some(status) = child.try_wait()? {
             return Err(anyhow!("sing-box exited before proxy was ready: {status}"));
@@ -2366,16 +2429,17 @@ async fn wait_for_local_proxies(
                 .is_ok_and(|result| result.is_ok())
             {
                 ready[index] = true;
-                debug!(
-                    port,
-                    ready = ready.iter().filter(|is_ready| **is_ready).count(),
-                    total = ports.len(),
-                    "sing-box local proxy became ready"
-                );
             }
         }
 
         if ready.iter().all(|is_ready| *is_ready) {
+            debug!(
+                ports = ports.len(),
+                first_port = ports.first().copied(),
+                timeout_ms = timeout.as_millis(),
+                duration_ms = started.elapsed().as_millis(),
+                "sing-box local proxies ready"
+            );
             return Ok(());
         }
 
@@ -4228,7 +4292,10 @@ mod tests {
         // A stale verdict from an earlier batch must not demote the pool when
         // this batch proved nothing (the echo endpoint may be unreachable).
         pool[0].upload_ok = Some(false);
-        publish_upload_results(&mut pool, vec![(0, false), (1, false)]);
+        publish_upload_results(
+            &mut pool,
+            vec![(0, false, None), (1, false, Some("timeout".to_string()))],
+        );
         keep_upload_preference_only_when_available(&mut pool);
         assert_eq!(pool[0].upload_ok, None);
         assert_eq!(pool[1].upload_ok, None);

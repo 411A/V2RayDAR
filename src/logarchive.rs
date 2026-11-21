@@ -266,6 +266,8 @@ impl LogArchive {
             self.warned_prune = true;
             tracing::warn!(
                 max_bytes = self.max_bytes,
+                compressed_bytes = self.compressed_bytes,
+                chunks = self.chunks.len(),
                 "log archive budget reached; oldest chunks will be pruned"
             );
         }

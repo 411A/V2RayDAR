@@ -195,7 +195,12 @@ fn load_legacy_dir(dir: &Path) -> Result<ZoneDb> {
     }
     sort_ranges(&mut db);
     if skipped > 0 {
-        debug!(skipped, dir = %dir.display(), "skipped malformed zone lines");
+        debug!(
+            skipped,
+            dir = %dir.display(),
+            prefixes = db.prefix_count(),
+            "skipped malformed zone lines"
+        );
     }
     Ok(db)
 }
@@ -230,7 +235,12 @@ pub fn load_consolidated(path: &Path) -> Result<ZoneDb> {
     }
     sort_ranges(&mut db);
     if skipped > 0 {
-        debug!(skipped, path = %path.display(), "skipped malformed zone lines");
+        debug!(
+            skipped,
+            path = %path.display(),
+            prefixes = db.prefix_count(),
+            "skipped malformed zone lines"
+        );
     }
     Ok(db)
 }
@@ -391,9 +401,15 @@ pub fn init(mmdb_path: Option<&Path>, zone_dir: Option<&Path>) {
                 return None;
             }
         };
+        let bytes_len = bytes.len();
         match Reader::from_source(bytes) {
             Ok(reader) => {
-                info!(path = %path.display(), "GeoIP database loaded (MaxMind)");
+                info!(
+                    path = %path.display(),
+                    bytes = bytes_len,
+                    format = "mmdb",
+                    "GeoIP database loaded"
+                );
                 Some(reader)
             }
             Err(err) => {
@@ -407,7 +423,8 @@ pub fn init(mmdb_path: Option<&Path>, zone_dir: Option<&Path>) {
             info!(
                 prefixes = db.prefix_count(),
                 dir = %dir.display(),
-                "GeoIP database loaded (country zones)"
+                format = "zones",
+                "GeoIP database loaded"
             );
             Some(db)
         }
@@ -417,7 +434,11 @@ pub fn init(mmdb_path: Option<&Path>, zone_dir: Option<&Path>) {
         }
     });
     if mmdb.is_none() && zones.is_none() {
-        info!("GeoIP disabled; country detection unavailable");
+        info!(
+            mmdb = mmdb.is_some(),
+            zones = zones.is_some(),
+            "GeoIP disabled; country detection unavailable"
+        );
     }
     let _ = GEOIP.set(GeoIp { mmdb, zones });
 }

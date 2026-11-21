@@ -601,7 +601,11 @@ fn generate_token() -> String {
 
     // No secure random source. The token still works, but it is not
     // unpredictable, so the condition is worth reporting.
-    tracing::warn!("no secure random source available; the LAN token is not unpredictable");
+    tracing::warn!(
+        event = "insecure-token",
+        pid = std::process::id(),
+        "no secure random source available; the LAN token is not unpredictable"
+    );
     let fallback = format!(
         "{}-{}",
         std::process::id(),

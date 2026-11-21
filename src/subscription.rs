@@ -63,7 +63,11 @@ where
     Fut: Future<Output = ()>,
 {
     if !config.subscriptions.iter().any(|source| source.enabled) {
-        info!("subscription load skipped because no subscriptions are enabled");
+        info!(
+            configured = config.subscriptions.len(),
+            enabled = 0,
+            "subscription load skipped because no subscriptions are enabled"
+        );
         return Ok(FetchOutcome {
             candidates: Vec::new(),
             errors: Vec::new(),
@@ -86,6 +90,8 @@ where
         fetch_concurrency = config.fetch_concurrency,
         timeout_ms = config.fetch_timeout_ms,
         max_bytes = config.max_subscription_bytes,
+        cache_only = config.use_cache_only,
+        require_transport_security = config.probe.require_transport_security,
         "subscription fetch queue built"
     );
     send_progress(
@@ -264,9 +270,12 @@ where
                     .count();
                 unique_count = unique_count.saturating_add(new_unique);
                 info!(
+                    source = %source.name,
                     parsed,
                     new_unique,
+                    unique_total = unique_count,
                     bytes_read = fetched.bytes_read,
+                    duration_ms = elapsed.as_millis(),
                     "subscription fetch result parsed"
                 );
                 send_progress(
@@ -281,7 +290,14 @@ where
             Err(err) => {
                 report_subscription_bytes(err.bytes_read, report_bytes).await;
                 let message = fetch_error_message(&source.name, &err.error, &source.url);
-                warn!(error = %message, "subscription fetch failed");
+                warn!(
+                    source = %source.name,
+                    bytes_read = err.bytes_read,
+                    duration_ms = elapsed.as_millis(),
+                    proxy_retry = proxy_may_help(&err.error),
+                    error = %message,
+                    "subscription fetch failed"
+                );
                 send_progress(
                     context.progress.as_ref(),
                     LogLevel::Warn,
@@ -489,20 +505,17 @@ async fn fetch_source(
     .map_err(|err| {
         err.with_error_context(format!("failed to fetch subscription '{}'", source.name))
     })?;
-    info!(
-        source = %source.name,
-        body_bytes = fetched.body.len(),
-        bytes_read = fetched.bytes_read,
-        duration_ms = started.elapsed().as_millis(),
-        "subscription source fetch finished"
-    );
+    let fetch_ms = started.elapsed().as_millis();
     let parse_started = std::time::Instant::now();
     let candidates = parse_subscription_document(&source.name, source.priority, &fetched.body);
     info!(
         source = %source.name,
+        body_bytes = fetched.body.len(),
+        bytes_read = fetched.bytes_read,
         candidates = candidates.len(),
-        duration_ms = parse_started.elapsed().as_millis(),
-        "subscription source parse finished"
+        fetch_ms,
+        parse_ms = parse_started.elapsed().as_millis(),
+        "subscription source loaded"
     );
     send_progress(
         progress.as_ref(),
@@ -518,6 +531,8 @@ async fn fetch_source(
     if candidates.is_empty() {
         warn!(
             source = source.name,
+            body_bytes = fetched.body.len(),
+            bytes_read = fetched.bytes_read,
             "subscription did not contain supported share links"
         );
     }
@@ -650,8 +665,7 @@ async fn fetch_body(client: &Client, url: &str, max_bytes: usize) -> FetchResult
 async fn fetch_http_body(client: &Client, url: &str, max_bytes: usize) -> FetchResult<FetchedBody> {
     // Never log the raw URL: it can carry userinfo and a private token.
     let safe_url = redact_subscription_url(url);
-    debug!(url = %safe_url, "HTTP subscription request prepared");
-
+    let started = std::time::Instant::now();
     let request_bytes = estimated_request_bytes(url);
 
     let response = client
@@ -659,12 +673,8 @@ async fn fetch_http_body(client: &Client, url: &str, max_bytes: usize) -> FetchR
         .send()
         .await
         .map_err(|err| FetchError::new(err.into(), request_bytes))?;
-    debug!(
-        url = %safe_url,
-        status = response.status().as_u16(),
-        content_length = response.content_length(),
-        "HTTP subscription response received"
-    );
+    let status = response.status().as_u16();
+    let content_length = response.content_length();
     let response_bytes = estimated_response_bytes(&response);
     let exchange_bytes = request_bytes.saturating_add(response_bytes);
     let response = response
@@ -675,9 +685,12 @@ async fn fetch_http_body(client: &Client, url: &str, max_bytes: usize) -> FetchR
         .map_err(|err| err.add_bytes(exchange_bytes))?;
     let bytes_read = exchange_bytes.saturating_add(body.len() as u64);
     debug!(
-        url,
+        url = %safe_url,
+        status,
+        content_length,
         body_bytes = body.len(),
         bytes_read,
+        duration_ms = started.elapsed().as_millis(),
         "HTTP subscription body read"
     );
     Ok(FetchedBody { body, bytes_read })

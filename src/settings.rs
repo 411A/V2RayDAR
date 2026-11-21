@@ -479,6 +479,7 @@ fn unflatten_settings(rows: &HashMap<String, String>) -> Value {
     let mut root = Map::new();
     let mut keys: Vec<&String> = rows.keys().collect();
     keys.sort();
+    let stored_keys = keys.len();
     for key in keys {
         // A single unreadable row must not take the whole boot down with it.
         let leaf: Value = match serde_json::from_str(&rows[key]) {
@@ -486,6 +487,7 @@ fn unflatten_settings(rows: &HashMap<String, String>) -> Value {
             Err(error) => {
                 tracing::warn!(
                     key,
+                    stored_keys,
                     error = %error,
                     "stored setting does not parse; skipping it"
                 );

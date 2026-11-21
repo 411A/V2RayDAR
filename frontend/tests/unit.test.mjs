@@ -2091,3 +2091,74 @@ describe("stat cards: deltas refresh numbers, clocks stay ticker-owned", () => {
     assert.doesNotMatch(plain, /cache/i);
   });
 });
+
+describe("dashboard password card stays compact, accurate, and live", () => {
+  const walk = (node, out = []) => {
+    out.push(node);
+    for (const child of node.children || []) walk(child, out);
+    return out;
+  };
+  const setup = (patch = {}) => {
+    const { api, sandbox } = loadApp();
+    api.state.dashAuth = {
+      enabled: false,
+      has_phrase: true,
+      reset_wait_seconds: null,
+      min_password_chars: 12,
+      min_phrase_chars: 8,
+      ...patch,
+    };
+    api.state.dashAuthUntil = 0;
+    api.renderDashboardAuth();
+    const body = sandbox.__elements.get("dash-auth-body");
+    const nodes = walk(body);
+    return { api, sandbox, byId: (id) => nodes.find((node) => node.id === id) };
+  };
+
+  it("counts characters, marks mismatches, and gates the primary action", () => {
+    const { api, byId } = setup();
+    assert.equal(byId("auth-submit").disabled, true);
+
+    byId("auth-new").value = "short";
+    api.authValidity();
+    assert.equal(byId("auth-new-meta").textContent, "5/12");
+    assert.equal(byId("auth-submit").disabled, true);
+
+    byId("auth-new").value = "correct horse battery staple";
+    byId("auth-confirm").value = "correct horse battery stapl";
+    byId("auth-phrase").value = "John Smith";
+    byId("auth-phrase-confirm").value = "John Smith";
+    api.authValidity();
+    assert.match(byId("auth-confirm-meta").textContent, /Different/);
+    assert.equal(byId("auth-submit").disabled, true);
+
+    byId("auth-confirm").value = byId("auth-new").value;
+    api.authValidity();
+    assert.match(byId("auth-confirm-meta").textContent, /Matches/);
+    assert.equal(byId("auth-submit").disabled, false);
+  });
+
+  it("shows the live status, missing-phrase warning, and reset countdown", () => {
+    const { api, sandbox, byId } = setup({ enabled: true, has_phrase: false, reset_wait_seconds: 3600 });
+    const state = sandbox.__elements.get("dash-auth-state");
+    const parts = walk(state);
+    assert.ok(parts.some((node) => node.classList && node.classList.contains("on")));
+    assert.ok(parts.some((node) => node.className === "auth-warn"));
+    const lock = parts.find((node) => node.className === "auth-lock");
+    assert.match(lock.textContent, /1:00:00/);
+    assert.equal(sandbox.__elements.get("dash-auth-recommended").hidden, true);
+    assert.equal(walk(sandbox.__elements.get("dash-auth-body")).some((n) => n.id === "auth-current"), true);
+    assert.equal(byId("auth-disable").disabled, true);
+    byId("auth-current").value = "current";
+    api.authValidity();
+    assert.equal(byId("auth-disable").disabled, false);
+  });
+
+  it("renders the reset command as code, not plain text", () => {
+    const { sandbox } = setup();
+    const note = sandbox.__elements.get("dash-auth-note");
+    const code = walk(note).find((node) => node.tagName === "CODE");
+    assert.equal(code.textContent, "v2raydar --reset-dashboard-password");
+    assert.match(walk(note).map((n) => n.textContent).join(" "), /Forgot the password/);
+  });
+});

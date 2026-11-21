@@ -82,6 +82,7 @@ const state = {
   subs: null, // { list, dirty } when /api/subscriptions exists
   settings: null, // server settings payload when /api/config exists
   dashAuth: null, // /api/dashboard/status payload (security card)
+  dashAuthUntil: 0, // reset-lock countdown anchor (ms)
   logLines: [],
   // Older lines loaded from the compressed session archive, oldest first.
   // The live tail stays in `logLines` so real-time rendering never waits on
@@ -1670,6 +1671,7 @@ function tickClock() {
     }
     renderUpdated();
   }
+  paintAuthLock();
   scheduleClock();
 }
 
@@ -3705,31 +3707,164 @@ async function loadSettings() {
 
 /* ---------- dashboard password card ---------- */
 
+let authInputs = [];
+let authMetas = {};
+let authSubmit = null;
+let authDisable = null;
+let authLock = null;
+
 async function loadDashboardAuth() {
   const r = await fetchJson("/api/dashboard/status");
   if (r.status === 200 && r.data && typeof r.data.enabled === "boolean") {
     state.dashAuth = r.data;
+    const wait = Number(r.data.reset_wait_seconds) || 0;
+    state.dashAuthUntil = wait > 0 ? Date.now() + wait * 1000 : 0;
   } else {
     state.dashAuth = null;
+    state.dashAuthUntil = 0;
   }
   renderDashboardAuth();
 }
 
 function authValue(id) {
-  const node = $(id);
+  const node = authInputs.find((input) => input.id === id);
   return node ? String(node.value) : "";
 }
 
-function authField(text, id, autocomplete) {
+/// One labeled password field. `min` adds a live counter and `title` carries
+/// the full policy as a tooltip, so the card stays short without hiding rules.
+function authField(text, id, autocomplete, min, title) {
   const label = el("label", null, "auth-field");
-  label.appendChild(document.createTextNode(text));
+  if (id === "auth-current") {
+    label.classList.add("full");
+  }
+  const top = el("span", null, "auth-label");
+  top.appendChild(document.createTextNode(text));
+  if (id !== "auth-current") {
+    const meta = el("span", min ? "0/" + min : "", "auth-meta");
+    meta.id = id + "-meta";
+    meta.setAttribute("aria-live", "polite");
+    authMetas[id] = meta;
+    top.appendChild(meta);
+  }
+  label.appendChild(top);
   const input = document.createElement("input");
   input.type = "password";
   input.id = id;
   input.autocomplete = autocomplete;
   input.spellcheck = false;
+  input.maxLength = id.includes("phrase") ? 512 : 256;
+  if (title) input.title = title;
   label.appendChild(input);
+  authInputs.push(input);
   return label;
+}
+
+/// Live policy: counters, match marks, and whether each action may run. It
+/// never stores or logs a value; the form is rebuilt after every save.
+function authValidity() {
+  const status = state.dashAuth;
+  if (!status) {
+    return false;
+  }
+  const pairs = [
+    ["auth-new", "auth-confirm", status.min_password_chars],
+    ["auth-phrase", "auth-phrase-confirm", status.min_phrase_chars],
+  ];
+  let valid = !status.enabled || authValue("auth-current").length > 0;
+  for (const [id, confirmId, min] of pairs) {
+    const value = authValue(id);
+    const typed = authValue(confirmId).length > 0;
+    const same = value === authValue(confirmId);
+    const meta = authMetas[id];
+    if (meta) {
+      meta.textContent = Math.min(value.length, min) + "/" + min;
+      meta.classList.toggle("ok", value.length >= min);
+    }
+    const confirmMeta = authMetas[confirmId];
+    if (confirmMeta) {
+      confirmMeta.textContent = typed ? t(same ? "dashAuthMatch" : "dashAuthDiffers") : "";
+      confirmMeta.classList.toggle("ok", typed && same);
+      confirmMeta.classList.toggle("bad", typed && !same);
+    }
+    valid = valid && value.length >= min && same;
+  }
+  if (authSubmit) {
+    authSubmit.disabled = !valid;
+  }
+  if (authDisable) {
+    authDisable.disabled = !authValue("auth-current");
+  }
+  return valid;
+}
+
+function paintAuthLock() {
+  if (!authLock) {
+    return;
+  }
+  const left = Math.ceil((state.dashAuthUntil - Date.now()) / 1000);
+  if (left <= 0) {
+    state.dashAuthUntil = 0;
+    if (state.dashAuth) {
+      state.dashAuth.reset_wait_seconds = 0;
+    }
+    if (authLock.parentNode) {
+      authLock.parentNode.removeChild(authLock);
+    }
+    authLock = null;
+    return;
+  }
+  setText(authLock, t("dashAuthLocked", { time: fmtCountdown(left * 1000) }));
+}
+
+/// Status dot plus the one-line state, an optional reset-lock chip, and a
+/// warning when protection is on but no recovery phrase exists.
+function paintDashAuthState() {
+  const status = state.dashAuth;
+  const node = $("dash-auth-state");
+  if (!status || !node) {
+    return;
+  }
+  while (node.firstChild) {
+    node.removeChild(node.firstChild);
+  }
+  const dot = el("span", null, "auth-dot");
+  dot.classList.toggle("on", status.enabled);
+  node.appendChild(dot);
+  node.appendChild(document.createTextNode(status.enabled ? t("dashAuthOn") : t("dashAuthOff")));
+  if (!state.dashAuthUntil) {
+    const wait = Number(status.reset_wait_seconds) || 0;
+    state.dashAuthUntil = wait > 0 ? Date.now() + wait * 1000 : 0;
+  }
+  authLock = null;
+  if (state.dashAuthUntil > Date.now()) {
+    authLock = el("span", "", "auth-lock");
+    authLock.id = "dash-auth-lock";
+    node.appendChild(authLock);
+    paintAuthLock();
+  }
+  if (status.enabled && !status.has_phrase) {
+    node.appendChild(el("span", t("dashAuthNoPhrase"), "auth-warn"));
+  }
+  const recommended = $("dash-auth-recommended");
+  if (recommended) {
+    recommended.hidden = status.enabled;
+  }
+}
+
+/// The reset command is markup, not text: it must render as code.
+function paintDashAuthNote() {
+  const note = $("dash-auth-note");
+  if (!note) {
+    return;
+  }
+  while (note.firstChild) {
+    note.removeChild(note.firstChild);
+  }
+  const parts = t("dashAuthNote").split("{cmd}");
+  note.appendChild(document.createTextNode(parts[0]));
+  note.appendChild(el("code", "v2raydar --reset-dashboard-password"));
+  note.appendChild(document.createTextNode(parts[1] || ""));
 }
 
 function renderDashboardAuth() {
@@ -3743,61 +3878,84 @@ function renderDashboardAuth() {
     return;
   }
   card.hidden = false;
-  setText($("dash-auth-state"), status.enabled ? t("dashAuthOn") : t("dashAuthOff"));
+  authInputs = [];
+  authMetas = {};
+  authSubmit = null;
+  authDisable = null;
+  paintDashAuthState();
+  paintDashAuthNote();
+
   const body = $("dash-auth-body");
   while (body.firstChild) {
     body.removeChild(body.firstChild);
   }
-  const form = el("div", null, "auth-form");
+  const form = el("form", null, "auth-form");
+  const passwordHint = t("dashAuthHint", { n: status.min_password_chars });
+  const phraseHint = t("dashAuthPhraseHint", { n: status.min_phrase_chars });
   if (status.enabled) {
     form.appendChild(authField(t("dashAuthCurrent"), "auth-current", "current-password"));
   }
-  form.appendChild(authField(t("dashAuthNew"), "auth-new", "new-password"));
-  form.appendChild(authField(t("dashAuthConfirm"), "auth-confirm", "new-password"));
-  form.appendChild(authField(t("dashAuthPhrase"), "auth-phrase", "off"));
-  form.appendChild(authField(t("dashAuthPhraseConfirm"), "auth-phrase-confirm", "off"));
+  form.appendChild(
+    authField(t("dashAuthNew"), "auth-new", "new-password", status.min_password_chars, passwordHint),
+  );
+  form.appendChild(
+    authField(t("dashAuthConfirm"), "auth-confirm", "new-password", null, passwordHint),
+  );
+  form.appendChild(
+    authField(t("dashAuthPhrase"), "auth-phrase", "off", status.min_phrase_chars, phraseHint),
+  );
+  form.appendChild(
+    authField(t("dashAuthPhraseConfirm"), "auth-phrase-confirm", "off", null, phraseHint),
+  );
+
+  const tools = el("div", null, "auth-tools");
+  const actions = el("div", null, "auth-actions");
+  authSubmit = el("button", status.enabled ? t("dashAuthUpdate") : t("dashAuthEnable"), "btn primary");
+  authSubmit.type = "submit";
+  authSubmit.id = "auth-submit";
+  actions.appendChild(authSubmit);
+  if (status.enabled) {
+    authDisable = el("button", t("dashAuthDisable"), "btn danger");
+    authDisable.type = "button";
+    authDisable.id = "auth-disable";
+    authDisable.addEventListener("click", () => {
+      if (window.confirm(t("dashAuthDisableConfirm"))) {
+        void saveDashboardAuth(true);
+      }
+    });
+    actions.appendChild(authDisable);
+    const signOut = el("button", t("dashAuthSignOut"), "btn");
+    signOut.type = "button";
+    signOut.addEventListener("click", () => void logoutDashboard());
+    actions.appendChild(signOut);
+  }
 
   const showLabel = el("label", null, "auth-show");
   const show = document.createElement("input");
   show.type = "checkbox";
   show.id = "auth-show";
   showLabel.appendChild(show);
-  showLabel.appendChild(
-    document.createTextNode(t("dashAuthShow")),
-  );
+  showLabel.appendChild(document.createTextNode(t("dashAuthShow")));
   show.addEventListener("change", () => {
-    for (const input of form.querySelectorAll("input[type=password], input[type=text]")) {
+    for (const input of authInputs) {
       input.type = show.checked ? "text" : "password";
     }
   });
-  form.appendChild(showLabel);
 
-  const hints = el("p", null, "hint");
-  hints.textContent = t("dashAuthHint", { n: status.min_password_chars }) + " " +
-    t("dashAuthPhraseHint", { n: status.min_phrase_chars });
-  form.appendChild(hints);
-
-  const actions = el("div", null, "auth-actions");
-  const primary = el("button", status.enabled ? t("dashAuthUpdate") : t("dashAuthEnable"), "btn primary");
-  primary.type = "button";
-  primary.addEventListener("click", () => void saveDashboardAuth(false));
-  actions.appendChild(primary);
-  if (status.enabled) {
-    const disable = el("button", t("dashAuthDisable"), "btn danger");
-    disable.type = "button";
-    disable.addEventListener("click", () => {
-      if (window.confirm(t("dashAuthDisableConfirm"))) {
-        void saveDashboardAuth(true);
-      }
-    });
-    actions.appendChild(disable);
-    const signOut = el("button", t("dashAuthSignOut"), "btn");
-    signOut.type = "button";
-    signOut.addEventListener("click", () => void logoutDashboard());
-    actions.appendChild(signOut);
+  tools.appendChild(actions);
+  tools.appendChild(showLabel);
+  form.appendChild(tools);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (authValidity()) {
+      void saveDashboardAuth(false);
+    }
+  });
+  for (const input of authInputs) {
+    input.addEventListener("input", authValidity);
   }
-  form.appendChild(actions);
   body.appendChild(form);
+  authValidity();
 }
 
 async function saveDashboardAuth(disable) {

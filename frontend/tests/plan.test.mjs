@@ -14,7 +14,9 @@ const readRepo = (f) => fs.readFileSync(path.join(repo, f), "utf8");
 // Every budget below is a number the plan calls a hard gate, so every one of
 // them is asserted here. The plan says "test asserts"; this file is that
 // test. A budget nobody checks is a budget that silently stops being true.
-const INITIAL_PAYLOAD_CAP = 444 * 1024; // PLAN §5, "Initial payload"
+// 444 -> 452 KiB: compact password card (live counters, reset countdown,
+// code-formatted recovery command).
+const INITIAL_PAYLOAD_CAP = 452 * 1024; // PLAN §5, "Initial payload"
 const MAX_LOG_RING = 300; // PLAN §5, "ring buffers: logs 300"
 const MAX_RANKED_ROWS = 64; // PLAN §5, "table capped at 64 rows"
 const MAX_DOM_PATCH_HZ = 4; // PLAN §5, "DOM patch <= 4 Hz"

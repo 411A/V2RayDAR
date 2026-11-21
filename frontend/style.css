@@ -1230,10 +1230,60 @@ td .lat-bar > span {
   margin-block-end: 1rem;
 }
 
+.auth-state {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.55;
+}
+
+.auth-dot {
+  display: inline-block;
+  inline-size: 0.5rem;
+  block-size: 0.5rem;
+  border-radius: 50%;
+  background: var(--muted);
+  margin-inline-end: 0.45rem;
+  vertical-align: middle;
+}
+
+.auth-dot.on {
+  background: var(--good);
+  box-shadow: 0 0 0 3px var(--good-soft);
+}
+
+.auth-lock {
+  display: inline-block;
+  margin-inline-start: 0.45rem;
+  vertical-align: middle;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: 0.74rem;
+  font-weight: 600;
+}
+
+.auth-warn {
+  display: block;
+  margin-block-start: 0.2rem;
+  color: var(--warn);
+  font-size: 0.78rem;
+}
+
+.auth-recommended,
+.auth-note {
+  margin: 0.35rem 0 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
 .auth-form {
   display: grid;
-  gap: 0.65rem;
-  max-inline-size: 440px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem 0.8rem;
+  max-inline-size: 560px;
+  margin-block-start: 0.55rem;
 }
 
 .auth-field {
@@ -1243,11 +1293,37 @@ td .lat-bar > span {
   font-weight: 600;
 }
 
+.auth-field.full {
+  grid-column: 1 / -1;
+}
+
+.auth-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.auth-meta {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.auth-meta.ok {
+  color: var(--good);
+}
+
+.auth-meta.bad {
+  color: var(--bad);
+}
+
 .auth-field input {
   width: 100%;
   font: inherit;
   font-weight: 400;
-  padding: 0.55rem 0.65rem;
+  padding: 0.5rem 0.6rem;
   color: var(--text);
   background: var(--bg-sunken);
   border: 1px solid var(--border);
@@ -1260,6 +1336,22 @@ td .lat-bar > span {
   border-color: transparent;
 }
 
+.auth-tools {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin-block-start: 0.2rem;
+}
+
+.auth-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
 .auth-show {
   display: flex;
   align-items: center;
@@ -1268,11 +1360,23 @@ td .lat-bar > span {
   color: var(--muted);
 }
 
-.auth-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  margin-block-start: 0.25rem;
+.auth-note code {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.08rem 0.35rem;
+  white-space: nowrap;
+}
+
+@media (max-width: 560px) {
+  .auth-form {
+    grid-template-columns: 1fr;
+  }
+
+  .auth-field.full,
+  .auth-tools {
+    grid-column: auto;
+  }
 }
 
 /* ---- Logs ---- */

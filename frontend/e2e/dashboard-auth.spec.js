@@ -63,3 +63,17 @@ test("disabling requires the current password field when protection is on", asyn
   });
   await expect(page.locator("#dash-auth-state")).toContainText("Off.");
 });
+
+test("live status warns about a missing phrase and ticks the reset lock", async ({ page }) => {
+  stub.dashAuth.enabled = true;
+  stub.dashAuth.has_phrase = false;
+  stub.dashAuth.reset_wait_seconds = 120;
+  await page.goto(base + "/settings");
+  await expect(page.locator("#dash-auth-state")).toContainText("On.");
+  await expect(page.locator(".auth-warn")).toContainText("No recovery phrase");
+  await expect(page.locator("#dash-auth-recommended")).toBeHidden();
+  const lock = page.locator("#dash-auth-lock");
+  await expect(lock).toContainText("Reset paused");
+  const first = await lock.innerText();
+  await expect.poll(async () => (await lock.innerText()) !== first, { timeout: 3000 }).toBe(true);
+});

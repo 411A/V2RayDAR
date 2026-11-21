@@ -114,6 +114,9 @@ describe("frontend i18n: one unified strings file, English default", () => {
       // language — same category as URLs and units, never translated).
       "# name, priority, url",
       ", ",
+      // The recovery command is a machine token: identical in every locale,
+      // rendered in <code> by the password card.
+      "v2raydar --reset-dashboard-password",
     ]);
     const bad = [...new Set(spaced)].filter((s) => !legit.has(s));
     assert.deepEqual(bad, [], `hardcoded user strings left in app.js: ${bad.join(" | ")}`);

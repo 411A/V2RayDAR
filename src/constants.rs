@@ -49,6 +49,19 @@ pub const DEFAULT_FETCH_CONCURRENCY: usize = 8;
 pub const FETCH_RETRY_ATTEMPTS: usize = 3;
 /// Base delay before a fetch retry; doubles per attempt (1000ms, then 2s).
 pub const FETCH_RETRY_BASE_DELAY_MS: u64 = 1000;
+/// How long the cycle waits for the fetch phase before probing what has
+/// already arrived. Slow sources keep retrying in the background and are
+/// drained after the first probe when the target is still unmet.
+pub const SUBSCRIPTION_SOFT_WAIT: Duration = Duration::from_secs(10);
+/// How long the late drain waits for still-retrying sources once the first
+/// probe has run. Capped, but long enough for a source on its last retry to
+/// land: the proxy already serves the configs found so far, so this wait is
+/// not user-facing.
+pub const SUBSCRIPTION_LATE_WAIT: Duration = Duration::from_secs(60);
+/// When the target is already met the cycle stops immediately, but a source
+/// that was one packet away still gets this long to land so its configs are
+/// cached for the next ping instead of being thrown away.
+pub const SUBSCRIPTION_CANCEL_GRACE: Duration = Duration::from_secs(3);
 pub const DEFAULT_MAX_SUBSCRIPTION_BYTES: usize = 32 * 1024 * 1024;
 pub const DEFAULT_USE_CACHE_ONLY: bool = false;
 pub const DEFAULT_SUBSCRIPTION_PRIORITY: u32 = 100;

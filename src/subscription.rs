@@ -1,8 +1,8 @@
-use std::{collections::HashSet, future::Future, time::Duration};
+use std::{collections::HashSet, future::Future, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use futures_util::{StreamExt, stream};
+use futures_util::StreamExt;
 use percent_encoding::percent_decode_str;
 use reqwest::Client;
 use reqwest::Proxy;
@@ -13,7 +13,8 @@ use crate::{
     applog::{self, LogLevel},
     config::{AppConfig, SubscriptionSource, redact_subscription_url},
     constants::{
-        FETCH_RETRY_ATTEMPTS, FETCH_RETRY_BASE_DELAY_MS, HTTP_EXCHANGE_OVERHEAD_BYTES, LOCALHOST_IP,
+        FETCH_RETRY_ATTEMPTS, FETCH_RETRY_BASE_DELAY_MS, HTTP_EXCHANGE_OVERHEAD_BYTES,
+        LOCALHOST_IP, SUBSCRIPTION_SOFT_WAIT,
     },
     model::{Candidate, ProgressEvent},
     parser::parse_subscription_document,
@@ -55,9 +56,9 @@ fn proxy_retry_sources(failures: &[FetchFailure]) -> Vec<SubscriptionSource> {
 
 pub async fn load_candidates_with_cache<F, Fut>(
     config: &AppConfig,
-    mut report_bytes: F,
+    report_bytes: &mut F,
     progress: Option<UnboundedSender<ProgressEvent>>,
-) -> Result<FetchOutcome>
+) -> Result<FetchStage>
 where
     F: FnMut(u64) -> Fut,
     Fut: Future<Output = ()>,
@@ -68,11 +69,14 @@ where
             enabled = 0,
             "subscription load skipped because no subscriptions are enabled"
         );
-        return Ok(FetchOutcome {
-            candidates: Vec::new(),
-            errors: Vec::new(),
-            failures: Vec::new(),
-            successes: Vec::new(),
+        return Ok(FetchStage {
+            outcome: FetchOutcome {
+                candidates: Vec::new(),
+                errors: Vec::new(),
+                failures: Vec::new(),
+                successes: Vec::new(),
+            },
+            pending: None,
         });
     }
 
@@ -103,7 +107,7 @@ where
         ),
     );
 
-    let outcome = fetch_sources_with_client(
+    let stage = fetch_sources_streamed(
         client,
         sources,
         FetchContext {
@@ -111,11 +115,12 @@ where
             concurrency: config.fetch_concurrency,
             progress,
         },
-        &mut report_bytes,
+        report_bytes,
+        Some(SUBSCRIPTION_SOFT_WAIT),
     )
     .await;
 
-    Ok(outcome)
+    Ok(stage)
 }
 
 pub async fn retry_failed_sources_with_proxy<F, Fut>(
@@ -226,39 +231,120 @@ fn failure_line(
     )
 }
 
-async fn fetch_sources_with_client<F, Fut>(
-    client: Client,
-    sources: Vec<SubscriptionSource>,
-    context: FetchContext,
-    report_bytes: &mut F,
-) -> FetchOutcome
-where
-    F: FnMut(u64) -> Fut,
-    Fut: Future<Output = ()>,
-{
-    let mut candidates = Vec::new();
-    let mut errors = Vec::new();
-    let mut failures = Vec::new();
-    let mut successes = Vec::new();
-    let mut results = stream::iter(sources.into_iter().enumerate().map(|(index, source)| {
-        let client = client.clone();
-        let progress = context.progress.clone();
-        let max_bytes = context.max_bytes;
-        let source_for_result = source.clone();
-        async move {
-            // Timed from first poll (queue wait excluded): the per-source
-            // line below reports honest fetch + parse time.
-            let started = std::time::Instant::now();
-            let result = fetch_source(&client, source, max_bytes, progress).await;
-            (index, source_for_result, result, started.elapsed())
-        }
-    }))
-    .buffer_unordered(context.concurrency);
-    let mut fetched_sources = Vec::new();
-    let mut seen_keys = HashSet::new();
-    let mut unique_count: usize = 0;
+/// A fetch run that may still have sources in flight. `pending` is `Some`
+/// when the probe was allowed to start before every source finished.
+pub struct FetchStage {
+    pub outcome: FetchOutcome,
+    pub pending: Option<PendingFetches>,
+}
 
-    while let Some((index, source, result, elapsed)) = results.next().await {
+/// Sources still retrying when the cycle moved on. Their results remain
+/// available through `collect`; dropping this handle aborts them (the target
+/// was already met, so the remaining URLs are moot).
+pub struct PendingFetches {
+    rx: tokio::sync::mpsc::UnboundedReceiver<SourceFetch>,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+    seen_keys: HashSet<String>,
+    unique_count: usize,
+    progress: Option<UnboundedSender<ProgressEvent>>,
+    remaining: usize,
+}
+
+type SourceFetch = (
+    usize,
+    SubscriptionSource,
+    FetchResult<FetchedSource>,
+    Duration,
+);
+
+impl PendingFetches {
+    /// Sources still in flight at the time of the call.
+    pub const fn remaining(&self) -> usize {
+        self.remaining
+    }
+
+    /// Drain the stragglers for at most `wait`. A broken origin cannot hold
+    /// the cycle hostage: anything past the window is abandoned and logged.
+    pub async fn collect<F, Fut>(mut self, wait: Duration, report_bytes: &mut F) -> FetchOutcome
+    where
+        F: FnMut(u64) -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        let mut accumulator = FetchAccumulator::new(
+            self.progress.take(),
+            std::mem::take(&mut self.seen_keys),
+            self.unique_count,
+        );
+        let deadline = (!wait.is_zero()).then(|| tokio::time::Instant::now() + wait);
+        while self.remaining > 0 {
+            let received = if let Some(at) = deadline {
+                if let Ok(received) = tokio::time::timeout_at(at, self.rx.recv()).await {
+                    received
+                } else {
+                    warn!(
+                        abandoned = self.remaining,
+                        "subscription fetch drain timed out; abandoning remaining sources"
+                    );
+                    break;
+                }
+            } else {
+                self.rx.recv().await
+            };
+            let Some(item) = received else {
+                break;
+            };
+            self.remaining = self.remaining.saturating_sub(1);
+            accumulator.absorb(item, report_bytes).await;
+        }
+        accumulator.finish().0
+    }
+}
+
+impl Drop for PendingFetches {
+    fn drop(&mut self) {
+        for task in &self.tasks {
+            task.abort();
+        }
+    }
+}
+
+/// Per-source results folded into one outcome. Shared by the first phase and
+/// the late drain so logging, dedupe counters, and byte accounting match.
+struct FetchAccumulator {
+    fetched: Vec<(usize, Vec<Candidate>)>,
+    errors: Vec<String>,
+    failures: Vec<(usize, FetchFailure)>,
+    successes: Vec<SubscriptionSource>,
+    seen_keys: HashSet<String>,
+    unique_count: usize,
+    progress: Option<UnboundedSender<ProgressEvent>>,
+}
+
+impl FetchAccumulator {
+    const fn new(
+        progress: Option<UnboundedSender<ProgressEvent>>,
+        seen_keys: HashSet<String>,
+        unique_count: usize,
+    ) -> Self {
+        Self {
+            fetched: Vec::new(),
+            errors: Vec::new(),
+            failures: Vec::new(),
+            successes: Vec::new(),
+            seen_keys,
+            unique_count,
+            progress,
+        }
+    }
+
+    async fn absorb<F, Fut>(
+        &mut self,
+        (index, source, result, elapsed): SourceFetch,
+        report_bytes: &mut F,
+    ) where
+        F: FnMut(u64) -> Fut,
+        Fut: Future<Output = ()>,
+    {
         match result {
             Ok(fetched) => {
                 report_subscription_bytes(fetched.bytes_read, report_bytes).await;
@@ -266,26 +352,26 @@ where
                 let new_unique = fetched
                     .candidates
                     .iter()
-                    .filter(|c| seen_keys.insert(c.dedup_key.clone()))
+                    .filter(|c| self.seen_keys.insert(c.dedup_key.clone()))
                     .count();
-                unique_count = unique_count.saturating_add(new_unique);
+                self.unique_count = self.unique_count.saturating_add(new_unique);
                 info!(
                     source = %source.name,
                     parsed,
                     new_unique,
-                    unique_total = unique_count,
+                    unique_total = self.unique_count,
                     bytes_read = fetched.bytes_read,
                     duration_ms = elapsed.as_millis(),
                     "subscription fetch result parsed"
                 );
                 send_progress(
-                    context.progress.as_ref(),
+                    self.progress.as_ref(),
                     LogLevel::Info,
                     success_line(&source, parsed, new_unique, fetched.bytes_read, elapsed),
                 );
-                send_fetched_delta(context.progress.as_ref(), unique_count);
-                successes.push(source);
-                fetched_sources.push((index, fetched.candidates));
+                send_fetched_delta(self.progress.as_ref(), self.unique_count);
+                self.successes.push(source);
+                self.fetched.push((index, fetched.candidates));
             }
             Err(err) => {
                 report_subscription_bytes(err.bytes_read, report_bytes).await;
@@ -293,18 +379,19 @@ where
                 warn!(
                     source = %source.name,
                     bytes_read = err.bytes_read,
+                    attempts = err.attempts,
                     duration_ms = elapsed.as_millis(),
                     proxy_retry = proxy_may_help(&err.error),
                     error = %message,
                     "subscription fetch failed"
                 );
                 send_progress(
-                    context.progress.as_ref(),
+                    self.progress.as_ref(),
                     LogLevel::Warn,
                     failure_line(&source, &message, err.bytes_read, elapsed),
                 );
-                errors.push(message.clone());
-                failures.push((
+                self.errors.push(message.clone());
+                self.failures.push((
                     index,
                     FetchFailure {
                         source,
@@ -315,23 +402,147 @@ where
             }
         }
     }
-    fetched_sources.sort_by_key(|(index, _)| *index);
-    let mut dedup_keys = HashSet::new();
-    for (_, mut fetched) in fetched_sources {
-        fetched.retain(|candidate| dedup_keys.insert(candidate.dedup_key.clone()));
-        candidates.append(&mut fetched);
-    }
-    failures.sort_by_key(|(index, _)| *index);
-    let failures = failures
-        .into_iter()
-        .map(|(_, failure)| failure)
-        .collect::<Vec<_>>();
 
-    FetchOutcome {
-        candidates,
-        errors,
-        failures,
-        successes,
+    fn finish(self) -> (FetchOutcome, HashSet<String>, usize) {
+        let Self {
+            mut fetched,
+            errors,
+            mut failures,
+            successes,
+            seen_keys,
+            unique_count,
+            ..
+        } = self;
+        fetched.sort_by_key(|(index, _)| *index);
+        let mut dedup_keys = HashSet::new();
+        let mut candidates = Vec::new();
+        for (_, mut source_candidates) in fetched {
+            source_candidates.retain(|candidate| dedup_keys.insert(candidate.dedup_key.clone()));
+            candidates.append(&mut source_candidates);
+        }
+        failures.sort_by_key(|(index, _)| *index);
+        let failures = failures
+            .into_iter()
+            .map(|(_, failure)| failure)
+            .collect::<Vec<_>>();
+        (
+            FetchOutcome {
+                candidates,
+                errors,
+                failures,
+                successes,
+            },
+            seen_keys,
+            unique_count,
+        )
+    }
+}
+
+/// Proxy retries and tests want the final tally: never return early here.
+async fn fetch_sources_with_client<F, Fut>(
+    client: Client,
+    sources: Vec<SubscriptionSource>,
+    context: FetchContext,
+    report_bytes: &mut F,
+) -> FetchOutcome
+where
+    F: FnMut(u64) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    fetch_sources_streamed(client, sources, context, report_bytes, None)
+        .await
+        .outcome
+}
+
+/// Start every source at once and fold results in as they arrive. With a soft
+/// wait the caller gets the fast sources immediately plus a handle for the
+/// stragglers, instead of blocking on the slowest retry loop.
+async fn fetch_sources_streamed<F, Fut>(
+    client: Client,
+    sources: Vec<SubscriptionSource>,
+    context: FetchContext,
+    report_bytes: &mut F,
+    soft_wait: Option<Duration>,
+) -> FetchStage
+where
+    F: FnMut(u64) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let total = sources.len();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<SourceFetch>();
+    // Keep the configured parallelism: every source is queued, only the
+    // permit holders actually fetch, and the timer starts after the wait
+    // (the old buffer_unordered behaviour).
+    let limit = Arc::new(tokio::sync::Semaphore::new(context.concurrency.max(1)));
+    let tasks = sources
+        .into_iter()
+        .enumerate()
+        .map(|(index, source)| {
+            let client = client.clone();
+            let progress = context.progress.clone();
+            let max_bytes = context.max_bytes;
+            let tx = tx.clone();
+            let limit = Arc::clone(&limit);
+            tokio::spawn(async move {
+                let permit = limit
+                    .acquire_owned()
+                    .await
+                    .expect("fetch semaphore is never closed");
+                let started = std::time::Instant::now();
+                let result = fetch_source(&client, source.clone(), max_bytes, progress).await;
+                let _ = tx.send((index, source, result, started.elapsed()));
+                drop(permit);
+            })
+        })
+        .collect::<Vec<_>>();
+    drop(tx);
+
+    let mut accumulator = FetchAccumulator::new(context.progress.clone(), HashSet::new(), 0);
+    let mut done = 0usize;
+    let mut deadline = soft_wait.map(|wait| tokio::time::Instant::now() + wait);
+    while done < total {
+        let received = if let Some(at) = deadline {
+            if let Ok(received) = tokio::time::timeout_at(at, rx.recv()).await {
+                received
+            } else {
+                // Nothing to probe and nothing to bridge yet: keep waiting
+                // instead of starting an empty cycle. A completed failure is
+                // enough material for the proxy retry, so a restricted
+                // network can start that while the rest still retries.
+                if accumulator.fetched.is_empty() && accumulator.failures.is_empty() {
+                    deadline = None;
+                    continue;
+                }
+                break;
+            }
+        } else {
+            rx.recv().await
+        };
+        let Some(item) = received else {
+            break;
+        };
+        done = done.saturating_add(1);
+        accumulator.absorb(item, report_bytes).await;
+    }
+
+    if done < total {
+        let (outcome, seen_keys, unique_count) = accumulator.finish();
+        FetchStage {
+            outcome,
+            pending: Some(PendingFetches {
+                rx,
+                tasks,
+                seen_keys,
+                unique_count,
+                progress: context.progress,
+                remaining: total.saturating_sub(done),
+            }),
+        }
+    } else {
+        FetchStage {
+            outcome: accumulator.finish().0,
+            pending: None,
+        }
     }
 }
 
@@ -411,16 +622,23 @@ type FetchResult<T> = std::result::Result<T, FetchError>;
 struct FetchError {
     error: anyhow::Error,
     bytes_read: u64,
+    /// Fetch attempts spent before giving up (1 = no retry was made).
+    attempts: usize,
 }
 
 impl FetchError {
     const fn new(error: anyhow::Error, bytes_read: u64) -> Self {
-        Self { error, bytes_read }
+        Self {
+            error,
+            bytes_read,
+            attempts: 1,
+        }
     }
 
     fn with_error_context(self, context: impl std::fmt::Display) -> Self {
         Self {
             error: self.error.context(context.to_string()),
+            attempts: self.attempts,
             bytes_read: self.bytes_read,
         }
     }
@@ -428,6 +646,7 @@ impl FetchError {
     fn add_bytes(self, bytes: u64) -> Self {
         Self {
             error: self.error,
+            attempts: self.attempts,
             bytes_read: self.bytes_read.saturating_add(bytes),
         }
     }
@@ -444,9 +663,17 @@ struct FetchedSource {
     bytes_read: u64,
 }
 
+/// Connect (DNS + TCP + TLS) budget: a dead or hostile endpoint must fail
+/// into the retry path quickly instead of eating the whole request timeout.
+/// Capped at 10s, never zero.
+fn connect_budget(timeout_ms: u64) -> Duration {
+    Duration::from_millis(timeout_ms.clamp(1, 10_000))
+}
+
 fn build_http_client(timeout_ms: u64) -> Result<Client> {
     let mut builder = Client::builder()
         .timeout(Duration::from_millis(timeout_ms))
+        .connect_timeout(connect_budget(timeout_ms))
         .user_agent(concat!("v2raydar/", env!("CARGO_PKG_VERSION")));
 
     if cfg!(target_os = "android")
@@ -462,6 +689,7 @@ fn build_proxied_http_client(timeout_ms: u64, port: u16) -> Result<Client> {
     let proxy_url = format!("http://{LOCALHOST_IP}:{port}");
     let mut builder = Client::builder()
         .timeout(Duration::from_millis(timeout_ms))
+        .connect_timeout(connect_budget(timeout_ms))
         .user_agent(concat!("v2raydar/", env!("CARGO_PKG_VERSION")))
         .proxy(Proxy::all(&proxy_url)?);
 
@@ -574,7 +802,7 @@ fn is_transient_fetch_error(error: &anyhow::Error) -> bool {
         || matches!(request_error.status(), Some(status) if status.as_u16() == 429 || status.is_server_error())
 }
 
-/// Backoff before retry `attempt` (1-based): 500ms, then 1s.
+/// Backoff before retry `attempt` (1-based): 1s, then 2s.
 const fn fetch_retry_delay_ms(attempt: usize) -> u64 {
     FETCH_RETRY_BASE_DELAY_MS.saturating_mul(1u64 << attempt.saturating_sub(1))
 }
@@ -602,6 +830,17 @@ async fn fetch_body_with_retries(
                 } else {
                     detail
                 };
+                // Both sinks: tracing for --verbose runs, progress for the
+                // dashboard, so a restricted network is diagnosable in either.
+                debug!(
+                    source = source_name,
+                    attempt,
+                    attempts = FETCH_RETRY_ATTEMPTS,
+                    delay_ms,
+                    bytes_read = err.bytes_read,
+                    error = %detail,
+                    "subscription fetch retry"
+                );
                 send_progress(
                     progress,
                     LogLevel::Debug,
@@ -611,7 +850,10 @@ async fn fetch_body_with_retries(
                 );
                 sleep(Duration::from_millis(delay_ms)).await;
             }
-            Err(err) => return Err(err),
+            Err(mut err) => {
+                err.attempts = attempt;
+                return Err(err);
+            }
         }
     }
 }
@@ -954,6 +1196,44 @@ mod tests {
         url
     }
 
+    /// One-shot local HTTP server replying with `body` after `delay`.
+    async fn serve_body_once(body: &'static str, delay: Duration) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback");
+        let url = format!(
+            "http://{}/sub",
+            listener.local_addr().expect("loopback addr")
+        );
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut head = vec![0u8; 1024];
+                let mut seen = 0;
+                while seen < head.len() {
+                    let Ok(read) = socket.read(&mut head[seen..]).await else {
+                        break;
+                    };
+                    if read == 0 {
+                        break;
+                    }
+                    seen += read;
+                    if head[..seen].windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                if !delay.is_zero() {
+                    tokio::time::sleep(delay).await;
+                }
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+            }
+        });
+        url
+    }
+
     #[tokio::test]
     async fn transient_classifier_splits_status_codes() {
         let client = Client::new();
@@ -1042,6 +1322,140 @@ mod tests {
             .find(|failure| failure.source.name == "gone")
             .expect("gone fails");
         assert!(!gone.proxy_retry);
+    }
+
+    #[tokio::test]
+    async fn slow_source_does_not_block_the_fast_ones() {
+        let fast = format!(
+            "data:text/plain;base64,{}",
+            STANDARD.encode("vless://uuid@fast.example.org:8443?security=tls#Fast")
+        );
+        let slow = serve_body_once(
+            "vless://uuid@slow.example.org:8443?security=tls#Slow",
+            Duration::from_millis(1500),
+        )
+        .await;
+        let sources = vec![
+            SubscriptionSource {
+                name: "fast".to_string(),
+                url: fast,
+                enabled: true,
+                priority: 1,
+            },
+            SubscriptionSource {
+                name: "slow".to_string(),
+                url: slow,
+                enabled: true,
+                priority: 2,
+            },
+        ];
+
+        let stage = fetch_sources_streamed(
+            Client::new(),
+            sources,
+            FetchContext {
+                max_bytes: 1024 * 1024,
+                concurrency: 2,
+                progress: None,
+            },
+            &mut |_bytes: u64| async {},
+            Some(Duration::from_millis(150)),
+        )
+        .await;
+
+        assert_eq!(
+            stage.outcome.candidates.len(),
+            1,
+            "the fast source is returned while the slow one retries"
+        );
+        let pending = stage.pending.expect("slow source is still in flight");
+        let late = pending
+            .collect(Duration::from_secs(5), &mut |_bytes: u64| async {})
+            .await;
+        assert_eq!(late.candidates.len(), 1, "the late config is delivered");
+        assert_eq!(late.successes.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn soft_wait_does_not_return_an_empty_cycle() {
+        let slow = serve_body_once(
+            "vless://uuid@slow.example.org:8443?security=tls#Slow",
+            Duration::from_millis(400),
+        )
+        .await;
+        let stage = fetch_sources_streamed(
+            Client::new(),
+            vec![SubscriptionSource {
+                name: "slow".to_string(),
+                url: slow,
+                enabled: true,
+                priority: 1,
+            }],
+            FetchContext {
+                max_bytes: 1024 * 1024,
+                concurrency: 1,
+                progress: None,
+            },
+            &mut |_bytes: u64| async {},
+            Some(Duration::from_millis(50)),
+        )
+        .await;
+
+        assert!(
+            stage.pending.is_none(),
+            "with no material yet the loader waits instead of starting an empty probe"
+        );
+        assert_eq!(stage.outcome.candidates.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn soft_wait_returns_known_failures_for_the_bridge() {
+        let gone = serve_status_once(404).await;
+        let slow = serve_body_once(
+            "vless://uuid@slow.example.org:8443?security=tls#Slow",
+            Duration::from_millis(1500),
+        )
+        .await;
+        let stage = fetch_sources_streamed(
+            Client::new(),
+            vec![
+                SubscriptionSource {
+                    name: "gone".to_string(),
+                    url: gone,
+                    enabled: true,
+                    priority: 1,
+                },
+                SubscriptionSource {
+                    name: "slow".to_string(),
+                    url: slow,
+                    enabled: true,
+                    priority: 2,
+                },
+            ],
+            FetchContext {
+                max_bytes: 1024 * 1024,
+                concurrency: 2,
+                progress: None,
+            },
+            &mut |_bytes: u64| async {},
+            Some(Duration::from_millis(150)),
+        )
+        .await;
+
+        assert!(
+            stage.outcome.candidates.is_empty(),
+            "nothing verified yet, but the known failure is enough for the proxy retry"
+        );
+        assert_eq!(stage.outcome.failures.len(), 1);
+        let pending = stage.pending.expect("slow source still running");
+        let late = pending
+            .collect(Duration::from_secs(5), &mut |_bytes: u64| async {})
+            .await;
+        assert_eq!(
+            late.candidates.len(),
+            1,
+            "the late config is still delivered"
+        );
     }
 
     /// A proxy retry spins up a sing-box instance, so it must only cover the

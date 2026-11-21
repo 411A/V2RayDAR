@@ -51,7 +51,7 @@ use crate::{
         DB_SHM_FILE_NAME, DB_WAL_FILE_NAME, DEFAULT_LOG_FILTER_PLAIN, DEFAULT_LOG_FILTER_TUI,
         DEFAULT_LOG_FILTER_VERBOSE, FIREWALL_STATE_FILE_NAME, GEOIP_DIR_NAME, GEOIP_MMDB_FILE_NAME,
         LEGACY_APP_MARKER_FILE_NAME, LEGACY_CACHE_MARKER_FILE_NAME, LOCALHOST_IP, MAX_TUI_LOGS,
-        sing_box_download_url,
+        SUBSCRIPTION_CANCEL_GRACE, SUBSCRIPTION_LATE_WAIT, sing_box_download_url,
     },
     db::Database,
     model::{
@@ -1092,8 +1092,8 @@ async fn fetch_through_bridge(
                 if delivered {
                     if !retry.candidates.is_empty() {
                         // The bridged configs are fresh sightings too: cache
-                        // them, then probe them together with the direct
-                        // ones in the single probe run.
+                        // them for ping backfill; the caller probes them once
+                        // the direct pool is already running.
                         cache_fetched_candidates(database, &retry.candidates).await;
                     }
                     return Some(retry);
@@ -1395,7 +1395,13 @@ async fn refresh_once(
         top_n = config.top_n,
         "subscription load started"
     );
-    let mut fetched = if cache_only {
+    let mut report_bytes = |bytes: u64| {
+        let state = state.clone();
+        async move {
+            add_fetch_bytes(&state, bytes).await;
+        }
+    };
+    let (mut fetched, mut pending_fetches) = if cache_only {
         let db = database.clone();
         let top_n = config.top_n;
         let ranked_from_db = tokio::task::spawn_blocking(move || db.load_ranked_configs(top_n))
@@ -1403,7 +1409,7 @@ async fn refresh_once(
             .map_err(|e| anyhow!("{e}"))?
             .unwrap_or_default();
 
-        if ranked_from_db.is_empty() {
+        let outcome = if ranked_from_db.is_empty() {
             FetchOutcome {
                 candidates: Vec::new(),
                 errors: vec!["no previously-probed configs in database".to_string()],
@@ -1438,19 +1444,13 @@ async fn refresh_once(
                     .cloned()
                     .collect(),
             }
-        }
+        };
+        (outcome, None)
     } else {
-        load_candidates_with_cache(
-            config,
-            |bytes| {
-                let state = state.clone();
-                async move {
-                    add_fetch_bytes(&state, bytes).await;
-                }
-            },
-            Some(progress_tx.clone()),
-        )
-        .await?
+        let loaded =
+            load_candidates_with_cache(config, &mut report_bytes, Some(progress_tx.clone()))
+                .await?;
+        (loaded.outcome, loaded.pending)
     };
     let mut fresh_success_count = fetched.successes.len();
     let mut fetched_count = fetched.candidates.len();
@@ -1469,9 +1469,20 @@ async fn refresh_once(
         .map(|candidate| candidate.dedup_key.clone())
         .collect::<HashSet<_>>();
     let mut fetch_errors = fetched.errors.clone();
+    // Sources still retrying are not failures: the probe starts on what is
+    // here and the late drain collects them only if the target needs them.
+    let pending_sources = pending_fetches
+        .as_ref()
+        .map_or(0, crate::subscription::PendingFetches::remaining);
+    let pending_note = if pending_sources > 0 {
+        format!("; {pending_sources} source(s) still retrying")
+    } else {
+        String::new()
+    };
     info!(
         candidates = fetched_count,
         sources_ok = fresh_success_count,
+        pending = pending_sources,
         fetch_errors = fetch_errors.len(),
         cache_only,
         duration_ms = fetch_started.elapsed().as_millis(),
@@ -1479,10 +1490,11 @@ async fn refresh_once(
     );
     if print_compact_progress {
         print_log(format!(
-            "Subscription loading finished: {} configs, {} source errors in {}.",
+            "Subscription loading finished: {} configs, {} source errors in {}{}.",
             fetched_count,
             fetch_errors.len(),
-            format_duration_short(fetch_started.elapsed().as_millis())
+            format_duration_short(fetch_started.elapsed().as_millis()),
+            pending_note
         ));
     }
     {
@@ -1494,10 +1506,11 @@ async fn refresh_once(
             &mut runtime,
             applog::LogLevel::Info,
             &format!(
-                "Subscription loading finished: {} configs, {} source errors in {}",
+                "Subscription loading finished: {} configs, {} source errors in {}{}",
                 fetched_count,
                 fetch_errors.len(),
-                format_duration_short(fetch_started.elapsed().as_millis())
+                format_duration_short(fetch_started.elapsed().as_millis()),
+                pending_note
             ),
         );
     }
@@ -1525,11 +1538,24 @@ async fn refresh_once(
     // list: untested leftovers stay available for ping backfill.
     cache_fetched_candidates(&database, &fetched.candidates).await;
 
-    // Bridge fetch, before the probe: a source that failed because the
-    // network is blocked can often be reached through a config that worked
-    // before. Doing it here means the "Fetched" count is final when the
-    // probe starts, and one probe covers the direct and the bridged
-    // configs together.
+    let probe_started = std::time::Instant::now();
+    let mut ranked = probe_refresh_candidates(
+        std::mem::take(&mut fetched.candidates),
+        config,
+        &previous_top_n,
+        &state,
+        &progress_tx,
+        print_compact_progress,
+        "Probe",
+        carry.as_ref(),
+        None,
+        0,
+    )
+    .await;
+    // A source that failed because the network is blocked can often be
+    // reached through a config that worked before. The direct configs are
+    // already being probed, so this only runs when the target is still
+    // unmet: a restricted network must never delay the probe.
     //
     // The bridge comes from the database: the in-memory lists only hold
     // what the last cycle published, which is empty on a cold start -
@@ -1542,7 +1568,8 @@ async fn refresh_once(
     // connect/DNS, timeouts, 403/429). Deterministic failures (404, sick
     // origins, bad content) would fail identically through a proxy, so a
     // batch of only those skips the proxy run entirely.
-    if !cache_only && !fetched.failures.is_empty() {
+    let mut working_now = ranked.iter().filter(|item| item.reachable).count();
+    if working_now < config.top_n && !cache_only && !fetched.failures.is_empty() {
         if fetched.failures.iter().any(|failure| failure.proxy_retry) {
             // The bridge needs sing-box: only the active mode can spin one
             // up with the bridge config. Without it there is no tunnel, so
@@ -1608,9 +1635,9 @@ async fn refresh_once(
                         );
                     }
                     if retry_count > 0 {
-                        // The bridged configs are fresh sightings too: they
-                        // are probed together with the direct ones in the
-                        // single probe run below.
+                        // The bridged configs are fresh sightings too: the
+                        // blocked probe below tests them and merges the result
+                        // into the pool the direct probe already built.
                         fetched.candidates.append(&mut retry.candidates);
                     }
                 }
@@ -1620,22 +1647,109 @@ async fn refresh_once(
         } else {
             debug!("proxy retry skipped: failures look origin-side, not restricted");
         }
+
+        // Bridged configs run through the same probe engine; the working
+        // configs already verified count toward the target.
+        let bridged = std::mem::take(&mut fetched.candidates);
+        if !bridged.is_empty() {
+            let bridged_ranked = probe_refresh_candidates(
+                bridged,
+                config,
+                &previous_top_n,
+                &state,
+                &progress_tx,
+                print_compact_progress,
+                "Bridge retry",
+                None,
+                None,
+                working_now,
+            )
+            .await;
+            ranked.extend(bridged_ranked);
+            working_now = ranked.iter().filter(|item| item.reachable).count();
+        }
     }
 
-    let probe_started = std::time::Instant::now();
-    let mut ranked = probe_refresh_candidates(
-        std::mem::take(&mut fetched.candidates),
-        config,
-        &previous_top_n,
-        &state,
-        &progress_tx,
-        print_compact_progress,
-        "Probe",
-        carry.as_ref(),
-        None,
-        0,
-    )
-    .await;
+    // Late subscription fetches: sources still retrying when the probe
+    // started. A met target stops the wait immediately; a short grace lets a
+    // nearly finished source land and be cached. Otherwise a bounded drain
+    // gathers what they bring and the normal probe adds those configs.
+    if let Some(pending) = pending_fetches.take() {
+        if config.top_n > 0 && working_now >= config.top_n {
+            let grace = pending
+                .collect(SUBSCRIPTION_CANCEL_GRACE, &mut report_bytes)
+                .await;
+            let cached = grace
+                .candidates
+                .into_iter()
+                .filter(|candidate| seen_candidate_keys.insert(candidate.dedup_key.clone()))
+                .collect::<Vec<_>>();
+            if !cached.is_empty() {
+                fetched_count = fetched_count.saturating_add(cached.len());
+                cache_fetched_candidates(&database, &cached).await;
+            }
+            info!(
+                working = working_now,
+                target = config.top_n,
+                cached = cached.len(),
+                "late subscription fetches stopped; target met"
+            );
+        } else {
+            let late_started = std::time::Instant::now();
+            let late = pending
+                .collect(SUBSCRIPTION_LATE_WAIT, &mut report_bytes)
+                .await;
+            let late_sources = late.successes.len();
+            let late_candidates = late
+                .candidates
+                .into_iter()
+                .filter(|candidate| seen_candidate_keys.insert(candidate.dedup_key.clone()))
+                .collect::<Vec<_>>();
+            let late_count = late_candidates.len();
+            fetched_count = fetched_count.saturating_add(late_count);
+            fresh_success_count = fresh_success_count.saturating_add(late_sources);
+            fetch_errors.extend(late.errors);
+            info!(
+                candidates = late_count,
+                sources_ok = late_sources,
+                fetch_errors = fetch_errors.len(),
+                duration_ms = late_started.elapsed().as_millis(),
+                "late subscription fetches finished"
+            );
+            {
+                let mut runtime = state.write().await;
+                runtime.total_candidates = fetched_count;
+                runtime.fetch_errors.clone_from(&fetch_errors);
+                applog::push(
+                    &mut runtime,
+                    applog::LogLevel::Info,
+                    &format!(
+                        "Late fetch finished: {late_count} new configs, {} source errors remain",
+                        fetch_errors.len()
+                    ),
+                );
+            }
+            if !late_candidates.is_empty() {
+                // Late sightings stay available for the ping even if this
+                // probe's early stop never reaches them.
+                cache_fetched_candidates(&database, &late_candidates).await;
+                let late_ranked = probe_refresh_candidates(
+                    late_candidates,
+                    config,
+                    &previous_top_n,
+                    &state,
+                    &progress_tx,
+                    print_compact_progress,
+                    "Late fetch",
+                    None,
+                    None,
+                    working_now,
+                )
+                .await;
+                ranked.extend(late_ranked);
+            }
+        }
+    }
     // Database fallback: the cycle can end below `top_n` working configs
     // for two reasons - every subscription source failed, so the fetch
     // brought nothing, or the fetch worked but too many probes failed to

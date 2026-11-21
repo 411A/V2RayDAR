@@ -83,6 +83,13 @@ describe("frontend i18n: one unified strings file, English default", () => {
       "btn primary",
       "btn danger",
       "val editable",
+      "val checks",
+      "lat-speed limited",
+      "Clash Verge Rev",
+      "noopener noreferrer",
+      "v2rayN, v2rayNG, Clash Verge Rev, Hiddify, NekoBox, v2rayA, ClashMetaForAndroid, SFA",
+      "v2rayN, Clash Verge Rev, Hiddify, NekoBox, v2rayA, ClashMetaForAndroid, SFA",
+      " (",
       "drag-cell cell-grip",
       "input[type=password], input[type=text]",
       // Code fragments (the scanner pairs quotes naively, so the selector

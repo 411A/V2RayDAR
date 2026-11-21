@@ -129,7 +129,7 @@
             <table id="ov-cfg-table">
               <thead>
                 <tr>
-                  <th scope="col" data-i18n="thRank">#</th>
+                  <th scope="col" data-i18n="thRank" data-i18n-title="rankOrderTip">#</th>
                   <th scope="col" data-i18n="thName">Name</th>
                   <th scope="col" data-i18n="thLatency">Latency</th>
                 </tr>
@@ -204,7 +204,7 @@
         <table id="cfg-table">
           <thead>
             <tr>
-              <th scope="col" data-i18n="thRank">#</th>
+              <th scope="col" data-i18n="thRank" data-i18n-title="rankOrderTip">#</th>
               <th scope="col" data-i18n="thName">Name</th>
               <th scope="col" data-i18n="thProtocol">Protocol</th>
               <th scope="col" data-i18n="thEndpoint">Endpoint</th>
@@ -383,6 +383,21 @@
         <button type="submit" class="btn" value="close" data-i18n="btnClose">Close</button>
       </div>
     </form>
+  </dialog>
+
+  <dialog id="dlg-protocols" aria-labelledby="dlg-protocols-title">
+    <div class="dlg">
+      <h2 id="dlg-protocols-title" data-i18n="protoHelpTitle">Client protocol support</h2>
+      <div class="table-wrap slim">
+        <table id="proto-help-table">
+          <thead id="proto-help-head"></thead>
+          <tbody id="proto-help-body"></tbody>
+        </table>
+      </div>
+      <div class="dlg-actions">
+        <button type="button" class="btn" id="dlg-protocols-close" data-i18n="btnClose">Close</button>
+      </div>
+    </div>
   </dialog>
 
   <dialog id="dlg-detail" aria-labelledby="dlg-detail-title">

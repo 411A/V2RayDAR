@@ -204,6 +204,7 @@ const EXPORT_HOOK = `;globalThis.__v2 = {
   renderStats,   fmtClock, fmtStamp, fmtDuration, fmtAgo, fmtBytes, fmtLatency, fmtLatencyMs, LOG_LEVELS, LOG_LEVEL_ORDER, logLineVisible, parseLogLine, ltr, flagFor, extractFlag, flagCode, countryFlag, displayName,
   openDetail, wireRowDialog, selectProxy, toggleProxy,
   proxyRowState, syncProxyPending, applyProbeDelta, settleProxyPending, sameProxyUri,
+  openProtocolHelp,
   setProxyMode, proxyMode, updateProxyModeButtons,
   firewallElevation, showAdminGuide,
   tickClock, uptimeText, renderUpdated, lastRefreshStamp, pillStamp,

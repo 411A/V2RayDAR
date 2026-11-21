@@ -963,6 +963,32 @@ describe("stat badges stay one-line with full stamps in tooltips", () => {
     assert.match(cards[5].children[2].textContent, /of .*550.* tested/);
   });
 
+  it("Failed keeps fetched and cached on separate lines", () => {
+    api.state.hasSummaryApi = true;
+    api.state.refreshSeconds = 300;
+    api.state.pingSeconds = 0;
+    api.state.startedAt = "2026-09-16T13:03:47+00:00";
+    api.state.snapshot = {
+      refreshing: false,
+      pinging: false,
+      total_candidates: 10833,
+      cached_candidates: 2,
+      tested_candidates: 671,
+      reachable_candidates: 0,
+      fetch_bytes: 7340032,
+      last_refresh: "2026-09-16T13:03:40+00:00",
+      refresh_duration_ms: 60000,
+      ranked: [],
+      fetch_errors: [],
+      proxy_running: false,
+    };
+    api.renderStats();
+    const sub = sandbox.__elements.get("stat-cards").children[4].children[2];
+    assert.equal(sub.textContent.split("\n").length, 2);
+    assert.match(sub.textContent, /fetched/);
+    assert.match(sub.textContent, /cached/);
+  });
+
   it("Last scan reads — while a refresh runs (TUI parity)", () => {
     api.state.hasSummaryApi = true;
     api.state.refreshSeconds = 300;
@@ -1581,6 +1607,7 @@ describe("settings tab: typed controls + translated rows", () => {
         { key: "probe.mode", value: "active", guide: "Mode.", kind: "choice", options: ["active", "tcp"] },
         { key: "sharing.token", value: "empty", guide: "Secret.", kind: "secret", options: [] },
         { key: "probe.speedtest_enabled", value: "false", guide: "Derived.", kind: "readonly", options: [] },
+        { key: "probe.protocols", value: "vless, ss", guide: "Protocols.", kind: "checks", options: ["vless", "vmess", "ss"] },
       ],
     }],
   });
@@ -1618,7 +1645,7 @@ describe("settings tab: typed controls + translated rows", () => {
     const card = box.children[0];
     assert.equal(card.children[0].textContent, "Connection");
     const rows = card.children.slice(1);
-    assert.equal(rows.length, 6);
+    assert.equal(rows.length, 7);
     // Name | control | description columns.
     assert.equal(rows[0].children[0].textContent, "Bind address");
     assert.equal(rows[0].children[0].className, "set-name");
@@ -1634,6 +1661,72 @@ describe("settings tab: typed controls + translated rows", () => {
     assert.equal(rows[3].children[1].children[0].tagName, "SELECT");
     assert.equal(rows[4].children[1].children[0].textContent, "empty");
     assert.equal(rows[5].children[1].children.length, 0);
+    // Protocol row is one compact, aligned checkbox group.
+    const checks = rows[6].children[1];
+    assert.equal(checks.className, "val checks");
+    assert.equal(checks.children.length, 3);
+    assert.equal(checks.children[0].children[0].checked, true, "vless enabled");
+    assert.equal(checks.children[1].children[0].checked, false, "vmess disabled");
+    assert.equal(checks.children[2].children[0].checked, true, "ss enabled");
+    assert.equal(checks.children[0].children[1].textContent, "vless");
+    // The ? opens the client-support matrix; the row itself stays clean.
+    assert.equal(rows[6].children[0].children[0].className, "help-dot");
+    assert.match(rows[6].children[2].textContent, /Click the \?/);
+  });
+
+  it("the client support popup lists every protocol and links repositories", () => {
+    api.openProtocolHelp();
+    const head = sandbox.__elements.get("proto-help-head");
+    const body = sandbox.__elements.get("proto-help-body");
+    assert.equal(head.children[0].children.length, 8); // Client + 7 protocols
+    assert.equal(body.children.length, 8); // eight clients
+
+    const v2rayng = body.children[1];
+    const link = v2rayng.children[0].children[0];
+    assert.match(link.textContent, /v2rayNG/);
+    assert.equal(link.href, "https://github.com/2dust/v2rayNG");
+    // v2rayNG supports the first five; TUIC and AnyTLS are absent.
+    assert.equal(v2rayng.children[1].textContent, "✅");
+    assert.equal(v2rayng.children[6].textContent, "❌");
+    assert.equal(v2rayng.children[7].textContent, "❌");
+  });
+
+  it("overview keeps the active config visible beyond the top rows", () => {
+    const row = (rank, uri) => ({
+      rank,
+      name: `node-${rank}`,
+      protocol: "vless",
+      endpoint: { host: "example.com", port: 443 },
+      uri,
+      reachable: true,
+      latency_ms: rank * 10,
+      stability_count: 1,
+      source: "test",
+    });
+    const ranked = Array.from({ length: 10 }, (_, index) =>
+      row(index + 1, `vless://example.com:443#node-${index + 1}`),
+    );
+    const active = row(19, "vless://active.example.com:443#active");
+    active.download_mbps = 12.5;
+    active.upload_ok = true;
+    ranked.push(active);
+    api.state.snapshot = {
+      proxy_active_uri: active.uri,
+      proxy_active_config: active.name,
+      ranked,
+    };
+
+    api.renderOvConfigs();
+
+    const body = sandbox.__elements.get("ov-cfg-body");
+    const last = body.children[body.children.length - 1];
+    assert.equal(last.className, "is-proxy");
+    assert.match(last.children[1].children[0].textContent, /node-19/);
+    assert.equal(last.children[0].children[0].textContent, "19");
+    // The latency cell carries the rank key: unmeasured sits below measured.
+    assert.match(last.children[2].children[1].textContent, /12\.5/);
+    // Unmeasured rows carry no speed line at all.
+    assert.equal(sandbox.__elements.get("ov-cfg-body").children[0].children[2].children.length, 1);
   });
 
   it("switch click PATCHes the flipped value", async () => {

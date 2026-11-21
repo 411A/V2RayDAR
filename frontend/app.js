@@ -1775,8 +1775,16 @@ function paintOvConfigs() {
   const rows = s && Array.isArray(s.ranked)
     ? s.ranked.filter((c) => c.reachable).slice(0, ovQrShown() ? 15 : 8)
     : [];
-  $("ov-cfg-empty").hidden = rows.length !== 0;
   const activeUri = s && s.proxy_active_uri ? s.proxy_active_uri : "";
+  // The door is a live fact, not a top-N fact: append the active config when
+  // it ranks below the visible window so the green row is never missing.
+  if (activeUri && rows.length) {
+    const active = s.ranked.find((c) => c.reachable && sameProxyUri(activeUri, c.uri));
+    if (active && !rows.some((c) => sameProxyUri(activeUri, c.uri))) {
+      rows.push(active);
+    }
+  }
+  $("ov-cfg-empty").hidden = rows.length !== 0;
   for (const c of rows) {
     const tr = document.createElement("tr");
     if (activeUri && sameProxyUri(activeUri, c.uri)) {
@@ -1789,7 +1797,9 @@ function paintOvConfigs() {
     nameTd.className = "cell-main";
     nameTd.appendChild(el("strong", displayName(c.name) || t("unnamed")));
     tr.appendChild(nameTd);
-    tr.appendChild(cell(fmtLatency(c.latency_ms), t("thLatency"), "cell-num"));
+    const latTd = cell(fmtLatency(c.latency_ms), t("thLatency"), "cell-num");
+    appendSpeed(latTd, c);
+    tr.appendChild(latTd);
     wireRowDialog(tr, c);
     body.appendChild(tr);
   }
@@ -2062,6 +2072,84 @@ function visibleRanked() {
   return out;
 }
 
+const PROTOCOL_HELP_PROTOCOLS = ["vless", "vmess", "trojan", "ss", "hysteria2", "tuic", "anytls"];
+const PROTOCOL_HELP = [
+  ["v2rayN", "https://github.com/2dust/v2rayN"],
+  ["v2rayNG", "https://github.com/2dust/v2rayNG", "tuic anytls"],
+  ["Clash Verge Rev", "https://github.com/clash-verge-rev/clash-verge-rev"],
+  ["Hiddify", "https://github.com/hiddify/hiddify-app"],
+  ["NekoBox", "https://github.com/MatsuriDayo/NekoBoxForAndroid"],
+  ["v2rayA", "https://github.com/v2rayA/v2rayA"],
+  ["ClashMetaForAndroid", "https://github.com/MetaCubeX/ClashMetaForAndroid"],
+  ["SFA", "https://github.com/SagerNet/sing-box"],
+];
+
+/// Client-by-protocol matrix, with each client linked to its repository.
+function openProtocolHelp() {
+  const head = $("proto-help-head");
+  const body = $("proto-help-body");
+  for (const node of [head, body]) {
+    while (node.firstChild) {
+      node.removeChild(node.firstChild);
+    }
+  }
+  const header = document.createElement("tr");
+  const clientTh = document.createElement("th");
+  clientTh.textContent = t("thName");
+  header.appendChild(clientTh);
+  for (const protocol of PROTOCOL_HELP_PROTOCOLS) {
+    const th = document.createElement("th");
+    th.textContent = protocol;
+    header.appendChild(th);
+  }
+  head.appendChild(header);
+  for (const [name, url, lacking = ""] of PROTOCOL_HELP) {
+    const tr = document.createElement("tr");
+    const nameTd = document.createElement("td");
+    const link = el("a", name);
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    nameTd.appendChild(link);
+    tr.appendChild(nameTd);
+    for (const protocol of PROTOCOL_HELP_PROTOCOLS) {
+      const ok = !lacking.split(" ").includes(protocol);
+      const td = document.createElement("td");
+      td.textContent = ok ? "✅" : "❌";
+      td.setAttribute("aria-label", `${protocol}: ${ok ? t("yes") : t("no")}`);
+      tr.appendChild(td);
+    }
+    body.appendChild(tr);
+  }
+  $("dlg-protocols").showModal();
+}
+
+/// Compact explanation of a row's rank: measured throughput, or why it
+/// sits below the measured bulk configs.
+function speedInfo(c) {
+  if (typeof c.download_mbps === "number" && c.download_mbps > 0) {
+    const limited = c.upload_ok === false;
+    return {
+      text: t("speedValue", { mbps: c.download_mbps.toFixed(1) }),
+      cls: limited ? "lat-speed limited" : "lat-speed",
+    };
+  }
+  if (c.upload_ok === false) {
+    return { text: t("speedNoUpload"), cls: "lat-speed limited" };
+  }
+  // Unmeasured: show nothing. A wall of "unmeasured" is noise, and the
+  // header tooltip already explains the order.
+  return null;
+}
+
+function appendSpeed(td, c) {
+  const info = speedInfo(c);
+  if (!info) {
+    return;
+  }
+  td.appendChild(el("span", info.text, info.cls));
+}
+
 function renderConfigs() {
   preserveViewport(paintConfigs);
 }
@@ -2128,6 +2216,7 @@ function paintConfigs() {
     fillSpan.style.inlineSize = pct + "%";
     bar.appendChild(fillSpan);
     latTd.appendChild(bar);
+    appendSpeed(latTd, c);
     tr.appendChild(latTd);
 
     tr.appendChild(cell(c.stability_count ? ltr("\u00d7" + c.stability_count) : "—", t("thStability"), "cell-num"));
@@ -3782,7 +3871,7 @@ const READONLY_SETTING_KEYS = [
 /// Control kind for one settings row: the server's `kind` wins; older
 /// servers (no kinds) fall back to inference from key/value.
 function settingKind(k) {
-  const known = ["bool", "int", "text", "choice", "list", "secret", "readonly"];
+  const known = ["bool", "int", "text", "choice", "list", "checks", "secret", "readonly"];
   if (k && known.includes(k.kind)) {
     return k.kind;
   }
@@ -3929,11 +4018,21 @@ function settingRow(k) {
   const name = settingName(key);
   const row = document.createElement("div");
   row.className = "set-row";
-  row.appendChild(el("span", name, "set-name"));
+  const nameEl = el("span", name, "set-name");
+  if (key === "probe.protocols") {
+    const help = el("button", "?", "help-dot");
+    help.type = "button";
+    help.title = t("protoHelpTitle");
+    help.setAttribute("aria-label", t("protoHelpTitle"));
+    help.addEventListener("click", openProtocolHelp);
+    nameEl.appendChild(help);
+  }
+  row.appendChild(nameEl);
   row.appendChild(settingControl(k, key, name));
   const guide = settingGuide(key, k.guide);
-  if (guide) {
-    row.appendChild(el("span", guide, "guide"));
+  const hint = key === "probe.protocols" ? t("setProtocolHint") : "";
+  if (guide || hint) {
+    row.appendChild(el("span", guide + (hint ? "\n" + hint : ""), "guide"));
   }
   return row;
 }
@@ -3971,6 +4070,38 @@ function settingControl(k, key, name) {
     sel.addEventListener("change", () => void patchSetting(key, sel.value));
     const wrap = el("span", null, "val");
     wrap.appendChild(sel);
+    return wrap;
+  }
+  if (kind === "checks") {
+    const options = k.options && k.options.length ? k.options : [];
+    const enabled = new Set(
+      value.split(",").map((part) => part.trim().toLowerCase()).filter(Boolean),
+    );
+    const wrap = el("span", null, "val checks");
+    wrap.setAttribute("role", "group");
+    wrap.setAttribute("aria-label", name);
+    const boxes = [];
+    for (const opt of options) {
+      const label = document.createElement("label");
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.value = opt;
+      box.checked = enabled.has(opt);
+      box.setAttribute("data-key", key);
+      box.addEventListener("change", () => {
+        const picked = options.filter((_, index) => boxes[index].checked);
+        if (picked.length === 0) {
+          box.checked = true;
+          toast(t("setProtocolOne"), "bad");
+          return;
+        }
+        void patchSetting(key, picked.join(","));
+      });
+      boxes.push(box);
+      label.appendChild(box);
+      label.appendChild(el("span", opt));
+      wrap.appendChild(label);
+    }
     return wrap;
   }
   if (kind === "secret") {
@@ -4619,6 +4750,10 @@ function wire() {
   $("btn-qr-generate-ov").addEventListener("click", () => void generateQr());
 
   $("dlg-detail-close").addEventListener("click", () => $("dlg-detail").close());
+  $("dlg-protocols-close").addEventListener("click", () => $("dlg-protocols").close());
+  $("dlg-protocols").addEventListener("click", (event) => {
+    if (event.target === event.currentTarget) event.currentTarget.close();
+  });
   // Light-dismiss: a click/tap outside the dialog box (on the backdrop,
   // which targets the dialog element itself) closes it, same as Close/Esc.
   // Inner clicks target children, so form buttons keep working.

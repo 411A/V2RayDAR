@@ -749,6 +749,10 @@ main {
   padding-block-start: 0.15rem;
 }
 
+#stat-failed-sub {
+  white-space: pre-line;
+}
+
 /* The Working card's fetched total is a small-screen fallback only: larger
  * screens already show the Fetched badge, so the duplicate stays off there.
  * Portrait phones re-enable it below (where #stat-fetched hides).
@@ -1060,6 +1064,103 @@ td .lat-bar > span {
   grid-column: 2;
   color: var(--text);
   overflow-wrap: anywhere;
+}
+
+/* Compact checkbox group (protocol selection): wraps inside the value
+ * column instead of adding one full row per option. */
+.help-dot {
+  inline-size: 1.35rem;
+  block-size: 1.35rem;
+  margin-inline-start: 0.45rem;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--bg-raised);
+  color: var(--muted);
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+.help-dot:hover,
+.help-dot:focus-visible {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+#dlg-protocols {
+  max-inline-size: min(96vw, 780px);
+}
+
+#dlg-protocols .table-wrap {
+  max-block-size: 60vh;
+  overflow: auto;
+}
+
+#proto-help-table {
+  inline-size: 100%;
+  border-collapse: collapse;
+  font-size: 0.84rem;
+}
+
+#proto-help-table th,
+#proto-help-table td {
+  padding: 0.35rem 0.45rem;
+  border-block-start: 1px solid var(--border);
+  text-align: center;
+  white-space: nowrap;
+}
+
+#proto-help-table th:first-child,
+#proto-help-table td:first-child {
+  text-align: start;
+  position: sticky;
+  inset-inline-start: 0;
+}
+
+#proto-help-table td:first-child { background: var(--bg-raised); }
+#proto-help-table tbody tr:hover td:first-child { background: var(--accent-soft); }
+
+#proto-help-table a {
+  color: var(--accent);
+}
+
+/* Second line under the latency bar: the rank's actual key. */
+.lat-speed {
+  display: block;
+  margin-block-start: 2px;
+  font-size: 0.72rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.lat-speed.limited {
+  color: var(--warn);
+}
+
+.set-row .val.checks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.2rem 0.7rem;
+}
+
+.set-row .val.checks label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.set-row .val.checks input {
+  inline-size: 0.95rem;
+  block-size: 0.95rem;
+  margin: 0;
+  accent-color: var(--accent);
 }
 
 /* Click-to-edit values look like the text field they turn into (same box

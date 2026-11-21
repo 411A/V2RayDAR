@@ -1227,6 +1227,25 @@ Run unit tests:
 cargo test --locked
 ```
 
+Run the dashboard gates and browser suite (hermetic, stub backend):
+
+```bash
+cd frontend
+npm ci
+npm run test:unit
+npx playwright install chromium
+npm run test:e2e
+```
+
+Run the opt-in live checks against a running instance:
+
+```bash
+cd frontend
+LIVE_BASE=http://127.0.0.1:27141 npx playwright test e2e/live-smoke.spec.js e2e/live-auth.spec.js
+```
+
+`live-auth` enables a temporary password, exercises sign-in, update, recovery and disable, checks the real reset-lock countdown, and restores protection to off. It refuses to run when a password is already enabled. On PowerShell, set the URL with `$env:LIVE_BASE='http://127.0.0.1:27141'`.
+
 Run formatting check:
 
 ```bash

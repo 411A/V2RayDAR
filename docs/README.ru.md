@@ -1,45 +1,46 @@
-<p align="center">
-  <strong>🌐 Available in</strong><br>
-  <strong><a href="https://github.com/411A/V2RayDAR/blob/main/README.md">English</a></strong>
-  • <strong><a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.zh-CN.md">简体中文</a></strong>
-  • <strong><a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.ru.md">Русский</a></strong>
-  • <strong><a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.fr.md">Français</a></strong>
-  • <strong><a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.fa.md">فارسی</a></strong>
+<div align="center">
+
+<img src="../assets/V2RayDAR_logo_v1.png" alt="V2RayDAR logo" width="144" height="144">
+
+<h1>V2RayDAR</h1>
+
+<p><em>V2Ray Detection And Reconnaissance — произносится как <code>v2ray</code> + <code>radar</code>.</em></p>
+
+<p>
+  <a href="https://github.com/411A/V2RayDAR/releases/latest"><img src="https://img.shields.io/github/v/release/411A/V2RayDAR?style=flat-square&amp;label=release" alt="Последний релиз"></a>
+  <a href="../LICENSE"><img src="https://img.shields.io/github/license/411A/V2RayDAR?style=flat-square&amp;label=license" alt="Лицензия: AGPL-3.0"></a>
+  <a href="https://github.com/411A/V2RayDAR/actions/workflows/rust.yml"><img src="https://github.com/411A/V2RayDAR/actions/workflows/rust.yml/badge.svg?branch=main" alt="Статус Rust CI"></a>
+  <a href="https://github.com/411A/V2RayDAR/actions/workflows/frontend.yml"><img src="https://github.com/411A/V2RayDAR/actions/workflows/frontend.yml/badge.svg?branch=main" alt="Статус Frontend CI"></a>
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20Termux-blue?style=flat-square" alt="Платформы: Windows | Linux | macOS | Termux">
 </p>
 
-<p align="center">
-  <img src="../assets/V2RayDAR_logo_v1.png" alt="V2RayDAR logo" width="200" height="200">
+<p>
+  <a href="https://github.com/411A/V2RayDAR/blob/main/README.md">English</a> •
+  <a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.zh-CN.md">简体中文</a> •
+  <strong><a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.ru.md">Русский</a></strong> •
+  <a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.fr.md">Français</a> •
+  <a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.fa.md">فارسی</a>
 </p>
 
-<p align="center">
-  <a href="https://deepwiki.com/411A/V2RayDAR">
-    <img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki About V2RayDAR">
-  </a>
-</p>
-
-<h1 align="center">V2RayDAR</h1>
-
-<p align="center">
-  <em>V2Ray Detection And Reconnaissance — произносится как <code>v2ray</code> + <code>radar</code>.</em><br>
-  <a href="https://github.com/411A/V2RayDAR/releases/latest"><img src="https://img.shields.io/github/v/release/411A/V2RayDAR" alt="Последний релиз"></a>
-  <a href="../LICENSE"><img src="https://img.shields.io/github/license/411A/V2RayDAR" alt="Лицензия: AGPL-3.0"></a>
-  <a href="https://github.com/411A/V2RayDAR/actions/workflows/rust.yml"><img src="https://github.com/411A/V2RayDAR/actions/workflows/rust.yml/badge.svg" alt="Статус Rust CI"></a>
-</p>
-
-<p align="center">
+<p>
   <strong>Устали вручную проверять конфиги V2Ray и выяснять, какой из них действительно работает у вас? Конфиг работает у друга, но не в вашей сети? Запустите V2RayDAR один раз на любом устройстве — а лучше на постоянно включённом, например на старом телефоне, ПК, Raspberry Pi или домашнем сервере — и он непрерывно находит, проверяет и раздаёт лучшие рабочие конфиги всем устройствам вашей LAN. Он также поднимает стандартный SOCKS5/HTTP-прокси, поэтому каждое устройство вашей LAN получает рабочее V2Ray-соединение — без V2Ray-клиента (если клиент всё же нужен, рекомендуем <a href="https://github.com/clash-verge-rev/clash-verge-rev">Clash Verge Rev</a>).</strong>
 </p>
 
-<p align="center">
+<p>
   Быстрый сервис на Rust со встроенным веб-дашбордом, который забирает источники подписок V2Ray / Clash / Mihomo, проверяет их через вашу реальную сеть с помощью <code>sing-box</code>, ранжирует реально работающие конфиги и переиздаёт лучшие на локальном URL подписки, на который могут указывать клиенты v2rayN / v2rayNG / sing-box / Clash Verge / Mihomo. Опциональный терминальный интерфейс (<code>--tui</code>) покрывает несколько дополнительных действий по обслуживанию.
 </p>
 
-<p align="center">
-  📘 <a href="guide.md">Подробное руководство</a>
-  • 🧠 <a href="https://deepwiki.com/411A/V2RayDAR">Ask DeepWiki</a>
-  • 📡 <a href="#-эндпоинты-подписки">Эндпоинты</a>
-  • 🌐 <a href="#-постоянный-прокси">Прокси</a>
+<p>
+  📘 <a href="guide.md">Руководство</a> •
+  🚀 <a href="#-установка">Установка</a> •
+  📡 <a href="#-эндпоинты-подписки">Эндпоинты</a> •
+  🌐 <a href="#-постоянный-прокси">Прокси</a> •
+  🧠 <a href="https://deepwiki.com/411A/V2RayDAR">DeepWiki</a>
 </p>
+
+</div>
+
+---
 
 ## 📖 Содержание
 

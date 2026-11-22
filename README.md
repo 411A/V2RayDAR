@@ -1,45 +1,46 @@
-<p align="center">
-  <strong>🌐 Available in</strong><br>
-  <strong><a href="https://github.com/411A/V2RayDAR/blob/main/README.md">English</a></strong>
-  • <strong><a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.zh-CN.md">简体中文</a></strong>
-  • <strong><a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.ru.md">Русский</a></strong>
-  • <strong><a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.fr.md">Français</a></strong>
-  • <strong><a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.fa.md">فارسی</a></strong>
+<div align="center">
+
+<img src="assets/V2RayDAR_logo_v1.png" alt="V2RayDAR logo" width="144" height="144">
+
+<h1>V2RayDAR</h1>
+
+<p><em>V2Ray Detection And Reconnaissance — pronounced like <code>v2ray</code> + <code>radar</code>.</em></p>
+
+<p>
+  <a href="https://github.com/411A/V2RayDAR/releases/latest"><img src="https://img.shields.io/github/v/release/411A/V2RayDAR?style=flat-square&amp;label=release" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/411A/V2RayDAR?style=flat-square&amp;label=license" alt="License: AGPL-3.0"></a>
+  <a href="https://github.com/411A/V2RayDAR/actions/workflows/rust.yml"><img src="https://github.com/411A/V2RayDAR/actions/workflows/rust.yml/badge.svg?branch=main" alt="Rust CI"></a>
+  <a href="https://github.com/411A/V2RayDAR/actions/workflows/frontend.yml"><img src="https://github.com/411A/V2RayDAR/actions/workflows/frontend.yml/badge.svg?branch=main" alt="Frontend CI"></a>
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20Termux-blue?style=flat-square" alt="Windows, Linux, macOS, and Termux">
 </p>
 
-<p align="center">
-  <img src="assets/V2RayDAR_logo_v1.png" alt="V2RayDAR logo" width="200" height="200">
+<p>
+  <strong>English</strong> •
+  <a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.zh-CN.md">简体中文</a> •
+  <a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.ru.md">Русский</a> •
+  <a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.fr.md">Français</a> •
+  <a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.fa.md">فارسی</a>
 </p>
 
-<p align="center">
-  <a href="https://deepwiki.com/411A/V2RayDAR">
-    <img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki About V2RayDAR">
-  </a>
-</p>
-
-<h1 align="center">V2RayDAR</h1>
-
-<p align="center">
-  <em>V2Ray Detection And Reconnaissance — pronounced like <code>v2ray</code> + <code>radar</code>.</em><br>
-  <a href="https://github.com/411A/V2RayDAR/releases/latest"><img src="https://img.shields.io/github/v/release/411A/V2RayDAR" alt="Latest release"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/411A/V2RayDAR" alt="License: AGPL-3.0"></a>
-  <a href="https://github.com/411A/V2RayDAR/actions/workflows/rust.yml"><img src="https://github.com/411A/V2RayDAR/actions/workflows/rust.yml/badge.svg" alt="Rust CI status"></a>
-</p>
-
-<p align="center">
+<p>
   <strong>Tired of manually ping-testing V2Ray configs to see which one actually works for you? Does a config work for your friend but not on your network? Run V2RayDAR once on any device — or better, on an always-on device such as an old phone, PC, Raspberry Pi, or home server — and it continuously finds, verifies, and serves the best working configs to every device on your LAN. It also exposes a standard SOCKS5/HTTP proxy, so every device on your LAN gets a working V2Ray connection — no V2Ray client required (if you need one, <a href="https://github.com/clash-verge-rev/clash-verge-rev">Clash Verge Rev</a> is recommended).</strong>
 </p>
 
-<p align="center">
+<p>
   A fast Rust service with a built-in web dashboard that fetches V2Ray / Clash / Mihomo subscription sources, validates them through your real network with <code>sing-box</code>, ranks the configs that actually work, and re-publishes the best ones at a local subscription URL your v2rayN / v2rayNG / sing-box / Clash Verge / Mihomo client can point to. An optional terminal UI (<code>--tui</code>) covers a few extra maintenance actions.
 </p>
 
-<p align="center">
-  📘 <a href="docs/guide.md">Detailed guide</a>
-  • 🧠 <a href="https://deepwiki.com/411A/V2RayDAR">Ask DeepWiki</a>
-  • 📡 <a href="#-subscription-endpoints">Endpoints</a>
-  • 🌐 <a href="#-persistent-proxy">Proxy</a>
+<p>
+  📘 <a href="docs/guide.md">Guide</a> •
+  🚀 <a href="#-installation">Install</a> •
+  📡 <a href="#-subscription-endpoints">Endpoints</a> •
+  🌐 <a href="#-persistent-proxy">Proxy</a> •
+  🧠 <a href="https://deepwiki.com/411A/V2RayDAR">DeepWiki</a>
 </p>
+
+</div>
+
+---
 
 ## 📖 Table of Contents
 

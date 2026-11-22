@@ -1,51 +1,50 @@
-<div dir="ltr">
+<div dir="ltr" align="center">
 
-<p align="center">
-  <strong>🌐 Available in</strong><br>
-  <strong><a href="https://github.com/411A/V2RayDAR/blob/main/README.md">English</a></strong>
-  • <strong><a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.zh-CN.md">简体中文</a></strong>
-  • <strong><a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.ru.md">Русский</a></strong>
-  • <strong><a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.fr.md">Français</a></strong>
-  • <strong><a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.fa.md">فارسی</a></strong>
+<img src="../assets/V2RayDAR_logo_v1.png" alt="V2RayDAR logo" width="144" height="144">
+
+<h1>V2RayDAR</h1>
+
+<p dir="rtl"><em>تشخیص و بازشناسی V2Ray &#x200F;— مانند <code>v2ray</code> + <code>radar</code> تلفظ می‌شود.</em></p>
+
+<p>
+  <a href="https://github.com/411A/V2RayDAR/releases/latest"><img src="https://img.shields.io/github/v/release/411A/V2RayDAR?style=flat-square&amp;label=release" alt="آخرین نسخه"></a>
+  <a href="../LICENSE"><img src="https://img.shields.io/github/license/411A/V2RayDAR?style=flat-square&amp;label=license" alt="مجوز: AGPL-3.0"></a>
+  <a href="https://github.com/411A/V2RayDAR/actions/workflows/rust.yml"><img src="https://github.com/411A/V2RayDAR/actions/workflows/rust.yml/badge.svg?branch=main" alt="وضعیت Rust CI"></a>
+  <a href="https://github.com/411A/V2RayDAR/actions/workflows/frontend.yml"><img src="https://github.com/411A/V2RayDAR/actions/workflows/frontend.yml/badge.svg?branch=main" alt="وضعیت Frontend CI"></a>
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20Termux-blue?style=flat-square" alt="پلتفرم‌ها: Windows | Linux | macOS | Termux">
 </p>
 
-<p align="center">
-  <img src="../assets/V2RayDAR_logo_v1.png" alt="V2RayDAR logo" width="200" height="200">
+<p>
+  <a href="https://github.com/411A/V2RayDAR/blob/main/README.md">English</a> •
+  <a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.zh-CN.md">简体中文</a> •
+  <a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.ru.md">Русский</a> •
+  <a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.fr.md">Français</a> •
+  <strong><a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.fa.md">فارسی</a></strong>
 </p>
-
-<p align="center">
-  <a href="https://deepwiki.com/411A/V2RayDAR">
-    <img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki About V2RayDAR">
-  </a>
-</p>
-
-<h1 align="center">V2RayDAR</h1>
 
 </div>
 
-<div dir="rtl" align="right">
+<div dir="rtl" align="center">
 
-<p align="center">
-  <em>تشخیص و بازشناسی V2Ray &#x200F;— مانند <code>v2ray</code> + <code>radar</code> تلفظ می‌شود.</em><br>
-  <a href="https://github.com/411A/V2RayDAR/releases/latest"><img src="https://img.shields.io/github/v/release/411A/V2RayDAR" alt="آخرین نسخه"></a>
-  <a href="../LICENSE"><img src="https://img.shields.io/github/license/411A/V2RayDAR" alt="مجوز: AGPL-3.0"></a>
-  <a href="https://github.com/411A/V2RayDAR/actions/workflows/rust.yml"><img src="https://github.com/411A/V2RayDAR/actions/workflows/rust.yml/badge.svg" alt="وضعیت Rust CI"></a>
-</p>
-
-<p align="center">
+<p>
   <strong>از تست دستی کانفیگ‌های V2Ray خسته شده‌اید تا ببینید کدام واقعاً روی شبکه شما کار می‌کند؟ یک کانفیگ برای دوستتان کار می‌کند ولی روی شبکه شما نه؟ V2RayDAR را یک‌بار روی هر دستگاهی — یا بهتر، روی یک دستگاه همیشه‌روشن مثل گوشی قدیمی، کامپیوتر، رزبری‌پای یا سرور خانگی — اجرا کنید تا به‌طور مداوم بهترین کانفیگ‌های سالم را پیدا، بررسی و به همه دستگاه‌های شبکه محلی شما ارائه کند. همچنین یک پروکسی استاندارد SOCKS5/HTTP ارائه می‌کند، پس همه دستگاه‌های شبکه محلی شما به یک اتصال V2Ray سالم دسترسی دارند — بدون نیاز به کلاینت V2Ray (اگر به کلاینت نیاز دارید، <a href="https://github.com/clash-verge-rev/clash-verge-rev">Clash Verge Rev</a> توصیه می‌شود).</strong>
 </p>
 
-<p align="center">
+<p>
   سرویس سریع Rust با داشبورد وب داخلی که منابع اشتراک &#x200F;V2Ray / Clash / Mihomo &#x200F;را دریافت می‌کند، آن‌ها را از طریق شبکه واقعی شما با <code>sing-box</code> اعتبارسنجی می‌کند، کانفیگ‌های واقعاً کارآمد را رتبه‌بندی کرده و بهترین‌ها را در یک URL اشتراک محلی بازنشر می‌کند تا کلاینت &#x200F;v2rayN / v2rayNG / sing-box / Clash Verge / Mihomo &#x200F;شما به آن وصل شود. رابط ترمینالی اختیاری (<code>--tui</code>) چند اقدام نگهداری اضافه را پوشش می‌دهد.
 </p>
 
-<p align="center">
-  &#x200F;📘 <a href="guide.md">راهنمای جامع</a>
-  • 🧠 <a href="https://deepwiki.com/411A/V2RayDAR">Ask DeepWiki</a>
-  • &#x200F;📡 <a href="#-اندپوینت‌های-اشتراک">اندپوینت‌ها</a>
-  • &#x200F;🌐 <a href="#-پروکسی-پایدار-1">پروکسی</a>
+<p>
+  &#x200F;📘 <a href="guide.md">راهنمای جامع</a> •
+  &#x200F;🚀 <a href="#-نصب">نصب</a> •
+  &#x200F;📡 <a href="#-اندپوینت‌های-اشتراک">اندپوینت‌ها</a> •
+  &#x200F;🌐 <a href="#-پروکسی-پایدار-1">پروکسی</a> •
+  &#x200F;🧠 <a href="https://deepwiki.com/411A/V2RayDAR">DeepWiki</a>
 </p>
+
+</div>
+
+---
 
 ## &#x200F;📖 فهرست
 

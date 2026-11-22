@@ -1,45 +1,46 @@
-<p align="center">
-  <strong>🌐 Available in</strong><br>
-  <strong><a href="https://github.com/411A/V2RayDAR/blob/main/README.md">English</a></strong>
-  • <strong><a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.zh-CN.md">简体中文</a></strong>
-  • <strong><a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.ru.md">Русский</a></strong>
-  • <strong><a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.fr.md">Français</a></strong>
-  • <strong><a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.fa.md">فارسی</a></strong>
+<div align="center">
+
+<img src="../assets/V2RayDAR_logo_v1.png" alt="V2RayDAR logo" width="144" height="144">
+
+<h1>V2RayDAR</h1>
+
+<p><em>V2Ray 检测与侦察 — 发音类似 <code>v2ray</code> + <code>radar</code>。</em></p>
+
+<p>
+  <a href="https://github.com/411A/V2RayDAR/releases/latest"><img src="https://img.shields.io/github/v/release/411A/V2RayDAR?style=flat-square&amp;label=release" alt="最新版本"></a>
+  <a href="../LICENSE"><img src="https://img.shields.io/github/license/411A/V2RayDAR?style=flat-square&amp;label=license" alt="许可证：AGPL-3.0"></a>
+  <a href="https://github.com/411A/V2RayDAR/actions/workflows/rust.yml"><img src="https://github.com/411A/V2RayDAR/actions/workflows/rust.yml/badge.svg?branch=main" alt="Rust CI 状态"></a>
+  <a href="https://github.com/411A/V2RayDAR/actions/workflows/frontend.yml"><img src="https://github.com/411A/V2RayDAR/actions/workflows/frontend.yml/badge.svg?branch=main" alt="前端 CI 状态"></a>
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20Termux-blue?style=flat-square" alt="平台：Windows | Linux | macOS | Termux">
 </p>
 
-<p align="center">
-  <img src="../assets/V2RayDAR_logo_v1.png" alt="V2RayDAR logo" width="200" height="200">
+<p>
+  <a href="https://github.com/411A/V2RayDAR/blob/main/README.md">English</a> •
+  <strong><a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.zh-CN.md">简体中文</a></strong> •
+  <a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.ru.md">Русский</a> •
+  <a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.fr.md">Français</a> •
+  <a href="https://github.com/411A/V2RayDAR/blob/main/docs/README.fa.md">فارسی</a>
 </p>
 
-<p align="center">
-  <a href="https://deepwiki.com/411A/V2RayDAR">
-    <img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki About V2RayDAR">
-  </a>
-</p>
-
-<h1 align="center">V2RayDAR</h1>
-
-<p align="center">
-  <em>V2Ray 检测与侦察 — 发音类似 <code>v2ray</code> + <code>radar</code>。</em><br>
-  <a href="https://github.com/411A/V2RayDAR/releases/latest"><img src="https://img.shields.io/github/v/release/411A/V2RayDAR" alt="最新版本"></a>
-  <a href="../LICENSE"><img src="https://img.shields.io/github/license/411A/V2RayDAR" alt="许可证：AGPL-3.0"></a>
-  <a href="https://github.com/411A/V2RayDAR/actions/workflows/rust.yml"><img src="https://github.com/411A/V2RayDAR/actions/workflows/rust.yml/badge.svg" alt="Rust CI 状态"></a>
-</p>
-
-<p align="center">
+<p>
   <strong>厌倦了手动逐个测试 V2Ray 配置，想知道哪个才真正适合你的网络？同一个配置在朋友那里能用，在你的网络却不行？只需在任意设备上运行一次 V2RayDAR——更好的选择是把它放在常开设备上，例如旧手机、电脑、树莓派或家庭服务器——它就会持续查找、验证最佳可用配置，并将其提供给局域网中的每台设备。它还提供标准的 SOCKS5/HTTP 代理，因此局域网中的每台设备都能使用可用的 V2Ray 连接——无需安装 V2Ray 客户端（如需客户端，推荐 <a href="https://github.com/clash-verge-rev/clash-verge-rev">Clash Verge Rev</a>）。</strong>
 </p>
 
-<p align="center">
+<p>
   一款快速的 Rust 服务，内置 Web 仪表盘：获取 V2Ray / Clash / Mihomo 订阅源，通过 <code>sing-box</code> 在真实网络中验证配置，对可用配置进行排名，并在本地订阅 URL 上重新发布最佳配置，供 v2rayN / v2rayNG / sing-box / Clash Verge / Mihomo 客户端使用。可选的终端界面（<code>--tui</code>）仅提供少量额外的维护操作。
 </p>
 
-<p align="center">
-  📘 <a href="guide.md">阅读详细指南</a>
-  • 🧠 <a href="https://deepwiki.com/411A/V2RayDAR">Ask DeepWiki</a>
-  • 📡 <a href="#-订阅端点">端点</a>
-  • 🌐 <a href="#-持久代理">代理</a>
+<p>
+  📘 <a href="guide.md">指南</a> •
+  🚀 <a href="#-安装">安装</a> •
+  📡 <a href="#-订阅端点">端点</a> •
+  🌐 <a href="#-持久代理">代理</a> •
+  🧠 <a href="https://deepwiki.com/411A/V2RayDAR">DeepWiki</a>
 </p>
+
+</div>
+
+---
 
 ## 📖 目录
 

@@ -33,7 +33,7 @@ tokio = { version = "1.54.1", features = ["fs", "macros", "net", "process", "rt-
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 unicode-width = "0.2.2"
-url = "2.5.8"
+url = "2.5.9"
 qrcodegen = "1.8.0"
 jpeg-encoder = "0.7.1"
 sysinfo = { version = "0.38.4", default-features = false, features = ["system"] }

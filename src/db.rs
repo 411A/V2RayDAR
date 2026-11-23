@@ -13,6 +13,13 @@ pub struct Database {
     conn: Mutex<Connection>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct MaintenanceStats {
+    pub bytes_before: u64,
+    pub bytes_after: u64,
+    pub vacuumed: bool,
+}
+
 impl Database {
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)
@@ -253,6 +260,42 @@ impl Database {
             )
             .context("failed to clean offline configs")?;
         Ok(deleted)
+    }
+
+    /// Cheap post-cycle database upkeep. `PRAGMA optimize` refreshes planner
+    /// statistics; a `VACUUM` runs only when deleted rows left at least a
+    /// quarter of the file free (and the file is not tiny). The live database
+    /// had accumulated ~99 MB of free pages, which made every backup and
+    /// cold read larger for no benefit. Runs after the cycle, never on the
+    /// proxy path.
+    #[allow(clippy::significant_drop_tightening)]
+    pub fn optimize_and_compact(&self) -> Result<MaintenanceStats> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        conn.execute_batch("PRAGMA optimize;")
+            .context("failed to optimize database")?;
+
+        let page_size = pragma_u64(&conn, "page_size")?;
+        let page_count = pragma_u64(&conn, "page_count")?;
+        let free_pages = pragma_u64(&conn, "freelist_count")?;
+        let bytes_before = page_count.saturating_mul(page_size);
+        let vacuumed =
+            page_count > 512 && free_pages >= 256 && free_pages.saturating_mul(4) >= page_count;
+
+        if vacuumed {
+            conn.execute_batch("VACUUM;")
+                .context("failed to compact database")?;
+            let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+        } else {
+            let _ = conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
+        }
+
+        let page_count_after = pragma_u64(&conn, "page_count")?;
+        let bytes_after = page_count_after.saturating_mul(page_size);
+        Ok(MaintenanceStats {
+            bytes_before,
+            bytes_after,
+            vacuumed,
+        })
     }
 
     #[allow(
@@ -782,6 +825,11 @@ fn restrict_file_permissions(path: &Path) {
     }
 }
 
+fn pragma_u64(conn: &Connection, pragma: &str) -> Result<u64> {
+    let value: i64 = conn.query_row(&format!("PRAGMA {pragma}"), [], |row| row.get(0))?;
+    Ok(u64::try_from(value).unwrap_or(0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1123,6 +1171,34 @@ mod tests {
         .optional()
         .expect("query runs")
         .is_some()
+    }
+
+    #[test]
+    fn maintenance_compacts_a_database_bloated_by_deleted_rows() {
+        let db = open_temp_db("maintenance");
+        let rows = (0..1_500)
+            .map(|index| {
+                let key = format!("bloat-{index}");
+                let mut row = ranked_row(&key, true, "active_http", 1);
+                row.uri = format!("vless://{key}@example.com:443?pad={}", "x".repeat(8 * 1024));
+                row
+            })
+            .collect::<Vec<_>>();
+        db.upsert_configs(&rows).expect("bloat rows insert");
+        {
+            let conn = db.conn.lock().expect("db lock");
+            conn.execute("DELETE FROM configs", [])
+                .expect("bloat rows delete");
+        }
+
+        let stats = db.optimize_and_compact().expect("maintenance runs");
+        assert!(stats.vacuumed, "a mostly-free database should compact");
+        assert!(
+            stats.bytes_after < stats.bytes_before,
+            "compaction must shrink the file: {} -> {}",
+            stats.bytes_before,
+            stats.bytes_after
+        );
     }
 
     #[test]

@@ -141,6 +141,21 @@ pub fn log_persist_stats(
     }
 }
 
+/// One line when a post-cycle vacuum actually shrank the database.
+pub fn log_db_compaction(state: &mut RuntimeState, before: u64, after: u64) {
+    if after < before {
+        push(
+            state,
+            LogLevel::Info,
+            &format!(
+                "DB: compacted {} → {}",
+                format_bytes(before),
+                format_bytes(after)
+            ),
+        );
+    }
+}
+
 /// Human byte count for fetch lines: `512 B`, `41.02 KB`, `3.10 MB`.
 #[allow(clippy::cast_precision_loss)]
 pub fn format_bytes(bytes: u64) -> String {

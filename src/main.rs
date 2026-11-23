@@ -1176,6 +1176,7 @@ struct PersistStats {
     upserted: usize,
     stable_keys: usize,
     cleaned: usize,
+    maintenance: Option<crate::db::MaintenanceStats>,
 }
 
 /// Persist probed configs and stable top-N keys; optionally clean offline rows.
@@ -1223,6 +1224,7 @@ async fn persist_ranked_configs(
     };
 
     let mut cleaned = 0;
+    let mut maintenance = None;
     if clean_offlines {
         let db = database.clone();
         cleaned = tokio::task::spawn_blocking(move || {
@@ -1237,11 +1239,21 @@ async fn persist_ranked_configs(
                 upserted, stable_keys, "cleaned offline configs from database"
             );
         }
+
+        // Post-cycle upkeep, never on the proxy path. A vacuum failure must
+        // not fail the refresh: the data is already persisted.
+        let db = database.clone();
+        match tokio::task::spawn_blocking(move || db.optimize_and_compact()).await {
+            Ok(Ok(stats)) => maintenance = Some(stats),
+            Ok(Err(err)) => warn!(error = %err, "database maintenance failed"),
+            Err(err) => warn!(error = %err, "database maintenance task failed"),
+        }
     }
     Ok(PersistStats {
         upserted,
         stable_keys,
         cleaned,
+        maintenance,
     })
 }
 
@@ -1918,6 +1930,15 @@ async fn refresh_once(
                 persisted.cleaned,
                 config.clean_offlines_after_days,
             );
+            if let Some(maintenance) = persisted.maintenance
+                && maintenance.vacuumed
+            {
+                applog::log_db_compaction(
+                    &mut runtime,
+                    maintenance.bytes_before,
+                    maintenance.bytes_after,
+                );
+            }
         }
     }
     // A protocol disabled in settings must not be published or ranked, even

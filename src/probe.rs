@@ -31,11 +31,13 @@ use crate::{
     constants::{
         ACTIVE_PROBE_BATCH_CONCURRENCY_MULTIPLIER, ACTIVE_PROBE_BATCH_MAX_SIZE,
         ACTIVE_PROBE_BATCH_MIN_SIZE, ACTIVE_PROBE_HTTP_MAX_CONCURRENCY,
-        ACTIVE_PROBE_PROCESS_MAX_CONCURRENCY, BITS_PER_BYTE, BITS_PER_MEGABIT, BULK_MIN_BYTES,
-        DOWNLOAD_TAIL_MIN_WINDOW, DOWNLOAD_TAIL_WINDOW, HTTP_EXCHANGE_OVERHEAD_BYTES,
-        LOCAL_PROXY_CONNECT_TIMEOUT, LOCAL_PROXY_WAIT_INTERVAL, LOCALHOST_IP, PROBE_UPLOAD_BYTES,
-        PROBE_UPLOAD_TIMEOUT, SING_BOX_CLEANUP_TIMEOUT, SING_BOX_CONFIG_FILE_PREFIX,
-        SING_BOX_INBOUND_TAG_PREFIX, SING_BOX_OUTBOUND_TAG_PREFIX, SPEEDTEST_TIMEOUT,
+        ACTIVE_PROBE_PREPARE_WINDOW_MAX, ACTIVE_PROBE_PREPARE_WINDOW_MIN,
+        ACTIVE_PROBE_PREPARE_WINDOW_WAVES, ACTIVE_PROBE_PROCESS_MAX_CONCURRENCY, BITS_PER_BYTE,
+        BITS_PER_MEGABIT, BULK_MIN_BYTES, DOWNLOAD_TAIL_MIN_WINDOW, DOWNLOAD_TAIL_WINDOW,
+        HTTP_EXCHANGE_OVERHEAD_BYTES, LOCAL_PROXY_CONNECT_TIMEOUT, LOCAL_PROXY_WAIT_INTERVAL,
+        LOCALHOST_IP, PROBE_UPLOAD_BYTES, PROBE_UPLOAD_TIMEOUT, SING_BOX_CLEANUP_TIMEOUT,
+        SING_BOX_CONFIG_FILE_PREFIX, SING_BOX_INBOUND_TAG_PREFIX, SING_BOX_OUTBOUND_TAG_PREFIX,
+        SPEEDTEST_TIMEOUT,
     },
     convert::{
         decode_base64_bytes, decode_base64_to_string, first_param, json_bool, json_string,
@@ -564,12 +566,19 @@ struct BatchProbeStats {
 }
 
 impl ProbeStopState {
-    fn new(prepared: &[PreparedActiveCandidate], policy: &ProbeStopPolicy) -> Self {
+    fn new(candidates: &[Candidate], policy: &ProbeStopPolicy) -> Self {
         let remaining_previous_working = if policy.scan_all_configs || !policy.prioritize_stability
         {
             0
         } else {
-            previous_working_entry_count(prepared, policy)
+            let mut seen = std::collections::HashSet::new();
+            candidates
+                .iter()
+                .filter(|candidate| {
+                    policy.previous_working_keys.contains(&candidate.dedup_key)
+                        && seen.insert(candidate.dedup_key.as_str())
+                })
+                .count()
         };
         Self {
             half_snapshot_sent: false,
@@ -669,6 +678,7 @@ impl ProbeStopSignal {
 /// for the stability search update.
 type ProbeWave = Vec<(usize, Vec<PreparedActiveCandidate>)>;
 
+#[allow(clippy::too_many_lines)]
 async fn probe_active_batched(
     candidates: Vec<Candidate>,
     config: &ProbeConfig,
@@ -677,22 +687,51 @@ async fn probe_active_batched(
     cancel: Option<Arc<AtomicBool>>,
 ) -> Vec<RankedConfig> {
     let started = Instant::now();
-    let (mut prepared, prepared_ranked) =
-        prepare_batched_probe_inputs(candidates, stop_policy, progress.as_ref()).await;
+    let scheduled = schedule_active_candidates(candidates, stop_policy);
+    let scheduled_count = scheduled.len();
 
     let process_concurrency = active_probe_process_concurrency(config.process_concurrency);
     let mut batch_sizer = ActiveBatchSizer::new(config.concurrency, config.batch_size);
+    let window_size = active_prepare_window_size(batch_sizer.current, process_concurrency);
+    info!(
+        candidates = scheduled_count,
+        window_size, "active probe scheduled with bounded preparation windows"
+    );
     let shared: SharedProbe = Arc::new(Mutex::new(SharedProbeState {
-        ranked: prepared_ranked,
-        stop: ProbeStopState::new(&prepared, stop_policy),
+        ranked: Vec::new(),
+        stop: ProbeStopState::new(&scheduled, stop_policy),
         stop_announced: false,
     }));
     // The external switch only stops batches; the early-stop broadcast
     // below uses the run-internal flag so a reached target never looks
     // like an external preemption to the caller.
     let stop = ProbeStopSignal::from_external(cancel);
+    let mut pending: VecDeque<Candidate> = scheduled.into();
+    let mut prepared: Vec<PreparedActiveCandidate> = Vec::new();
     let mut batch_index = 0_usize;
-    while !prepared.is_empty() && !stop.stopped() {
+    while !stop.stopped() {
+        if prepared.is_empty() {
+            if pending.is_empty() {
+                break;
+            }
+            let take = pending.len().min(window_size);
+            let window = pending.drain(..take).collect::<Vec<_>>();
+            let (window_prepared, window_ranked) =
+                prepare_active_window_inputs(window, progress.as_ref()).await;
+            let failed_previous = window_ranked
+                .iter()
+                .filter(|item| stop_policy.previous_working_keys.contains(&item.dedup_key))
+                .count();
+            if !window_ranked.is_empty() {
+                let mut shared = lock_shared(&shared);
+                shared.ranked.extend(window_ranked);
+                update_stability_search_after_batch(failed_previous, stop_policy, &mut shared.stop);
+            }
+            prepared = window_prepared;
+            if prepared.is_empty() {
+                continue;
+            }
+        }
         let before = lock_shared(&shared).ranked.len();
         let (wave, wave_previous_working) = queue_probe_wave(
             &mut prepared,
@@ -774,41 +813,28 @@ async fn probe_active_batched(
 }
 
 /// CPU-bound preparation (outbound building) plus its logging, lifted out
-/// of [`probe_active_batched`] so the wave loop stays readable. Returns the
-/// testable definitions alongside configs rejected before any probing.
-async fn prepare_batched_probe_inputs(
-    candidates: Vec<Candidate>,
-    stop_policy: &ProbeStopPolicy,
+/// of [`probe_active_batched`] so the wave loop stays readable. Only the
+/// bounded window is built; the rest of the queue waits until the first
+/// window has been tested.
+async fn prepare_active_window_inputs(
+    window: Vec<Candidate>,
     progress: Option<&UnboundedSender<ProgressEvent>>,
 ) -> (Vec<PreparedActiveCandidate>, Vec<RankedConfig>) {
-    let input_count = candidates.len();
-    let stop_policy_clone = stop_policy.clone();
+    let input_count = window.len();
     let ActivePreparation {
         prepared,
         ranked: prepared_ranked,
         prepared_candidates,
-    } = tokio::task::spawn_blocking(move || {
-        prepare_active_candidates(candidates, &stop_policy_clone)
-    })
-    .await
-    .expect("prepare_active_candidates panicked");
+    } = tokio::task::spawn_blocking(move || prepare_active_window(&window))
+        .await
+        .expect("prepare_active_window panicked");
     let prepared_failed = prepared_ranked.len();
-    info!(
+    debug!(
         input = input_count,
         prepared = prepared_candidates,
         test_definitions = prepared.len(),
         parse_failed = prepared_failed,
-        "active probe preparation finished"
-    );
-    send_progress(
-        progress,
-        LogLevel::Info,
-        format!(
-            "Prepared active test: {} sing-box definitions represent {} loaded configs; {} unsupported configs skipped",
-            prepared.len(),
-            prepared_candidates,
-            prepared_failed
-        ),
+        "active probe window prepared"
     );
     if prepared_failed > 0 {
         send_probe_delta(progress, prepared_failed, 0, 0);
@@ -824,8 +850,10 @@ async fn prepare_batched_probe_inputs(
                 .join(", ");
             send_progress(
                 progress,
-                LogLevel::Warn,
-                format!("Preparation skipped {prepared_failed} configs; top errors: {summary}"),
+                LogLevel::Debug,
+                format!(
+                    "Preparation skipped {prepared_failed} configs in this window; top errors: {summary}"
+                ),
             );
         }
     }
@@ -903,20 +931,16 @@ async fn finish_batched_probe(
     ranked
 }
 
-fn prepare_active_candidates(
-    candidates: Vec<Candidate>,
-    stop_policy: &ProbeStopPolicy,
-) -> ActivePreparation {
-    let scheduled = schedule_active_candidates(candidates, stop_policy);
+fn prepare_active_window(candidates: &[Candidate]) -> ActivePreparation {
     let num_cpus = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
-    let chunk_size = (scheduled.len() / num_cpus.max(1)).max(1);
+    let chunk_size = (candidates.len() / num_cpus.max(1)).max(1);
 
     // Process candidates in parallel across threads
     let mut all_prepared = Vec::new();
     let mut all_ranked = Vec::new();
 
     std::thread::scope(|s| {
-        let handles: Vec<_> = scheduled
+        let handles: Vec<_> = candidates
             .chunks(chunk_size)
             .map(|chunk| {
                 s.spawn(move || {
@@ -1313,6 +1337,16 @@ fn send_asap_configs(
             top_n: policy.top_n,
         });
     }
+}
+
+fn active_prepare_window_size(batch_size: usize, process_concurrency: usize) -> usize {
+    batch_size
+        .saturating_mul(process_concurrency)
+        .saturating_mul(ACTIVE_PROBE_PREPARE_WINDOW_WAVES)
+        .clamp(
+            ACTIVE_PROBE_PREPARE_WINDOW_MIN,
+            ACTIVE_PROBE_PREPARE_WINDOW_MAX,
+        )
 }
 
 fn active_probe_batch_size(concurrency: usize, configured: Option<usize>) -> usize {
@@ -3582,6 +3616,23 @@ mod tests {
     }
 
     #[test]
+    fn active_prepare_window_is_bounded() {
+        assert_eq!(
+            active_prepare_window_size(1, 1),
+            ACTIVE_PROBE_PREPARE_WINDOW_MIN
+        );
+        assert_eq!(active_prepare_window_size(20, 4), 320);
+        assert_eq!(
+            active_prepare_window_size(ACTIVE_PROBE_BATCH_MAX_SIZE, 4),
+            ACTIVE_PROBE_PREPARE_WINDOW_MAX
+        );
+        assert_eq!(
+            active_prepare_window_size(usize::MAX, usize::MAX),
+            ACTIVE_PROBE_PREPARE_WINDOW_MAX
+        );
+    }
+
+    #[test]
     fn active_probe_http_concurrency_is_bounded() {
         assert_eq!(active_probe_http_concurrency(1, 128), 11);
         assert_eq!(active_probe_http_concurrency(16, 128), 128);
@@ -3827,8 +3878,7 @@ mod tests {
             },
         ];
 
-        let policy = stop_policy(2, false, std::collections::HashSet::new());
-        let prepared = prepare_active_candidates(candidates, &policy);
+        let prepared = prepare_active_window(&candidates);
 
         assert_eq!(prepared.prepared.len(), 1);
         assert_eq!(prepared.prepared_candidates, 2);

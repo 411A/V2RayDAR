@@ -251,6 +251,12 @@ pub const ACTIVE_PROBE_BATCH_MAX_SIZE: usize = 128;
 pub const ACTIVE_PROBE_BATCH_CONCURRENCY_MULTIPLIER: usize = 16;
 pub const ACTIVE_PROBE_HTTP_MAX_CONCURRENCY: usize = 128;
 pub const ACTIVE_PROBE_PROCESS_MAX_CONCURRENCY: usize = 4;
+/// Prepare only a few waves of outbounds at a time. Building a definition for
+/// every loaded config (often 10k+) before testing the first 400 wasted tens of
+/// megabytes and seconds of CPU on low-end devices.
+pub const ACTIVE_PROBE_PREPARE_WINDOW_MIN: usize = 128;
+pub const ACTIVE_PROBE_PREPARE_WINDOW_MAX: usize = 512;
+pub const ACTIVE_PROBE_PREPARE_WINDOW_WAVES: usize = 4;
 pub const LOCAL_PROXY_WAIT_INTERVAL: Duration = Duration::from_millis(25);
 pub const LOCAL_PROXY_CONNECT_TIMEOUT: Duration = Duration::from_millis(5);
 pub const SING_BOX_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);

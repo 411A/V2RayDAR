@@ -124,6 +124,11 @@ struct ProxyState {
     /// switch, so open sockets keep running on the old outbound. Empty when
     /// the process is stopped or has no controller.
     outbound_tags: HashMap<String, String>,
+    /// The running selector has fewer outbounds than the current ranking can
+    /// supply. Unlike `provisional_start`, this survives a hot swap or a
+    /// post-cycle update: only a restart that actually builds the full pool
+    /// clears it.
+    pool_incomplete: bool,
 }
 
 /// Clash API controller allocation for one proxy start: localhost listener
@@ -247,6 +252,7 @@ impl PersistentProxy {
                 clash_controller: None,
                 clash_secret: None,
                 outbound_tags: HashMap::new(),
+                pool_incomplete: false,
             })),
             process: Mutex::new(None),
             events,
@@ -318,6 +324,14 @@ impl PersistentProxy {
                     .is_some_and(|seen| seen.elapsed() < PROXY_STREAM_WINDOW.saturating_mul(3));
             let open_connections = state.open_connections;
             let uploading_connections = state.uploading_connections;
+            let reachable_pool = ranked
+                .iter()
+                .filter(|candidate| candidate.reachable)
+                .take(PROXY_SELECTOR_POOL_SIZE)
+                .count();
+            if state.running && !state.outbound_tags.is_empty() {
+                state.pool_incomplete |= state.outbound_tags.len() < reachable_pool;
+            }
             // A provisional mid-cycle start is replaced by the first full
             // ranking without the dwell wait. Clear here so the bypass is
             // one-shot even when no switch is needed.
@@ -426,6 +440,7 @@ impl PersistentProxy {
         };
 
         let (should_switch, reason) = {
+            let reachable_count = ranked.iter().filter(|item| item.reachable).count();
             let state = self.state.read().await;
             match &state.active_config_uri {
                 None => (true, "starting"),
@@ -444,39 +459,43 @@ impl PersistentProxy {
                     let hot_swappable = state.running
                         && state.clash_controller.is_some()
                         && state.outbound_tags.contains_key(&best.uri);
-                    let restart_guard = if traffic_active && !pin_active && active_class != Some(2)
-                    {
-                        RestartGuard::Traffic
-                    } else if open_connections > 0 && !pin_active {
-                        RestartGuard::Open
+                    if selector_pool_stale(
+                        state.pool_incomplete,
+                        state.running,
+                        state.outbound_tags.len(),
+                        reachable_count,
+                    ) {
+                        (true, "repool")
                     } else {
-                        RestartGuard::Clear
-                    };
-                    ranking_switch_decision(
-                        dwell_blocks_switch(
-                            state.last_switch,
-                            Instant::now(),
-                            pin_active,
-                            provisional_start,
-                            clear_blacklist,
-                        ),
-                        hot_swappable,
-                        restart_guard,
-                    )
+                        let restart_guard =
+                            if traffic_active && !pin_active && active_class != Some(2) {
+                                RestartGuard::Traffic
+                            } else if open_connections > 0 && !pin_active {
+                                RestartGuard::Open
+                            } else {
+                                RestartGuard::Clear
+                            };
+                        ranking_switch_decision(
+                            dwell_blocks_switch(
+                                state.last_switch,
+                                Instant::now(),
+                                pin_active,
+                                provisional_start,
+                                clear_blacklist,
+                            ),
+                            hot_swappable,
+                            restart_guard,
+                        )
+                    }
                 }
                 Some(_) => {
                     let running = state.running;
                     let failures = state.consecutive_failures;
                     let pooled = state.outbound_tags.len();
+                    let pool_incomplete = state.pool_incomplete;
                     drop(state);
 
-                    if selector_pool_stale(
-                        provisional_start,
-                        clear_blacklist,
-                        running,
-                        pooled,
-                        ranked.iter().filter(|item| item.reachable).count(),
-                    ) {
+                    if selector_pool_stale(pool_incomplete, running, pooled, reachable_count) {
                         (true, "repool")
                     } else if !running || !self.is_process_alive().await {
                         (true, "restarted")
@@ -624,6 +643,7 @@ impl PersistentProxy {
                 let mut state = self.state.write().await;
                 state.running = false;
                 state.outbound_tags.clear();
+                state.pool_incomplete = false;
                 state.consecutive_failures = state.consecutive_failures.saturating_add(1);
                 false
             }
@@ -644,6 +664,7 @@ impl PersistentProxy {
                 let mut state = self.state.write().await;
                 state.running = false;
                 state.outbound_tags.clear();
+                state.pool_incomplete = false;
                 state.consecutive_failures = state.consecutive_failures.saturating_add(1);
                 false
             }
@@ -867,6 +888,12 @@ impl PersistentProxy {
             } else {
                 HashMap::new()
             };
+            let desired_pool = ranked
+                .iter()
+                .filter(|candidate| candidate.reachable)
+                .take(PROXY_SELECTOR_POOL_SIZE)
+                .count();
+            state.pool_incomplete = selector_ready && state.outbound_tags.len() < desired_pool;
         }
 
         let managed_child_id = managed.child.id();
@@ -1482,6 +1509,7 @@ impl PersistentProxy {
         state.clash_controller = None;
         state.clash_secret = None;
         state.outbound_tags.clear();
+        state.pool_incomplete = false;
     }
 
     pub async fn shutdown(&self) {
@@ -1762,19 +1790,19 @@ const fn ranking_switch_decision(
 }
 
 /// A mid-cycle start is provisional and only saw the first verified configs.
-/// When the first full ranking arrives, its selector may hold too few
-/// outbounds for later hot swaps. Rebuild it once, even if the active config
-/// is still the best: this is the only point where an open-socket restart is
-/// allowed, and it happens seconds after startup before the pool exists.
+/// The running selector has fewer outbounds than the current ranking can
+/// supply. Rebuild it once, even if the active config is the best: this is the
+/// only point where an open-socket restart is allowed, and it happens seconds
+/// after startup before the pool exists. Unlike `provisional_start`, the flag
+/// survives hot swaps and post-cycle updates until a start actually builds the
+/// full pool.
 const fn selector_pool_stale(
-    provisional_start: bool,
-    clear_blacklist: bool,
+    pool_incomplete: bool,
     running: bool,
     pooled: usize,
     reachable: usize,
 ) -> bool {
-    provisional_start
-        && clear_blacklist
+    pool_incomplete
         && running
         && pooled > 0
         && pooled
@@ -3760,16 +3788,16 @@ mod tests {
     #[test]
     fn provisional_pool_refreshes_once_after_the_first_full_ranking() {
         // One verified config at mid-cycle start, eight at full ranking.
-        assert!(selector_pool_stale(true, true, true, 1, 8));
+        assert!(selector_pool_stale(true, true, 1, 8));
+        assert!(selector_pool_stale(true, true, 2, 8));
         // A full pool needs no restart.
-        assert!(!selector_pool_stale(true, true, true, 8, 8));
-        // Never on a ping (same set) or after the provisional flag clears.
-        assert!(!selector_pool_stale(true, false, true, 1, 8));
-        assert!(!selector_pool_stale(false, true, true, 1, 8));
+        assert!(!selector_pool_stale(true, true, 8, 8));
+        // Never after the provisional flag clears.
+        assert!(!selector_pool_stale(false, true, 1, 8));
         // No selector/controller: a restart cannot improve the pool.
-        assert!(!selector_pool_stale(true, true, true, 0, 8));
+        assert!(!selector_pool_stale(true, true, 0, 8));
         // Only one reachable config: one outbound is the full pool.
-        assert!(!selector_pool_stale(true, true, true, 1, 1));
+        assert!(!selector_pool_stale(true, true, 1, 1));
     }
 
     #[test]

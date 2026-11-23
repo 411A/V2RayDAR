@@ -217,6 +217,14 @@ pub const PROXY_CLASH_UNREACHABLE_RETRY_POLLS: u8 = 12;
 pub const PROXY_DNS_PRIMARY: &str = "8.8.8.8";
 pub const PROXY_DNS_FALLBACK: &str = "1.1.1.1";
 pub const PROXY_SING_BOX_TAG_OUTBOUND: &str = "proxy-0";
+/// Selector outbound that routes new connections to whichever pooled config
+/// is active. Switching it through the Clash API leaves open sockets on the
+/// old outbound alive, so a ranking change no longer needs a sing-box restart.
+pub const PROXY_SING_BOX_TAG_SELECTOR: &str = "proxy-select";
+/// Configs bundled into one sing-box start: the active one plus the next-best
+/// ranked alternatives. Covers normal ranking churn without writing hundreds
+/// of outbounds; a config outside the pool still falls back to a restart.
+pub const PROXY_SELECTOR_POOL_SIZE: usize = 8;
 pub const PROXY_SING_BOX_TAG_DIRECT: &str = "direct-out";
 pub const PROXY_SING_BOX_TAG_INBOUND: &str = "proxy-in";
 pub const PROXY_SING_BOX_TAG_DNS_DIRECT: &str = "dns-direct";

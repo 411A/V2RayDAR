@@ -31,14 +31,15 @@ use crate::{
         PROXY_FAILOVER_COOLDOWN, PROXY_HEALTH_CHECK_BODY_BYTES, PROXY_HEALTH_CHECK_TIMEOUT,
         PROXY_HEALTH_FULL_BPS, PROXY_HEALTH_LIGHT_TIMEOUT, PROXY_HEALTH_MIN_BPS,
         PROXY_MAX_CONSECUTIVE_FAILURES, PROXY_MAX_RECENTLY_FAILED_KEYS, PROXY_MIN_SWITCH_INTERVAL,
-        PROXY_PERFORMANCE_SWITCH_COOLDOWN, PROXY_PORT_POLL_INTERVAL, PROXY_SING_BOX_TAG_DIRECT,
-        PROXY_SING_BOX_TAG_DNS_DIRECT, PROXY_SING_BOX_TAG_DNS_FALLBACK,
+        PROXY_PERFORMANCE_SWITCH_COOLDOWN, PROXY_PORT_POLL_INTERVAL, PROXY_SELECTOR_POOL_SIZE,
+        PROXY_SING_BOX_TAG_DIRECT, PROXY_SING_BOX_TAG_DNS_DIRECT, PROXY_SING_BOX_TAG_DNS_FALLBACK,
         PROXY_SING_BOX_TAG_DNS_PROXY, PROXY_SING_BOX_TAG_INBOUND, PROXY_SING_BOX_TAG_OUTBOUND,
-        PROXY_SLOW_CHECK_WARN, PROXY_STARTUP_TIMEOUT, PROXY_STARVATION_MIN_AGE,
-        PROXY_STARVATION_MIN_UPLOAD_BYTES, PROXY_STARVATION_POLL_INTERVAL, PROXY_STREAM_MIN_AGE,
-        PROXY_STREAM_MIN_WINDOW_BYTES, PROXY_STREAM_SLOW_MIN_BYTES, PROXY_STREAM_SLOW_MIN_FLOW,
-        PROXY_STREAM_SLOW_WINDOWS, PROXY_STREAM_UPGRADE_FACTOR, PROXY_STREAM_WINDOW,
-        PROXY_UPLOAD_ACTIVE_BYTES, SING_BOX_CLEANUP_TIMEOUT, SING_BOX_CONFIG_FILE_PREFIX,
+        PROXY_SING_BOX_TAG_SELECTOR, PROXY_SLOW_CHECK_WARN, PROXY_STARTUP_TIMEOUT,
+        PROXY_STARVATION_MIN_AGE, PROXY_STARVATION_MIN_UPLOAD_BYTES,
+        PROXY_STARVATION_POLL_INTERVAL, PROXY_STREAM_MIN_AGE, PROXY_STREAM_MIN_WINDOW_BYTES,
+        PROXY_STREAM_SLOW_MIN_BYTES, PROXY_STREAM_SLOW_MIN_FLOW, PROXY_STREAM_SLOW_WINDOWS,
+        PROXY_STREAM_UPGRADE_FACTOR, PROXY_STREAM_WINDOW, PROXY_UPLOAD_ACTIVE_BYTES,
+        SING_BOX_CLEANUP_TIMEOUT, SING_BOX_CONFIG_FILE_PREFIX, SING_BOX_OUTBOUND_TAG_PREFIX,
     },
     model::{ProgressEvent, RankedConfig, RuntimeState},
     probe::{sing_box_outbound_from_share_link, sing_box_version_at_least},
@@ -118,6 +119,11 @@ struct ProxyState {
     clash_controller: Option<SocketAddr>,
     /// Random per-start bearer secret for the controller. Never logged.
     clash_secret: Option<String>,
+    /// URI → sing-box outbound tag for every config bundled into the running
+    /// child. A ranking change inside this pool is a Clash API selector
+    /// switch, so open sockets keep running on the old outbound. Empty when
+    /// the process is stopped or has no controller.
+    outbound_tags: HashMap<String, String>,
 }
 
 /// Clash API controller allocation for one proxy start: localhost listener
@@ -240,6 +246,7 @@ impl PersistentProxy {
                 starting: false,
                 clash_controller: None,
                 clash_secret: None,
+                outbound_tags: HashMap::new(),
             })),
             process: Mutex::new(None),
             events,
@@ -424,38 +431,54 @@ impl PersistentProxy {
                 None => (true, "starting"),
                 Some(uri) if uri != &best.uri => {
                     // Anti-flap dwell: rankings jitter between cycles, and
-                    // every "new config" switch drops the port for seconds.
-                    // Hold the current config inside the dwell window; proven
-                    // failures (restart/failover arms below) always bypass.
-                    // A live manual pin also bypasses: user choice wins.
-                    // While the user has live traffic, ranking alone does not
-                    // justify cutting the stream; the traffic loop switches
-                    // when it can prove the active config is bad or slower.
-                    // Open connections count even when quiet: a Telegram long
-                    // poll moves no bytes but dies the moment sing-box is
-                    // restarted, so a switch waits for the proxy to go idle.
-                    if dwell_blocks_switch(
-                        state.last_switch,
-                        Instant::now(),
-                        pin_active,
-                        provisional_start,
-                        clear_blacklist,
-                    ) {
-                        (false, "dwell")
-                    } else if traffic_active && !pin_active && active_class != Some(2) {
-                        (false, "traffic")
+                    // every restart drops the port for seconds. Hold the
+                    // current config inside the dwell window; proven failures
+                    // (restart/failover arms below) always bypass. A live
+                    // manual pin also bypasses: user choice wins.
+                    //
+                    // A config already bundled in the running selector is not
+                    // a restart: the Clash API moves new connections to it and
+                    // leaves open sockets on the old outbound. That path is
+                    // safe under live traffic, so it skips the traffic/open
+                    // guards below.
+                    let hot_swappable = state.running
+                        && state.clash_controller.is_some()
+                        && state.outbound_tags.contains_key(&best.uri);
+                    let restart_guard = if traffic_active && !pin_active && active_class != Some(2)
+                    {
+                        RestartGuard::Traffic
                     } else if open_connections > 0 && !pin_active {
-                        (false, "open")
+                        RestartGuard::Open
                     } else {
-                        (true, "new config")
-                    }
+                        RestartGuard::Clear
+                    };
+                    ranking_switch_decision(
+                        dwell_blocks_switch(
+                            state.last_switch,
+                            Instant::now(),
+                            pin_active,
+                            provisional_start,
+                            clear_blacklist,
+                        ),
+                        hot_swappable,
+                        restart_guard,
+                    )
                 }
                 Some(_) => {
                     let running = state.running;
                     let failures = state.consecutive_failures;
+                    let pooled = state.outbound_tags.len();
                     drop(state);
 
-                    if !running || !self.is_process_alive().await {
+                    if selector_pool_stale(
+                        provisional_start,
+                        clear_blacklist,
+                        running,
+                        pooled,
+                        ranked.iter().filter(|item| item.reachable).count(),
+                    ) {
+                        (true, "repool")
+                    } else if !running || !self.is_process_alive().await {
                         (true, "restarted")
                     } else if failures >= PROXY_MAX_CONSECUTIVE_FAILURES {
                         (true, "failover")
@@ -500,7 +523,48 @@ impl PersistentProxy {
             "proxy: switching to new config"
         );
 
-        if let Err(err) = self.start_with_config(best).await {
+        if reason == "hot switch" {
+            match self.switch_outbound(&best.uri).await {
+                Ok(()) => {
+                    self.emit_log(
+                        LogLevel::Info,
+                        &format!("proxy: switched → {} (port {})", best.name, config.port),
+                    );
+                    let mut state = self.state.write().await;
+                    state.active_config_uri = Some(best.uri.clone());
+                    state.active_config_name = Some(best.name.clone());
+                    state.active_config_country.clone_from(&best.country_code);
+                    state.consecutive_failures = 0;
+                    state.last_switch = Some(Instant::now());
+                    state.provisional_start = false;
+                    state.degraded = false;
+                    drop(state);
+                    return;
+                }
+                Err(err) => {
+                    warn!(
+                        error = %err,
+                        name = %best.name,
+                        open_connections,
+                        "proxy: hot swap failed; falling back to a guarded restart"
+                    );
+                    // A failed selector switch must not become a restart that
+                    // kills live sockets: only fall through when the restart
+                    // would be safe.
+                    if open_connections > 0
+                        || (traffic_active && !pin_active && active_class != Some(2))
+                    {
+                        self.emit_log(
+                            LogLevel::Warn,
+                            "proxy: hot switch failed; keeping the active config while connections are open",
+                        );
+                        return;
+                    }
+                }
+            }
+        }
+
+        if let Err(err) = self.start_with_config(best, ranked).await {
             error!(
                 error = %err,
                 name = %best.name,
@@ -559,6 +623,7 @@ impl PersistentProxy {
                 drop(process);
                 let mut state = self.state.write().await;
                 state.running = false;
+                state.outbound_tags.clear();
                 state.consecutive_failures = state.consecutive_failures.saturating_add(1);
                 false
             }
@@ -578,6 +643,7 @@ impl PersistentProxy {
                 drop(process);
                 let mut state = self.state.write().await;
                 state.running = false;
+                state.outbound_tags.clear();
                 state.consecutive_failures = state.consecutive_failures.saturating_add(1);
                 false
             }
@@ -610,9 +676,13 @@ impl PersistentProxy {
         api
     }
 
-    async fn start_with_config(&self, config: &RankedConfig) -> Result<()> {
+    async fn start_with_config(
+        &self,
+        config: &RankedConfig,
+        ranked: &[RankedConfig],
+    ) -> Result<()> {
         self.state.write().await.starting = true;
-        let mut result = self.start_with_config_inner(config, true).await;
+        let mut result = self.start_with_config_inner(config, ranked, true).await;
         if let Err(error) = &result
             && error.to_string().contains(CONTROLLER_REJECTED)
         {
@@ -622,7 +692,7 @@ impl PersistentProxy {
                 error = %error,
                 "proxy: controller port conflict; retrying without the Clash controller"
             );
-            result = self.start_with_config_inner(config, false).await;
+            result = self.start_with_config_inner(config, ranked, false).await;
         }
         self.state.write().await.starting = false;
         result
@@ -632,6 +702,7 @@ impl PersistentProxy {
     async fn start_with_config_inner(
         &self,
         config: &RankedConfig,
+        ranked: &[RankedConfig],
         use_controller: bool,
     ) -> Result<()> {
         if self.state.read().await.shutting_down {
@@ -639,8 +710,39 @@ impl PersistentProxy {
         }
         self.stop().await;
 
-        let outbound = sing_box_outbound_from_share_link(&config.uri)
+        let primary = sing_box_outbound_from_share_link(&config.uri)
             .context("failed to convert config to sing-box outbound")?;
+
+        // Bundle the active config with the next-best ranked alternatives in
+        // one selector. A later ranking update can then move new connections
+        // without restarting sing-box or cutting open sockets. Unsupported
+        // transports are skipped here; the probe already could not run them.
+        let mut pool: Vec<(String, Value)> =
+            vec![(PROXY_SING_BOX_TAG_OUTBOUND.to_string(), primary)];
+        let mut outbound_tags = HashMap::new();
+        outbound_tags.insert(config.uri.clone(), PROXY_SING_BOX_TAG_OUTBOUND.to_string());
+        for candidate in ranked {
+            if pool.len() >= PROXY_SELECTOR_POOL_SIZE {
+                break;
+            }
+            if !candidate.reachable
+                || candidate.uri == config.uri
+                || outbound_tags.contains_key(&candidate.uri)
+            {
+                continue;
+            }
+            let Ok(outbound) = sing_box_outbound_from_share_link(&candidate.uri) else {
+                debug!(
+                    name = %candidate.name,
+                    protocol = %candidate.protocol,
+                    "proxy: skipping unbuildable selector alternate"
+                );
+                continue;
+            };
+            let tag = format!("{SING_BOX_OUTBOUND_TAG_PREFIX}-{}", pool.len());
+            outbound_tags.insert(candidate.uri.clone(), tag.clone());
+            pool.push((tag, outbound));
+        }
 
         let current_config = {
             let state = self.state.read().await;
@@ -658,8 +760,9 @@ impl PersistentProxy {
         } else {
             None
         };
+        let selector_ready = clash_api.is_some();
         let config_json =
-            build_sing_box_config(&outbound, current_config.port, listen, clash_api.as_ref());
+            build_sing_box_config(&pool, current_config.port, listen, clash_api.as_ref());
         let config_path = write_proxy_config(&config_json).await?;
 
         let mut child = Command::new(&self.sing_box_path)
@@ -759,6 +862,11 @@ impl PersistentProxy {
             state.last_health_ok = false;
             state.clash_controller = controller;
             state.clash_secret = secret;
+            state.outbound_tags = if selector_ready {
+                outbound_tags
+            } else {
+                HashMap::new()
+            };
         }
 
         let managed_child_id = managed.child.id();
@@ -774,10 +882,48 @@ impl PersistentProxy {
             country = ?config.country_code,
             discoverable = current_config.discoverable,
             clash_port = ?clash_port,
+            pool_size = pool.len(),
             pid = managed_child_id,
             "proxy: started"
         );
 
+        Ok(())
+    }
+
+    /// Move future connections to an outbound already bundled in the running
+    /// selector. Existing connections stay on the old outbound, so this is
+    /// safe while a stream, upload, or long poll is open.
+    async fn switch_outbound(&self, uri: &str) -> Result<()> {
+        let (controller, secret, tag) = {
+            let state = self.state.read().await;
+            (
+                state.clash_controller,
+                state.clash_secret.clone(),
+                state.outbound_tags.get(uri).cloned(),
+            )
+        };
+        let (Some(addr), Some(secret), Some(tag)) = (controller, secret, tag) else {
+            return Err(anyhow!(
+                "proxy: config is not hot-swappable in the running selector"
+            ));
+        };
+
+        let client = reqwest::Client::builder()
+            .timeout(PROXY_CLASH_API_TIMEOUT)
+            .build()
+            .context("proxy: hot-swap client build failed")?;
+        let response = client
+            .put(format!(
+                "http://{addr}/proxies/{PROXY_SING_BOX_TAG_SELECTOR}"
+            ))
+            .header("Authorization", format!("Bearer {secret}"))
+            .json(&json!({ "name": tag }))
+            .send()
+            .await
+            .context("proxy: hot-swap request failed")?;
+        response
+            .error_for_status()
+            .context("proxy: hot-swap request rejected")?;
         Ok(())
     }
 
@@ -1025,7 +1171,12 @@ impl PersistentProxy {
             latency_ms = ?best.latency_ms,
             "proxy: attempting revival after stopped failover"
         );
-        let started = proxy.lock().await.start_with_config(best).await.is_ok();
+        let started = proxy
+            .lock()
+            .await
+            .start_with_config(best, &ranked_snapshot)
+            .await
+            .is_ok();
         if !started {
             warn!(
                 name = %best.name,
@@ -1205,12 +1356,32 @@ impl PersistentProxy {
                 kind = ?kind,
                 "proxy: attempting failover"
             );
-            let started = proxy
-                .lock()
-                .await
-                .start_with_config(candidate)
-                .await
-                .is_ok();
+            let hot_swappable = read_proxy_state(proxy, |state| {
+                state.running
+                    && state.clash_controller.is_some()
+                    && state.outbound_tags.contains_key(&candidate.uri)
+            })
+            .await;
+            let hot_swapped = if hot_swappable {
+                proxy
+                    .lock()
+                    .await
+                    .switch_outbound(&candidate.uri)
+                    .await
+                    .is_ok()
+            } else {
+                false
+            };
+            let started = if hot_swapped {
+                true
+            } else {
+                proxy
+                    .lock()
+                    .await
+                    .start_with_config(candidate, &ranked_snapshot)
+                    .await
+                    .is_ok()
+            };
             let verified = if started {
                 match kind {
                     FailoverKind::Failure => Self::health_check(proxy).await,
@@ -1310,6 +1481,7 @@ impl PersistentProxy {
         // be polled (the secret is dropped here too).
         state.clash_controller = None;
         state.clash_secret = None;
+        state.outbound_tags.clear();
     }
 
     pub async fn shutdown(&self) {
@@ -1552,6 +1724,65 @@ fn dwell_allows(last_switch: Option<Instant>, now: Instant, pinned: bool) -> boo
         return true;
     }
     last_switch.is_none_or(|switched| now.duration_since(switched) >= PROXY_MIN_SWITCH_INTERVAL)
+}
+
+/// Why a ranking update that needs a sing-box restart must wait.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RestartGuard {
+    /// No live flow and no open connection: a restart is safe.
+    Clear,
+    /// A real transfer is moving bytes; restarting would kill it.
+    Traffic,
+    /// Sockets are still open; a long poll or stream would die with them.
+    Open,
+}
+
+/// Decide whether a ranking update should move off the active config.
+///
+/// A hot-swappable config is already bundled in the running selector: moving
+/// new connections to it through the Clash API leaves open sockets untouched,
+/// so it is safe under traffic. Anything else needs a sing-box restart, which
+/// still waits for a live flow or any open connection to end.
+const fn ranking_switch_decision(
+    dwell_blocked: bool,
+    hot_swappable: bool,
+    restart_guard: RestartGuard,
+) -> (bool, &'static str) {
+    if dwell_blocked {
+        (false, "dwell")
+    } else if hot_swappable {
+        (true, "hot switch")
+    } else {
+        match restart_guard {
+            RestartGuard::Clear => (true, "new config"),
+            RestartGuard::Traffic => (false, "traffic"),
+            RestartGuard::Open => (false, "open"),
+        }
+    }
+}
+
+/// A mid-cycle start is provisional and only saw the first verified configs.
+/// When the first full ranking arrives, its selector may hold too few
+/// outbounds for later hot swaps. Rebuild it once, even if the active config
+/// is still the best: this is the only point where an open-socket restart is
+/// allowed, and it happens seconds after startup before the pool exists.
+const fn selector_pool_stale(
+    provisional_start: bool,
+    clear_blacklist: bool,
+    running: bool,
+    pooled: usize,
+    reachable: usize,
+) -> bool {
+    provisional_start
+        && clear_blacklist
+        && running
+        && pooled > 0
+        && pooled
+            < if reachable < PROXY_SELECTOR_POOL_SIZE {
+                reachable
+            } else {
+                PROXY_SELECTOR_POOL_SIZE
+            }
 }
 
 /// Drain a byte stream up to `cap`, returning `(received, complete)`.
@@ -2547,16 +2778,40 @@ fn random_clash_secret() -> String {
     )
 }
 
+/// Build the sing-box config for one proxy start. `pool` is ordered: the
+/// first entry is the active outbound, the rest are hot-swap alternatives.
+/// All of them sit behind one selector, so the Clash API can move new
+/// connections without restarting the process and killing open sockets.
 fn build_sing_box_config(
-    outbound: &Value,
+    pool: &[(String, Value)],
     port: u16,
     listen: &str,
     clash_api: Option<&ClashApi>,
 ) -> Value {
-    let mut outbound = outbound.clone();
-    if let Some(obj) = outbound.as_object_mut() {
-        obj.insert("tag".to_string(), json!(PROXY_SING_BOX_TAG_OUTBOUND));
+    let mut outbounds = Vec::with_capacity(pool.len() + 2);
+    let mut tags = Vec::with_capacity(pool.len());
+    for (tag, outbound) in pool {
+        let mut outbound = outbound.clone();
+        if let Some(obj) = outbound.as_object_mut() {
+            obj.insert("tag".to_string(), json!(tag));
+        }
+        outbounds.push(outbound);
+        tags.push(tag.clone());
     }
+    let default_tag = tags
+        .first()
+        .cloned()
+        .unwrap_or_else(|| PROXY_SING_BOX_TAG_OUTBOUND.to_string());
+
+    outbounds.insert(
+        0,
+        json!({
+            "type": "selector",
+            "tag": PROXY_SING_BOX_TAG_SELECTOR,
+            "outbounds": tags,
+            "default": default_tag
+        }),
+    );
 
     let direct_outbound = json!({
         "type": "direct",
@@ -2567,26 +2822,26 @@ fn build_sing_box_config(
         json!([
             { "tag": PROXY_SING_BOX_TAG_DNS_DIRECT, "type": "udp", "server": PROXY_DNS_PRIMARY },
             { "tag": PROXY_SING_BOX_TAG_DNS_FALLBACK, "type": "udp", "server": PROXY_DNS_FALLBACK },
-            { "tag": PROXY_SING_BOX_TAG_DNS_PROXY, "type": "udp", "server": PROXY_DNS_PRIMARY, "detour": PROXY_SING_BOX_TAG_OUTBOUND }
+            { "tag": PROXY_SING_BOX_TAG_DNS_PROXY, "type": "udp", "server": PROXY_DNS_PRIMARY, "detour": PROXY_SING_BOX_TAG_SELECTOR }
         ])
     } else {
         json!([
             { "tag": PROXY_SING_BOX_TAG_DNS_DIRECT, "address": PROXY_DNS_PRIMARY, "strategy": "prefer_ipv4", "detour": PROXY_SING_BOX_TAG_DIRECT },
             { "tag": PROXY_SING_BOX_TAG_DNS_FALLBACK, "address": PROXY_DNS_FALLBACK, "strategy": "prefer_ipv4", "detour": PROXY_SING_BOX_TAG_DIRECT },
-            { "tag": PROXY_SING_BOX_TAG_DNS_PROXY, "address": PROXY_DNS_PRIMARY, "strategy": "prefer_ipv4", "detour": PROXY_SING_BOX_TAG_OUTBOUND }
+            { "tag": PROXY_SING_BOX_TAG_DNS_PROXY, "address": PROXY_DNS_PRIMARY, "strategy": "prefer_ipv4", "detour": PROXY_SING_BOX_TAG_SELECTOR }
         ])
     };
 
     let route = if sing_box_version_at_least(1, 12, 0) {
         json!({
             "rules": [{ "protocol": "bittorrent", "action": "reject" }],
-            "final": PROXY_SING_BOX_TAG_OUTBOUND,
+            "final": PROXY_SING_BOX_TAG_SELECTOR,
             "default_domain_resolver": PROXY_SING_BOX_TAG_DNS_DIRECT
         })
     } else {
         json!({
             "rules": [{ "protocol": "bittorrent", "action": "reject" }],
-            "final": PROXY_SING_BOX_TAG_OUTBOUND
+            "final": PROXY_SING_BOX_TAG_SELECTOR
         })
     };
 
@@ -2601,6 +2856,7 @@ fn build_sing_box_config(
         })
     });
 
+    outbounds.push(direct_outbound);
     let mut config = json!({
         "log": { "level": "warning" },
         "dns": { "servers": dns_servers },
@@ -2610,7 +2866,7 @@ fn build_sing_box_config(
             "listen": listen,
             "listen_port": port
         }],
-        "outbounds": [outbound, direct_outbound],
+        "outbounds": outbounds,
         "route": route
     });
     if let Some(experimental) = experimental
@@ -2882,13 +3138,22 @@ mod tests {
         })
     }
 
+    fn single_outbound_pool(outbound: &Value) -> Vec<(String, Value)> {
+        vec![(PROXY_SING_BOX_TAG_OUTBOUND.to_string(), outbound.clone())]
+    }
+
     #[test]
     fn build_config_clash_api_present_when_allocated() {
         let api = ClashApi {
             port: 27911,
             secret: "s3cr3t".to_string(),
         };
-        let config = build_sing_box_config(&minimal_outbound(), 27910, "127.0.0.1", Some(&api));
+        let config = build_sing_box_config(
+            &single_outbound_pool(&minimal_outbound()),
+            27910,
+            "127.0.0.1",
+            Some(&api),
+        );
         assert_eq!(
             config["experimental"]["clash_api"]["external_controller"]
                 .as_str()
@@ -2909,7 +3174,12 @@ mod tests {
             port: 27911,
             secret: "s3cr3t".to_string(),
         };
-        let config = build_sing_box_config(&minimal_outbound(), 27910, "0.0.0.0", Some(&api));
+        let config = build_sing_box_config(
+            &single_outbound_pool(&minimal_outbound()),
+            27910,
+            "0.0.0.0",
+            Some(&api),
+        );
         assert_eq!(config["inbounds"][0]["listen"], "0.0.0.0");
         assert_eq!(
             config["experimental"]["clash_api"]["external_controller"]
@@ -2921,7 +3191,12 @@ mod tests {
 
     #[test]
     fn build_config_no_experimental_without_clash_api() {
-        let config = build_sing_box_config(&minimal_outbound(), 27910, "127.0.0.1", None);
+        let config = build_sing_box_config(
+            &single_outbound_pool(&minimal_outbound()),
+            27910,
+            "127.0.0.1",
+            None,
+        );
         assert!(config.get("experimental").is_none());
     }
 
@@ -3450,6 +3725,88 @@ mod tests {
         assert!(!dwell_blocks_switch(Some(old), now, false, false, true));
     }
 
+    #[test]
+    fn hot_swap_skips_open_and_traffic_guards() {
+        // A config already in the selector does not restart sing-box, so open
+        // sockets and live traffic cannot be cut by moving new connections.
+        assert_eq!(
+            ranking_switch_decision(false, true, RestartGuard::Traffic),
+            (true, "hot switch")
+        );
+        assert_eq!(
+            ranking_switch_decision(false, true, RestartGuard::Open),
+            (true, "hot switch")
+        );
+        // The same update without a hot-swap path must still wait.
+        assert_eq!(
+            ranking_switch_decision(false, false, RestartGuard::Traffic),
+            (false, "traffic")
+        );
+        assert_eq!(
+            ranking_switch_decision(false, false, RestartGuard::Open),
+            (false, "open")
+        );
+        // Anti-flap still applies to both paths.
+        assert_eq!(
+            ranking_switch_decision(true, true, RestartGuard::Clear),
+            (false, "dwell")
+        );
+        assert_eq!(
+            ranking_switch_decision(false, false, RestartGuard::Clear),
+            (true, "new config")
+        );
+    }
+
+    #[test]
+    fn provisional_pool_refreshes_once_after_the_first_full_ranking() {
+        // One verified config at mid-cycle start, eight at full ranking.
+        assert!(selector_pool_stale(true, true, true, 1, 8));
+        // A full pool needs no restart.
+        assert!(!selector_pool_stale(true, true, true, 8, 8));
+        // Never on a ping (same set) or after the provisional flag clears.
+        assert!(!selector_pool_stale(true, false, true, 1, 8));
+        assert!(!selector_pool_stale(false, true, true, 1, 8));
+        // No selector/controller: a restart cannot improve the pool.
+        assert!(!selector_pool_stale(true, true, true, 0, 8));
+        // Only one reachable config: one outbound is the full pool.
+        assert!(!selector_pool_stale(true, true, true, 1, 1));
+    }
+
+    #[test]
+    fn build_config_selector_lists_every_pooled_outbound() {
+        let api = ClashApi {
+            port: 27911,
+            secret: "s3cr3t".to_string(),
+        };
+        let pool = vec![
+            (PROXY_SING_BOX_TAG_OUTBOUND.to_string(), minimal_outbound()),
+            ("proxy-1".to_string(), minimal_outbound()),
+        ];
+        let config = build_sing_box_config(&pool, 27910, "127.0.0.1", Some(&api));
+
+        assert_eq!(
+            config["outbounds"][0]["tag"].as_str().unwrap(),
+            PROXY_SING_BOX_TAG_SELECTOR
+        );
+        assert_eq!(
+            config["outbounds"][0]["outbounds"],
+            json!([PROXY_SING_BOX_TAG_OUTBOUND, "proxy-1"])
+        );
+        assert_eq!(config["outbounds"][2]["tag"], "proxy-1");
+        assert_eq!(
+            config["route"]["final"].as_str().unwrap(),
+            PROXY_SING_BOX_TAG_SELECTOR
+        );
+        assert!(
+            config["dns"]["servers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|s| s["detour"].as_str() == Some(PROXY_SING_BOX_TAG_SELECTOR)),
+            "proxy DNS must follow the selector"
+        );
+    }
+
     #[tokio::test]
     async fn transfer_outcome_passes_204_empty() {
         let mock = MockHttp::start(
@@ -3681,19 +4038,29 @@ mod tests {
             }
         });
 
-        let config = build_sing_box_config(&outbound, 27910, "127.0.0.1", None);
+        let config =
+            build_sing_box_config(&single_outbound_pool(&outbound), 27910, "127.0.0.1", None);
 
         assert_eq!(config["inbounds"][0]["listen_port"], 27910);
         assert_eq!(config["inbounds"][0]["listen"], "127.0.0.1");
         assert_eq!(config["inbounds"][0]["type"], "mixed");
+        assert_eq!(config["outbounds"][0]["type"], "selector");
         assert_eq!(
             config["outbounds"][0]["tag"].as_str().unwrap(),
+            PROXY_SING_BOX_TAG_SELECTOR
+        );
+        assert_eq!(
+            config["outbounds"][0]["outbounds"][0].as_str().unwrap(),
             PROXY_SING_BOX_TAG_OUTBOUND
         );
-        assert_eq!(config["outbounds"][1]["type"], "direct");
+        assert_eq!(
+            config["outbounds"][1]["tag"].as_str().unwrap(),
+            PROXY_SING_BOX_TAG_OUTBOUND
+        );
+        assert_eq!(config["outbounds"][2]["type"], "direct");
         assert_eq!(
             config["route"]["final"].as_str().unwrap(),
-            PROXY_SING_BOX_TAG_OUTBOUND
+            PROXY_SING_BOX_TAG_SELECTOR
         );
     }
 
@@ -3710,7 +4077,8 @@ mod tests {
             }
         });
 
-        let config = build_sing_box_config(&outbound, 10808, "0.0.0.0", None);
+        let config =
+            build_sing_box_config(&single_outbound_pool(&outbound), 10808, "0.0.0.0", None);
         assert_eq!(config["inbounds"][0]["listen"], "0.0.0.0");
     }
 
@@ -3728,7 +4096,8 @@ mod tests {
             }
         });
 
-        let config = build_sing_box_config(&outbound, 27910, "127.0.0.1", None);
+        let config =
+            build_sing_box_config(&single_outbound_pool(&outbound), 27910, "127.0.0.1", None);
         let rules = config["route"]["rules"].as_array().unwrap();
         assert!(rules.iter().any(|r| r["protocol"] == json!("bittorrent")));
     }
@@ -3746,7 +4115,8 @@ mod tests {
             }
         });
 
-        let config = build_sing_box_config(&outbound, 27910, "127.0.0.1", None);
+        let config =
+            build_sing_box_config(&single_outbound_pool(&outbound), 27910, "127.0.0.1", None);
         let dns_servers = config["dns"]["servers"].as_array().unwrap();
         let has_proxy_dns = dns_servers
             .iter()
@@ -3770,7 +4140,8 @@ mod tests {
             }
         });
 
-        let config = build_sing_box_config(&outbound, 27910, "127.0.0.1", None);
+        let config =
+            build_sing_box_config(&single_outbound_pool(&outbound), 27910, "127.0.0.1", None);
         let dns_servers = config["dns"]["servers"].as_array().unwrap();
 
         let (server_key, _addr_key) = if sing_box_version_at_least(1, 12, 0) {

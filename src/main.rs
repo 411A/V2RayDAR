@@ -3580,10 +3580,12 @@ struct LiveProxyWiring {
     config: AppConfig,
 }
 
-/// Start the proxy from the best config verified so far, mid-cycle. Only a
-/// proxy with no active config is started here: a live one is never churned
+/// Start the proxy from the working configs verified so far, mid-cycle. Only
+/// a proxy with no active config is started here: a live one is never churned
 /// for a partial ranking, and the post-cycle update picks the final best with
-/// its one-shot dwell bypass.
+/// its one-shot dwell bypass. At least two working configs are required so the
+/// process starts with a selector alternative; a lone config waits for the
+/// post-cycle update.
 async fn start_live_proxy(
     state: &Arc<RwLock<RuntimeState>>,
     wiring: &LiveProxyWiring,
@@ -3600,7 +3602,11 @@ async fn start_live_proxy(
         .filter(|item| item.reachable)
         .cloned()
         .collect::<Vec<_>>();
-    if ranked.is_empty() {
+    // Wait for a second working config before going live mid-cycle. The first
+    // one alone would build a selector with no alternative, and that process
+    // cannot be repaired later without a restart. The post-cycle update still
+    // starts a lone working config when nothing else exists.
+    if ranked.len() < 2 {
         return true;
     }
 
@@ -3647,10 +3653,11 @@ fn spawn_tui_progress_forwarder(
         // runs normally.
         let mut live_start_failed = false;
         while let Some(event) = rx.recv().await {
-            // A verified working config can start the proxy right away; the
-            // cycle keeps probing and speedtesting in the background.
+            // The full working list from the probe is a ready-made selector
+            // pool: start from it instead of the single best config, so a
+            // later ranking change can hot-swap without a restart.
             let live_configs = match &event {
-                ProgressEvent::LiveProxyConfigs(configs) => Some(configs.clone()),
+                ProgressEvent::WorkingConfigsFound { configs, .. } => Some(configs.clone()),
                 _ => None,
             };
             if let Some(reporter) = reporter.as_mut() {
@@ -3696,7 +3703,6 @@ async fn push_tui_progress(
             apply_snapshot_ranks(&mut ranked);
             state.ranked = ranked;
         }
-        ProgressEvent::LiveProxyConfigs(_) => {}
         ProgressEvent::WorkingConfigsFound { configs, top_n } => {
             append_asap_working_configs(&mut state, configs, top_n, previous_top_n);
         }
@@ -4210,6 +4216,39 @@ mod tests {
         let state = state.read().await;
         assert_eq!(state.ranked[0].stability_count, 3);
         drop(state);
+    }
+
+    #[tokio::test]
+    async fn live_start_waits_for_a_second_working_config() {
+        let proxy = Arc::new(tokio::sync::Mutex::new(proxy::PersistentProxy::new(
+            crate::config::ProxyConfig {
+                enabled: true,
+                ..Default::default()
+            },
+            String::new(),
+            None,
+        )));
+        let state = Arc::new(RwLock::new(RuntimeState::default()));
+        let wiring = LiveProxyWiring {
+            proxy,
+            config: AppConfig::default_for_first_run(),
+        };
+
+        let one = vec![ranked("one", "vless://one@example.com:443", true, Some(5))];
+        assert!(
+            start_live_proxy(&state, &wiring, &one).await,
+            "a lone config is deferred, not a failed start"
+        );
+        assert!(!state.read().await.proxy_running);
+
+        let two = vec![
+            ranked("one", "vless://one@example.com:443", true, Some(5)),
+            ranked("two", "vless://two@example.com:443", true, Some(6)),
+        ];
+        // The empty sing-box path makes the real start fail; the point is that
+        // the two-config list reaches the start path instead of waiting.
+        assert!(!start_live_proxy(&state, &wiring, &two).await);
+        assert!(!state.read().await.proxy_running);
     }
 
     #[tokio::test]

@@ -289,7 +289,6 @@ pub async fn probe_candidates(
             }))
             .buffer_unordered(config.concurrency);
             let mut ranked = Vec::new();
-            let mut announced: Option<RankedConfig> = None;
             // Dropping the stream cancels in-flight connects; one
             // already-finished result at most slips through per check.
             while let Some(result) = results.next().await {
@@ -297,9 +296,6 @@ pub async fn probe_candidates(
                     break;
                 }
                 send_probe_delta(progress.as_ref(), 1, usize::from(result.reachable), 0);
-                if result.reachable {
-                    send_live_proxy_config(progress.as_ref(), result.clone(), &mut announced);
-                }
                 ranked.push(result);
                 send_asap_configs(progress.as_ref(), &ranked, stop_policy);
             }
@@ -1288,26 +1284,10 @@ fn send_ranked_snapshot(
     }
 }
 
-/// Offer one newly verified config to the proxy mid-cycle. Only improvements
-/// are sent: the first working config is enough to start serving, and a later
-/// better one is worth a retry when an earlier start failed.
-fn send_live_proxy_config(
-    progress: Option<&UnboundedSender<ProgressEvent>>,
-    config: RankedConfig,
-    announced: &mut Option<RankedConfig>,
-) {
-    if announced
-        .as_ref()
-        .is_some_and(|current| compare_ranked(&config, current).is_ge())
-    {
-        return;
-    }
-    *announced = Some(config.clone());
-    if let Some(progress) = progress {
-        let _ = progress.send(ProgressEvent::LiveProxyConfigs(vec![config]));
-    }
-}
-
+/// Offer the working configs verified so far to the proxy mid-cycle. The
+/// proxy starts once the list has more than one entry, so the running child
+/// gets a selector with an alternative; a lone config waits for the
+/// post-cycle update instead of becoming a dead-end pool.
 fn send_asap_configs(
     progress: Option<&UnboundedSender<ProgressEvent>>,
     ranked: &[RankedConfig],
@@ -1649,7 +1629,6 @@ async fn probe_active_batch(
     let mut produced = 0usize;
     let mut working = 0usize;
     let mut completed = 0;
-    let mut announced: Option<RankedConfig> = None;
     while let Some((mut results, bytes)) = probe_results.next().await {
         if stop.stopped() {
             break;
@@ -1659,16 +1638,6 @@ async fn probe_active_batch(
         let working_delta = results.iter().filter(|item| item.reachable).count();
         working = working.saturating_add(working_delta);
         produced = produced.saturating_add(tested_delta);
-        // The best config this probe verified, so the proxy can start now
-        // instead of waiting for the whole cycle (speedtests included).
-        if let Some(best) = results
-            .iter()
-            .filter(|item| item.reachable)
-            .min_by(|a, b| compare_ranked(a, b))
-            .cloned()
-        {
-            send_live_proxy_config(progress, best, &mut announced);
-        }
         // Publish to the shared list first: every finished probe counts toward
         // the global stop decision, so all batches quit within ~one probe of
         // the target instead of each batch probing toward `top_n` on its own.
@@ -3813,37 +3782,6 @@ mod tests {
         );
 
         assert!(rx.try_recv().is_err());
-    }
-
-    #[tokio::test]
-    async fn live_proxy_config_announces_only_improvements() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut announced = None;
-        send_live_proxy_config(
-            Some(&tx),
-            ranked("slow", "vless://slow@example.com:443", true, Some(90)),
-            &mut announced,
-        );
-        send_live_proxy_config(
-            Some(&tx),
-            ranked("worse", "vless://worse@example.com:443", true, Some(120)),
-            &mut announced,
-        );
-        send_live_proxy_config(
-            Some(&tx),
-            ranked("fast", "vless://fast@example.com:443", true, Some(5)),
-            &mut announced,
-        );
-
-        let Some(ProgressEvent::LiveProxyConfigs(first)) = rx.recv().await else {
-            panic!("expected the first live config");
-        };
-        assert_eq!(first[0].name, "slow");
-        let Some(ProgressEvent::LiveProxyConfigs(better)) = rx.recv().await else {
-            panic!("expected the improved live config");
-        };
-        assert_eq!(better[0].name, "fast");
-        assert!(rx.try_recv().is_err(), "a worse config is never sent");
     }
 
     #[test]

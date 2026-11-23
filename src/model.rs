@@ -199,7 +199,6 @@ pub enum ProgressEvent {
     /// Best working config verified so far in this cycle. Internal: the proxy
     /// starts on it while the refresh is still probing; the dashboard ignores
     /// it and keeps its own early-publish policy.
-    LiveProxyConfigs(Vec<RankedConfig>),
     WorkingConfigsFound {
         configs: Vec<RankedConfig>,
         top_n: usize,

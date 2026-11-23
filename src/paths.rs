@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, anyhow};
 use tokio::fs;
 
-use crate::constants::{APP_DATA_DIR_NAME, APP_NAME, CACHE_DIR_NAME, CONFIG_FILE_NAME};
+use crate::constants::{
+    APP_DATA_DIR_NAME, APP_NAME, CACHE_DIR_NAME, CONFIG_FILE_NAME, DB_FILE_NAME,
+};
 
 #[derive(Debug, Clone)]
 pub struct AppPaths {
@@ -38,6 +40,26 @@ impl AppPaths {
             .ok()
             .and_then(|executable| executable.parent().map(Path::to_path_buf))
             .is_some_and(|dir| dir_looks_portable(&dir))
+    }
+
+    /// The database used by the *other* supported layout, when it exists.
+    ///
+    /// A portable run looks under the platform app-data root; an installed run
+    /// looks beside the executable. Surfacing this at startup turns the
+    /// "why did my settings change?" case into an explicit warning: the other
+    /// database is still there, and launching from a different folder switches
+    /// to it instead of merging.
+    pub fn other_layout_db(&self) -> Option<PathBuf> {
+        let installed_root = installed_root_dir().ok();
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|executable| executable.parent().map(Path::to_path_buf));
+        other_layout_db_candidate(
+            &self.root_dir,
+            self.portable,
+            installed_root.as_deref(),
+            exe_dir.as_deref(),
+        )
     }
 
     pub fn from_config_override(config_path: PathBuf) -> Self {
@@ -77,6 +99,21 @@ impl AppPaths {
             generated_config,
         }
     }
+}
+
+fn other_layout_db_candidate(
+    current_root: &Path,
+    portable: bool,
+    installed_root: Option<&Path>,
+    exe_dir: Option<&Path>,
+) -> Option<PathBuf> {
+    let current = current_root.join(DB_FILE_NAME);
+    let other = if portable {
+        installed_root?.join(DB_FILE_NAME)
+    } else {
+        exe_dir?.join(APP_DATA_DIR_NAME).join(DB_FILE_NAME)
+    };
+    (other != current && other.is_file()).then_some(other)
 }
 
 fn installed_root_dir() -> Result<PathBuf> {
@@ -157,6 +194,42 @@ mod tests {
                 .join(APP_NAME)
                 .join(APP_DATA_DIR_NAME)
         );
+    }
+
+    #[test]
+    fn other_layout_db_only_reports_an_existing_other_database() {
+        let base = unique_temp_dir("other-db");
+        let portable = base.join("portable");
+        let installed = base.join("installed");
+        let exe = base.join("exe");
+        std::fs::create_dir_all(&portable).expect("portable root");
+        std::fs::create_dir_all(&installed).expect("installed root");
+        std::fs::create_dir_all(exe.join(APP_DATA_DIR_NAME)).expect("portable beside exe");
+
+        let portable_db = portable.join(DB_FILE_NAME);
+        let installed_db = installed.join(DB_FILE_NAME);
+        let beside_exe_db = exe.join(APP_DATA_DIR_NAME).join(DB_FILE_NAME);
+        std::fs::write(&portable_db, b"portable").expect("portable db");
+        std::fs::write(&installed_db, b"installed").expect("installed db");
+        std::fs::write(&beside_exe_db, b"beside").expect("beside-exe db");
+
+        assert_eq!(
+            other_layout_db_candidate(&portable, true, Some(&installed), Some(&exe)),
+            Some(installed_db.clone())
+        );
+        assert_eq!(
+            other_layout_db_candidate(&portable, true, Some(&portable), Some(&exe)),
+            None,
+            "the active database is not the other one"
+        );
+        assert_eq!(
+            other_layout_db_candidate(&installed, false, Some(&portable), Some(&exe)),
+            Some(beside_exe_db.clone())
+        );
+
+        std::fs::remove_file(&installed_db).expect("remove other db");
+        std::fs::remove_file(&beside_exe_db).expect("remove beside db");
+        let _ = std::fs::remove_dir_all(base);
     }
 
     #[test]

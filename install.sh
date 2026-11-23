@@ -645,15 +645,18 @@ heal_flipped_database() {
     fi
     [ -z "$_installed_size" ] && _installed_size=0
     [ -z "$_portable_size" ] && _portable_size=0
-    # A real portable database (far more than a fresh seed) must never be
-    # replaced by an older installed-root copy: it holds the newest settings
-    # and configs. Keep both and let the user choose.
-    if [ "$_portable_size" -gt 1048576 ]; then
-        warn "both databases exist; keeping the portable one at $_portable_db"
-        warn "the older installed-root database is at $_installed_db"
+    # A non-empty portable database is always authoritative. It may be a
+    # fresh seed under 1 MB, but it still holds the user's current settings;
+    # never replace it with an older installed-root copy. Only a missing or
+    # zero-byte portable database is safe to heal.
+    if [ "$_portable_size" -gt 0 ]; then
+        if [ -f "$_installed_db" ]; then
+            warn "both databases exist; keeping the portable one at $_portable_db"
+            warn "the other installed-root database is at $_installed_db"
+        fi
         return 0
     fi
-    if [ "$_installed_size" -le "$_portable_size" ] || [ "$_installed_size" -lt 1048576 ]; then return 0; fi
+    if [ "$_installed_size" -lt 1048576 ]; then return 0; fi
     _stamp="$(date +%Y%m%d-%H%M%S 2>/dev/null || echo backup)"
     if [ -d "$_target/v2raydar_data" ]; then
         mv "$_target/v2raydar_data" "$_target/v2raydar_data.backup-$_stamp"

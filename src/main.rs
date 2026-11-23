@@ -204,6 +204,23 @@ async fn main() -> Result<()> {
         Database::open(&db_path)
             .with_context(|| format!("failed to open database at {}", db_path.display()))?,
     );
+    let data_mode = if paths.portable {
+        "portable"
+    } else {
+        "installed"
+    };
+    let data_line = format!("Data: {} ({data_mode})", paths.root_dir.display());
+    let other_db = paths.other_layout_db();
+    let other_db_warning = other_db.as_ref().map(|other| {
+        format!(
+            "Another database exists at {}. This run uses {} ({data_mode} mode); launching from a different folder switches databases instead of merging settings.",
+            other.display(),
+            db_path.display()
+        )
+    });
+    if let Some(warning) = &other_db_warning {
+        warn!("{warning}");
+    }
 
     if cli.reset_dashboard_password {
         let removed = crate::dashboard_auth::clear_credentials(&database)
@@ -328,6 +345,13 @@ async fn main() -> Result<()> {
     }
 
     let state = Arc::new(RwLock::new(RuntimeState::default()));
+    {
+        let mut runtime = state.write().await;
+        applog::push(&mut runtime, applog::LogLevel::Info, &data_line);
+        if let Some(warning) = &other_db_warning {
+            applog::push(&mut runtime, applog::LogLevel::Warn, warning);
+        }
+    }
     let runtime_config = Arc::new(RwLock::new(RuntimeConfig::from(&config)));
     let subscriptions: crate::server::SharedSubscriptions =
         Arc::new(RwLock::new(config.subscriptions.clone()));

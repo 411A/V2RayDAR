@@ -722,6 +722,8 @@ When a refresh completes, all probed configs are upserted into the database. Con
 
 The database is also the fallback source: a cycle that cannot fill `top_n` working configs probes the cached pool instead of publishing an empty result (see [Restricted-Network Behavior](#restricted-network-behavior)).
 
+Only one database is active per run. A portable install uses `v2raydar_data/data.db` beside the executable; an installed run uses the platform app-data directory. If the other layout's database exists, startup writes both paths to Live logs and says which one this run is using — launching from a different folder switches databases rather than merging their settings. Updates replace binaries only and never replace a non-empty portable database with an older installed-root copy.
+
 ## Restricted-Network Behavior
 
 On very restricted networks, set `use_cache_only: true` to load previously-probed configs from the database instead of fetching fresh subscriptions. The app can test these previously-probed configs when fresh HTTP subscription URLs are unreachable.
